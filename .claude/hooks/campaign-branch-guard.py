@@ -25,6 +25,30 @@ from datetime import datetime, timedelta, timezone
 
 HEARTBEAT_FRESH_MINUTES = 15
 
+# Lifecycle states declared in .campaigns/schema.json + policies.json.state_enum.
+# Parity with those two files and OWNERSHIP-GUARD-SPEC.md is pinned by
+# service/tests/test_campaign_branch_guard.py.
+KNOWN_STATES = (
+    "IN_PROGRESS",
+    "READY_FOR_REBASE",
+    "REBASED_PENDING_REVIEW",
+    "PR_OPEN",
+    "MERGED",
+    "MERGED_PENDING_ARCHIVE",
+    "FROZEN",
+    "LOCKED",
+    "DEPLOYING",
+    "ARCHIVED",
+)
+
+# Write-restricted: denied for ALL sessions INCLUDING the registered owner (§6).
+# MERGED_PENDING_ARCHIVE joins these (ADR-campaign-state-lifecycle-sha-authority,
+# 2026-07-19): the branch is merged, the worktree is still registered, and no
+# legitimate write remains. Because 4a runs before check 5, a merged campaign can
+# never raise a spurious branch-drift incident — drift detection stays fully active
+# for every writable state and is merely superseded here by a stricter deny.
+RESTRICTED_STATES = ("FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED", "MERGED_PENDING_ARCHIVE")
+
 WRITE_VERBS = re.compile(
     r"\bgit\b[^\n|;&]*?\b("
     r"commit|reset|rebase|cherry-pick|merge"
@@ -68,8 +92,15 @@ def _emit(decision, reason):
     sys.stdout.buffer.flush()
 
 
+# Canonical operational-registry location. Module-level so tests can exercise the real
+# guard against a fixture registry by rebinding this name in-process. Deliberately NOT
+# an environment variable: an env-settable registry path would be a bypass vector in a
+# fail-closed enforcement hook.
+CANONICAL_REGISTRY = r"C:\PZ-main\.claude\state\active-campaigns.json"
+
+
 def _registry_paths():
-    paths = [r"C:\PZ-main\.claude\state\active-campaigns.json"]
+    paths = [CANONICAL_REGISTRY]
     proj = os.environ.get("CLAUDE_PROJECT_DIR")
     if proj:
         paths.append(os.path.join(proj, ".claude", "state", "active-campaigns.json"))
@@ -176,9 +207,27 @@ def main():
         state = (entry.get("state") or entry.get("status") or "").upper()
         phase = entry.get("phase") or ""
 
+        # 4a-pre — UNKNOWN/SCHEMA-INVALID STATE (fail-closed enforcement boundary).
+        # An undeclared state must NEVER fall through to write-permitted behaviour:
+        # `MERGED_VERIFIED` (transport-m1, 2026-07-18) sat outside every enum and
+        # would otherwise have been treated as an ordinary writable state. Surface it
+        # explicitly instead of guessing intent.
+        if state and state not in KNOWN_STATES:
+            _emit("ask", f"campaign-branch-guard[{name}]: unrecognised campaign state "
+                         f"'{state}' — not in the declared lifecycle enum "
+                         f"(.campaigns/schema.json, policies.json.state_enum). Treating as "
+                         f"RESTRICTED pending an operator ruling: confirm the intended state "
+                         f"before any write. Fail-closed by design; never assume writable.")
+            return 0
+        if not state:
+            _emit("ask", f"campaign-branch-guard[{name}]: campaign entry has no `state` "
+                         f"(required by .campaigns/schema.json). Treating as RESTRICTED "
+                         f"pending an operator ruling — fail closed, never assume writable.")
+            return 0
+
         # 4a — STATE enforcement (operator second ruling §6): write-restricted states
         # deny EVEN FOR THE OWNER. Ownership match alone never permits a write.
-        if state in ("FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"):
+        if state in RESTRICTED_STATES:
             _emit("deny", f"campaign-branch-guard[{name}]: campaign state is {state}"
                           f"{' (phase ' + phase + ')' if phase else ''} — allowed: read/verify/review; "
                           f"denied: commit/reset/rebase/cherry-pick/merge for ALL sessions including "

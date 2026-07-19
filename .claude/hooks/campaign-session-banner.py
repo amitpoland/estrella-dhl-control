@@ -13,7 +13,18 @@ import json
 import os
 import sys
 
-RESTRICTED = ("FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED")
+# Parity with campaign-branch-guard.RESTRICTED_STATES, .campaigns/policies.json
+# state_operation_matrix, and OWNERSHIP-GUARD-SPEC.md — pinned by
+# service/tests/test_campaign_branch_guard.py.
+RESTRICTED = ("FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED", "MERGED_PENDING_ARCHIVE")
+
+# Declared lifecycle states (.campaigns/schema.json + policies.json.state_enum).
+# An entry outside this set is displayed as write-restricted: the guard fails closed
+# on it, and the banner must not imply the campaign is writable.
+KNOWN_STATES = (
+    "IN_PROGRESS", "READY_FOR_REBASE", "REBASED_PENDING_REVIEW", "PR_OPEN", "MERGED",
+    "MERGED_PENDING_ARCHIVE", "FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED",
+)
 
 
 def _registry_paths():
@@ -49,9 +60,13 @@ def main():
             continue
         state = (e.get("state") or e.get("status") or "?").upper()
         phase = e.get("phase") or ""
-        allowed = ("read/verify/review ONLY (write-restricted state — denied even for owner)"
-                   if state in RESTRICTED
-                   else "owner writes with claimed lock; everyone else READ-ONLY")
+        if state in RESTRICTED:
+            allowed = "read/verify/review ONLY (write-restricted state — denied even for owner)"
+        elif state not in KNOWN_STATES:
+            allowed = ("UNRECOGNISED STATE — guard fails closed (ask) on any write; "
+                       "operator ruling required")
+        else:
+            allowed = "owner writes with claimed lock; everyone else READ-ONLY"
         lines.append(
             f"  Campaign: {name} | Owner: {e.get('owner', '?')} | State: {state}"
             f"{(' / ' + phase) if phase else ''} | Expected HEAD: {e.get('expected_head', '?')}"

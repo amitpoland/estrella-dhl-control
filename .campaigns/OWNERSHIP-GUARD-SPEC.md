@@ -34,7 +34,8 @@ only — ordinary work is unaffected). `git worktree add` is always in scope (ru
 | 1 | Registry unreadable/corrupt while a campaign entry may apply | `ask` (surface to operator; never silently allow) |
 | 2 | Branch checked out at the target tree matches the entry's `branch` (branch mismatch) | `deny` |
 | 3 | Target tree is the entry's registered `worktree` (worktree mismatch) | `deny` |
-| 4a | **STATE enforcement (§6)**: campaign `state` ∉ {FROZEN, LOCKED, DEPLOYING, ARCHIVED} | `deny` — for ALL sessions **including the owner**; ownership match alone never permits a write |
+| 4a-pre | **STATE DECLARED**: `state` is present and appears in the lifecycle enum (`.campaigns/schema.json`, `policies.json.state_enum`) | `ask` naming the offending value — an unknown/missing state is a fail-closed boundary and must **never** fall through to write-permitted behaviour |
+| 4a | **STATE enforcement (§6)**: campaign `state` ∉ {FROZEN, LOCKED, DEPLOYING, ARCHIVED, MERGED_PENDING_ARCHIVE} | `deny` — for ALL sessions **including the owner**; ownership match alone never permits a write |
 | 4 | Session holds the entry's `lock` (`lock.session_id == payload session_id`) — owner mismatch | `deny`; if `lock` is null (unclaimed) → `ask` (operator confirms the claimant). A non-holder's denial is classified: fresh heartbeat (<15 min) → **concurrent writer (check 6)**; stale heartbeat → **stale/crashed owner** — only the operator may reassign the lock by editing the registry entry |
 | 5 | Current HEAD starts with `expected_head` (unexpected HEAD) | `deny` + instruct: file incident, request operator ruling, NEVER auto-correct |
 | 7 | `git worktree add` without operator approval | `ask` (the ask prompt IS the operator-approval gate) |
@@ -44,12 +45,27 @@ only — ordinary work is unaffected). `git worktree add` is always in scope (ru
 | State | Allowed | Denied (all sessions, incl. owner) |
 |---|---|---|
 | FROZEN / LOCKED / DEPLOYING | read, verify, review | commit, reset, rebase, cherry-pick, merge, branch move |
+| MERGED_PENDING_ARCHIVE | read, verify, review | commit, reset, rebase, cherry-pick, merge, branch move |
 | ARCHIVED | read | all writes |
-| other states | owner writes with claimed lock | any non-owner write |
+| *unknown / missing state* | — | all writes (`ask`, fail closed) |
+| other declared states | owner writes with claimed lock | any non-owner write |
 
 Registry-field divergence (`expected_head` ≠ `last_verified_head`) is governed by
 `policies.json → rules.no_auto_correction`: incident report + operator ruling, never
 an auto-correct — the guard's check 5 enforces the write-time actual-HEAD case.
+
+## SHA authority (ADR-campaign-state-lifecycle-sha-authority, 2026-07-19)
+
+`expected_head` and `last_verified_head` are **always campaign branch-tip SHAs**. Main-side
+provenance for a merged campaign lives in the optional `merge` object
+(`{pr, squash_sha, merged_at}`), which is **inert**: check 5 compares `expected_head` against
+the worktree HEAD and **never** reads `merge.squash_sha`. Storing a squash SHA in
+`expected_head` is what produced the `transport-m1` false-drift incident.
+
+`MERGED_PENDING_ARCHIVE` covers the window where a campaign is merged but its worktree is
+still registered (e.g. post-merge follow-up open). Because check 4a runs before check 5, a
+merged campaign cannot raise a spurious branch-drift incident — drift detection remains fully
+active for every writable state and is superseded here by a stricter deny, never disabled.
 
 ## Session-start banner (§7)
 
