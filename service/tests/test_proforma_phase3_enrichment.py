@@ -21,6 +21,25 @@ _pildb_src  = _PIL_DB.read_text(encoding="utf-8")
 _routes_src = _ROUTES.read_text(encoding="utf-8")
 
 
+def test_module_level_source_reads_use_explicit_utf8():
+    """Regression pin for the module-level source reads above.
+
+    routes_proforma.py carries a UTF-8 BOM + non-ASCII punctuation, so a bare
+    ``.read_text()`` (platform-default encoding) raises UnicodeDecodeError at
+    COLLECTION on Windows/cp1252 and aborts the whole run. This asserts each of
+    the three source-file reads is explicitly utf-8 — and that none reverts to
+    the platform default. (A self-referential ``'read_text(encoding="utf-8")' in
+    __file__`` check would be tautological: the assertion body itself carries
+    that string, so it would pass even after a regression.)
+    """
+    src = Path(__file__).read_text(encoding="utf-8")
+    for var in ("_WFIRMA_CLIENT", "_PIL_DB", "_ROUTES"):
+        assert f'{var}.read_text(encoding="utf-8")' in src, \
+            f"{var} module-level read must be explicit utf-8"
+        assert f"{var}.read_text()" not in src, \
+            f"{var} must not be read with the platform-default encoding"
+
+
 def test_fetch_proforma_enrichment_exists():
     assert "def fetch_proforma_enrichment" in _wfirma_src
 
