@@ -123,21 +123,37 @@ def _entry(state="IN_PROGRESS", expected_head=TIP_SHA, lock="owner", merge=None,
     return e
 
 
-def _repo_head():
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT,
+def _git(args, cwd):
+    return subprocess.run(["git"] + args, cwd=str(cwd),
                           capture_output=True, text=True).stdout.strip()
 
 
-def _repo_branch():
-    return subprocess.run(["git", "branch", "--show-current"], cwd=REPO_ROOT,
-                          capture_output=True, text=True).stdout.strip()
+@pytest.fixture
+def repo(tmp_path):
+    """A real, self-contained git repo to act as the campaign worktree.
+
+    Deliberately NOT the repository under test: when this suite runs from an exported
+    tree (`git archive`) there is no .git, `rev-parse HEAD` returns empty, and check 5
+    silently short-circuits into an allow — a vacuous pass. Owning the fixture repo
+    makes the drift pins hold in any execution context.
+    """
+    d = tmp_path / "campaign_repo"
+    d.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "campaign-branch"], cwd=str(d), check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=str(d), check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=str(d), check=True)
+    (d / "f.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=str(d), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(d), check=True)
+    return d
 
 
-def _repo_entry(state="IN_PROGRESS", expected_head=None, lock="owner", merge=None):
-    """An entry bound to this real repo, so checks 2/3 pass and 4/5 are truly reached."""
-    e = _entry(state=state, expected_head=expected_head or _repo_head(),
-               lock=lock, merge=merge, worktree=REPO_ROOT)
-    e["branch"] = _repo_branch()
+def _repo_entry(repo, state="IN_PROGRESS", expected_head=None, lock="owner", merge=None):
+    """An entry bound to the fixture repo, so checks 2/3 pass and 4/5 are truly reached."""
+    e = _entry(state=state,
+               expected_head=expected_head or _git(["rev-parse", "HEAD"], repo),
+               lock=lock, merge=merge, worktree=str(repo))
+    e["branch"] = _git(["branch", "--show-current"], repo)
     return e
 
 
@@ -157,16 +173,16 @@ def test_out_of_scope_write_passes_silently(tmp_path):
 
 # ------------------------------------------------------------------- required test matrix
 
-def test_old_format_record_without_merge_preserves_existing_behaviour(tmp_path):
+def test_old_format_record_without_merge_preserves_existing_behaviour(tmp_path, repo):
     """An untouched legacy record (no `merge` key) behaves exactly as before.
 
     Bound to the real repo so checks 2/3 pass and execution reaches check 4 — otherwise
     the worktree-mismatch deny would mask the behaviour actually under test.
     """
-    entry = _repo_entry(state="IN_PROGRESS", lock="none")
+    entry = _repo_entry(repo, state="IN_PROGRESS", lock="none")
     assert "merge" not in entry
     _write_registry(tmp_path, entry)
-    d = _run_guard(tmp_path, "git commit -m x", cwd=REPO_ROOT)
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
     # lock unclaimed -> ask (check 4), the pre-existing behaviour
     assert d["permissionDecision"] == "ask"
     assert "write-lock unclaimed" in d["permissionDecisionReason"]
@@ -181,7 +197,7 @@ def test_merged_pending_archive_denies_owner_and_non_owner(tmp_path, session):
     assert "MERGED_PENDING_ARCHIVE" in d["permissionDecisionReason"]
 
 
-def test_claimed_lock_writable_state_with_mismatched_expected_head_denies(tmp_path):
+def test_claimed_lock_writable_state_with_mismatched_expected_head_denies(tmp_path, repo):
     """Drift detection stays ACTIVE in writable states.
 
     This is the non-vacuous check-5 pin: the lock is held by this very session and the
@@ -191,41 +207,30 @@ def test_claimed_lock_writable_state_with_mismatched_expected_head_denies(tmp_pa
     non-repo path `rev-parse HEAD` returns nothing and check 5 short-circuits into a
     silent allow, which is a second way this pin can go vacuous.
     """
-    _write_registry(tmp_path, _repo_entry(state="IN_PROGRESS", expected_head=SQUASH_SHA))
-    d = _run_guard(tmp_path, "git commit -m x", cwd=REPO_ROOT)
+    _write_registry(tmp_path, _repo_entry(repo, state="IN_PROGRESS",
+                                          expected_head=SQUASH_SHA))
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
     assert d is not None, "expected a decision, got silent allow"
     assert d["permissionDecision"] == "deny"
     assert "unexpected HEAD" in d["permissionDecisionReason"]
 
 
-def test_matching_branch_tip_expected_head_allows_when_other_gates_pass(tmp_path):
+def test_matching_branch_tip_expected_head_allows_when_other_gates_pass(tmp_path, repo):
     """Correct branch-tip expected_head + held lock + writable state => silent allow."""
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT,
-                          capture_output=True, text=True).stdout.strip()
-    branch = subprocess.run(["git", "branch", "--show-current"], cwd=REPO_ROOT,
-                            capture_output=True, text=True).stdout.strip()
-    entry = _entry(state="IN_PROGRESS", expected_head=head, worktree=REPO_ROOT)
-    entry["branch"] = branch
-    _write_registry(tmp_path, entry)
-    assert _run_guard(tmp_path, "git commit -m x", cwd=REPO_ROOT) is None
+    _write_registry(tmp_path, _repo_entry(repo, state="IN_PROGRESS"))
+    assert _run_guard(tmp_path, "git commit -m x", cwd=str(repo)) is None
 
 
-def test_merge_squash_sha_mismatch_has_no_independent_effect(tmp_path):
+def test_merge_squash_sha_mismatch_has_no_independent_effect(tmp_path, repo):
     """`merge` is inert: a squash SHA unrelated to HEAD must not influence any decision.
 
     Identical to the allow case above except for the added `merge` object. If the guard
     ever compared merge.squash_sha against HEAD, this would flip to a deny.
     """
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT,
-                          capture_output=True, text=True).stdout.strip()
-    branch = subprocess.run(["git", "branch", "--show-current"], cwd=REPO_ROOT,
-                            capture_output=True, text=True).stdout.strip()
-    entry = _entry(state="IN_PROGRESS", expected_head=head, worktree=REPO_ROOT,
-                   merge={"pr": 940, "squash_sha": SQUASH_SHA,
-                          "merged_at": "2026-07-17T22:27:37Z"})
-    entry["branch"] = branch
-    _write_registry(tmp_path, entry)
-    assert _run_guard(tmp_path, "git commit -m x", cwd=REPO_ROOT) is None
+    _write_registry(tmp_path, _repo_entry(repo, state="IN_PROGRESS",
+                                          merge={"pr": 940, "squash_sha": SQUASH_SHA,
+                                                 "merged_at": "2026-07-17T22:27:37Z"}))
+    assert _run_guard(tmp_path, "git commit -m x", cwd=str(repo)) is None
 
 
 @pytest.mark.parametrize("state", ["FROZEN", "LOCKED", "DEPLOYING", "ARCHIVED"])
