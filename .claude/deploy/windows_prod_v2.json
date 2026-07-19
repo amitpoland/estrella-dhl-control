@@ -19,10 +19,6 @@
 
   "engine_files": ["pz_import_processor.py", "polish_description_generator.py"],
 
-  "requirements_src": "C:\\PZ-main\\service\\requirements.txt",
-  "requirements_dst": "C:\\PZ\\requirements.txt",
-  "python": "C:\\Users\\Super Fashion\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
-
   "protected_dirs": ["storage", "logs", "cloudflared", "__pycache__", ".pytest_cache"],
   "protected_files": [".env", "*.pyc", "*.pyo", "*.zip"],
   "protected_runtime_paths": [
@@ -61,7 +57,7 @@
     "/api/v1/customer-master/"
   ],
 
-  "operator_token_env": "PZ_DEPLOY_OPERATOR_TOKEN",
+  "authorization_helper": "hooks\\deploy_authorization.py",
 
   "notes": [
     "schema_version 2 (2026-07-19): promoted from inert documentation to the single runtime configuration authority consumed by Deploy-PZ.ps1.",
@@ -70,7 +66,8 @@
     "Deploy bytes come from artifact_root\\app-<SHA> (immutable, hash-manifested), never from a live git tree. Rollback bytes come from backup_root, never from git.",
     "/XO is FORBIDDEN: it skips files it judges not-newer, silently leaving stale destination files (2026-07-07 ImportError incident).",
     "robocopy exit semantics: 0-3 success; >= robocopy_suspect_exit fatal unless the destination inventory classified it; >= robocopy_fatal_exit always fatal.",
-    "version_file is written by Deploy-PZ.ps1 ONLY and is read at runtime by service/app/api/routes_webhooks_wfirma_status.py. Exactly one writer, pinned by test_deploy_authority.py.",
+    "version_file is written by Deploy-PZ.ps1 ONLY, as BOM-free ASCII, and is read at runtime by service/app/api/routes_webhooks_wfirma_status.py using Python's utf-8 codec. A UTF-8 BOM would NOT be stripped by that reader and would corrupt the served SHA. Exactly one writer, pinned by test_deploy_authority.py.",
+    "Production writes require a signed, SHA-bound, single-use authorization artifact evaluated by authorization_helper. Presence of an environment variable is NOT authorization. The signing key lives outside this repository; with no key provisioned every deploy is denied, which is the intended default.",
     "Lesson J: engine_files are NOT covered by the application sync; they need the separate source_root -> runtime_engine copy, verified by content hash, never by Python import."
   ]
 }

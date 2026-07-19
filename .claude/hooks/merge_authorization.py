@@ -41,6 +41,13 @@ PROTECTED_PATH_MARKERS = (
     ".claude/hooks/merge_authorization.py",
     ".claude/settings.json",
     ".claude/hooks/",                 # any hook change is guard-adjacent
+    ".claude/deploy/",                # sole deploy configuration + execution +
+                                      # validation authority. A config-only PR could
+                                      # repoint runtime paths and redirect /MIR
+                                      # convergence at an arbitrary destination.
+    "service/app/tools/verify_runtime_sync",   # can copy into the runtime tree
+    "service/scripts/env_config_manager",      # writes the runtime .env
+    "service/scripts/activate_pz_lifecycle",   # writes the runtime .env
     "docs/decisions/adr-council-authorized-merge",  # this ADR / policy
     "service/docs/production_deployment_rule",
     ".claude/contracts/governance-precedence",

@@ -33,14 +33,20 @@ function Add-Result { param([string]$Name, [bool]$Ok, [string]$Detail) $script:r
 
 # 1 - deployed SHA matches expectation (via the version file)
 if (Test-Path $cfg.version_file) {
-    $actual = (Get-Content $cfg.version_file -Raw).Trim()
-    Add-Result "version_file matches ExpectedSHA" ($actual -like "$ExpectedSHA*") "file=$actual expected=$ExpectedSHA"
+    # RAW BYTES, deliberately. Get-Content silently strips a UTF-8 BOM that Python's
+    # utf-8 reader does NOT, so a text-mode check passes while the runtime endpoint
+    # serves a corrupted SHA. Validation must see what the consumer sees.
+    $bytes = [System.IO.File]::ReadAllBytes($cfg.version_file)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $actual = ([System.Text.Encoding]::UTF8.GetString($bytes)).Trim([char]0xFEFF, ' ', "`r", "`n", "`t")
+    Add-Result "version_file is BOM-free" (-not $hasBom) $(if ($hasBom) { "BOM PRESENT - the status endpoint would serve a corrupted SHA" } else { "clean" })
+    Add-Result "version_file matches ExpectedSHA" ($actual -eq $ExpectedSHA) "file=$actual expected=$ExpectedSHA"
 }
 else { Add-Result "version_file present" $false "MISSING: $($cfg.version_file) - the wfirma status endpoint will report no version" }
 
 # 2 - certified source is at the expected SHA
 $head = (& git -C $cfg.source_root rev-parse HEAD 2>$null)
-Add-Result "source_root HEAD == ExpectedSHA" ($LASTEXITCODE -eq 0 -and $head -like "$ExpectedSHA*") "head=$head"
+Add-Result "source_root HEAD == ExpectedSHA" ($LASTEXITCODE -eq 0 -and $head.Trim() -eq $ExpectedSHA) "head=$head"
 
 # 3 - artifact for this SHA exists and production matches its manifest
 $art = Join-Path $cfg.artifact_root "app-$ExpectedSHA"

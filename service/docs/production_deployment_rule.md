@@ -14,6 +14,7 @@
 | Service | `PZService` (NSSM, port 47213) |
 | Public URL | `https://pz.estrellajewels.eu` |
 | Git repo (verify) | `C:\PZ-verify` (canonical — `C:\Users\Super Fashion\PZ APP` RETIRED 2026-06-04) |
+| Deploy source | `C:\PZ-main` - clean `main`, ff-only; the ONLY source of deploy bytes |
 | Production secrets | `C:\PZ\.env` |
 | Production data | `C:\PZ\storage` |
 | Production logs | `C:\PZ\logs` |
@@ -32,7 +33,7 @@ The git repository is a **staging workspace only**.
 4. **No sync before agents inspect changed files.**  The 7-agent gate is mandatory.
 5. **No restart before rollback path is defined.**  Rollback command must be written down first.
 6. **No deletion, overwrite, or mirror copy.**  Additive sync only.
-7. **Never use `the application sync /MIR`.**  Forbidden without exception.
+7. **Never use `robocopy /MIR` outside the gated convergence.**  Forbidden without exception.
 8. **Never overwrite these production paths:**
    - `C:\PZ\.env`
    - `C:\PZ\storage\`
@@ -47,12 +48,12 @@ The git repository is a **staging workspace only**.
 
 ## Post-incident deployment source rules (PERMANENT — added 2026-07-07)
 
-Origin: 2026-07-07 incident — a `the application sync /XO` sourced from a **feature-branch worktree**
+Origin: 2026-07-07 incident — a `robocopy /XO` sourced from a **feature-branch worktree**
 (`feat/product-master-authority-tests`, not `main`) left `C:\PZ\app` version-skewed: a stale
 `main.py` imported a 0-byte `routes_wfirma_reservation.py` → `ImportError` → PZService failed to
 start. These rules are mandatory for every deploy AND every recovery sync.
 
-1. **Never deploy from a feature-branch worktree.** The the application sync source app tree must be a
+1. **Never deploy from a feature-branch worktree.** The sync source app tree must be a
    checkout of clean `main` (or an explicitly approved release SHA) — never a feature/PR branch
    or a scratch worktree.
 2. **Deployment source must be clean `main` or an explicitly approved release SHA** — fully
@@ -62,7 +63,7 @@ start. These rules are mandatory for every deploy AND every recovery sync.
    must OVERWRITE to match the source exactly (still no `/MIR`; still exclude the forbidden
    paths in Rule 8). `/XO` is permitted ONLY for a known-incremental top-up where the dest is
    already a consistent subset of the source.
-4. **Verify the source BEFORE any the application sync** — all three must be clean/expected:
+4. **Verify the source BEFORE any sync** — all three must be clean/expected:
    ```bash
    git branch --show-current      # MUST be: main (or the approved release ref)
    git status --short             # MUST be empty (clean working tree)
@@ -80,7 +81,7 @@ start. These rules are mandatory for every deploy AND every recovery sync.
 
 ## Deployment Identity Gate (PERMANENT — added 2026-07-07)
 
-**Before any the application sync, capture and record the deployment identity. ABORT if any field does not
+**Before any sync, capture and record the deployment identity. ABORT if any field does not
 match the approved deployment source.**
 
 ```bash
@@ -93,7 +94,7 @@ git status --short               # Working-tree status — MUST be empty (clean)
 
 Record all six: **Repository · Remote · Branch · HEAD SHA · origin/main SHA · Working-tree status.**
 Proceed ONLY if: Branch = `main` (or approved SHA) · HEAD == origin/main (or approved SHA) · tree
-clean. **Any mismatch → ABORT (do not the application sync).** This is the gate that would have stopped the
+clean. **Any mismatch → ABORT (do not sync).** This is the gate that would have stopped the
 2026-07-07 feature-branch-source skew.
 
 ---
@@ -117,7 +118,7 @@ All 7 agents run in parallel.  No deployment proceeds until all 7 return clear.
 - [ ] Working tree is clean (`git status` shows no staged/unstaged changes)
 - [ ] All 7 agents have returned findings
 - [ ] No agent has raised a blocker
-- [ ] Tests pass (PZ regression 160/160, carrier suite 366/366)
+- [ ] Tests pass - required counts from `.claude/contracts/test-baseline.md` (never hardcoded here)
 - [ ] No data-loss risk identified
 - [ ] Rollback command is written and verified
 - [ ] Lead Coordinator has issued written approval
@@ -173,7 +174,7 @@ python -m pytest tests/test_carrier_*.py -q            # required count: .claude
 ```powershell
 # Create backup before any production changes
 cd "C:\PZ\service"
-python scripts\run_backup.py --backup-root "C:\PZ-backups"
+python scripts\the canonical backup created by Deploy-PZ.ps1 --backup-root "C:\PZ-backups"
 ```
 
 **Abort deploy on backup failure.** Maximum timeout: 10 minutes. If backup fails or times out, investigate storage health before proceeding. A failed backup means restore capability is compromised.
@@ -259,13 +260,13 @@ Revert carrier status to pending via `.env` and restart.
 
 ### Level 2 — Revert last commit
 ```bash
-git revert HEAD --no-edit
+Deploy-PZ.ps1 -Rollback -Unit <unit>
 # then re-run deploy procedure from Step 5
 ```
 
 ### Level 3 — Revert a named merge
 ```bash
-git revert -m 1 <merge-commit-sha> --no-edit
+Deploy-PZ.ps1 -Rollback -Unit <unit>   # restores a manifest-validated backup; never mutates git
 # then re-run deploy procedure from Step 5
 ```
 

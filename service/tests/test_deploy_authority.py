@@ -86,7 +86,7 @@ def test_exactly_one_configuration_authority():
     assert cfg["schema_version"] == 2
     for key in ("source_root", "runtime_app", "runtime_engine", "artifact_root",
                 "backup_root", "version_file", "engine_files", "protected_dirs",
-                "forbidden_flags", "operator_token_env", "test_baseline_contract"):
+                "forbidden_flags", "authorization_helper", "test_baseline_contract"):
         assert key in cfg, f"config missing required key: {key}"
     assert "/XO" in cfg["forbidden_flags"], "/XO caused the 2026-07-07 incident and stays forbidden"
 
@@ -176,8 +176,8 @@ def test_guard_denies_deploy_script_invocation():
 
 def test_deploy_script_defends_itself():
     body = _read(DEPLOY_SCRIPT)
-    assert "Assert-OperatorToken" in body, "script must refuse production writes without the operator token"
-    assert "operator_token_env" in body, "operator token env var name comes from config"
+    assert "Assert-Authorization" in body, "script must refuse production writes without signed authorization"
+    assert "authorization_helper" in body, "the authorization helper path comes from config"
     assert "Enter-DeployLock" in body, "concurrent operator execution must be refused"
 
 
@@ -203,3 +203,241 @@ def test_rollback_requires_validated_manifest():
 ])
 def test_retired_deployment_scripts_are_gone(retired):
     assert not (REPO / retired).exists(), f"{retired} was retired; it must not return"
+
+
+# ============================================================================
+# Repo-wide production-writer inventory.
+#
+# The first version of these tests scanned only `.claude/**/*.ps1` and
+# `.claude/deploy/`. That blindness let FOUR undeclared production writers survive
+# a campaign that claimed "no hidden deployment authority left behind":
+# verify_runtime_sync.py --sync, env_config_manager.ps1, activate_pz_lifecycle.py,
+# and run_backup.py. These tests scan the whole repository.
+# ============================================================================
+
+PROD_PATH_RX = re.compile(r"(?i)[\"']c:[\\/]{1,2}pz(?![\w\-])")
+WRITE_RX = re.compile(
+    r"shutil\.copy|shutil\.copytree|\bos\.replace\b|open\([^)]*['\"][wa]|write_text|write_bytes"
+    r"|\brobocopy\b|Copy-Item|\bxcopy\b|Set-Content|Out-File|WriteAllText",
+    re.IGNORECASE,
+)
+
+# Every file that names the production tree AND writes, with its classification.
+# Nothing may be added here without a stated authority class. The point is that the
+# inventory is explicit and cannot grow silently -- an unclassified writer fails.
+#
+#   DEPLOYMENT      -> may write production code; exactly one such authority
+#   RUNTIME_CONFIG  -> writes C:\PZ\.env; see UNGOVERNED note below
+#   OPERATIONAL     -> maintenance/diagnostic; must not write production code
+#   REFERENCE_ONLY  -> names paths for guarding, config, or docs; writes elsewhere
+PRODUCTION_WRITER_ALLOWLIST = {
+    ".claude/deploy/windows_prod_v2.json": "DEPLOYMENT - sole configuration authority",
+    ".claude/deploy/Deploy-PZ.ps1": "DEPLOYMENT - sole execution + rollback authority",
+    ".claude/deploy/Test-PZDeployClose.ps1": "DEPLOYMENT - sole validation authority, read-only",
+    ".claude/hooks/pz-deploy-guard.py": "REFERENCE_ONLY - denies production writes",
+    ".claude/hooks/deploy_authorization.py": "REFERENCE_ONLY - authorizes production writes",
+    ".claude/hooks/merge_authorization.py": "REFERENCE_ONLY - protected-path markers",
+    "service/tests/test_deploy_authority.py": "REFERENCE_ONLY - this inventory",
+    "service/app/tools/verify_runtime_sync.py": "OPERATIONAL - refuses production destinations",
+    # UNGOVERNED (tracked, NOT closed by this campaign). These write C:\PZ\.env, which
+    # controls live service behaviour. They have no operator authorization, no lock, no
+    # backup and no audit trail. They are merge-protected (merge_authorization.py) and
+    # inventoried here so they cannot multiply, but consolidating them behind a single
+    # runtime-configuration authority is a separate campaign.
+    "service/scripts/env_config_manager.ps1": "RUNTIME_CONFIG - UNGOVERNED, tracked",
+    "service/scripts/activate_pz_lifecycle.py": "RUNTIME_CONFIG - UNGOVERNED, tracked",
+    "service/scripts/dhl-email-auto-scan.ps1": "OPERATIONAL - scheduled scan, no code write",
+    "service/scripts/review_launch.py": "OPERATIONAL - review tooling",
+    "service/scripts/backfill_skip_events_f255bbb5.py": "OPERATIONAL - one-off backfill",
+    "service/app/api/routes_dhl_clearance.py": "REFERENCE_ONLY - storage paths, not code",
+}
+
+
+def _source_files():
+    for pat in ("**/*.py", "**/*.ps1"):
+        for p in REPO.glob(pat):
+            rel = p.relative_to(REPO).as_posix()
+            if any(rel.startswith(s) for s in (".git/", "node_modules/", "reports/", ".claude/memory/")):
+                continue
+            # Test files reference production paths in fixtures and assertions; they
+            # never execute against production.
+            if rel.startswith("service/tests/") and rel != "service/tests/test_deploy_authority.py":
+                continue
+            if "__pycache__" in rel or "/.claude/worktrees/" in rel:
+                continue
+            yield p, rel
+
+
+def test_no_undeclared_production_writers():
+    """A file that both names the production tree AND performs a write is a
+    production writer. Every one must be explicitly accounted for."""
+    offenders = {}
+    for p, rel in _source_files():
+        if rel in PRODUCTION_WRITER_ALLOWLIST:
+            continue
+        body = _read(p)
+        if PROD_PATH_RX.search(body) and WRITE_RX.search(body):
+            offenders[rel] = "names the production tree and performs writes"
+    assert not offenders, (
+        "undeclared production writer(s) found. Either route the write through "
+        "Deploy-PZ.ps1, make the file refuse production destinations, or add it to "
+        f"PRODUCTION_WRITER_ALLOWLIST with a justification: {offenders}"
+    )
+
+
+def test_runtime_sync_refuses_production_destinations():
+    """verify_runtime_sync.py --sync was a second, unguarded writer into the runtime
+    engine path: no authorization, no lock, no backup, invisible to the guard."""
+    body = _read(REPO / "service" / "app" / "tools" / "verify_runtime_sync.py")
+    assert "_is_production" in body, "sync tool must detect production destinations"
+    assert "def _is_forbidden" in body and "_is_production(path)" in body, (
+        "the production check must be wired into _is_forbidden, which _sync_file consults"
+    )
+
+
+def test_no_competing_backup_authority_in_prescriptive_docs():
+    """run_backup.py produces a manifest-less format incompatible with -Rollback.
+    The deploy policy must not instruct an operator to run it as a deploy backup."""
+    offenders = []
+    for md in _prescriptive_markdown():
+        if "run_backup.py" in _read(md):
+            offenders.append(str(md.relative_to(REPO)))
+    assert not offenders, (
+        "deployment docs must reference only the canonical backup (Deploy-PZ.ps1 "
+        f"New-BackupUnit): {offenders}"
+    )
+
+
+def test_no_git_revert_rollback_in_policy():
+    """Rollback restores validated artifacts. git revert as a production rollback
+    mutates the certified source and was explicitly retired."""
+    body = _read(POLICY).lower()
+    assert "git revert" not in body, (
+        "production_deployment_rule.md must not document git revert as rollback; "
+        "use Deploy-PZ.ps1 -Rollback -Unit <unit>"
+    )
+
+
+# ---------------------------------------------------------------- regressions
+def test_reviewed_sha_is_explicit_and_never_recomputed():
+    """The two-invocation design let origin/main advance between the gate run and the
+    deploy run, shipping an unreviewed commit. The target must be operator-supplied."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "$ReviewedSHA" in body, "-ReviewedSHA must be a parameter"
+    assert "-ReviewedSHA is required" in body, "a deploy without an explicit target must be refused"
+    assert "advanced BEYOND the reviewed target" in body, (
+        "the script must refuse to deploy when origin/main has moved past the reviewed SHA"
+    )
+    assert "Get-IncomingRange" not in body, (
+        "the deployed target must never be recomputed from a fresh origin/main read"
+    )
+
+
+def test_version_file_written_bom_free_and_validated_by_bytes():
+    """PowerShell 5.1 Out-File -Encoding utf8 emits a BOM. Python's utf-8 reader does
+    not strip it and it is not whitespace, so the endpoint would serve a corrupt SHA.
+    The old validator used Get-Content, which strips BOM -> silent false PASS."""
+    deploy = _read(DEPLOY_SCRIPT)
+    assert "ASCIIEncoding" in deploy, "version file must be written BOM-free"
+    assert "| Out-File" not in deploy and "Out-File -FilePath" not in deploy, (
+        "Out-File -Encoding utf8 emits a BOM on PS 5.1; the version file must not use it"
+    )
+    assert "0xEF" in deploy, "the writer must assert the result is BOM-free"
+    val = _read(VALIDATOR)
+    assert "ReadAllBytes" in val, "validation must read raw bytes, not text"
+    assert "BOM-free" in val, "validation must explicitly check for a BOM"
+    # The version-file and HEAD checks must be EXACT. (-like remains legitimate for
+    # matching backup unit directories, which are named "<sha>-<stamp>".)
+    assert '$actual -eq $ExpectedSHA' in val, "version-file SHA comparison must be exact"
+    assert '$head.Trim() -eq $ExpectedSHA' in val, "HEAD SHA comparison must be exact"
+    assert '$actual -like' not in val and '$head -like' not in val, (
+        "SHA comparisons must not use wildcard prefix matching"
+    )
+
+
+def test_rollback_unit_rejects_traversal():
+    body = _read(DEPLOY_SCRIPT)
+    assert "UNIT_RX" in body, "unit identifiers must be format-validated"
+    assert r"^[0-9a-f]{40}-\d{8}-\d{6}$" in body, "unit format must be anchored"
+    idx_check = body.index("not a valid unit identifier")
+    idx_stop = body.index("Set-ServiceState -Cfg $Cfg -Target Stopped", body.index("function Invoke-Rollback"))
+    assert idx_check < idx_stop, "traversal must be rejected BEFORE the service is stopped"
+
+
+def test_empty_protection_arrays_are_rejected():
+    body = _read(DEPLOY_SCRIPT)
+    assert "is present but EMPTY" in body, (
+        "an empty protected_dirs would let /MIR delete production storage/logs/cloudflared"
+    )
+    for key in ("engine_files", "protected_dirs", "protected_files", "protected_runtime_paths"):
+        assert key in body, f"{key} must be non-empty-validated"
+
+
+def test_lock_taken_before_any_mutable_preparation():
+    body = _read(DEPLOY_SCRIPT)
+    i_lock = body.index("Enter-DeployLock -Cfg $cfg")
+    i_art = body.index("New-ReleaseArtifact -Cfg $cfg")
+    i_bak = body.index("New-BackupUnit -Cfg $cfg")
+    assert i_lock < i_art and i_lock < i_bak, (
+        "the lock must be held before artifact staging and backup creation"
+    )
+
+
+def test_backup_taken_with_service_stopped():
+    body = _read(DEPLOY_SCRIPT)
+    i_stop = body.index("Set-ServiceState -Cfg $cfg -Target Stopped")
+    i_bak = body.index("New-BackupUnit -Cfg $cfg")
+    assert i_stop < i_bak, "the backup must be taken from a stopped, stable runtime tree"
+    assert "SERVICE_STOPPED_NO_DEPLOY" in body, (
+        "a preparation failure after the stop must emit an explicit recovery state"
+    )
+
+
+def test_stale_lock_recovery_is_pid_aware():
+    body = _read(DEPLOY_SCRIPT)
+    assert "Get-Process -Id $lockPid" in body, "staleness must be decided by process existence"
+    assert "ForceUnlock" in body, "an explicit operator override must exist"
+    assert "STALE LOCK CLEARED (audit)" in body, "clearing a lock must be auditable"
+    assert "CreateNew" in body, "lock creation must be atomic, not Test-Path then write"
+
+
+def test_whatif_requires_no_authorization_and_writes_nothing():
+    body = _read(DEPLOY_SCRIPT)
+    assert 'if (-not $script:PlanOnly) { Assert-Authorization' in body, (
+        "-WhatIf must not require a production authorization"
+    )
+    assert "plan mode takes none" in body, "-WhatIf must not create a lock"
+    for fn in ("Write-VersionFile", "New-Manifest", "Invoke-Robocopy", "Set-ServiceState"):
+        seg = body[body.index(f"function {fn}"):]
+        seg = seg[:seg.index("\nfunction ") if "\nfunction " in seg else len(seg)]
+        assert "$script:PlanOnly" in seg, f"{fn} must be a no-op under -WhatIf"
+
+
+def test_rollback_survives_missing_engine_metadata():
+    body = _read(DEPLOY_SCRIPT)
+    assert "-Optional" in body, "component manifests must be optional so app-only units restore"
+    assert "contains no restorable component" in body, (
+        "only a unit with NO restorable component may fail outright"
+    )
+
+
+def test_authorization_is_signed_not_presence_only():
+    """Presence of an env var is not authorization: an agent can set one in a wrapper
+    script. Authorization must be cryptographically bound to SHA, action and scope."""
+    auth = _read(REPO / ".claude" / "hooks" / "deploy_authorization.py")
+    assert "hmac.compare_digest" in auth, "signature check must be constant-time"
+    assert "_SIGNED_FIELDS" in auth and "reviewed_sha" in auth, "signature must cover the SHA"
+    assert '"action"' in auth and '"scope"' in auth, "signature must cover action and scope"
+    assert "expires_at" in auth and "jti" in auth, "authorizations must expire and be single-use"
+    deploy = _read(DEPLOY_SCRIPT)
+    assert "operator_token_env" not in deploy, "presence-only token gating must be gone"
+    assert "the agent cannot derive it" not in deploy.lower(), (
+        "a security claim the implementation does not enforce must not be asserted"
+    )
+
+
+def test_guard_covers_deploy_config_in_merge_protection():
+    body = _read(REPO / ".claude" / "hooks" / "merge_authorization.py")
+    assert '".claude/deploy/"' in body, (
+        "a config-only PR could repoint runtime paths and redirect /MIR convergence"
+    )
