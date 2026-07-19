@@ -520,19 +520,35 @@ _FIELD_ALIASES: Dict[str, str] = {
 }
 
 
+# Currency markers stripped before numeric coercion so a legitimate
+# currency-formatted value (e.g. "$ 993", "$ 1,554", "€ 538", "USD 993")
+# normalises to its number instead of collapsing to 0.0. EJL packing lists
+# render the Value/Total Value columns as "$ N" / "$ N,NNN". Bare symbols plus
+# word-boundaried ISO codes; the Polish "zł" suffix is included explicitly.
+_CURRENCY_MARKER_RE = re.compile(
+    r"[$€£¥₹]|zł|\b(?:USD|EUR|PLN|GBP|CHF|JPY|INR)\b",
+    re.IGNORECASE,
+)
+
+
 def _safe_float(val: Any) -> float:
     """Convert any value to float without raising.
 
-    Defensive wrapper used throughout the packing upload pipeline to prevent
-    crashes when an unexpected string (e.g. "ite 1", "Total") reaches a
-    numeric coercion. Returns 0.0 on any error.
+    Canonical numeric-normalisation authority for the packing pipeline (upload
+    AND reprocess persistence). Tolerates the string forms real packing lists
+    carry: currency-prefixed values ("$ 993", "$ 1,554"), thousands commas, and
+    stray whitespace. Genuinely non-numeric strings ("ite 1", "Total") and any
+    other error return 0.0 — never raises.
     """
     if val is None:
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
+    # Strip currency symbols / ISO codes first, then the existing thousands-comma
+    # + whitespace normalisation, then coerce.
+    s = _CURRENCY_MARKER_RE.sub("", str(val))
     try:
-        return float(str(val).replace(",", "").strip())
+        return float(s.replace(",", "").strip())
     except (ValueError, TypeError):
         return 0.0
 
@@ -1221,8 +1237,8 @@ def match_packing_to_invoice(
         r = dict(row)
         inv_no = str(r.get("invoice_no", "")).strip()
         item_canon = _canonical_item_type(str(r.get("item_type", "")))
-        qty   = float(r.get("quantity",   0) or 0)
-        rate  = float(r.get("unit_price", 0) or 0)  # EJL packing "Value" column
+        qty   = _safe_float(r.get("quantity"))
+        rate  = _safe_float(r.get("unit_price"))    # EJL packing "Value" column ("$ N" / "$ N,NNN")
         # Metal/material — packing list has "metal" and "karat" columns
         # (mapped from "Kt/Color"). Combine them so "18KT/W" → "18KT" and
         # "PT950/-" → "PT950".
