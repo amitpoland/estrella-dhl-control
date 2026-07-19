@@ -14,7 +14,14 @@ deliberately different trees; see the canonical working-tree registry in `CLAUDE
 
 ```powershell
 $SRC = "C:\PZ-main"
+
+# The fetch MUST be guarded. PowerShell's default $ErrorActionPreference is 'Continue',
+# so a failed fetch (network/DNS/auth) does NOT stop the script — it silently leaves the
+# LOCAL refs/remotes/origin/main in place. The HEAD == origin/main check would then compare
+# against a stale ref and PASS, shipping a commit that is behind origin. Fail closed here.
 git -C $SRC fetch origin
+if ($LASTEXITCODE -ne 0) { throw "BLOCKED: git fetch failed — origin/main is unverifiable, do not deploy" }
+
 $dirty  = git -C $SRC status --porcelain
 $branch = git -C $SRC branch --show-current
 $head   = git -C $SRC rev-parse HEAD
@@ -25,7 +32,7 @@ if ($head -ne $remote)    { throw "BLOCKED: HEAD $head != origin/main $remote" }
 Write-Host "Deploy source OK: $SRC @ $head"
 ```
 
-All three assertions must pass. A throw here stops the deploy — do not "just continue".
+All four assertions must pass. A throw here stops the deploy — do not "just continue".
 
 ---
 

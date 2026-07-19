@@ -113,7 +113,8 @@ That inference is **not** a measurement, and this report does not claim a produc
 Establishing the real deployed revision requires hash-comparing `C:\PZ\app` against
 candidate commits. That is a **read of production**, which was explicitly out of scope for
 this task, so it was not performed. Carried to §9 as an open item.
-**Production is behind main.** Deploying is a separate 7-agent-gated action and was
+**Production drift is unconfirmed and must be measured before the next deploy.** Deploying
+is a separate 7-agent-gated action and was
 explicitly out of scope for this task. Carried forward as an open item for the next deploy
 gate.
 

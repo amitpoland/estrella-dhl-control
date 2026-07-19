@@ -121,8 +121,9 @@ authority (`C:\PZ-verify`), deployment source (`C:\PZ-main`), and runtime (`C:\P
 resolves into `C:\PZ-verify\.git` — this is by design and is **not** a fault to repair.
 `C:\PZ` contains no `.git` at all; it is a pure robocopy target (NSSM `AppDirectory`,
 `python -m uvicorn app.main:app`), so the git-authority location never affects runtime.
-Do not "fix" this by relocating `.git`: every registered worktree (23 as of 2026-07-19,
-and the set churns as campaigns open and close) holds an absolute `gitdir:` pointer into
+Do not "fix" this by relocating `.git`: every registered worktree (the set churns as
+campaigns open and close — run `git worktree list` for the current set) holds an absolute
+`gitdir:` pointer into
 `C:\PZ-verify\.git\worktrees\`, and moving it would break every one of them for zero
 runtime benefit. Deploying from `C:\PZ-verify` is forbidden because that tree is routinely
 detached, stale, and dirty — `/deploy` Step 0 asserts this fail-closed. Evidence:
