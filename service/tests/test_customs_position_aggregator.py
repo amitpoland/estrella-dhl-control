@@ -266,41 +266,77 @@ _ROUTES = (
 )
 
 
-def test_inject_chain_supports_customs_view_param():
+def _fn_body(signature: str) -> str:
+    """Return one function's source text, from `signature` to the next
+    top-level def.
+
+    Replaces a fixed ``src[idx : idx + 3500]`` window. The window silently
+    stopped covering the function it was meant to inspect, so these tests
+    reported "assertion text missing" when the truth was "the code moved
+    past character 3500" — the failure mode pointed at the wrong thing.
+    """
     src = _ROUTES.read_text(encoding="utf-8")
-    idx = src.find("def _inject_rows_from_sources(")
-    body = src[idx : idx + 3500]
+    idx = src.find(signature)
+    assert idx != -1, f"{signature!r} not found in routes_dhl_clearance.py"
+    end = len(src)
+    for marker in ("\ndef ", "\nasync def "):
+        nxt = src.find(marker, idx + len(signature))
+        if nxt != -1:
+            end = min(end, nxt)
+    return src[idx:end]
+
+
+# NOTE (2026-07-19): the three tests below previously asserted the PR #267
+# packing-row aggregation wiring — `aggregate_packing_rows_to_invoice_positions`,
+# `_src_sum` / `_agg_sum`, and a $0.01 tolerance — inside _inject_rows_from_sources.
+# Commit 2ca8bf20 (2026-05-21) DELIBERATELY removed that wiring: aggregation
+# collapsed distinct invoice lines into artificial groups (CZ+CLS merged with
+# DIA+CZ because both contained "CZ"). It was replaced by invoice-line authority,
+# one customs row per commercial invoice line, via
+# _try_inject_invoice_positions_for_global. The tests were never updated and had
+# been failing ever since.
+#
+# They are rewritten here to guard the CURRENT contract rather than deleted: the
+# safety property they encoded (never swap in rows whose FOB sum disagrees with
+# the declared FOB) still exists — it just lives in the replacement function with
+# a $1.00 tolerance instead of $0.01.
+
+
+def test_inject_chain_supports_customs_view_param():
+    body = _fn_body("def _inject_rows_from_sources(")
     assert "customs_view: str" in body
     assert 'customs_view == "invoice_positions"' in body
-    assert "aggregate_packing_rows_to_invoice_positions" in body
+    # invoice-line authority replaced packing-row aggregation (2ca8bf20)
+    assert "_try_inject_invoice_positions_for_global" in body
 
 
 def test_inject_chain_preserves_fob_sum_check_before_swap():
-    """Safety: the aggregation result must be applied only when the
-    aggregated FOB sum equals the source FOB sum (within $0.01).
-    Otherwise per-row rows are preserved."""
-    src = _ROUTES.read_text(encoding="utf-8")
-    idx = src.find("def _inject_rows_from_sources(")
-    body = src[idx : idx + 3500]
-    assert "_src_sum" in body and "_agg_sum" in body
-    assert "abs(_src_sum - _agg_sum) <= 0.01" in body
+    """Safety: injected invoice-position rows are applied only when their
+    FOB sum matches the declared invoice FOB (within $1.00). On mismatch the
+    function must REJECT the rows and fall back to the packing path."""
+    body = _fn_body("def _try_inject_invoice_positions_for_global(")
+    assert "declared_fob" in body and "row_sum" in body
+    assert "abs(row_sum - declared_fob) > 1.00" in body
+    # the mismatch branch must bail out, not swap the rows in anyway
+    guard = body[body.find("abs(row_sum - declared_fob) > 1.00"):]
+    assert "return False" in guard
+    assert guard.find("return False") < guard.find('audit["rows"]')
 
 
 def test_generate_description_endpoint_accepts_customs_view():
-    src = _ROUTES.read_text(encoding="utf-8")
-    idx = src.find("async def generate_description(")
-    body = src[idx : idx + 2000]
+    body = _fn_body("async def generate_description(")
     assert 'customs_view: str = "invoice_positions"' in body
 
 
 def test_packing_rows_mode_preserves_legacy_behaviour():
-    """When customs_view='packing_rows' the aggregation step does not
-    execute — per-row authority preserved for warehouse / audit use."""
-    src = _ROUTES.read_text(encoding="utf-8")
-    idx = src.find("def _inject_rows_from_sources(")
-    body = src[idx : idx + 3500]
-    # The aggregation must be guarded by customs_view == "invoice_positions"
-    assert 'customs_view == "invoice_positions" and audit.get("rows")' in body
+    """When customs_view='packing_rows' the invoice-position injection does
+    not execute — per-row authority preserved for warehouse / audit use."""
+    body = _fn_body("def _inject_rows_from_sources(")
+    # the injection must sit behind the invoice_positions guard
+    guard_at = body.find('if customs_view == "invoice_positions":')
+    inject_at = body.find("_try_inject_invoice_positions_for_global")
+    assert guard_at != -1, "invoice_positions guard missing"
+    assert inject_at > guard_at, "injection is not guarded by customs_view"
 
 
 # ── Out-of-scope guard ────────────────────────────────────────────────────
