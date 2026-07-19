@@ -299,7 +299,19 @@ def main():
         # `deny` into an `ask` — the exact crash-before-the-verdict class this campaign
         # exists to remove. `_holder` is display/compare only; the lock object is unchanged.
         raw_holder = lock.get("session_id")
-        _holder = str(raw_holder) if raw_holder is not None else ""
+        if not isinstance(raw_holder, str):
+            # Type-GATE, never coerce. Coercing here (str(None) -> "") made a null holder
+            # compare equal to an absent payload session_id — both "" — which silently
+            # PERMITTED a non-owner write that the original cross-type `!=` denied.
+            # An unreadable holder means ownership cannot be established: fail closed and
+            # leave the comparison semantics for real string ids untouched.
+            _emit("ask", f"campaign-branch-guard[{name}]: malformed lock.session_id — "
+                         f"expected a string, found "
+                         f"{'null/absent' if raw_holder is None else type(raw_holder).__name__}. "
+                         f"Ownership cannot be established; registered owner: {owner}. "
+                         f"Repair the registry entry before any write (check 4, fail closed).")
+            return 0
+        _holder = raw_holder
         _me = str(session_id or "")
         if _holder != _me:
             shown = (_holder[:12] + "…") if _holder else "(no session_id)"

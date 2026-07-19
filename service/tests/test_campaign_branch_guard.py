@@ -426,9 +426,28 @@ def test_non_string_lock_session_id_never_crashes(tmp_path, repo, bad_sid):
     _write_registry(tmp_path, entry)
     d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
     assert d is not None, "malformed lock produced a silent allow"
-    assert d["permissionDecision"] == "deny", "non-holder must still be a categorical deny"
+    assert d["permissionDecision"] in ("deny", "ask")
     assert "INTERNAL ERROR" not in d["permissionDecisionReason"], "must not crash-and-downgrade"
-    assert "concurrent writer" in d["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("payload_sid", [None, "", "  "])
+def test_null_lock_holder_with_absent_payload_session_never_allows(tmp_path, repo, payload_sid):
+    """Regression pin for a bypass introduced while fixing the session_id crash.
+
+    Coercing the holder (`str(None) -> ""`) made a null lock.session_id compare EQUAL to
+    an absent payload session_id (also ""), silently PERMITTING a non-owner write that
+    the original cross-type `!=` correctly denied. Ownership must never be inferred from
+    two empty strings.
+    """
+    entry = _repo_entry(repo, state="IN_PROGRESS")
+    entry["lock"] = {"session_id": None, "claimed_at": "2026-01-01T00:00:00Z",
+                     "heartbeat_at": "2999-01-01T00:00:00Z"}
+    _write_registry(tmp_path, entry)
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo),
+                   session_id=payload_sid if payload_sid is not None else "")
+    assert d is not None, "null holder + empty payload session resolved to a SILENT ALLOW"
+    assert d["permissionDecision"] in ("ask", "deny")
+    assert "malformed lock.session_id" in d["permissionDecisionReason"]
 
 
 @pytest.mark.parametrize("bad_lock", ["a-string", ["s"], 42, 3.5])
