@@ -39,6 +39,12 @@ import re
 # (followed by alphanumeric). Also covers C:/PZ variants.
 PROD_PZ_RX = re.compile(r"c:[\\/]pz(?![\w\-])", re.IGNORECASE)
 
+# The canonical deployment script. Matched by NAME because the script is
+# configuration-driven: its command line carries no production path token, so the
+# path-based rule cannot see it. Covers Deploy-PZ.ps1 however it is invoked
+# (relative, absolute, via &, via powershell -File).
+DEPLOY_SCRIPT_RX = re.compile(r"deploy-pz\.ps1", re.IGNORECASE)
+
 
 def _is_prod_pz_path(text):
     """Return True if `text` contains a 'C:\\PZ' path token (case-insensitive,
@@ -90,6 +96,17 @@ def _classify_command(command):
     )
     if has_copy and _is_prod_pz_path(low):
         return ("deploy-to-prod-PZ", "copy/write into C:\\PZ is operator-only")
+
+    # 1b. Invocation of the canonical deployment script.
+    #     Deploy-PZ.ps1 reads every production path from windows_prod_v2.json, so the
+    #     command text an agent would run ('.\Deploy-PZ.ps1') contains NO C:\PZ token
+    #     and rule 1 above would not fire. Without this rule, config-driving the paths
+    #     would silently DISABLE the guard. Deny by script name instead of by path.
+    #     Rollback is equally production-mutating and is denied by the same rule.
+    if DEPLOY_SCRIPT_RX.search(low) is not None:
+        return ("deploy-script-invocation",
+                "Deploy-PZ.ps1 writes to production and is operator-only "
+                "(-WhatIf is also denied to the agent: use the operator shell)")
 
     # 2. gh pr merge — Council-authorized merge gate
     #    (ADR-council-authorized-merge-gate). Default-OFF + FAIL-CLOSED: replaces

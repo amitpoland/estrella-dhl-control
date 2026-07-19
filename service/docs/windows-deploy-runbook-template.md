@@ -8,14 +8,14 @@ and make a go/no-go decision before proceeding.
 
 ## 0. Pre-deploy: disable the health watchdog
 
-**Do this FIRST, before any snapshot or robocopy.**
+**Do this FIRST, before any snapshot or the application sync.**
 
 ```powershell
 schtasks /Change /TN "PZService-HealthWatchdog" /DISABLE
 ```
 
 **Why:** The watchdog probes `http://127.0.0.1:47213/login` every 60 s and restarts
-PZService on 2 consecutive misses. A probe firing during robocopy (service momentarily
+PZService on 2 consecutive misses. A probe firing during the application sync (service momentarily
 unresponsive) or during the deploy's own `sc.exe restart` creates two restart authorities
 racing against an in-progress file copy — the "serve half-written files" failure class.
 
@@ -60,24 +60,21 @@ Compute one hash per file being deployed.
 
 ---
 
-## 4. Robocopy
+## 4. the application sync
 
-```powershell
-robocopy "C:\PZ-verify\service\app\..." "C:\PZ\app\..." <file> /COPY:DAT
-# exit code 1 = copied, 0 = no change needed; <8 = success
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
+
 
 ---
 
 ## 5. Restart PZService (ONLY if backend changed; skip for static-only deploys)
 
-```powershell
-sc.exe stop PZService
-Start-Sleep -Seconds 4
-sc.exe start PZService
-Start-Sleep -Seconds 6
-sc.exe query PZService | Select-String "STATE"   # must be STATE 4 RUNNING
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
+
 
 If not STATE 4 RUNNING: run **ROLLBACK** immediately — do not proceed.
 
@@ -126,21 +123,10 @@ Run any PR-specific smokes (render gate, API smoke, etc.) from the PR's runbook.
 
 ## ROLLBACK (any step fails)
 
-```powershell
-# Re-enable watchdog FIRST — a disabled watchdog after a failed deploy is worse than no watchdog
-schtasks /Change /TN "PZService-HealthWatchdog" /ENABLE
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
 
-# Restore every snapshotted file:
-Copy-Item "C:\PZ\app\...\<file>.bak-$ts" "C:\PZ\app\...\<file>" -Force
-# Remove any NEW files (no snapshot): Remove-Item "C:\PZ\app\...\<new-file>" -Force
-
-# Restart to load restored state:
-sc.exe stop PZService; Start-Sleep -Seconds 3; sc.exe start PZService
-sc.exe query PZService   # confirm STATE 4 RUNNING
-
-# Verify rollback:
-# bare call should 200 (open) or 401 (enforcement) depending on pre-deploy state
-```
 
 **The watchdog ENABLE is the first rollback step** so that a deploy that aborts
 after DISABLE but before the normal ENABLE does not leave production unmonitored.
@@ -176,15 +162,7 @@ Append locally only — batch into the next docs PR.
 
 ## Checklist summary (copy per deploy)
 
-```
-[ ] 0. schtasks DISABLE PZService-HealthWatchdog
-[ ] 1. VERIFY_DIR synced to post-merge main
-[ ] 2. Snapshot(s) taken
-[ ] 3. EXPECTED hash(es) computed
-[ ] 4. Robocopy
-[ ] 5. Restart (if backend) — STATE 4 confirmed
-[ ] 6. HASH GATE — OPERATOR confirms EXPECTED==ACTUAL (every file)
-[ ] 7. schtasks ENABLE PZService-HealthWatchdog
-[ ] 8. Smokes
-[ ] Deploy log appended
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
+

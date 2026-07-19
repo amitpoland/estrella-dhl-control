@@ -1,15 +1,57 @@
 {
+  "schema_version": 2,
   "profile": "windows_prod_v2",
+  "_authority": "SOLE configuration authority for PZ production deployment. Deploy-PZ.ps1 is the SOLE execution authority and reads every path, filename, and flag from this file. No deployment path, engine filename, or robocopy flag may be hardcoded anywhere else. Enforced by service/tests/test_deploy_authority.py.",
+
   "service": "PZService",
   "port": 47213,
-  "runtime_root": "C:\\PZ\\app",
-  "source_root": "C:\\Users\\Super Fashion\\PZ APP\\service\\app",
-  "requirements_src": "C:\\Users\\Super Fashion\\PZ APP\\service\\requirements.txt",
+
+  "source_root": "C:\\PZ-main",
+  "source_app": "C:\\PZ-main\\service\\app",
+  "runtime_root": "C:\\PZ",
+  "runtime_app": "C:\\PZ\\app",
+  "runtime_engine": "C:\\PZ\\engine",
+
+  "artifact_root": "C:\\PZ-releases",
+  "backup_root": "C:\\PZ-backups",
+  "version_file": "C:\\PZ\\version.txt",
+  "lock_file": "C:\\PZ-backups\\.deploy.lock",
+
+  "engine_files": ["pz_import_processor.py", "polish_description_generator.py"],
+
+  "requirements_src": "C:\\PZ-main\\service\\requirements.txt",
   "requirements_dst": "C:\\PZ\\requirements.txt",
   "python": "C:\\Users\\Super Fashion\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
+
+  "protected_dirs": ["storage", "logs", "cloudflared", "__pycache__", ".pytest_cache"],
+  "protected_files": [".env", "*.pyc", "*.pyo", "*.zip"],
+  "protected_runtime_paths": [
+    "C:\\PZ\\.env",
+    "C:\\PZ\\storage",
+    "C:\\PZ\\logs",
+    "C:\\PZ\\cloudflared"
+  ],
+
+  "forbidden_flags": ["/XO"],
+  "gated_flags": {
+    "/MIR": "PERMITTED ONLY after the destination-only inventory has classified every extraneous path, AND with protected_dirs/protected_files excluded. /MIR is REQUIRED for exact convergence and is the only mechanism that removes files a newer release introduced."
+  },
+  "robocopy_fatal_exit": 8,
+  "robocopy_suspect_exit": 4,
+
+  "service_cmds": {
+    "stop": "sc.exe stop PZService",
+    "start": "sc.exe start PZService",
+    "query": "sc.exe query PZService"
+  },
+  "service_wait_seconds": 60,
+
+  "test_baseline_contract": ".claude/contracts/test-baseline.md",
+  "root_golden_script": "test_pz_regression.py",
+  "carrier_test_glob": "service/tests/test_carrier_*.py",
+
   "health_urls": [
-    "http://localhost:47213/health",
-    "http://localhost:47213/api/v1/health",
+    "http://127.0.0.1:47213/api/v1/health",
     "https://pz.estrellajewels.eu/api/v1/health"
   ],
   "smoke_endpoints": [
@@ -18,26 +60,17 @@
     "/api/v1/hs-codes/",
     "/api/v1/customer-master/"
   ],
-  "service_cmds": {
-    "stop":    "nssm stop PZService",
-    "start":   "nssm start PZService",
-    "restart": "nssm restart PZService",
-    "status":  "nssm status PZService"
-  },
-  "robocopy_pattern": "robocopy \"{src_dir}\" \"{dst_dir}\" {filename} /COPY:DAT",
-  "forbidden_paths": [
-    "C:\\PZ\\.env",
-    "C:\\PZ\\storage\\",
-    "C:\\PZ\\logs\\",
-    "C:\\PZ\\cloudflared\\"
-  ],
-  "forbidden_flags": ["/MIR"],
-  "rollback": "robocopy C:\\PZ\\app\\bak C:\\PZ\\app /COPY:DAT /E — restore from pre-deploy backup",
-  "pip_extra": "tzdata>=2024.1",
+
+  "operator_token_env": "PZ_DEPLOY_OPERATOR_TOKEN",
+
   "notes": [
-    "runtime_root is C:\\PZ\\app — NOT C:\\PZ\\service\\app",
-    "robocopy /MIR is PERMANENTLY FORBIDDEN",
-    "never overwrite .env / storage / logs / cloudflared",
-    "Lesson D: reconcile Windows-local commits before git pull --ff-only"
+    "schema_version 2 (2026-07-19): promoted from inert documentation to the single runtime configuration authority consumed by Deploy-PZ.ps1.",
+    "Test counts are NOT stored here. The authority is test_baseline_contract; required counts are read from that file.",
+    "source_root is C:\\PZ-main. C:\\PZ-verify owns the repository .git and is the verification-read tree; it is NEVER a deploy source. C:\\Users\\Super Fashion\\PZ APP was decommissioned 2026-07-17. C:\\PZ-deploy-w12 (former reports/deploy/verify_sync.py source) no longer exists.",
+    "Deploy bytes come from artifact_root\\app-<SHA> (immutable, hash-manifested), never from a live git tree. Rollback bytes come from backup_root, never from git.",
+    "/XO is FORBIDDEN: it skips files it judges not-newer, silently leaving stale destination files (2026-07-07 ImportError incident).",
+    "robocopy exit semantics: 0-3 success; >= robocopy_suspect_exit fatal unless the destination inventory classified it; >= robocopy_fatal_exit always fatal.",
+    "version_file is written by Deploy-PZ.ps1 ONLY and is read at runtime by service/app/api/routes_webhooks_wfirma_status.py. Exactly one writer, pinned by test_deploy_authority.py.",
+    "Lesson J: engine_files are NOT covered by the application sync; they need the separate source_root -> runtime_engine copy, verified by content hash, never by Python import."
   ]
 }

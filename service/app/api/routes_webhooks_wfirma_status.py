@@ -41,7 +41,8 @@ router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks-wfirma"])
 
 TICK_INTERVAL_SECONDS = 30
 
-# Written by verify_deploy_close.ps1 after robocopy. Two levels above app/:
+# Written by .claude/deploy/Deploy-PZ.ps1 — the sole writer, from the config key
+# `version_file`. Pinned by service/tests/test_deploy_authority.py. Two levels above app/:
 #   production: C:\PZ\version.txt  (parents[2] of C:\PZ\app\api\<file>)
 _SHA_FILE = Path(__file__).parents[2] / "version.txt"
 

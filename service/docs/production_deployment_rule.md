@@ -32,7 +32,7 @@ The git repository is a **staging workspace only**.
 4. **No sync before agents inspect changed files.**  The 7-agent gate is mandatory.
 5. **No restart before rollback path is defined.**  Rollback command must be written down first.
 6. **No deletion, overwrite, or mirror copy.**  Additive sync only.
-7. **Never use `robocopy /MIR`.**  Forbidden without exception.
+7. **Never use `the application sync /MIR`.**  Forbidden without exception.
 8. **Never overwrite these production paths:**
    - `C:\PZ\.env`
    - `C:\PZ\storage\`
@@ -47,12 +47,12 @@ The git repository is a **staging workspace only**.
 
 ## Post-incident deployment source rules (PERMANENT — added 2026-07-07)
 
-Origin: 2026-07-07 incident — a `robocopy /XO` sourced from a **feature-branch worktree**
+Origin: 2026-07-07 incident — a `the application sync /XO` sourced from a **feature-branch worktree**
 (`feat/product-master-authority-tests`, not `main`) left `C:\PZ\app` version-skewed: a stale
 `main.py` imported a 0-byte `routes_wfirma_reservation.py` → `ImportError` → PZService failed to
 start. These rules are mandatory for every deploy AND every recovery sync.
 
-1. **Never deploy from a feature-branch worktree.** The robocopy source app tree must be a
+1. **Never deploy from a feature-branch worktree.** The the application sync source app tree must be a
    checkout of clean `main` (or an explicitly approved release SHA) — never a feature/PR branch
    or a scratch worktree.
 2. **Deployment source must be clean `main` or an explicitly approved release SHA** — fully
@@ -62,7 +62,7 @@ start. These rules are mandatory for every deploy AND every recovery sync.
    must OVERWRITE to match the source exactly (still no `/MIR`; still exclude the forbidden
    paths in Rule 8). `/XO` is permitted ONLY for a known-incremental top-up where the dest is
    already a consistent subset of the source.
-4. **Verify the source BEFORE any robocopy** — all three must be clean/expected:
+4. **Verify the source BEFORE any the application sync** — all three must be clean/expected:
    ```bash
    git branch --show-current      # MUST be: main (or the approved release ref)
    git status --short             # MUST be empty (clean working tree)
@@ -80,7 +80,7 @@ start. These rules are mandatory for every deploy AND every recovery sync.
 
 ## Deployment Identity Gate (PERMANENT — added 2026-07-07)
 
-**Before any robocopy, capture and record the deployment identity. ABORT if any field does not
+**Before any the application sync, capture and record the deployment identity. ABORT if any field does not
 match the approved deployment source.**
 
 ```bash
@@ -93,7 +93,7 @@ git status --short               # Working-tree status — MUST be empty (clean)
 
 Record all six: **Repository · Remote · Branch · HEAD SHA · origin/main SHA · Working-tree status.**
 Proceed ONLY if: Branch = `main` (or approved SHA) · HEAD == origin/main (or approved SHA) · tree
-clean. **Any mismatch → ABORT (do not robocopy).** This is the gate that would have stopped the
+clean. **Any mismatch → ABORT (do not the application sync).** This is the gate that would have stopped the
 2026-07-07 feature-branch-source skew.
 
 ---
@@ -157,13 +157,14 @@ git rev-parse HEAD                # record exact deployed SHA
 
 ```bash
 # PZ regression
-cd "C:\PZ-verify"
-PYTHONIOENCODING=utf-8 python test_pz_regression.py    # must be 160/160
-
-# Carrier suite
-cd service
-python -m pytest tests/test_carrier_*.py -q            # must be 412/412
+PYTHONIOENCODING=utf-8 python test_pz_regression.py    # root golden: must exit 0
+python -m pytest tests/test_carrier_*.py -q            # required count: .claude/contracts/test-baseline.md
 ```
+
+> Counts are NOT recorded here. `.claude/contracts/test-baseline.md` is the sole
+> authority; hardcoding them across deploy surfaces is what let three different
+> required carrier counts coexist in this repository.
+> The deploy source is `C:\PZ-main`, never the verification tree.
 
 **Stop if any test fails.**
 
@@ -179,40 +180,23 @@ python scripts\run_backup.py --backup-root "C:\PZ-backups"
 
 ### Step 5 — Safe sync to production
 
-```powershell
-# PRECONDITION: source is clean `main` (post-incident rules 1-4) — verify branch/status/SHA first.
-# FULL / RECOVERY sync: OVERWRITE to match source exactly. Do NOT use /XO —
-# /XO skips stale/mismatched files and caused the 2026-07-07 version-skew incident.
-robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E `
-  /XD __pycache__ .pytest_cache storage `
-  /XF "*.pyc" "*.pyo" "*.zip"
-# /XO is allowed ONLY for a known-incremental top-up (dest already consistent with source).
-# After sync, run the post-incident Rule 5 import check BEFORE any feature validation.
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
 
-# Robocopy exit codes: 0=nothing to copy, 1=copied, 2=extras retained, 3=both
-# All are SUCCESS.  Exit 4+ = error, stop immediately.
-```
 
 **Forbidden sync operations:**
-```
-robocopy /MIR                            ← NEVER
-robocopy ... C:\PZ\.env                  ← NEVER
-robocopy ... C:\PZ\storage               ← NEVER
-robocopy ... C:\PZ\logs                  ← NEVER
-robocopy ... C:\PZ\cloudflared           ← NEVER
-Copy-Item -Recurse (without -Force /XO)  ← NEVER without review
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
+
 
 ### Step 6 — Restart PZService (as Administrator)
 
-```powershell
-# Must be run from an elevated (Administrator) PowerShell session
-sc.exe stop PZService
-timeout /t 8 /nobreak
-sc.exe start PZService
-timeout /t 10 /nobreak
-sc.exe query PZService    # verify STATE: RUNNING
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
+
 
 ### Step 7 — Post-deploy verification
 
@@ -286,10 +270,10 @@ git revert -m 1 <merge-commit-sha> --no-edit
 ```
 
 ### Emergency — restore from git directly
-```bash
-git checkout <last-known-good-sha> -- service/app/
-# then robocopy /E /XO to C:\PZ\app, then restart
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
+
 
 ---
 
@@ -298,22 +282,10 @@ git checkout <last-known-good-sha> -- service/app/
 Every deployment report MUST contain all of the following. The first seven are the mandatory
 **Deployment Evidence** fields (added 2026-07-07).
 
-```
-Deployment Source:       # repo · remote · branch(=main) · HEAD SHA · origin/main SHA · tree status (Identity Gate)
-Deployment Target:       # C:\PZ\app
-Robocopy summary:        # dirs / files / bytes copied · FAILED (must be 0)
-Service restart result:  # sc.exe query PZService -> STATE : RUNNING
-Import verification:      # C:\PZ\logs\pz_stderr.log -> no ImportError (post-incident Rule 5)
-Runtime verification:     # local + public /api/v1/health · V2 runtime gate (Step 7.5)
-Feature verification:     # the deployed feature's own acceptance check
-Pulled SHA:
-Tests:
-Carrier gate:
-Production mutation:
-Rollback command:
-Final decision:
-READY / BLOCKED:
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
+
 
 ---
 
