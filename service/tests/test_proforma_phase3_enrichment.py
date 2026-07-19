@@ -16,9 +16,9 @@ _WFIRMA_CLIENT = Path(__file__).parent.parent / "app" / "services" / "wfirma_cli
 _PIL_DB        = Path(__file__).parent.parent / "app" / "services" / "proforma_invoice_link_db.py"
 _ROUTES        = Path(__file__).parent.parent / "app" / "api" / "routes_proforma.py"
 
-_wfirma_src = _WFIRMA_CLIENT.read_text()
-_pildb_src  = _PIL_DB.read_text()
-_routes_src = _ROUTES.read_text()
+_wfirma_src = _WFIRMA_CLIENT.read_text(encoding="utf-8")
+_pildb_src  = _PIL_DB.read_text(encoding="utf-8")
+_routes_src = _ROUTES.read_text(encoding="utf-8")
 
 
 def test_fetch_proforma_enrichment_exists():
@@ -83,13 +83,6 @@ def test_renderer_shows_wfirma_dates():
 
 
 # ── DB round-trip tests ───────────────────────────────────────────────────────
-
-def _build_db() -> tuple[Path, sqlite3.Connection]:
-    tmp = tempfile.mktemp(suffix=".db")
-    conn = sqlite3.connect(tmp)
-    conn.row_factory = sqlite3.Row
-    return Path(tmp), conn
-
 
 def test_write_postposting_enrichment_round_trip(tmp_path):
     """write_postposting_enrichment stores and retrieves all three fields."""
