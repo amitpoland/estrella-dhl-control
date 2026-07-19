@@ -276,6 +276,68 @@ def _wfirma_hint(batch_id: str, a: Dict[str, Any] | None = None) -> str:
         return "n/a"
 
 
+# ── Canonical PZ-generation datetime ─────────────────────────────────────────
+#
+# Single authority: audit.pz_output.generated_at, written by
+# export_service._build_pz_output() from inside _write_audit(), which runs only
+# after a PZ engine run has produced BOTH the PDF and the XLSX. That block is
+# not in audit_merge.PRESERVED_KEYS, so every re-run overwrites it — the value
+# is always the LATEST successful generation for that run directory, and the
+# row and its date therefore always describe the same run.
+#
+# Deliberately NOT derived from:
+#   - top-level `timestamp` — overloaded: written at draft creation by
+#     routes_intake AND at each engine run by export_service, so on a draft or
+#     `ready` batch it is a creation moment, not a PZ-generation moment;
+#   - directory st_mtime — storage metadata, mutates on any later write;
+#   - SAD/customs dates, or any frontend clock.
+#
+# The stored string is passed through VERBATIM (operator ruling 2026-07-19).
+# _build_pz_output stamps local time with a literal "Z" suffix; correcting that
+# is a write-path change to PZ-generation persistence and is out of scope here.
+
+def _pz_generated_at(a: Dict[str, Any]) -> Optional[str]:
+    """Return the canonical PZ-generation datetime string, or None.
+
+    None means "this batch has no PZ-generation evidence" — callers must
+    render it as an em-dash and must never substitute another date.
+    """
+    raw = ((a.get("pz_output") or {}).get("generated_at") or "")
+    return raw.strip() or None
+
+
+def _parse_pz_generated_at(raw: Optional[str]) -> Optional[datetime]:
+    """Parse the canonical string for ORDERING ONLY. Never used to re-emit.
+
+    Ordering must be chronological, never lexicographic. A value that carries
+    no offset is treated as UTC purely so the comparison is total; the value
+    returned by the API is not rewritten.
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _order_by_pz_generated_desc(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Newest canonical PZ generation first; rows without a date last.
+
+    Rows with no (or unparseable) date keep their incoming relative order
+    rather than being interleaved, so the list stays stable for batches that
+    have never been through the engine.
+    """
+    dated   = [r for r in rows if _parse_pz_generated_at(r.get("pz_generated_at"))]
+    undated = [r for r in rows if not _parse_pz_generated_at(r.get("pz_generated_at"))]
+    dated.sort(key=lambda r: _parse_pz_generated_at(r["pz_generated_at"]), reverse=True)
+    return dated + undated
+
+
 def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
     t      = a.get("totals", {})
     inp    = a.get("inputs", {})
@@ -312,6 +374,9 @@ def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
         "tracking_no":           tracking_no,
         "doc_no":                doc_no,
         "timestamp":             a.get("timestamp", ""),
+        # Canonical PZ-generation datetime (see _pz_generated_at above).
+        # None when the engine has never produced PZ output for this batch.
+        "pz_generated_at":       _pz_generated_at(a),
         "status":                _derive_status(a),
         "engine_version":        a.get("engine_version"),
         "net":                   t.get("net"),
@@ -497,7 +562,15 @@ def list_batches(
     Return completed batches sorted newest-first.
 
     By default (all=false) deduplicates by (mrn, doc_no) keeping only the
-    latest run per document.  Pass ?all=1 to see every run.
+    latest run per document, then orders the deduplicated rows by canonical
+    `pz_generated_at` descending (batches with no PZ-generation evidence
+    last).  Pass ?all=1 to see every run in raw storage order.
+
+    The directory scan below stays keyed on st_mtime because it also selects
+    WHICH batches are read (`dirs[:_MAX_LIST]`); reordering it would change
+    the result set, not just its order.  Business ordering is applied to the
+    final rows instead.  The ?all=1 path is left in storage order on purpose:
+    it is the V1 raw all-runs view, and reordering it is outside this change.
     """
     if not _OUTPUTS.exists():
         return []
@@ -550,7 +623,7 @@ def list_batches(
         key    = f"{mrn}||{doc_no}" if (mrn or doc_no) else b["batch_id"]
         b["run_count"] = counts.get(key, 1)
 
-    return result
+    return _order_by_pz_generated_desc(result)
 
 
 # ── Batch detail ──────────────────────────────────────────────────────────────
