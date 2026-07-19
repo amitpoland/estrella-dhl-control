@@ -82,8 +82,8 @@ Reading from any path not listed below is a source-drift risk.
 | Path | Role | Status |
 |---|---|---|
 | `C:\PZ` | Production — NSSM AppDirectory (`PZService`, port 47213) | LIVE — never `reset --hard`, never robocopy'd INTO |
-| `C:\PZ-main` | Integration — pinned to `main`, ff-only pulls, no feature work | PERMANENT |
-| `C:\PZ-verify` | Verification clone (primary git tree) | SOURCE OF TRUTH for all git/file-hash checks |
+| `C:\PZ-main` | Integration + **SOLE DEPLOYMENT SOURCE** — pinned to `main`, ff-only pulls, no feature work | PERMANENT |
+| `C:\PZ-verify` | Verification tree; holds the repository `.git` (primary git tree) | SOURCE OF TRUTH for all git/file-hash checks — **NEVER a deploy source** |
 | `C:\PZ-active` | Current implementation campaign (one at a time) | PERMANENT (role); physical folder rotates per campaign |
 | `C:\PZ-archive` | Cold storage — zips + salvaged evidence, not a git tree | PERMANENT, read-only |
 
@@ -114,6 +114,19 @@ concurrent writer; `expected_head`≠actual tip is an INCIDENT requiring an oper
 never auto-correct.
 
 **Subagent reading rule (enforced):** All verification reads and git operations must use `C:\PZ-verify`.
+
+**Three roles, three trees — do NOT collapse them (verified 2026-07-19):** git/verification
+authority (`C:\PZ-verify`), deployment source (`C:\PZ-main`), and runtime (`C:\PZ`) are
+*deliberately* different locations. `C:\PZ-main` is a linked worktree whose `.git` pointer
+resolves into `C:\PZ-verify\.git` — this is by design and is **not** a fault to repair.
+`C:\PZ` contains no `.git` at all; it is a pure robocopy target (NSSM `AppDirectory`,
+`python -m uvicorn app.main:app`), so the git-authority location never affects runtime.
+Do not "fix" this by relocating `.git`: every registered worktree (23 as of 2026-07-19,
+and the set churns as campaigns open and close) holds an absolute `gitdir:` pointer into
+`C:\PZ-verify\.git\worktrees\`, and moving it would break every one of them for zero
+runtime benefit. Deploying from `C:\PZ-verify` is forbidden because that tree is routinely
+detached, stale, and dirty — `/deploy` Step 0 asserts this fail-closed. Evidence:
+`reports/inspection/2026-07-19-deploy-source-authority-split.md`.
 
 **One-session rule (enforced):** Only one Claude Code session may operate against
 `C:\PZ-verify` at a time. A second concurrent session on the same tree races branch

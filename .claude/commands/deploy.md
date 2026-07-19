@@ -6,10 +6,33 @@ Triggers the full production deployment procedure defined in `service/docs/produ
 
 ---
 
+## Step 0 — Deploy-source preflight (MANDATORY — fail closed)
+
+`C:\PZ-main` is the **sole deployment source**. `C:\PZ-verify` owns the repository
+`.git` and is the verification-read tree — it is **never** a deploy source. These are
+deliberately different trees; see the canonical working-tree registry in `CLAUDE.md`.
+
+```powershell
+$SRC = "C:\PZ-main"
+git -C $SRC fetch origin
+$dirty  = git -C $SRC status --porcelain
+$branch = git -C $SRC branch --show-current
+$head   = git -C $SRC rev-parse HEAD
+$remote = git -C $SRC rev-parse origin/main
+if ($dirty)               { throw "BLOCKED: deploy source is dirty" }
+if ($branch -ne "main")   { throw "BLOCKED: deploy source is not on main (is '$branch')" }
+if ($head -ne $remote)    { throw "BLOCKED: HEAD $head != origin/main $remote" }
+Write-Host "Deploy source OK: $SRC @ $head"
+```
+
+All three assertions must pass. A throw here stops the deploy — do not "just continue".
+
+---
+
 ## Step 1 — Inspect
 
 ```powershell
-cd "C:\PZ-verify"
+cd "C:\PZ-main"
 git status
 git branch --show-current
 git fetch origin
@@ -54,13 +77,13 @@ git rev-parse HEAD
 ## Step 4 — Test
 
 ```powershell
-cd "C:\PZ-verify"
+cd "C:\PZ-main"
 $env:PYTHONIOENCODING = "utf-8"
 python test_pz_regression.py
 ```
 
 ```powershell
-cd "C:\PZ-verify\service"
+cd "C:\PZ-main\service"
 python -m pytest tests/test_carrier_*.py -q
 ```
 
@@ -71,7 +94,7 @@ Required: counts per `.claude/contracts/test-baseline.md`. Stop if any test fail
 ## Step 5 — Safe sync to production
 
 ```powershell
-robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E /XO `
+robocopy "C:\PZ-main\service\app" "C:\PZ\app" /E /XO `
   /XD __pycache__ .pytest_cache storage `
   /XF "*.pyc" "*.pyo" "*.zip"
 ```
@@ -79,6 +102,29 @@ robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E /XO `
 Exit codes 0–3 = success. Exit 4+ = error, stop immediately.
 
 **Never use `/MIR`. Never sync `.env`, `storage\`, `logs\`, `cloudflared\`.**
+
+---
+
+## Step 5b — Engine sync (Lesson J — SEPARATE robocopy, not covered by Step 5)
+
+Root-level engine files live outside `service/app` and are **not** carried by the Step 5
+sync. Skipping this step ships a backend that runs against a stale calculation engine.
+
+```powershell
+robocopy "C:\PZ-main" "C:\PZ\engine" pz_import_processor.py polish_description_generator.py /COPY:DAT
+```
+
+Verify by **content**, not by Python import (Lesson J — an import check passes against the
+stale copy already on `sys.path`):
+
+```powershell
+Select-String -Path "C:\PZ\engine\pz_import_processor.py" -Pattern "def process_batch" | Select-Object -First 1
+(Get-FileHash "C:\PZ-main\pz_import_processor.py").Hash -eq (Get-FileHash "C:\PZ\engine\pz_import_processor.py").Hash
+(Get-FileHash "C:\PZ-main\polish_description_generator.py").Hash -eq (Get-FileHash "C:\PZ\engine\polish_description_generator.py").Hash
+```
+
+Both hash comparisons must print `True`. If the PR touched either engine file, the PR body
+must have declared this additional sync command (Lesson J).
 
 ---
 
@@ -117,7 +163,7 @@ After all steps above complete, run the reusable verification script to
 confirm all 8 close conditions pass before marking the deploy closed.
 
 ```powershell
-cd "C:\PZ-verify"
+cd "C:\PZ-main"
 .\.claude\manifests\verify_deploy_close.ps1 -ExpectedSHA <SHA>
 ```
 
