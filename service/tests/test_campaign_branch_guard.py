@@ -413,6 +413,91 @@ def test_entrypoint_does_not_copy_banner_fail_open_pattern():
         "an unconditional exit 0 in the failure handler would be a silent allow"
 
 
+@pytest.mark.parametrize("bad_sid", [123, {"a": 1}, ["s"], 12.5, True, None])
+def test_non_string_lock_session_id_never_crashes(tmp_path, repo, bad_sid):
+    """A non-string `lock.session_id` must not raise on the display slice.
+
+    Same class as the `state` defect: an exception here escapes to the entrypoint
+    handler, which emits `ask` — silently downgrading a categorical `deny`.
+    """
+    entry = _repo_entry(repo, state="IN_PROGRESS")
+    entry["lock"] = {"session_id": bad_sid, "claimed_at": "2026-01-01T00:00:00Z",
+                     "heartbeat_at": "2999-01-01T00:00:00Z"}
+    _write_registry(tmp_path, entry)
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
+    assert d is not None, "malformed lock produced a silent allow"
+    assert d["permissionDecision"] == "deny", "non-holder must still be a categorical deny"
+    assert "INTERNAL ERROR" not in d["permissionDecisionReason"], "must not crash-and-downgrade"
+    assert "concurrent writer" in d["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("bad_lock", ["a-string", ["s"], 42, 3.5])
+def test_malformed_lock_object_fails_closed(tmp_path, repo, bad_lock):
+    """A non-dict `lock` cannot establish ownership -> explicit fail-closed decision."""
+    entry = _repo_entry(repo, state="IN_PROGRESS")
+    entry["lock"] = bad_lock
+    _write_registry(tmp_path, entry)
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
+    assert d is not None, "malformed lock produced a silent allow"
+    assert d["permissionDecision"] in ("ask", "deny")
+    assert "malformed write-lock" in d["permissionDecisionReason"]
+
+
+def test_malformed_lock_does_not_outrank_branch_mismatch_deny(tmp_path, repo):
+    """Categorical deny precedence survives the lock hardening."""
+    entry = _repo_entry(repo, state="IN_PROGRESS")
+    entry["lock"] = {"session_id": {"nonsense": True}, "claimed_at": "x"}
+    entry["branch"] = "some/other-branch"
+    _write_registry(tmp_path, entry)
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
+    assert d["permissionDecision"] == "deny"
+    assert "branch mismatch" in d["permissionDecisionReason"]
+
+
+def test_valid_matching_lock_still_allows(tmp_path, repo):
+    """The happy path is unchanged by the coercion."""
+    _write_registry(tmp_path, _repo_entry(repo, state="IN_PROGRESS"))
+    assert _run_guard(tmp_path, "git commit -m x", cwd=str(repo)) is None
+
+
+def test_spec_documents_the_implemented_check_order():
+    """Spec's Order column must match the order checks appear in the guard source.
+
+    Compares relative ordering only — not exact text — so ordinary wording edits to
+    either file cannot break it, but a real order divergence will.
+    """
+    src = io.open(GUARD, encoding="utf-8").read()
+    # Anchor on each check's own section comment (`# <id> — ...`), which is unique.
+    # NOT on the emitted messages: checks 2 and 3 are deliberately re-evaluated inside
+    # the 4a-pre precedence guard, so their text appears twice and a text search would
+    # report the copy rather than the canonical check site.
+    code_pos = {}
+    for line_no, line in enumerate(src.splitlines()):
+        stripped = line.strip()
+        for cid in ("4a-pre", "4a", "2", "3", "4", "5"):
+            if stripped.startswith("# %s — " % cid) and cid not in code_pos:
+                code_pos[cid] = line_no
+    missing = {"4a-pre", "4a", "2", "3", "4", "5"} - set(code_pos)
+    assert not missing, "guard is missing check section comments for: %s" % sorted(missing)
+    code_order = [k for k, _ in sorted(code_pos.items(), key=lambda kv: kv[1])]
+
+    spec = io.open(os.path.join(CAMPAIGNS, "OWNERSHIP-GUARD-SPEC.md"), encoding="utf-8").read()
+    ordinal = {"1st": 1, "2nd": 2, "3rd": 3, "4th": 4, "5th": 5, "6th": 6, "7th": 7}
+    rows = []
+    for line in spec.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) >= 2 and cells[1] in ordinal and cells[0] in code_pos:
+            rows.append((ordinal[cells[1]], cells[0]))
+    spec_order = [name for _, name in sorted(rows)]
+
+    assert spec_order == code_order, (
+        "OWNERSHIP-GUARD-SPEC.md Order column disagrees with the implementation.\n"
+        "spec: %s\ncode: %s" % (spec_order, code_order)
+    )
+
+
 # ------------------------------------------------------------------------ parity pins
 
 def _load(name):

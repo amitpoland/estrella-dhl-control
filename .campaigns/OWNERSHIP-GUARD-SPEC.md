@@ -37,14 +37,13 @@ shell out to git). The order column below is authoritative and matches
 | # | Order | Check | On failure |
 |---|---|---|---|
 | 1 | 1st | Registry unreadable/corrupt while a campaign entry may apply | `ask` (surface to operator; never silently allow) |
-| 4a | 2nd | **STATE enforcement (§6)** — see row below | `deny` |
-| 4a-pre | 3rd | **STATE DECLARED**: `state` is present and appears in the lifecycle enum (`.campaigns/schema.json`, `policies.json.state_enum`) | `ask` naming the offending value — an unknown/missing state is a fail-closed boundary and must **never** fall through to write-permitted behaviour. Checks 2 and 3 are evaluated *inside* this branch first, so a bad state can never soften their categorical `deny` into an `ask`. |
+| 4a-pre | 2nd | **STATE DECLARED**: `state` is present and appears in the lifecycle enum (`.campaigns/schema.json`, `policies.json.state_enum`) | `ask` naming the offending value — an unknown/missing state is a fail-closed boundary and must **never** fall through to write-permitted behaviour. Checks 2 and 3 are evaluated *inside* this branch first, so a bad state can never soften their categorical `deny` into an `ask`. |
+| 4a | 3rd | **STATE enforcement (§6)**: campaign `state` ∉ {FROZEN, LOCKED, DEPLOYING, ARCHIVED, MERGED_PENDING_ARCHIVE} | `deny` — for ALL sessions **including the owner**; ownership match alone never permits a write |
 | 2 | 4th | Branch checked out at the target tree matches the entry's `branch` (branch mismatch) | `deny` |
 | 3 | 5th | Target tree is the entry's registered `worktree` (worktree mismatch) | `deny` |
-| 4a (detail) | — | campaign `state` ∉ {FROZEN, LOCKED, DEPLOYING, ARCHIVED, MERGED_PENDING_ARCHIVE} | `deny` — for ALL sessions **including the owner**; ownership match alone never permits a write |
-| 4 | Session holds the entry's `lock` (`lock.session_id == payload session_id`) — owner mismatch | `deny`; if `lock` is null (unclaimed) → `ask` (operator confirms the claimant). A non-holder's denial is classified: fresh heartbeat (<15 min) → **concurrent writer (check 6)**; stale heartbeat → **stale/crashed owner** — only the operator may reassign the lock by editing the registry entry |
-| 5 | Current HEAD starts with `expected_head` (unexpected HEAD) | `deny` + instruct: file incident, request operator ruling, NEVER auto-correct |
-| 7 | `git worktree add` without operator approval | `ask` (the ask prompt IS the operator-approval gate) |
+| 4 | 6th | Session holds the entry's `lock` (`lock.session_id == payload session_id`) — owner mismatch | `deny`; if `lock` is null (unclaimed) → `ask` (operator confirms the claimant). A non-holder's denial is classified: fresh heartbeat (<15 min) → **concurrent writer (check 6)**; stale heartbeat → **stale/crashed owner** — only the operator may reassign the lock by editing the registry entry |
+| 5 | 7th | Current HEAD starts with `expected_head` (unexpected HEAD) | `deny` + instruct: file incident, request operator ruling, NEVER auto-correct |
+| 7 | n/a | `git worktree add` without operator approval | `ask` (the ask prompt IS the operator-approval gate) |
 
 ## Per-state operation matrix (§6)
 

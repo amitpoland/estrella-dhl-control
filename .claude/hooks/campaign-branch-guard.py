@@ -284,16 +284,34 @@ def main():
             _emit("ask", f"campaign-branch-guard[{name}]: write-lock unclaimed. Registered owner: "
                          f"{owner}. Operator must confirm this session may claim it (check 4).")
             return 0
-        if lock.get("session_id") != session_id:
+        if not isinstance(lock, dict):
+            # A non-dict `lock` (string / list / number from a hand-edited registry) has no
+            # readable holder, so ownership cannot be established. Fail closed rather than
+            # crash on the .get() below.
+            _emit("ask", f"campaign-branch-guard[{name}]: malformed write-lock — expected an "
+                         f"object with session_id/claimed_at, found {type(lock).__name__}. "
+                         f"Ownership cannot be established; repair the registry entry before "
+                         f"any write (check 4, fail closed).")
+            return 0
+        # Same coercion discipline as `state` above: a non-string session_id (int / dict /
+        # list from a hand-edited registry) must not raise on the [:12] slice below. An
+        # exception here would escape to the entrypoint handler and downgrade a categorical
+        # `deny` into an `ask` — the exact crash-before-the-verdict class this campaign
+        # exists to remove. `_holder` is display/compare only; the lock object is unchanged.
+        raw_holder = lock.get("session_id")
+        _holder = str(raw_holder) if raw_holder is not None else ""
+        _me = str(session_id or "")
+        if _holder != _me:
+            shown = (_holder[:12] + "…") if _holder else "(no session_id)"
             if _heartbeat_fresh(lock):
                 _emit("deny", f"campaign-branch-guard[{name}]: concurrent writer — lock held by "
-                              f"session {lock.get('session_id', '?')[:12]}… with a fresh heartbeat; "
+                              f"session {shown} with a fresh heartbeat; "
                               f"registered owner: {owner} (check 6).")
             else:
                 _emit("deny", f"campaign-branch-guard[{name}]: owner mismatch — lock held by session "
-                              f"{lock.get('session_id', '?')[:12]}… (heartbeat STALE >"
+                              f"{shown} (heartbeat STALE >"
                               f"{HEARTBEAT_FRESH_MINUTES} min — possibly a crashed owner); current "
-                              f"session {session_id[:12]}…; registered owner: {owner}. Stale-owner "
+                              f"session {_me[:12]}…; registered owner: {owner}. Stale-owner "
                               f"recovery: only the operator may reassign the lock by editing the "
                               f"registry entry (check 4).")
             return 0
