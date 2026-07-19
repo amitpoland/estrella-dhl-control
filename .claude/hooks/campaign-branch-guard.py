@@ -212,17 +212,35 @@ def main():
         # `MERGED_VERIFIED` (transport-m1, 2026-07-18) sat outside every enum and
         # would otherwise have been treated as an ordinary writable state. Surface it
         # explicitly instead of guessing intent.
-        if state and state not in KNOWN_STATES:
+        if not state or state not in KNOWN_STATES:
+            # An undeclared state must not DOWNGRADE a harder verdict. Checks 2 and 3
+            # (branch / worktree mismatch) are categorical `deny`s that do not depend on
+            # state at all, so evaluate them first: otherwise an entry with both a bad
+            # state and a branch mismatch would soften an automatic deny into an
+            # operator-confirmable ask. Only when those pass does the unknown state
+            # itself become the reason to stop.
+            _tree = worktree if os.path.isdir(worktree) else cwd
+            _branch = _git(["branch", "--show-current"], _tree)
+            if _branch is not None and entry.get("branch") and _branch != entry["branch"]:
+                _emit("deny", f"campaign-branch-guard[{name}]: branch mismatch — tree has "
+                              f"'{_branch}', registry expects '{entry['branch']}' (check 2). "
+                              f"NOTE: this entry also carries an unrecognised state "
+                              f"'{state or '(missing)'}' — repair it before any write.")
+                return 0
+            if worktree and not _norm(cwd).startswith(_norm(worktree)) and \
+               (entry.get("branch") or "").lower() in command_low and \
+               _norm(worktree).replace("\\", "/") not in _norm(command).replace("\\", "/"):
+                _emit("deny", f"campaign-branch-guard[{name}]: worktree mismatch — campaign "
+                              f"branch may only be written in its registered worktree "
+                              f"{worktree} (check 3). NOTE: this entry also carries an "
+                              f"unrecognised state '{state or '(missing)'}'.")
+                return 0
+            label = f"'{state}'" if state else "(missing — required by .campaigns/schema.json)"
             _emit("ask", f"campaign-branch-guard[{name}]: unrecognised campaign state "
-                         f"'{state}' — not in the declared lifecycle enum "
+                         f"{label} — not in the declared lifecycle enum "
                          f"(.campaigns/schema.json, policies.json.state_enum). Treating as "
                          f"RESTRICTED pending an operator ruling: confirm the intended state "
                          f"before any write. Fail-closed by design; never assume writable.")
-            return 0
-        if not state:
-            _emit("ask", f"campaign-branch-guard[{name}]: campaign entry has no `state` "
-                         f"(required by .campaigns/schema.json). Treating as RESTRICTED "
-                         f"pending an operator ruling — fail closed, never assume writable.")
             return 0
 
         # 4a — STATE enforcement (operator second ruling §6): write-restricted states

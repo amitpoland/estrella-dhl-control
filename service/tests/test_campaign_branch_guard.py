@@ -243,16 +243,17 @@ def test_existing_restricted_states_still_deny(tmp_path, state):
 
 
 @pytest.mark.parametrize("state", ["MERGED_VERIFIED", "TOTALLY_MADE_UP", ""])
-def test_unknown_or_invalid_state_fails_closed_with_diagnostic(tmp_path, state):
+def test_unknown_or_invalid_state_fails_closed_with_diagnostic(tmp_path, repo, state):
     """An undeclared state must never fall through to write-permitted behaviour.
 
     `MERGED_VERIFIED` is the real transport-m1 value that sat outside every enum.
     """
-    entry = _entry(state="IN_PROGRESS")
+    entry = _repo_entry(repo, state="IN_PROGRESS")
     entry["state"] = state
     _write_registry(tmp_path, entry)
-    d = _run_guard(tmp_path, f"git commit -m x  # {BRANCH}")
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
     assert d is not None, "unknown state fell through to a silent allow"
+    # branch/worktree agree, so the unrecognised state itself is the reason to stop
     assert d["permissionDecision"] == "ask"
     reason = d["permissionDecisionReason"]
     assert "RESTRICTED" in reason
@@ -280,6 +281,53 @@ def test_worktree_add_still_asks(tmp_path):
     d = _run_guard(tmp_path, "git worktree add C:\\PZ-wt\\new-thing")
     assert d["permissionDecision"] == "ask"
     assert "operator approval" in d["permissionDecisionReason"]
+
+
+def test_unknown_state_does_not_soften_branch_mismatch_deny(tmp_path, repo):
+    """An unrecognised state must never DOWNGRADE a categorical deny into an ask.
+
+    Regression pin for a defect found in review: placing the unknown-state check ahead
+    of checks 2/3 turned an automatic branch-mismatch `deny` into an operator-
+    confirmable `ask`. Branch mismatch does not depend on state, so it must still win.
+    """
+    entry = _repo_entry(repo, state="IN_PROGRESS")
+    entry["state"] = "MERGED_VERIFIED"          # undeclared
+    entry["branch"] = "some/other-branch"       # ... and the tree is on a different branch
+    _write_registry(tmp_path, entry)
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
+    assert d["permissionDecision"] == "deny", "bad state must not soften a check-2 deny"
+    reason = d["permissionDecisionReason"]
+    assert "branch mismatch" in reason
+    assert "MERGED_VERIFIED" in reason, "the unrecognised state must still be surfaced"
+
+
+def test_unknown_state_does_not_soften_worktree_mismatch_deny(tmp_path, repo):
+    """Same guarantee for check 3 (worktree mismatch)."""
+    entry = _repo_entry(repo, state="IN_PROGRESS")
+    entry["state"] = ""                          # missing state
+    entry["worktree"] = str(tmp_path / "elsewhere")
+    _write_registry(tmp_path, entry)
+    d = _run_guard(tmp_path, f"git commit -m x  # {entry['branch']}", cwd=str(tmp_path))
+    assert d["permissionDecision"] == "deny"
+    assert "worktree mismatch" in d["permissionDecisionReason"]
+
+
+def test_multi_entry_registry_first_match_wins_is_documented(tmp_path, repo):
+    """Two campaigns, both in scope: the guard decides on the first match and stops.
+
+    Documents (does not endorse) the pre-existing first-match-wins behaviour so a future
+    change to entry resolution is a visible test failure rather than a silent shift.
+    """
+    a = _repo_entry(repo, state="ARCHIVED")
+    b = _repo_entry(repo, state="IN_PROGRESS")
+    state_dir = tmp_path / ".claude" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "active-campaigns.json").write_text(
+        json.dumps({"campaigns": {"a_first": a, "b_second": b}}), encoding="utf-8"
+    )
+    d = _run_guard(tmp_path, "git commit -m x", cwd=str(repo))
+    assert d is not None and d["permissionDecision"] == "deny"
+    assert "a_first" in d["permissionDecisionReason"], "first matching entry decides"
 
 
 # ------------------------------------------------------------------------ parity pins
