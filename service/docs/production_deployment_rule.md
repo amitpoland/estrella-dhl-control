@@ -167,15 +167,75 @@ python -m pytest tests/test_carrier_*.py -q            # must be 412/412
 
 **Stop if any test fails.**
 
-### Step 4.5 — Pre-deploy backup
+### Step 4.5 — Pre-deploy backup (DATABASES)
 
 ```powershell
-# Create backup before any production changes
-cd "C:\PZ\service"
+# STORAGE_ROOT MUST be set explicitly. run_backup.py backs up whatever
+# settings.storage_root resolves to, and that resolution depends on WHERE it runs:
+#   * C:\PZ\service\scripts\run_backup.py    -> DOES NOT EXIST (C:\PZ\service is a
+#     stale 2026-05-17 partial copy). The command simply fails.
+#   * C:\PZ-verify\service (no .env there)   -> falls back to
+#     C:\PZ-verify\service\app\storage, which EXISTS and holds the review clone's
+#     small test databases. The run reports "Total files: 16, Successful: 16" and
+#     exits 0 — a backup of the WRONG databases, indistinguishable from success.
+# Production data lives at C:/PZ/storage (per C:\PZ\.env). Always override:
+cd "C:\PZ-verify\service"
+$env:STORAGE_ROOT = "C:/PZ/storage"
 python scripts\run_backup.py --backup-root "C:\PZ-backups"
+Remove-Item Env:\STORAGE_ROOT
+```
+
+**Verify the backup is the RIGHT one before continuing** — a successful exit code is
+not sufficient evidence (see above):
+
+```powershell
+# Compare against production, not just "did it succeed"
+$b = Get-ChildItem "C:\PZ-backups" | Sort-Object Name -Descending | Select-Object -First 1
+"backup : $($b.FullName)"
+"size   : $([math]::Round((Get-ChildItem $b.FullName -File | Measure-Object Length -Sum).Sum/1MB,2)) MB"
+"prod   : $([math]::Round((Get-ChildItem 'C:\PZ\storage' -Filter *.db | Measure-Object Length -Sum).Sum/1MB,2)) MB"
+# The two totals must be comparable. A backup that is a fraction of production
+# size means STORAGE_ROOT was wrong — STOP and re-run.
 ```
 
 **Abort deploy on backup failure.** Maximum timeout: 10 minutes. If backup fails or times out, investigate storage health before proceeding. A failed backup means restore capability is compromised.
+
+### Step 4.5b — Pre-deploy backup (CODE) — REQUIRED
+
+`run_backup.py` covers **databases only**. It gives you no way to undo a bad sync.
+The app-tree copy is the code rollback artifact and must be taken every deploy
+(practice established in `DEPLOY_RECORD_20260528`, formalised here after it was
+found missing during the 2026-07-19 deploy):
+
+```powershell
+$ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+robocopy "C:\PZ\app" "C:\PZ\bak\app-pre-deploy-$ts" /E /XD __pycache__ /XF "*.pyc"
+# Record the path in the deploy record — this is the Level-2 rollback source.
+```
+
+### Step 4.6 — Byte-level source/destination drift check — REQUIRED
+
+`git status` is **not** sufficient evidence that the source tree is what you think it
+is. Git normalises line endings when hashing, so a worktree can hold LF copies of
+files that are CRLF in production, report perfectly clean, and still differ byte-wise —
+which is what `robocopy` actually compares. On 2026-07-19 this hid **17 such files** in
+`C:\PZ-verify`; an unguarded sync would have rewritten 17 files unrelated to the
+deployed commits.
+
+```powershell
+# Expected delta = ONLY the files your commits touch. Anything else is drift.
+$src = "C:\PZ-verify\service\app"; $dst = "C:\PZ\app"
+Get-ChildItem $src -Recurse -File | Where-Object { $_.FullName -notmatch '__pycache__|\\storage\\|\.pyc$' } | ForEach-Object {
+  $rel = $_.FullName.Substring($src.Length+1); $d = Join-Path $dst $rel
+  if (Test-Path $d) {
+    if ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $d).Hash) { "DIFF  $rel" }
+  } else { "ADD   $rel" }
+}
+```
+
+If the list contains files your commits did not touch, do **not** sync. Remediate the
+source first (delete the affected files and `git checkout --` them so they materialise
+with the worktree's configured line endings), then re-run this check.
 
 ### Step 5 — Safe sync to production
 

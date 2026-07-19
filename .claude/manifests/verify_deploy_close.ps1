@@ -128,7 +128,11 @@ Add-Result "Carrier tests" $pass3 $detail3
 # -------------------------------------------------------------
 if ($SkipRobocopy) {
     Write-Host "[4/8] Robocopy - SKIPPED (run separately)"
-    Add-Result "Robocopy" $true "skipped - operator confirmed ran separately"
+    Write-Host "      NOTE: C:\PZ\version.txt is written in the robocopy branch only," -ForegroundColor Yellow
+    Write-Host "      so it was NOT updated by this run. Update it manually to the" -ForegroundColor Yellow
+    Write-Host "      deployed SHA (BOM-less) or /api/v1/webhooks/wfirma/status will" -ForegroundColor Yellow
+    Write-Host "      keep reporting the previous deploy." -ForegroundColor Yellow
+    Add-Result "Robocopy" $true "skipped - operator confirmed ran separately (version.txt NOT updated)"
 } else {
     Write-Host "[4/8] Running robocopy sync..."
     # OVERWRITE to match source exactly. No /XO — it skips stale/mismatched files
@@ -150,7 +154,11 @@ if ($SkipRobocopy) {
     Add-Result "Robocopy" $true "exit=$LASTEXITCODE  (0-3=OK)"
 
     # -- Write version.txt for /api/v1/webhooks/wfirma/status version field --
-    $head | Out-File -FilePath "C:\PZ\version.txt" -Encoding utf8 -NoNewline
+    # MUST be BOM-less. `Out-File -Encoding utf8` emits a UTF-8 BOM on PowerShell 5.1,
+    # and routes_webhooks_wfirma_status.py reads this with
+    # read_text(encoding="utf-8").strip() — Python's strip() does NOT remove U+FEFF,
+    # so a BOM leaks into the reported service version (41 chars instead of 40).
+    [IO.File]::WriteAllText("C:\PZ\version.txt", $head, (New-Object Text.UTF8Encoding($false)))
 
     # -- Service restart (between conditions 4 and 5) --------------
     Write-Host "[*]   Restarting PZService..."

@@ -68,6 +68,37 @@ Required: counts per `.claude/contracts/test-baseline.md`. Stop if any test fail
 
 ---
 
+## Step 4.5 — Pre-deploy backups (BOTH required)
+
+Full detail and the verification step: `service/docs/production_deployment_rule.md`.
+
+```powershell
+# DATABASES — STORAGE_ROOT must be explicit. Without it the backup silently captures
+# the review clone's test databases and still exits 0 (see rule doc Step 4.5).
+cd "C:\PZ-verify\service"
+$env:STORAGE_ROOT = "C:/PZ/storage"
+python scripts\run_backup.py --backup-root "C:\PZ-backups"
+Remove-Item Env:\STORAGE_ROOT
+
+# CODE — run_backup.py does NOT cover the app tree. This is the Level-2 rollback source.
+$ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+robocopy "C:\PZ\app" "C:\PZ\bak\app-pre-deploy-$ts" /E /XD __pycache__ /XF "*.pyc"
+```
+
+Confirm the DB backup size is comparable to `C:\PZ\storage` before continuing. Abort on
+failure — a bad backup means no restore capability.
+
+---
+
+## Step 4.6 — Byte-level drift check
+
+`git status` cannot see line-ending drift (git normalises on hashing; robocopy compares
+bytes). Hash source against destination and confirm the delta contains **only** the files
+your commits touch — see rule doc Step 4.6 for the script. Remediate the source before
+syncing if anything else appears.
+
+---
+
 ## Step 5 — Safe sync to production
 
 ```powershell
