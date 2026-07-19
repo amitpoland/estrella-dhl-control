@@ -171,11 +171,9 @@ python -m pytest tests/test_carrier_*.py -q            # required count: .claude
 
 ### Step 4.5 — Pre-deploy backup
 
-```powershell
-# Create backup before any production changes
-cd "C:\PZ\service"
-python scripts\the canonical backup created by Deploy-PZ.ps1 --backup-root "C:\PZ-backups"
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`, which creates the
+> manifest-verified backup unit automatically as part of every deploy.
+
 
 **Abort deploy on backup failure.** Maximum timeout: 10 minutes. If backup fails or times out, investigate storage health before proceeding. A failed backup means restore capability is compromised.
 

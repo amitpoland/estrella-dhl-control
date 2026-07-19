@@ -162,6 +162,12 @@ def evaluate(reviewed_sha, action, scope, env=None):
     if auth.get("scope") != scope:
         return ("deny", "authorization scope mismatch")
 
+    # `repository` is signed but was not previously cross-checked: an artifact minted
+    # for one repository would validate against another if the key were reused.
+    expected_repo = env.get("PZ_DEPLOY_AUTH_REPO", "")
+    if expected_repo and auth.get("repository") != expected_repo:
+        return ("deny", "authorization repository mismatch")
+
     exp = _parse_iso(auth.get("expires_at"))
     iat = _parse_iso(auth.get("issued_at"))
     now = datetime.now(timezone.utc)

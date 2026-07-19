@@ -45,6 +45,16 @@ PROD_PZ_RX = re.compile(r"c:[\\/]pz(?![\w\-])", re.IGNORECASE)
 # (relative, absolute, via &, via powershell -File).
 DEPLOY_SCRIPT_RX = re.compile(r"deploy-pz\.ps1", re.IGNORECASE)
 
+# Scripts that write production RUNTIME CONFIGURATION (C:\PZ\.env) rather than code.
+# They are matched by NAME for the same reason as the deploy script: their command
+# lines carry no C:\PZ token, so the path rule cannot see them. .env controls live
+# service behaviour (API keys, write-gate flags), so running one is an operator action.
+# They are not yet consolidated behind a governed runtime-configuration authority;
+# blocking execution is the interim mitigation.
+RUNTIME_CONFIG_SCRIPT_RX = re.compile(
+    r"env_config_manager\.ps1|activate_pz_lifecycle\.py", re.IGNORECASE
+)
+
 
 def _is_prod_pz_path(text):
     """Return True if `text` contains a 'C:\\PZ' path token (case-insensitive,
@@ -107,6 +117,12 @@ def _classify_command(command):
         return ("deploy-script-invocation",
                 "Deploy-PZ.ps1 writes to production and is operator-only "
                 "(-WhatIf is also denied to the agent: use the operator shell)")
+
+    # 1c. Runtime-configuration writers. Same name-matching rationale as 1b.
+    if RUNTIME_CONFIG_SCRIPT_RX.search(low) is not None:
+        return ("runtime-config-write",
+                "this script writes production runtime configuration (C:\\PZ\\.env) "
+                "and is operator-only")
 
     # 2. gh pr merge — Council-authorized merge gate
     #    (ADR-council-authorized-merge-gate). Default-OFF + FAIL-CLOSED: replaces

@@ -476,13 +476,29 @@ function Invoke-Deploy {
             if ($unit) { Write-Host "  Or roll back:  Deploy-PZ.ps1 -Rollback -Unit $($unit.Unit)" }
             throw
         }
-        if ($Scope -ne "Engine") { Invoke-Converge -Cfg $cfg -ArtifactPath $art }
-        if ($Scope -ne "App") { Invoke-EngineSync -Cfg $cfg }
-        if ($Scope -ne "Engine") {
-            [void](Test-AgainstManifest -ManifestFile "$art.manifest.csv" -Root $cfg.runtime_app -What "deployed application")
+        # From here production IS being modified. A failure leaves a partially
+        # converged tree, so the recovery state differs from the preparation phase and
+        # must name the rollback unit explicitly -- an operator mid-incident should not
+        # have to scroll back through robocopy output to find it.
+        try {
+            if ($Scope -ne "Engine") { Invoke-Converge -Cfg $cfg -ArtifactPath $art }
+            if ($Scope -ne "App") { Invoke-EngineSync -Cfg $cfg }
+            if ($Scope -ne "Engine") {
+                [void](Test-AgainstManifest -ManifestFile "$art.manifest.csv" -Root $cfg.runtime_app -What "deployed application")
+            }
+            Write-VersionFile -Cfg $cfg -Sha $ReviewedSHA
+            Set-ServiceState -Cfg $cfg -Target Running
         }
-        Write-VersionFile -Cfg $cfg -Sha $ReviewedSHA
-        Set-ServiceState -Cfg $cfg -Target Running
+        catch {
+            Write-Host ""
+            Write-Host "RECOVERY STATE: PARTIAL_DEPLOY"
+            Write-Host "  Production WAS being modified when this failed: $($_.Exception.Message)"
+            Write-Host "  The service is STOPPED and the application tree may be partially converged."
+            Write-Host "  DO NOT start the service on a partial tree. Roll back:"
+            Write-Host "      Deploy-PZ.ps1 -Rollback -Unit $($unit.Unit)"
+            Write-Host "  (a rollback authorization artifact for $ReviewedSHA is required)"
+            throw
+        }
     }
     finally { Exit-DeployLock -Cfg $cfg }
 

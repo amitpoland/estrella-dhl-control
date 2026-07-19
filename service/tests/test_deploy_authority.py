@@ -215,7 +215,15 @@ def test_retired_deployment_scripts_are_gone(retired):
 # and run_backup.py. These tests scan the whole repository.
 # ============================================================================
 
-PROD_PATH_RX = re.compile(r"(?i)[\"']c:[\\/]{1,2}pz(?![\w\-])")
+# Requiring a QUOTED literal let a writer evade the scan by building the path
+# indirectly -- os.path.join(os.environ["SYSTEMDRIVE"], "PZ", "app") or
+# Path("C:\\") / "PZ" / "app". Match the token wherever it appears, plus the
+# indirect-construction shape.
+PROD_PATH_RX = re.compile(
+    r"c:[\\/]{1,2}pz(?![\w\-])"
+    r"|[\"']PZ[\"']\s*[,)/]",
+    re.IGNORECASE,
+)
 WRITE_RX = re.compile(
     r"shutil\.copy|shutil\.copytree|\bos\.replace\b|open\([^)]*['\"][wa]|write_text|write_bytes"
     r"|\brobocopy\b|Copy-Item|\bxcopy\b|Set-Content|Out-File|WriteAllText",
@@ -250,6 +258,9 @@ PRODUCTION_WRITER_ALLOWLIST = {
     "service/scripts/review_launch.py": "OPERATIONAL - review tooling",
     "service/scripts/backfill_skip_events_f255bbb5.py": "OPERATIONAL - one-off backfill",
     "service/app/api/routes_dhl_clearance.py": "REFERENCE_ONLY - storage paths, not code",
+    # Surfaced only after PROD_PATH_RX was broadened to catch unquoted/indirect paths.
+    "scripts/cp3_capture.py": "OPERATIONAL - capture tooling, no production code write",
+    "service/tools/backfill_service_product_registry.py": "OPERATIONAL - data backfill",
 }
 
 
