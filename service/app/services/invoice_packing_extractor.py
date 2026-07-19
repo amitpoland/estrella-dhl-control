@@ -531,24 +531,47 @@ _CURRENCY_MARKER_RE = re.compile(
 )
 
 
+# Grouped-thousands form: 1,554 / 1,234,567 — every comma group exactly 3 digits.
+# Anything else with a comma is read as a decimal comma (1234,56 -> 1234.56).
+_THOUSANDS_COMMA_RE = re.compile(r"^[+-]?\d{1,3}(?:,\d{3})+$")
+
+
 def _safe_float(val: Any) -> float:
     """Convert any value to float without raising.
 
     Canonical numeric-normalisation authority for the packing pipeline (upload
     AND reprocess persistence). Tolerates the string forms real packing lists
-    carry: currency-prefixed values ("$ 993", "$ 1,554"), thousands commas, and
-    stray whitespace. Genuinely non-numeric strings ("ite 1", "Total") and any
-    other error return 0.0 — never raises.
+    carry: currency-prefixed values ("$ 993", "$ 1,554"), thousands separators
+    (comma or space), decimal commas ("1234,56", "1.234,56"), and stray
+    whitespace. Genuinely non-numeric strings ("ite 1", "Total") and any other
+    error return 0.0 — never raises.
+
+    Comma disambiguation (a bare comma is ambiguous across locales):
+      - both "," and "." present -> the RIGHTMOST one is the decimal separator
+      - comma only, and the whole value is grouped thousands ("1,554") -> separator
+      - comma only, anything else ("1234,56", "1,5") -> decimal comma
+    "1,554" therefore stays 1554.0, preserving the EJL packing-list contract.
     """
     if val is None:
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    # Strip currency symbols / ISO codes first, then the existing thousands-comma
-    # + whitespace normalisation, then coerce.
+    # Strip currency symbols / ISO codes, then any whitespace used as a thousands
+    # separator. Bare split() covers Unicode spaces (NBSP, narrow NBSP) that
+    # Excel exports emit, so no literal invisible characters live in this file.
     s = _CURRENCY_MARKER_RE.sub("", str(val))
+    s = "".join(s.split())
+    if "," in s:
+        if "." in s:
+            s = (s.replace(".", "").replace(",", ".")
+                 if s.rfind(",") > s.rfind(".")
+                 else s.replace(",", ""))
+        elif _THOUSANDS_COMMA_RE.match(s):
+            s = s.replace(",", "")
+        else:
+            s = s.replace(",", ".")
     try:
-        return float(s.replace(",", "").strip())
+        return float(s)
     except (ValueError, TypeError):
         return 0.0
 

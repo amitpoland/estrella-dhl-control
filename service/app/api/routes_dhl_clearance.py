@@ -1514,9 +1514,10 @@ def _reconcile_rows_with_audit_totals(audit: dict) -> dict:
     """
     import re as _re
 
-    def _safe_float(x):
-        try: return float(x or 0)
-        except Exception: return 0.0
+    # Canonical packing normaliser: these rows come from the packing pipeline,
+    # and bare float() zeroed any string form silently -- understating FOB on a
+    # financial reconciliation gate.
+    from ..services.invoice_packing_extractor import _safe_float  # noqa: PLC0415
 
     rows = audit.get("rows") or []
     invoice_totals = audit.get("invoice_totals") or {}
