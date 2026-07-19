@@ -288,7 +288,7 @@ git revert -m 1 <merge-commit-sha> --no-edit
 ### Emergency — restore from git directly
 ```bash
 git checkout <last-known-good-sha> -- service/app/
-# then robocopy /E /XO to C:\PZ\app, then restart
+# then robocopy /E (NOT /XO — this is a recovery sync, rule 3) to C:\PZ\app, then restart
 ```
 
 ---

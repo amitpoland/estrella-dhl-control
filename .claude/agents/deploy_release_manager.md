@@ -81,14 +81,18 @@ If the deploy includes multiple commits, the rollback is the revert of the oldes
 Produce the exact robocopy command for this deploy:
 
 ```powershell
-robocopy "C:\Users\Super Fashion\PZ APP\service\app" "C:\PZ\app" /E /XO `
-  /XD __pycache__ .pytest_cache `
+# FULL / RECOVERY sync: OVERWRITE to match source exactly. Do NOT use /XO —
+# /XO skips stale/mismatched files and caused the 2026-07-07 version-skew incident.
+# /XO is allowed ONLY for a known-incremental top-up (dest already consistent with source).
+robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E `
+  /XD __pycache__ .pytest_cache storage `
   /XF "*.pyc" "*.pyo" "*.zip"
 ```
 
 Verify:
 - Source path exists in this repo
 - No `/MIR` flag
+- No `/XO` flag (full and recovery syncs must overwrite)
 - No paths from `.claude/contracts/forbidden-paths.md` in scope
 - Exit codes 0, 1, 2, 3 are all success; 4+ is error
 

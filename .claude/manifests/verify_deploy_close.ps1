@@ -131,7 +131,10 @@ if ($SkipRobocopy) {
     Add-Result "Robocopy" $true "skipped - operator confirmed ran separately"
 } else {
     Write-Host "[4/8] Running robocopy sync..."
-    robocopy "$RootDir\service\app" "C:\PZ\app" /E /XO `
+    # OVERWRITE to match source exactly. No /XO — it skips stale/mismatched files
+    # and caused the 2026-07-07 version-skew incident (production_deployment_rule.md
+    # post-incident rule 3). Never /MIR.
+    robocopy "$RootDir\service\app" "C:\PZ\app" /E `
         /XD __pycache__ .pytest_cache storage `
         /XF "*.pyc" "*.pyo" "*.zip"
     if ($LASTEXITCODE -ge 4) {

@@ -71,14 +71,18 @@ Required: counts per `.claude/contracts/test-baseline.md`. Stop if any test fail
 ## Step 5 — Safe sync to production
 
 ```powershell
-robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E /XO `
+# PRECONDITION: source is clean `main` — verify branch/status/SHA first (Step 1).
+# FULL / RECOVERY sync: OVERWRITE to match source exactly. Do NOT use /XO —
+# /XO skips stale/mismatched files and caused the 2026-07-07 version-skew incident.
+robocopy "C:\PZ-verify\service\app" "C:\PZ\app" /E `
   /XD __pycache__ .pytest_cache storage `
   /XF "*.pyc" "*.pyo" "*.zip"
+# /XO is allowed ONLY for a known-incremental top-up (dest already consistent with source).
 ```
 
 Exit codes 0–3 = success. Exit 4+ = error, stop immediately.
 
-**Never use `/MIR`. Never sync `.env`, `storage\`, `logs\`, `cloudflared\`.**
+**Never use `/MIR`. Never use `/XO` for a full or recovery sync. Never sync `.env`, `storage\`, `logs\`, `cloudflared\`.**
 
 ---
 
