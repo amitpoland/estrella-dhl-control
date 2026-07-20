@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -276,6 +277,134 @@ def _wfirma_hint(batch_id: str, a: Dict[str, Any] | None = None) -> str:
         return "n/a"
 
 
+# ── PZ-generation datetime (canonical first, legacy fallback) ────────────────
+#
+# Schema precedence, resolved once here so the UI never sees a schema version:
+#   1. audit.pz_output.generated_at   — canonical, modern runs
+#   2. audit.file_metadata.generated_at — legacy authority, pre-pz_output runs
+#   3. None                            — no PZ-generation evidence → em-dash
+#
+# The two fields record the SAME instant under DIFFERENT conventions and must
+# never share a parsing rule:
+#   - pz_output.generated_at is `time.strftime("...Z")` — Poland wall-clock with
+#     an incorrect literal Z. Passed through VERBATIM (operator ruling
+#     2026-07-19); fixing the convention is a write-path change, out of scope.
+#   - file_metadata.generated_at is `datetime.now(timezone.utc).isoformat()` —
+#     genuine UTC, so it MUST be converted to Europe/Warsaw before its calendar
+#     date is shown, or PZs generated after 22:00/23:00 UTC show the wrong day.
+#
+# The legacy branch is removable on its own: delete _legacy_pz_generated_at and
+# its call, and canonical behaviour is exactly what it was before.
+#
+# Primary authority: audit.pz_output.generated_at, written by
+# export_service._build_pz_output() from inside _write_audit(), which runs only
+# after a PZ engine run has produced BOTH the PDF and the XLSX. That block is
+# not in audit_merge.PRESERVED_KEYS, so every re-run overwrites it — the value
+# is always the LATEST successful generation for that run directory, and the
+# row and its date therefore always describe the same run.
+#
+# Deliberately NOT derived from:
+#   - top-level `timestamp` — overloaded: written at draft creation by
+#     routes_intake AND at each engine run by export_service, so on a draft or
+#     `ready` batch it is a creation moment, not a PZ-generation moment;
+#   - directory st_mtime — storage metadata, mutates on any later write;
+#   - SAD/customs dates, or any frontend clock.
+#
+# The stored string is passed through VERBATIM (operator ruling 2026-07-19).
+# _build_pz_output stamps local time with a literal "Z" suffix; correcting that
+# is a write-path change to PZ-generation persistence and is out of scope here.
+
+# Never let a missing tz database take the whole module — routes_dashboard is
+# imported by main.py at startup, and deploys robocopy app/ without a pip step,
+# so an unguarded ZoneInfo() here would turn a missing tzdata into "the service
+# does not boot". None means "system local", which astimezone(None) applies:
+# same degradation core.timezone_utils.warsaw_today() already chose, and on the
+# Warsaw-configured production host it yields the same offset anyway. Never
+# degrade to UTC — that lands on the wrong calendar day for 1–2 hours a day.
+try:
+    _WARSAW: Optional[ZoneInfo] = ZoneInfo("Europe/Warsaw")
+except Exception as _exc:                                   # ZoneInfoNotFoundError
+    log.warning(
+        "routes_dashboard: ZoneInfo('Europe/Warsaw') unavailable (%s). Legacy PZ "
+        "dates fall back to system local time. Install tzdata>=2024.1.", _exc,
+    )
+    _WARSAW = None
+
+
+def _audit_block(a: Dict[str, Any], key: str) -> Dict[str, Any]:
+    """audit[key] when it is a dict, else {} — a corrupted block must not raise."""
+    v = a.get(key)
+    return v if isinstance(v, dict) else {}
+
+
+def _pz_generated_at(a: Dict[str, Any]) -> Optional[str]:
+    """Resolve the PZ-generation datetime string for this audit, or None.
+
+    None means "this batch has no PZ-generation evidence" — callers must
+    render it as an em-dash and must never substitute another date.
+
+    Non-string or unparseable values are treated as absent rather than raising:
+    a single malformed audit.json must not 500 the whole list (same "the list
+    view must never break" rule the status hints above follow). A malformed
+    canonical value therefore falls through to the legacy authority.
+    """
+    raw = _audit_block(a, "pz_output").get("generated_at")
+    if isinstance(raw, str) and _parse_pz_generated_at(raw) is not None:
+        return raw.strip()                       # verbatim — never re-zoned
+    return _legacy_pz_generated_at(a)
+
+
+def _legacy_pz_generated_at(a: Dict[str, Any]) -> Optional[str]:
+    """Legacy authority: file_metadata.generated_at, real UTC → Europe/Warsaw.
+
+    Written in the same audit transaction as pz_output by export_service, so it
+    dates the same run; it only survives alone on batches generated before
+    pz_output existed. Returned as a Warsaw-offset ISO string so the calendar
+    date the UI reads textually is already the Warsaw date.
+    """
+    raw = _audit_block(a, "file_metadata").get("generated_at")
+    if not isinstance(raw, str):
+        return None
+    dt = _parse_pz_generated_at(raw)
+    # _WARSAW is None only when the tz database is missing; astimezone(None)
+    # then converts to system local rather than raising.
+    return dt.astimezone(_WARSAW).isoformat() if dt is not None else None
+
+
+def _parse_pz_generated_at(raw: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO stamp. Used for ORDERING, for validity, and for the legacy
+    UTC→Warsaw conversion — never to re-emit a canonical value.
+
+    Ordering must be chronological, never lexicographic. An offset-less value
+    is treated as UTC: for the legacy field that is the true convention, for the
+    canonical field it is a comparison convenience only — the canonical string
+    returned by the API is not rewritten.
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _order_by_pz_generated_desc(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Newest canonical PZ generation first; rows without a date last.
+
+    Rows with no (or unparseable) date keep their incoming relative order
+    rather than being interleaved, so the list stays stable for batches that
+    have never been through the engine.
+    """
+    dated   = [r for r in rows if _parse_pz_generated_at(r.get("pz_generated_at"))]
+    undated = [r for r in rows if not _parse_pz_generated_at(r.get("pz_generated_at"))]
+    dated.sort(key=lambda r: _parse_pz_generated_at(r["pz_generated_at"]), reverse=True)
+    return dated + undated
+
+
 def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
     t      = a.get("totals", {})
     inp    = a.get("inputs", {})
@@ -312,6 +441,9 @@ def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
         "tracking_no":           tracking_no,
         "doc_no":                doc_no,
         "timestamp":             a.get("timestamp", ""),
+        # Canonical PZ-generation datetime (see _pz_generated_at above).
+        # None when the engine has never produced PZ output for this batch.
+        "pz_generated_at":       _pz_generated_at(a),
         "status":                _derive_status(a),
         "engine_version":        a.get("engine_version"),
         "net":                   t.get("net"),
@@ -497,7 +629,15 @@ def list_batches(
     Return completed batches sorted newest-first.
 
     By default (all=false) deduplicates by (mrn, doc_no) keeping only the
-    latest run per document.  Pass ?all=1 to see every run.
+    latest run per document, then orders the deduplicated rows by canonical
+    `pz_generated_at` descending (batches with no PZ-generation evidence
+    last).  Pass ?all=1 to see every run in raw storage order.
+
+    The directory scan below stays keyed on st_mtime because it also selects
+    WHICH batches are read (`dirs[:_MAX_LIST]`); reordering it would change
+    the result set, not just its order.  Business ordering is applied to the
+    final rows instead.  The ?all=1 path is left in storage order on purpose:
+    it is the V1 raw all-runs view, and reordering it is outside this change.
     """
     if not _OUTPUTS.exists():
         return []
@@ -550,7 +690,7 @@ def list_batches(
         key    = f"{mrn}||{doc_no}" if (mrn or doc_no) else b["batch_id"]
         b["run_count"] = counts.get(key, 1)
 
-    return result
+    return _order_by_pz_generated_desc(result)
 
 
 # ── Batch detail ──────────────────────────────────────────────────────────────
