@@ -667,6 +667,17 @@
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
 
+    // GET /api/v1/carrier/dhl-account-resolution — read-only pre-flight view of
+    // the DHL account decision. Delegates to the ONE canonical authority
+    // (dhl_account_resolver). The UI must never derive a default itself.
+    // Returns { ok, billing_party, shipping_account, billing_account, choices,
+    //           choice_for, reason, message, awb_blocked } — accounts masked only.
+    resolveDhlAccounts: (params) =>
+      _get(`${BASE}/carrier/dhl-account-resolution?` +
+           new URLSearchParams(
+             Object.entries(params || {}).filter(([, v]) => v !== null && v !== undefined && v !== '')
+           ).toString()),
+
     // GET /api/v1/carrier/{batch_id}/shipment?client_ref={client_name}
     // The carrier shipment that belongs to THIS client's draft (404 when none).
     // client_ref (draft client_name) scopes resolution to one client so two

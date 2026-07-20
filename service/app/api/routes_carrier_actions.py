@@ -353,6 +353,77 @@ _DHL_SERVICES = [
 ]
 
 
+@router.get("/dhl-account-resolution",
+            summary="Resolve the DHL shipping / billing account (read-only)")
+def resolve_dhl_accounts_endpoint(
+    sender_contractor_id: Optional[str] = None,
+    receiver_contractor_id: Optional[str] = None,
+    billing_party: Optional[str] = None,
+    third_party_contractor_id: Optional[str] = None,
+    billing_account_id: Optional[int] = None,
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Pre-flight view of the account decision. Read-only — writes nothing.
+
+    Exists so the shipment page can show the operator WHICH account will be
+    used, and whether AWB creation is possible, before anything is created.
+    The frontend must never derive a default itself; it asks this endpoint,
+    which delegates to the ONE canonical authority
+    (``dhl_account_resolver.resolve_dhl_billing_account``) and returns its
+    verdict verbatim. No selection logic lives here.
+
+    ``ok`` is the AWB-eligibility signal. Account numbers are returned masked
+    only (``DHL account •••• 6789``); the full number never leaves the server.
+    """
+    from ..core.config import settings
+    from ..services.dhl_account_resolver import (
+        BILLING_SENDER,
+        resolve_dhl_billing_account,
+    )
+
+    if not sender_contractor_id:
+        return JSONResponse({
+            "ok": False,
+            "billing_party": (billing_party or BILLING_SENDER),
+            "shipping_account": None, "billing_account": None,
+            "choices": [], "choice_for": None,
+            "reason": "sender_not_selected",
+            "message": "No sender is selected for this shipment.",
+            "awb_blocked": True,
+        })
+
+    resolved = resolve_dhl_billing_account(
+        settings.storage_root / "customer_master.sqlite",
+        sender_contractor_id,
+        receiver_contractor_id,
+        billing_party,
+        third_party_contractor_id=third_party_contractor_id,
+        selected_billing_account_id=billing_account_id,
+    )
+
+    payload = resolved.to_dict()
+    # Strip the full account number from every account object — operational
+    # surfaces and logs get the masked form only.
+    for key in ("shipping_account", "billing_account"):
+        if payload.get(key):
+            payload[key].pop("account_number", None)
+    for choice in payload.get("choices", []):
+        choice.pop("account_number", None)
+
+    # Sender-paid is the only billing party wired to DHL today; receiver and
+    # third-party resolve for display but cannot execute (see the note on
+    # _RECEIVER_BILLING_NOT_ENABLED).
+    party = (billing_party or BILLING_SENDER).strip().lower()
+    if resolved.ok and party != BILLING_SENDER:
+        payload["awb_blocked"] = True
+        payload["blocked_reason"] = "billing_party_not_enabled"
+        payload["message"] = _RECEIVER_BILLING_NOT_ENABLED
+    else:
+        payload["awb_blocked"] = not resolved.ok
+
+    return JSONResponse(payload)
+
+
 @router.get("/services", summary="List available DHL Express product codes (static catalogue)")
 def list_carrier_services(_auth: None = Depends(require_api_key)) -> JSONResponse:
     """Returns the static DHL Express product code catalogue.
