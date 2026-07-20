@@ -169,7 +169,7 @@ def test_pick_proforma_series_id_returns_default_when_none():
 
 def test_invoice_gate_present_in_source():
     src = pathlib.Path(__file__).parents[1] / "app" / "api" / "routes_proforma.py"
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     assert "WFIRMA_CREATE_INVOICE_ALLOWED" in text, "Invoice gate missing from routes_proforma"
     assert "wfirma_create_invoice_allowed" in text.lower(), "Config field missing"
     # Ensure the blocking response still exists (gate not removed)
@@ -183,7 +183,7 @@ def test_no_auto_invoice_path():
     guard check and the first live invoices/add call and assert ordering.
     """
     src = pathlib.Path(__file__).parents[1] / "app" / "api" / "routes_proforma.py"
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     # Runtime guard: the if-not check, not the comment or doc reference
     gate_pos = text.find("if not settings.wfirma_create_invoice_allowed")
     # Live call: the actual HTTP POST to invoices/add (not a comment)
