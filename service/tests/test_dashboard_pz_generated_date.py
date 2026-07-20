@@ -527,6 +527,61 @@ class TestLegacyWarsawConversion:
         from zoneinfo import ZoneInfo
         assert rd._WARSAW == ZoneInfo("Europe/Warsaw")
 
+    def test_missing_tz_database_degrades_instead_of_raising(self, monkeypatch):
+        """routes_dashboard is imported by main.py at startup and deploys copy
+        app/ without a pip step, so a missing tzdata must never take the module
+        (or this resolver) down. _WARSAW=None → astimezone(None) → system local."""
+        monkeypatch.setattr(rd, "_WARSAW", None)
+        out = rd._pz_generated_at(_CORPUS_LEGACY)
+        assert out is not None and out.startswith("2026-05-08T")
+        assert rd._pz_generated_at(_CORPUS_MODERN) == "2026-05-08T11:49:28Z"
+
+
+class TestMixedEraOrdering:
+    """KNOWN LIMITATION, pinned deliberately.
+
+    The canonical stamp is Warsaw wall-clock carrying a false Z, so its sort key
+    reads 1–2h later than the instant it denotes; the legacy stamp is true UTC
+    and sorts at its real instant. Two batches from DIFFERENT eras recorded
+    within that offset window therefore order by the skew rather than by time.
+
+    This is unreachable in practice — legacy batches predate pz_output, so the
+    eras do not overlap — and it is not fixable at read time: correcting it
+    requires changing the canonical write convention. What must hold, and is
+    asserted here, is that the DISPLAYED date is right in both eras.
+    """
+
+    _CANONICAL = {"pz_output": {"generated_at": "2026-07-20T16:30:00Z"}}
+    _LEGACY    = {"file_metadata": {"generated_at": "2026-07-20T14:30:00+00:00"}}
+
+    def test_same_instant_renders_the_same_date_in_both_eras(self):
+        """16:30 Warsaw CEST == 14:30 UTC. Whatever the sort key does, the
+        operator-visible calendar date must agree across schema versions."""
+        canon  = rd._pz_generated_at(self._CANONICAL)
+        legacy = rd._pz_generated_at(self._LEGACY)
+        assert _date_part(canon) == _date_part(legacy) == "2026-07-20"
+        assert canon[11:19] == legacy[11:19] == "16:30:00"
+
+    def test_cross_era_ordering_beyond_the_offset_window_is_correct(self):
+        """Any real pair — eras are separated by months — orders by time."""
+        rows = [
+            {"batch_id": "legacy_old", "pz_generated_at": rd._pz_generated_at(self._LEGACY)},
+            {"batch_id": "canon_new",
+             "pz_generated_at": rd._pz_generated_at({"pz_output": {"generated_at": "2026-07-21T09:00:00Z"}})},
+        ]
+        assert [r["batch_id"] for r in rd._order_by_pz_generated_desc(rows)] \
+            == ["canon_new", "legacy_old"]
+
+    def test_skew_within_the_offset_window_is_bounded_by_the_offset(self):
+        """Pins the limitation itself: the canonical row wins for the same
+        instant, and the gap is exactly the Warsaw offset — nothing larger.
+        If this test starts failing, the write convention changed and the
+        ordering comment above must be revisited."""
+        canon  = rd._parse_pz_generated_at(rd._pz_generated_at(self._CANONICAL))
+        legacy = rd._parse_pz_generated_at(rd._pz_generated_at(self._LEGACY))
+        assert canon > legacy
+        assert (canon - legacy).total_seconds() == 2 * 3600   # CEST offset
+
 
 class TestLegacyMalformedValues:
 
@@ -573,6 +628,52 @@ class TestResolverReadsNoFilesystemTime:
         assert rd._pz_generated_at(_CORPUS_DRAFT) is None
 
 
+class TestLegacyEndpointIntegration:
+    """The legacy path over the REAL list_batches(), from audit.json on disk.
+
+    The canonical path already has this coverage (TestEndpointOrdering); without
+    it here the legacy branch is only ever exercised one function below the
+    endpoint, so a wiring break between disk and row would go unnoticed.
+    """
+
+    @pytest.fixture
+    def outputs(self, tmp_path, monkeypatch):
+        out = tmp_path / "outputs"
+        out.mkdir()
+        monkeypatch.setattr(rd, "_OUTPUTS", out)
+        return out
+
+    @staticmethod
+    def _write(outputs, name, audit):
+        d = outputs / name
+        d.mkdir(parents=True)
+        (d / "audit.json").write_text(json.dumps(audit), encoding="utf-8")
+
+    def test_legacy_only_batch_carries_a_warsaw_date_through_the_endpoint(self, outputs):
+        self._write(outputs, "b_legacy", dict(_CORPUS_LEGACY, doc_no="PZ/11/2026"))
+        row = rd.list_batches(all_runs=False)[0]
+        assert row["batch_id"] == _CORPUS_LEGACY["batch_id"]
+        assert row["pz_generated_at"].startswith("2026-05-08T11:49:28")
+
+    def test_legacy_midnight_batch_reports_the_warsaw_day(self, outputs):
+        self._write(outputs, "b_mid", dict(_CORPUS_LEGACY_MIDNIGHT, doc_no="PZ/12/2026"))
+        row = rd.list_batches(all_runs=False)[0]
+        assert _date_part(row["pz_generated_at"]) == "2026-05-09"
+
+    def test_no_output_batch_stays_undated_through_the_endpoint(self, outputs):
+        self._write(outputs, "b_draft", dict(_CORPUS_DRAFT, doc_no="PZ/13/2026"))
+        assert rd.list_batches(all_runs=False)[0]["pz_generated_at"] is None
+
+    def test_legacy_and_canonical_batches_coexist_and_order_by_date(self, outputs):
+        self._write(outputs, "b_legacy", dict(_CORPUS_LEGACY, doc_no="PZ/14/2026"))
+        self._write(outputs, "b_modern", dict(_CORPUS_MODERN, doc_no="PZ/15/2026"))
+        self._write(outputs, "b_draft",  dict(_CORPUS_DRAFT,  doc_no="PZ/16/2026"))
+        rows = rd.list_batches(all_runs=False)
+        assert [r["batch_id"] for r in rows][-1] == _CORPUS_DRAFT["batch_id"], \
+            "the batch with no PZ evidence must sort last"
+        assert len(rows) == 3
+
+
 class TestLegacyFallbackIsReversible:
 
     def test_legacy_branch_is_a_single_removable_call(self):
@@ -580,6 +681,16 @@ class TestLegacyFallbackIsReversible:
         canonical behaviour must not depend on it."""
         import inspect
         assert inspect.getsource(rd._pz_generated_at).count("_legacy_pz_generated_at") == 1
+
+    def test_ui_payload_exposes_no_resolver_provenance_endpoint(self, tmp_path, monkeypatch):
+        out = tmp_path / "outputs"
+        (out / "b_legacy").mkdir(parents=True)
+        (out / "b_legacy" / "audit.json").write_text(
+            json.dumps(_CORPUS_LEGACY), encoding="utf-8")
+        monkeypatch.setattr(rd, "_OUTPUTS", out)
+        row = rd.list_batches(all_runs=False)[0]
+        for leaked in ("pz_generated_source", "file_metadata", "resolver_source"):
+            assert leaked not in row
 
     def test_ui_payload_exposes_no_resolver_provenance(self):
         s = rd._batch_summary(_CORPUS_LEGACY, "d")

@@ -314,7 +314,21 @@ def _wfirma_hint(batch_id: str, a: Dict[str, Any] | None = None) -> str:
 # _build_pz_output stamps local time with a literal "Z" suffix; correcting that
 # is a write-path change to PZ-generation persistence and is out of scope here.
 
-_WARSAW = ZoneInfo("Europe/Warsaw")
+# Never let a missing tz database take the whole module — routes_dashboard is
+# imported by main.py at startup, and deploys robocopy app/ without a pip step,
+# so an unguarded ZoneInfo() here would turn a missing tzdata into "the service
+# does not boot". None means "system local", which astimezone(None) applies:
+# same degradation core.timezone_utils.warsaw_today() already chose, and on the
+# Warsaw-configured production host it yields the same offset anyway. Never
+# degrade to UTC — that lands on the wrong calendar day for 1–2 hours a day.
+try:
+    _WARSAW: Optional[ZoneInfo] = ZoneInfo("Europe/Warsaw")
+except Exception as _exc:                                   # ZoneInfoNotFoundError
+    log.warning(
+        "routes_dashboard: ZoneInfo('Europe/Warsaw') unavailable (%s). Legacy PZ "
+        "dates fall back to system local time. Install tzdata>=2024.1.", _exc,
+    )
+    _WARSAW = None
 
 
 def _audit_block(a: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -352,6 +366,8 @@ def _legacy_pz_generated_at(a: Dict[str, Any]) -> Optional[str]:
     if not isinstance(raw, str):
         return None
     dt = _parse_pz_generated_at(raw)
+    # _WARSAW is None only when the tz database is missing; astimezone(None)
+    # then converts to system local rather than raising.
     return dt.astimezone(_WARSAW).isoformat() if dt is not None else None
 
 
