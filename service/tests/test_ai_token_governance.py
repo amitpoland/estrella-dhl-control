@@ -26,7 +26,7 @@ def test_api_fallback_policy_exists() -> None:
 
 
 def test_token_budget_policy_contains_required_rules() -> None:
-    txt = (GOVERNANCE / "token-budget-policy.md").read_text()
+    txt = (GOVERNANCE / "token-budget-policy.md").read_text(encoding="utf-8")
     for marker in (
         "Rule 1", "Rule 2", "Rule 6", "Rule 7", "Rule 8", "Rule 9",
         "Rule 10", "Rule 11", "Rule 12",
@@ -92,7 +92,7 @@ def test_advisory_model_default_is_haiku(clean_settings) -> None:
 def test_advisory_route_still_no_write_verbs() -> None:
     import ast
     path = REPO_ROOT / "service" / "app" / "api" / "routes_ai_advisory.py"
-    src = ast.unparse(ast.parse(path.read_text()))
+    src = ast.unparse(ast.parse(path.read_text(encoding="utf-8")))
     for verb in ("router.post", "router.put", "router.delete", "router.patch"):
         assert verb not in src
 
@@ -139,7 +139,7 @@ def test_ai_customs_parser_max_tokens_within_policy() -> None:
     Policy T3 hard stop is 4000 tokens.
     """
     path = REPO_ROOT / "service" / "app" / "services" / "ai_customs_parser.py"
-    src = path.read_text()
+    src = path.read_text(encoding="utf-8")
     import re
     # Find all max_tokens=<int> assignments
     vals = [int(m) for m in re.findall(r"max_tokens\s*=\s*(\d+)", src)]
@@ -153,7 +153,7 @@ def test_ai_customs_parser_max_tokens_within_policy() -> None:
 # ── 8. Governance docs not referencing V1 frozen files as AI targets ─────────
 
 def test_capability_map_does_not_target_frozen_v1() -> None:
-    txt = (GOVERNANCE / "ai-capability-map.md").read_text()
+    txt = (GOVERNANCE / "ai-capability-map.md").read_text(encoding="utf-8")
     # Locate only the Phase 1 additions table — lines between the
     # "Phase 1 additions" header and the next "---" or "##" section break.
     start = txt.find("Phase 1 additions")

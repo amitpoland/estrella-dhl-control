@@ -373,7 +373,7 @@ class TestProductRegistrationScan:
         import ast, pathlib
         src = pathlib.Path(
             "app/api/routes_proforma.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert '"product_registration"' in src or "'product_registration'" in src, (
             "product_registration key not found in routes_proforma.py — "
             "Phase 2 wiring is missing from _build_preview return dict"
@@ -411,7 +411,7 @@ class TestBootstrapAuditPins:
     def test_startup_series_bootstrap_in_main(self):
         """Phase 4: main.py must call refresh_from_wfirma at startup."""
         import pathlib
-        src = pathlib.Path("app/main.py").read_text()
+        src = pathlib.Path("app/main.py").read_text(encoding="utf-8")
         assert "refresh_from_wfirma" in src, (
             "startup series bootstrap not found in main.py — "
             "Phase 4 was not implemented"
@@ -429,7 +429,7 @@ class TestBootstrapAuditPins:
     def test_governance_constants_no_io(self):
         """Phase 6: governance_constants.py must contain no I/O imports."""
         import pathlib
-        src = pathlib.Path("app/services/governance_constants.py").read_text()
+        src = pathlib.Path("app/services/governance_constants.py").read_text(encoding="utf-8")
         for forbidden in ("import sqlite3", "import requests", "import httpx",
                           "smtp", "open(", "Path("):
             assert forbidden not in src, (
@@ -441,7 +441,7 @@ class TestBootstrapAuditPins:
         """service_products use wfirma_products table (not a separate table)."""
         import pathlib
         # routes_proforma get_service_products calls wfdb.get_product(ct)
-        src = pathlib.Path("app/api/routes_proforma.py").read_text()
+        src = pathlib.Path("app/api/routes_proforma.py").read_text(encoding="utf-8")
         assert "wfdb.get_product" in src, (
             "service products should be looked up via wfdb.get_product — "
             "if this changed, update the bootstrap audit"
@@ -450,7 +450,7 @@ class TestBootstrapAuditPins:
     def test_pick_series_id_reads_from_customer_master(self):
         """Series IDs must come from customer_master, not hardcoded in routes."""
         import pathlib
-        src = pathlib.Path("app/api/routes_proforma.py").read_text()
+        src = pathlib.Path("app/api/routes_proforma.py").read_text(encoding="utf-8")
         assert "pick_proforma_series_id" in src, (
             "pick_proforma_series_id not used in routes_proforma — "
             "series selection may be broken"
@@ -465,7 +465,7 @@ class TestBootstrapAuditPins:
         tool_files = glob.glob("app/tools/**/*.py", recursive=True)
         non_tool_app = [f for f in app_files if f not in tool_files]
         for fpath in non_tool_app:
-            src = pathlib.Path(fpath).read_text()
+            src = pathlib.Path(fpath).read_text(encoding="utf-8")
             # Series IDs should NOT be hardcoded in non-tool app files
             for sid in ("15827088", "15827921", "15827163"):
                 # Allow in comments / docstrings (lines starting with #)
