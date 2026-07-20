@@ -575,8 +575,13 @@ class TestMixedEraOrdering:
     def test_skew_within_the_offset_window_is_bounded_by_the_offset(self):
         """Pins the limitation itself: the canonical row wins for the same
         instant, and the gap is exactly the Warsaw offset — nothing larger.
-        If this test starts failing, the write convention changed and the
-        ordering comment above must be revisited."""
+
+        This asserts a known-wrong ordering on purpose, so read the failure
+        correctly: if it fails because `canon > legacy` no longer holds, the
+        canonical write convention was FIXED (the engine now stamps true UTC
+        instead of Warsaw wall-clock with a false Z). That is the desired end
+        state — DELETE this test and TestMixedEraOrdering's skew wording rather
+        than restoring the old behaviour."""
         canon  = rd._parse_pz_generated_at(rd._pz_generated_at(self._CANONICAL))
         legacy = rd._parse_pz_generated_at(rd._pz_generated_at(self._LEGACY))
         assert canon > legacy
@@ -664,14 +669,24 @@ class TestLegacyEndpointIntegration:
         self._write(outputs, "b_draft", dict(_CORPUS_DRAFT, doc_no="PZ/13/2026"))
         assert rd.list_batches(all_runs=False)[0]["pz_generated_at"] is None
 
-    def test_legacy_and_canonical_batches_coexist_and_order_by_date(self, outputs):
+    def test_legacy_and_canonical_batches_coexist_with_the_documented_skew(self, outputs):
+        """Both corpus fixtures denote the SAME instant, so this pins the known
+        mixed-era skew end to end rather than a chronological order: the
+        canonical row leads because its false Z reads 2h late (see
+        TestMixedEraOrdering). Both still render 08.05.2026, and the batch with
+        no PZ evidence stays last."""
         self._write(outputs, "b_legacy", dict(_CORPUS_LEGACY, doc_no="PZ/14/2026"))
         self._write(outputs, "b_modern", dict(_CORPUS_MODERN, doc_no="PZ/15/2026"))
         self._write(outputs, "b_draft",  dict(_CORPUS_DRAFT,  doc_no="PZ/16/2026"))
         rows = rd.list_batches(all_runs=False)
-        assert [r["batch_id"] for r in rows][-1] == _CORPUS_DRAFT["batch_id"], \
-            "the batch with no PZ evidence must sort last"
-        assert len(rows) == 3
+        assert [r["batch_id"] for r in rows] == [
+            _CORPUS_MODERN["batch_id"],     # canonical, sort key 11:49Z (false Z)
+            _CORPUS_LEGACY["batch_id"],     # same instant, sort key 09:49Z (true)
+            _CORPUS_DRAFT["batch_id"],      # no PZ evidence → always last
+        ]
+        assert _date_part(rows[0]["pz_generated_at"]) \
+            == _date_part(rows[1]["pz_generated_at"]) == "2026-05-08"
+        assert rows[2]["pz_generated_at"] is None
 
 
 class TestLegacyFallbackIsReversible:
