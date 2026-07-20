@@ -277,8 +277,11 @@ def test_route_idempotent_no_side_effects(client: TestClient, tmp_path, monkeypa
 import re as _re_ui
 from pathlib import Path as _Path_ui
 
-_DASHBOARD = _Path_ui(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
+# Resolve from this file, not an absolute path from one contributor's laptop
+# — the hardcoded /Users/... path made every test below fail on any other
+# machine with FileNotFoundError.
+_DASHBOARD = (
+    _Path_ui(__file__).resolve().parent.parent / "app" / "static" / "dashboard.html"
 )
 
 

@@ -240,6 +240,8 @@ def update_tracking_for_batch(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Could not read audit: {exc}")
 
+        now = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
+
         # ── Patch tracking block ──────────────────────────────────────────────
         tr = audit.setdefault("tracking", {})
         tr.update({
@@ -249,10 +251,15 @@ def update_tracking_for_batch(
             "last_location":            body.location,
             "last_update":              body.event_time,
             "source":                   body.source,
+            # This endpoint is never the live DHL API, so the per-batch status
+            # is "manual" whoever submitted it. Distinct from get_tracking_mode(),
+            # which reports credential health (disabled / failed / active).
+            "api_status":               "manual",
+            "updated_at":               now,
             "available":                True,
             "cowork_result_received":   True,
             "cowork_tracking_required": False,
-            "cowork_result_at":         _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "cowork_result_at":         now,
         })
         if body.note:
             tr["cowork_result_note"] = body.note
@@ -265,9 +272,16 @@ def update_tracking_for_batch(
                 if (prop.get("proposal_id") == body.proposal_id
                         and prop.get("type") == "tracking_lookup"):
                     prop["status"] = "done"
-                    prop["done_at"] = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    prop["done_at"] = now
                     prop["done_source"] = body.source
                     break
+
+        # ── Advance the workflow ──────────────────────────────────────────────
+        # A human-supplied update satisfies the tracking step regardless of
+        # which actor submitted it, so the batch stops asking for a lookup.
+        audit["tracking_complete"]        = True
+        audit["tracking_complete_source"] = body.source
+        audit["tracking_complete_at"]     = now
 
         write_json_atomic(audit_path, audit)
 
