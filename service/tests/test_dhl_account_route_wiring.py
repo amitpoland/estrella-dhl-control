@@ -224,8 +224,13 @@ def test_route_does_not_reimplement_resolution():
 
 
 def test_adapter_does_not_choose_accounts():
-    """The DHL adapter only transmits the resolved account."""
-    src = (SERVICE_DIR / "app" / "services" / "carrier" / "adapters" / "live.py").read_text(encoding="utf-8")
+    """The DHL adapter only transmits the resolved account.
+
+    Comment lines are stripped first: the adapter may *document* which
+    authority resolved the account, it just must not call it.
+    """
+    raw = (SERVICE_DIR / "app" / "services" / "carrier" / "adapters" / "live.py").read_text(encoding="utf-8")
+    src = "\n".join(ln for ln in raw.splitlines() if not ln.strip().startswith("#"))
     assert "resolve_dhl_billing_account" not in src
     assert "client_carrier_accounts" not in src, \
         "the adapter must never read the Client Master account store"

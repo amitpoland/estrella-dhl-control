@@ -228,7 +228,13 @@ def test_no_parallel_state_store():
 
 
 def test_adapter_still_does_not_resolve():
-    src = _read(ADAPTER)
+    """The adapter may document the authority; it must not call it.
+
+    ``_code`` strips JSX ``//`` comments; the adapter is Python, so strip
+    ``#`` lines here.
+    """
+    src = "\n".join(ln for ln in _read(ADAPTER).splitlines()
+                    if not ln.strip().startswith("#"))
     assert "resolve_dhl_billing_account" not in src
     assert "client_carrier_accounts" not in src
 
