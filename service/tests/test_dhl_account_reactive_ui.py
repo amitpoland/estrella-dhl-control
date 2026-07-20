@@ -249,3 +249,78 @@ def test_receiver_paid_still_blocked():
     src = _read(ROUTE)
     assert "DHL_BILLING_PARTY_NOT_ENABLED" in src
     assert "billing_party_not_enabled" in src
+
+
+# =============================================================================
+# Mount — the panel must actually reach the operator (no dark code)
+# =============================================================================
+
+MODAL = V2 / "proforma-detail.jsx"
+
+
+def _modal_fn() -> str:
+    """Just the AwbGenerateModal function body."""
+    code = _code(MODAL)
+    start = code.index("function AwbGenerateModal(")
+    return code[start:start + 60000]
+
+
+class TestAwbModalMount:
+
+    def test_hook_is_used_in_the_modal(self):
+        assert "useDhlAccountResolution({" in _modal_fn()
+
+    def test_panel_is_rendered_in_the_modal(self):
+        assert "<DhlAccountPanel" in _modal_fn()
+
+    def test_modal_keeps_no_parallel_account_state(self):
+        """No second source of truth for the account decision."""
+        body = _modal_fn()
+        for banned in ("useState(null); // account", "setBillingParty(",
+                       "billingAccountId, setBillingAccountId"):
+            assert banned not in body, f"modal must not own account state ({banned!r})"
+
+    def test_modal_does_not_derive_a_default(self):
+        body = _modal_fn()
+        assert "is_default" not in body
+        assert "resolve_dhl_billing_account" not in body
+
+    def test_submit_button_gated_on_server_verdict(self):
+        body = _modal_fn()
+        assert "dhlBlocksSubmit" in body
+        m = re.search(r'data-testid="awb-submit-btn"', body)
+        assert m
+        btn = body[max(0, m.start() - 300):m.start()]
+        assert "dhlBlocksSubmit" in btn, "AWB button must honour the server verdict"
+
+    def test_gate_only_applies_when_sender_is_known(self):
+        """Without sender context the backend uses its legacy path — the panel
+        must not block a flow that works today."""
+        body = _modal_fn()
+        assert "dhlSenderKnown && dhlAccounts.awbBlocked" in body
+
+    def test_payload_extends_existing_contract(self):
+        body = _modal_fn()
+        assert "dhlAccounts.payloadFields" in body
+        assert "createCarrierShipment" in body
+
+    def test_payload_omitted_when_sender_unknown(self):
+        """Criterion 10 — the existing sender-paid payload stays unchanged."""
+        body = _modal_fn()
+        assert "...(dhlSenderKnown ? dhlAccounts.payloadFields : {})" in body
+
+    def test_panel_hidden_when_sender_unknown(self):
+        body = _modal_fn()
+        assert "dhlSenderKnown && (" in body
+
+    def test_modal_unmounts_on_close(self):
+        """Criterion 9 — no stale local state survives close/reopen."""
+        code = _code(MODAL)
+        assert "{showAwbModal && batchId && (() => {" in code, \
+            "modal must be conditionally mounted so its state is destroyed on close"
+
+    def test_no_full_account_number_in_modal(self):
+        assert "account_number" not in _modal_fn()
+
+    def test_prefill_carries_sender_contractor_id(self):
+        assert "sender_contractor_id:" in _code(MODAL)
