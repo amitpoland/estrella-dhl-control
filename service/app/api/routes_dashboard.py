@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -276,9 +277,26 @@ def _wfirma_hint(batch_id: str, a: Dict[str, Any] | None = None) -> str:
         return "n/a"
 
 
-# ── Canonical PZ-generation datetime ─────────────────────────────────────────
+# ── PZ-generation datetime (canonical first, legacy fallback) ────────────────
 #
-# Single authority: audit.pz_output.generated_at, written by
+# Schema precedence, resolved once here so the UI never sees a schema version:
+#   1. audit.pz_output.generated_at   — canonical, modern runs
+#   2. audit.file_metadata.generated_at — legacy authority, pre-pz_output runs
+#   3. None                            — no PZ-generation evidence → em-dash
+#
+# The two fields record the SAME instant under DIFFERENT conventions and must
+# never share a parsing rule:
+#   - pz_output.generated_at is `time.strftime("...Z")` — Poland wall-clock with
+#     an incorrect literal Z. Passed through VERBATIM (operator ruling
+#     2026-07-19); fixing the convention is a write-path change, out of scope.
+#   - file_metadata.generated_at is `datetime.now(timezone.utc).isoformat()` —
+#     genuine UTC, so it MUST be converted to Europe/Warsaw before its calendar
+#     date is shown, or PZs generated after 22:00/23:00 UTC show the wrong day.
+#
+# The legacy branch is removable on its own: delete _legacy_pz_generated_at and
+# its call, and canonical behaviour is exactly what it was before.
+#
+# Primary authority: audit.pz_output.generated_at, written by
 # export_service._build_pz_output() from inside _write_audit(), which runs only
 # after a PZ engine run has produced BOTH the PDF and the XLSX. That block is
 # not in audit_merge.PRESERVED_KEYS, so every re-run overwrites it — the value
@@ -296,27 +314,54 @@ def _wfirma_hint(batch_id: str, a: Dict[str, Any] | None = None) -> str:
 # _build_pz_output stamps local time with a literal "Z" suffix; correcting that
 # is a write-path change to PZ-generation persistence and is out of scope here.
 
+_WARSAW = ZoneInfo("Europe/Warsaw")
+
+
+def _audit_block(a: Dict[str, Any], key: str) -> Dict[str, Any]:
+    """audit[key] when it is a dict, else {} — a corrupted block must not raise."""
+    v = a.get(key)
+    return v if isinstance(v, dict) else {}
+
+
 def _pz_generated_at(a: Dict[str, Any]) -> Optional[str]:
-    """Return the canonical PZ-generation datetime string, or None.
+    """Resolve the PZ-generation datetime string for this audit, or None.
 
     None means "this batch has no PZ-generation evidence" — callers must
     render it as an em-dash and must never substitute another date.
 
-    Non-string values are treated as absent rather than raising: a single
-    malformed audit.json must not 500 the whole list (same "the list view must
-    never break" rule the status hints above follow).
+    Non-string or unparseable values are treated as absent rather than raising:
+    a single malformed audit.json must not 500 the whole list (same "the list
+    view must never break" rule the status hints above follow). A malformed
+    canonical value therefore falls through to the legacy authority.
     """
-    raw = (a.get("pz_output") or {}).get("generated_at")
+    raw = _audit_block(a, "pz_output").get("generated_at")
+    if isinstance(raw, str) and _parse_pz_generated_at(raw) is not None:
+        return raw.strip()                       # verbatim — never re-zoned
+    return _legacy_pz_generated_at(a)
+
+
+def _legacy_pz_generated_at(a: Dict[str, Any]) -> Optional[str]:
+    """Legacy authority: file_metadata.generated_at, real UTC → Europe/Warsaw.
+
+    Written in the same audit transaction as pz_output by export_service, so it
+    dates the same run; it only survives alone on batches generated before
+    pz_output existed. Returned as a Warsaw-offset ISO string so the calendar
+    date the UI reads textually is already the Warsaw date.
+    """
+    raw = _audit_block(a, "file_metadata").get("generated_at")
     if not isinstance(raw, str):
         return None
-    return raw.strip() or None
+    dt = _parse_pz_generated_at(raw)
+    return dt.astimezone(_WARSAW).isoformat() if dt is not None else None
 
 
 def _parse_pz_generated_at(raw: Optional[str]) -> Optional[datetime]:
-    """Parse the canonical string for ORDERING ONLY. Never used to re-emit.
+    """Parse an ISO stamp. Used for ORDERING, for validity, and for the legacy
+    UTC→Warsaw conversion — never to re-emit a canonical value.
 
-    Ordering must be chronological, never lexicographic. A value that carries
-    no offset is treated as UTC purely so the comparison is total; the value
+    Ordering must be chronological, never lexicographic. An offset-less value
+    is treated as UTC: for the legacy field that is the true convention, for the
+    canonical field it is a comparison convenience only — the canonical string
     returned by the API is not rewritten.
     """
     if not raw:

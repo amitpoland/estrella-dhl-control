@@ -50,6 +50,10 @@ function _pzDate(v) {
   // re-zone it and could shift the displayed day for PZs generated near
   // midnight. Reading the components shows the day exactly as recorded.
   //
+  // Legacy batches (no pz_output) arrive already converted to Europe/Warsaw by
+  // the backend resolver, so reading the components is correct for them too —
+  // the UI never learns which authority a row came from.
+  //
   // Never fabricates: anything absent or unparseable renders as an em-dash.
   if (typeof v !== 'string') return '—';
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v.trim());

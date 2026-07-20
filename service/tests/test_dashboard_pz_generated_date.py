@@ -1,10 +1,16 @@
 """
 test_dashboard_pz_generated_date.py — PZ Generated date on the Shipments page.
 
-Pins the canonical PZ-generation date authority end to end:
+Pins the PZ-generation date authorities end to end. Schema precedence:
 
-    export_service._build_pz_output()  →  audit.pz_output.generated_at
-        →  _batch_summary()["pz_generated_at"]
+    audit.pz_output.generated_at        canonical, emitted verbatim
+      ↓ absent / malformed
+    audit.file_metadata.generated_at    legacy, real UTC → Europe/Warsaw
+      ↓ absent / malformed
+    None                                em-dash
+
+    export_service._build_pz_output() / file_version_metadata()
+        →  _pz_generated_at()  →  _batch_summary()["pz_generated_at"]
         →  GET /api/v1/dashboard/batches
         →  DashboardPage "PZ Generated" column
 
@@ -24,6 +30,13 @@ Frontend (source-grep):
       / the browser clock
  11.  Date sorting uses datetime semantics, not lexicographic display strings
  12.  The no-write-action contract still holds
+
+Legacy fallback (unit, sanitized corpus shapes):
+ 13.  Canonical stays primary when both fields exist
+ 14.  Legacy UTC converts to Warsaw (DST, standard time, midnight crossing)
+ 15.  Malformed canonical falls back; malformed legacy and both-malformed → None
+ 16.  The resolver never reads a filesystem timestamp
+ 17.  The fallback is removable and leaks no provenance into the payload
 
 Authority notes:
   - `pz_output` is absent from audit_merge.PRESERVED_KEYS, so each engine
@@ -388,3 +401,188 @@ class TestReadOnlyContractIntact:
         for forbidden in ("Reprocess", "Regenerate", "Recheck", "Archive",
                           "Delete", "Resend", "Edit Draft"):
             assert forbidden not in code
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 13–17. Legacy authority fallback (file_metadata.generated_at, real UTC)
+#
+# Sanitized corpus shapes — synthetic ids only, no production values.
+# Precedence under test:  pz_output → file_metadata (UTC→Warsaw) → None
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Modern successful run: both fields present, canonical wins.
+_CORPUS_MODERN = {
+    "batch_id": "SHIPMENT_0000000001_2026-05_aaa",
+    "status": "success",
+    "pz_output": {"pdf": "pz.pdf", "xlsx": "pz.xlsx", "generated_at": "2026-05-08T11:49:28Z"},
+    "file_metadata": {"batch_id": "SHIPMENT_0000000001_2026-05_aaa",
+                      "row_schema_version": "v2", "generator_version": "v1.4",
+                      "generated_at": "2026-05-08T09:49:28.123456+00:00"},
+    "totals": {"net": 1.0, "gross": 1.0, "duty": 0.0}, "inputs": {},
+}
+
+# Legacy successful run: artifacts generated before pz_output existed.
+_CORPUS_LEGACY = {
+    "batch_id": "SHIPMENT_0000000002_2026-05_bbb",
+    "status": "success",
+    "pz_pdf_filename": "pz.pdf",
+    "file_metadata": {"batch_id": "SHIPMENT_0000000002_2026-05_bbb",
+                      "row_schema_version": "v1", "generator_version": "v1.1",
+                      "generated_at": "2026-05-08T09:49:28+00:00"},
+    "totals": {"net": 1.0, "gross": 1.0, "duty": 0.0}, "inputs": {},
+}
+
+# Legacy partial/blocked run that still produced artifacts.
+_CORPUS_LEGACY_PARTIAL = {
+    "batch_id": "SHIPMENT_0000000003_2026-01_ccc",
+    "status": "failed",
+    "pz_pdf_filename": "pz.pdf",
+    "file_metadata": {"generated_at": "2026-01-15T10:00:00+00:00"},
+    "totals": {}, "inputs": {},
+}
+
+# Legacy run whose UTC stamp falls on the next Warsaw day.
+_CORPUS_LEGACY_MIDNIGHT = {
+    "batch_id": "SHIPMENT_0000000004_2026-05_ddd",
+    "status": "success",
+    "file_metadata": {"generated_at": "2026-05-08T22:30:00+00:00"},
+    "totals": {}, "inputs": {},
+}
+
+# Genuine no-output draft: neither authority exists.
+_CORPUS_DRAFT = {
+    "batch_id": "SHIPMENT_0000000005_2026-06_eee",
+    "status": "ready",
+    "timestamp": "2026-06-01T09:00:00",
+    "totals": {}, "inputs": {},
+}
+
+# Genuine no-output manual-review batch: neither authority exists.
+_CORPUS_MANUAL_REVIEW = {
+    "batch_id": "SHIPMENT_0000000006_2026-06_fff",
+    "status": "manual_review",
+    "timestamp": "2026-06-02T09:00:00",
+    "manual_review_reason": "synthetic reason",
+    "totals": {}, "inputs": {},
+}
+
+
+def _date_part(v):
+    return v[:10] if isinstance(v, str) else v
+
+
+class TestLegacyFallbackPrecedence:
+
+    def test_canonical_wins_when_both_fields_exist(self):
+        """Canonical stays primary and verbatim — the legacy stamp is 09:49Z,
+        which renders as 11:49 Warsaw; the canonical string must still win."""
+        assert rd._pz_generated_at(_CORPUS_MODERN) == "2026-05-08T11:49:28Z"
+
+    def test_canonical_only_is_unchanged_by_the_fallback(self):
+        a = dict(_CORPUS_MODERN)
+        a.pop("file_metadata")
+        assert rd._pz_generated_at(a) == "2026-05-08T11:49:28Z"
+
+    def test_legacy_generated_batch_uses_file_metadata(self):
+        assert _date_part(rd._pz_generated_at(_CORPUS_LEGACY)) == "2026-05-08"
+
+    def test_legacy_partial_run_with_artifacts_still_resolves(self):
+        assert _date_part(rd._pz_generated_at(_CORPUS_LEGACY_PARTIAL)) == "2026-01-15"
+
+    def test_draft_with_neither_authority_is_none(self):
+        assert rd._pz_generated_at(_CORPUS_DRAFT) is None
+        assert rd._batch_summary(_CORPUS_DRAFT, "d")["pz_generated_at"] is None
+
+    def test_manual_review_with_neither_authority_is_none(self):
+        assert rd._pz_generated_at(_CORPUS_MANUAL_REVIEW) is None
+        assert rd._batch_summary(_CORPUS_MANUAL_REVIEW, "d")["pz_generated_at"] is None
+
+
+class TestLegacyWarsawConversion:
+
+    def test_daylight_saving_offset(self):
+        """May → CEST (+02:00): 09:49:28Z is 11:49:28 Warsaw."""
+        out = rd._pz_generated_at(_CORPUS_LEGACY)
+        assert out.startswith("2026-05-08T11:49:28")
+        assert out.endswith("+02:00")
+
+    def test_standard_time_offset(self):
+        """January → CET (+01:00): 10:00Z is 11:00 Warsaw."""
+        out = rd._pz_generated_at(_CORPUS_LEGACY_PARTIAL)
+        assert out.startswith("2026-01-15T11:00:00")
+        assert out.endswith("+01:00")
+
+    def test_utc_evening_crosses_into_the_next_warsaw_day(self):
+        """22:30Z on 08.05 is 00:30 on 09.05 in Warsaw — the operator-visible
+        calendar date must be the Warsaw one, not the UTC one."""
+        out = rd._pz_generated_at(_CORPUS_LEGACY_MIDNIGHT)
+        assert _date_part(out) == "2026-05-09"
+        assert out.startswith("2026-05-09T00:30:00")
+
+    def test_naive_legacy_value_is_read_as_utc(self):
+        a = {"file_metadata": {"generated_at": "2026-05-08T22:30:00"}}
+        assert _date_part(rd._pz_generated_at(a)) == "2026-05-09"
+
+    def test_conversion_uses_the_warsaw_zone_object(self):
+        from zoneinfo import ZoneInfo
+        assert rd._WARSAW == ZoneInfo("Europe/Warsaw")
+
+
+class TestLegacyMalformedValues:
+
+    def test_malformed_canonical_falls_back_to_legacy(self):
+        a = {"pz_output": {"generated_at": "not-a-date"},
+             "file_metadata": {"generated_at": "2026-05-08T09:49:28+00:00"}}
+        assert _date_part(rd._pz_generated_at(a)) == "2026-05-08"
+
+    def test_non_string_canonical_falls_back_to_legacy(self):
+        a = {"pz_output": {"generated_at": 20260508},
+             "file_metadata": {"generated_at": "2026-05-08T09:49:28+00:00"}}
+        assert _date_part(rd._pz_generated_at(a)) == "2026-05-08"
+
+    def test_malformed_legacy_without_canonical_is_none(self):
+        for bad in ("not-a-date", "", "   ", 20260508, 3.14, [], {}, None):
+            assert rd._pz_generated_at({"file_metadata": {"generated_at": bad}}) is None
+
+    def test_both_values_malformed_is_none(self):
+        a = {"pz_output": {"generated_at": "junk"},
+             "file_metadata": {"generated_at": "junk-too"}}
+        assert rd._pz_generated_at(a) is None
+
+    def test_malformed_shapes_do_not_raise(self):
+        for a in ({"file_metadata": None}, {"file_metadata": []},
+                  {"file_metadata": "x"}, {"pz_output": None, "file_metadata": {}}):
+            assert rd._pz_generated_at(a) is None
+
+
+class TestResolverReadsNoFilesystemTime:
+
+    def test_resolver_source_touches_no_filesystem_timestamp(self):
+        import inspect
+        src = (inspect.getsource(rd._pz_generated_at)
+               + inspect.getsource(rd._legacy_pz_generated_at))
+        for token in ("st_mtime", "st_ctime", "getmtime", "stat(", "Path(", "os."):
+            assert token not in src, f"resolver must not read {token}"
+
+    def test_resolver_does_not_touch_disk(self, monkeypatch):
+        def _boom(*a, **k):
+            raise AssertionError("resolver accessed the filesystem")
+        monkeypatch.setattr(os, "stat", _boom)
+        monkeypatch.setattr(Path, "stat", _boom)
+        assert _date_part(rd._pz_generated_at(_CORPUS_LEGACY)) == "2026-05-08"
+        assert rd._pz_generated_at(_CORPUS_DRAFT) is None
+
+
+class TestLegacyFallbackIsReversible:
+
+    def test_legacy_branch_is_a_single_removable_call(self):
+        """Rollback = delete _legacy_pz_generated_at and its one call site;
+        canonical behaviour must not depend on it."""
+        import inspect
+        assert inspect.getsource(rd._pz_generated_at).count("_legacy_pz_generated_at") == 1
+
+    def test_ui_payload_exposes_no_resolver_provenance(self):
+        s = rd._batch_summary(_CORPUS_LEGACY, "d")
+        for leaked in ("pz_generated_source", "pz_date_source", "file_metadata",
+                       "resolver_source", "pz_generated_confidence"):
+            assert leaked not in s
