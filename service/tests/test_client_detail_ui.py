@@ -153,7 +153,11 @@ class TestV1SectionParity:
     @pytest.mark.parametrize("heading", [
         'Company / Identity', 'Billing address', 'Contact', 'VAT / Tax numbers', 'Notes',
         'Bill-to address (from Client Master)', 'Ship-to address',
-        'Saved delivery addresses', 'Carrier accounts',
+        'Saved delivery addresses',
+        # Was V1's 'Carrier accounts'. Operator ruling 2026-07-20 renamed this
+        # section to 'DHL Express accounts' as part of the Carrier tab label
+        # work; the newer ruling supersedes the V1 heading here.
+        'DHL Express accounts',
         'KYC Status', 'KUKE Insurance', 'Credit',
         'Document defaults', 'Payment defaults',
     ])

@@ -89,6 +89,25 @@ const _cdDefaultPillStyle = {
   fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
 };
 
+// Business label for the stored payment_type value. Display only — the stored
+// values (shipper / receiver / third_party) are never rewritten.
+const _CD_BILLING_ROLE_LABELS = {
+  shipper: 'Sender',
+  receiver: 'Receiver',
+  third_party: 'Third party',
+};
+function _cdBillingRoleLabel(paymentType) {
+  if (!paymentType) return '';
+  return _CD_BILLING_ROLE_LABELS[paymentType] || paymentType;
+}
+
+const _cdInactivePillStyle = {
+  fontSize: 9, padding: '1px 5px',
+  background: 'var(--bg-subtle)', color: 'var(--text-3)',
+  border: '1px solid var(--border)', borderRadius: 8,
+  fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+};
+
 // ── Main modal ──────────────────────────────────────────────────────────
 function ClientDetailModal({ clientKey, onClose, onSaved }) {
   const [tab, setTab] = React.useState('basic');
@@ -801,7 +820,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
           {!loading && !error && tab === 'carriers' && (
             <div data-testid="cd-panel-carriers">
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <div style={_cdSubHeadStyle}>Carrier accounts</div>
+                <div style={_cdSubHeadStyle}>DHL Express accounts</div>
                 <button data-testid="cd-carriers-add-btn"
                   onClick={() => setCarrierForm({ carrier: 'dhl', account_number: '',
                     account_name: '', payment_type: '', service_level: '', is_default: false })}
@@ -825,11 +844,30 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                         <span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--text-2)' }}>
                           {acct.account_number}
                         </span>
-                        {acct.is_default && <span style={_cdDefaultPillStyle}>default</span>}
+                        {acct.is_default && (
+                          <span style={_cdDefaultPillStyle}
+                            data-testid={'cd-carriers-acct-' + acct.id + '-default'}>
+                            default shipping
+                          </span>
+                        )}
+                        {/* Active is READ-ONLY here on purpose. update_account()
+                            writes carrier / account_number / account_name /
+                            payment_type / service_level / is_default only — the
+                            `active` column is owned by the delete (soft-delete)
+                            and restore endpoints. An editable Active control
+                            would silently discard the operator's click. */}
+                        {acct.active === false && (
+                          <span style={_cdInactivePillStyle}
+                            data-testid={'cd-carriers-acct-' + acct.id + '-inactive'}>
+                            inactive
+                          </span>
+                        )}
                       </div>
                       {(acct.account_name || acct.payment_type) && (
-                        <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 2 }}>
-                          {[acct.account_name, acct.payment_type].filter(Boolean).join(' · ')}
+                        <div style={{ fontSize: 10, color: 'var(--text-2)', marginTop: 2 }}
+                          data-testid={'cd-carriers-acct-' + acct.id + '-meta'}>
+                          {[acct.account_name, _cdBillingRoleLabel(acct.payment_type)]
+                            .filter(Boolean).join(' · ')}
                         </div>
                       )}
                     </div>
@@ -882,12 +920,18 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                         style={_cdInputStyle} />
                     </label>
                     <label style={_cdLabelStyle}>
-                      <span style={_cdLabelTextStyle}>Payment type</span>
-                      <select value={carrierForm.payment_type || ''}
+                      <span style={_cdLabelTextStyle}>Billing role</span>
+                      {/* Business labels only — the STORED payment_type values
+                          (shipper / receiver / third_party) are unchanged.
+                          Billing role is the account's billing function; it is a
+                          separate concept from "Default shipping account"
+                          (is_default) and neither infers the other. */}
+                      <select data-testid="cd-carriers-form-billing-role"
+                        value={carrierForm.payment_type || ''}
                         onChange={e => setCarrierForm(f => ({ ...f, payment_type: e.target.value }))}
                         style={{ ..._cdInputStyle, padding: '4px 8px' }}>
                         <option value="">— none —</option>
-                        <option value="shipper">Shipper</option>
+                        <option value="shipper">Sender</option>
                         <option value="receiver">Receiver</option>
                         <option value="third_party">Third party</option>
                       </select>
@@ -901,7 +945,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, gridColumn: '1 / -1' }}>
                       <input type="checkbox" checked={!!carrierForm.is_default}
                         onChange={e => setCarrierForm(f => ({ ...f, is_default: e.target.checked }))} />
-                      Set as default carrier account
+                      Default shipping account
                     </label>
                   </div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
