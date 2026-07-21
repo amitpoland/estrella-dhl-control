@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -150,7 +151,27 @@ def _runtime_path(entry: _Entry) -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _is_production(path: Path) -> bool:
+    """True if `path` lives inside the production runtime tree.
+
+    Matches C:\\PZ and C:\\PZ\\... but NOT C:\\PZ-main, C:\\PZ-verify, C:\\PZ-releases,
+    C:\\PZ-backups -- the same token rule pz-deploy-guard.py applies.
+    """
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = str(path)
+    return re.match(r"(?i)^c:[\\/]pz(?![\w\-])", resolved) is not None
+
+
 def _is_forbidden(path: Path) -> bool:
+    # The production runtime tree is NEVER a sync destination. Deployment into
+    # production has exactly one authority: .claude/deploy/Deploy-PZ.ps1, which is
+    # gated by a signed operator authorization, takes a lock, creates a
+    # manifest-verified backup, and is deny-listed for agents by pz-deploy-guard.py.
+    # This tool is a diagnostic; it must never become a second deployment path.
+    if _is_production(path):
+        return True
     parts = path.parts
     for forbidden in _FORBIDDEN_DEST_PREFIXES:
         if forbidden in parts:
