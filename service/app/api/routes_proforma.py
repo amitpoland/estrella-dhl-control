@@ -5164,6 +5164,314 @@ def get_draft_reconciliation(draft_id: int) -> JSONResponse:
     return JSONResponse(report)
 
 
+# ── 2B: manual wFirma document linking (resolve preview + confirm write) ───────
+# Extends A2 read-only reconciliation with an operator-driven link of an EXISTING
+# wFirma document to a proforma-derived draft. NO wFirma write anywhere: resolve is
+# read-only; confirm persists only the LOCAL remote-reference onto proforma_drafts.
+
+class _ResolveWfirmaDocumentReq(_BaseModel):
+    """Body for the READ-ONLY preview. document_type currently "invoice" only
+    (A1 compares an invoice plan vs invoice XML; proforma-document linking is a
+    separate approved slice). Exactly ONE of wfirma_id / full_number."""
+    document_type: str = "invoice"
+    wfirma_id:     Optional[str] = ""
+    full_number:   Optional[str] = ""
+
+
+class _ConfirmWfirmaLinkReq(_BaseModel):
+    """Body for the WRITE confirm. Echoes the resolve identifier + the opaque
+    expected_preview_hash returned by the preview step."""
+    document_type:         str = "invoice"
+    wfirma_id:             Optional[str] = ""
+    full_number:           Optional[str] = ""
+    expected_preview_hash: str = ""
+
+
+# document_type allowlist for 2B (W-4): invoice only in this release.
+_MANUAL_LINK_DOC_TYPES = ("invoice",)
+
+
+def _resolve_manual_link_remote_id(document_type: str, wfirma_id: str,
+                                   full_number: str):
+    """Validate + resolve the operator-supplied remote document identifier.
+
+    Returns (remote_id, resolved_fullnumber). Raises HTTPException on any
+    failure. Read-only (find_invoices_by_fullnumber issues GET only). W-6/W-7:
+    exactly-one-of, numeric-id (path-injection defense), 0/many → refused.
+    """
+    wid = (wfirma_id or "").strip()
+    num = (full_number or "").strip()
+    if wid and num:
+        raise HTTPException(status_code=422,
+            detail="send either wfirma_id or full_number — not both")
+    if not wid and not num:
+        raise HTTPException(status_code=422,
+            detail="one of wfirma_id or full_number is required")
+    if wid:
+        if not wid.isdigit():
+            raise HTTPException(status_code=422,
+                detail=f"wfirma_id {wid!r} is not a numeric wFirma id")
+        return wid, ""
+    # full_number → immutable id via a read-only lookup (must be unique)
+    try:
+        matches = wfirma_client.find_invoices_by_fullnumber(num)
+    except Exception as exc:
+        raise HTTPException(status_code=502,
+            detail=f"invoice-number lookup failed: {type(exc).__name__}: {exc}")
+    if not matches:
+        raise HTTPException(status_code=404,
+            detail=f"no wFirma document carries number {num!r}")
+    if len(matches) > 1:
+        raise HTTPException(status_code=409,
+            detail=(f"number {num!r} is ambiguous — it matches "
+                    f"{len(matches)} documents; supply the wFirma id instead"))
+    resolved = (matches[0].get("id") or "").strip()
+    if not resolved.isdigit():
+        raise HTTPException(status_code=422,
+            detail=f"number {num!r} resolved to a non-numeric id — refusing")
+    return resolved, (matches[0].get("fullnumber") or num)
+
+
+def _manual_link_expected_plan(draft):
+    """Rebuild the EXPECTED FinalInvoicePlan for the manual-link preview, from the
+    draft's SOURCE proforma. Mirrors _reconciliation_expected_plan; separated by
+    name so A2 and 2B injection sites are distinguishable. Read-only. Injected into
+    the service so document_reconciler never imports this api layer.
+    Returns (plan, source_hash)."""
+    from ..services import proforma_to_invoice as _p2i
+    source_xml = wfirma_client.fetch_invoice_xml(draft.wfirma_proforma_id)
+    snap = _p2i.parse_proforma_xml(source_xml)
+    cand = _build_convert_candidate(draft, snap)
+    return cand["plan"], cand.get("core_hash", "")
+
+
+@router.post("/draft/{draft_id}/resolve-wfirma-document", dependencies=[_auth])
+def resolve_wfirma_document(draft_id: int,
+                            body: _ResolveWfirmaDocumentReq) -> JSONResponse:
+    """2B — READ-ONLY preview of linking a remote wFirma document to a draft.
+
+    NO flag gate (performs ZERO writes). NO wFirma write. Resolves the operator
+    identifier, rebuilds the expected plan from the draft's source proforma,
+    fetches the remote document read-only, and returns the comparison view-model
+    + an opaque preview_hash (the confirm round-trip token; never rendered in UI).
+
+    HTTP mapping: bad document_type / body → 422; draft missing → 404; draft with
+    no wFirma proforma → 422; number 0/many → 404/409; upstream failure → 502.
+    """
+    doc_type = (body.document_type or "").strip().lower()
+    if doc_type not in _MANUAL_LINK_DOC_TYPES:
+        raise HTTPException(status_code=422,
+            detail="document_type must be 'invoice' in this release")
+
+    remote_id, resolved_fullnumber = _resolve_manual_link_remote_id(
+        doc_type, body.wfirma_id or "", body.full_number or "")
+
+    db = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    if not getattr(draft, "wfirma_proforma_id", None):
+        raise HTTPException(status_code=422,
+            detail=("draft has no linked wFirma proforma — it must be posted to "
+                    "wFirma before a document can be linked"))
+
+    from ..services import document_reconciler as _drec
+    try:
+        report = _drec.build_manual_link_preview(
+            draft_id,
+            remote_document_id=remote_id,
+            document_type=doc_type,
+            db_path=db,
+            build_expected_plan=_manual_link_expected_plan,
+        )
+    except Exception as exc:   # never 500 on an upstream/data failure — map to 502
+        raise HTTPException(status_code=502,
+            detail=(f"resolve-wfirma-document upstream unavailable: "
+                    f"{type(exc).__name__}: {exc}"))
+
+    response = dict(report)
+    response["ok"] = True
+    # human-readable number the operator already knows — never the raw wfirma id.
+    if resolved_fullnumber:
+        response["remote_fullnumber"] = resolved_fullnumber
+    return JSONResponse(response)
+
+
+@router.post("/draft/{draft_id}/confirm-wfirma-link", dependencies=[_auth_write])
+def confirm_wfirma_link(
+    draft_id:     int,
+    body:         _ConfirmWfirmaLinkReq,
+    x_operator:   Optional[str] = Header(None, alias="X-Operator"),
+    pz_session:   Optional[str] = Cookie(default=None),
+) -> JSONResponse:
+    """2B — WRITE; privileged (_auth_write) + flag-gated
+    (wfirma_manual_document_link_enabled default False → 503).
+
+    Re-fetches remote, rebuilds the expected plan, recomputes preview_hash, and
+    REFUSES on any drift (409). Enforces the eligibility + conflict gates, then
+    persists the remote-document identity onto proforma_drafts via the existing
+    writer and appends ONE typed audit event. NO wFirma write.
+
+    Eligibility (W-1, Lesson N): the draft must carry wfirma_proforma_id and must
+    not be in an EDITABLE state — a posted proforma already passed the post-time
+    product-code billing true-blocker and its lines are frozen, so manual linking
+    records an already-existing document without new fiscal exposure.
+
+    Conflict (W-2): same remote id already linked → noop (no write, no event);
+    different id already linked → blocked (409); the document is the issued
+    invoice on another link → blocked (409). Replacement is not implemented.
+    """
+    if not settings.wfirma_manual_document_link_enabled:
+        raise HTTPException(status_code=503,
+            detail=("Manual wFirma document linking is disabled "
+                    "(wfirma_manual_document_link_enabled=false). Set "
+                    "WFIRMA_MANUAL_DOCUMENT_LINK_ENABLED=true to enable."))
+
+    # Resolve the session user at REQUEST time (the helper is defined later in this
+    # module, so it cannot be referenced in the signature's Depends default, which
+    # is evaluated at module-load time).
+    session_user = _get_current_user_optional(pz_session)
+    operator = (
+        ((session_user or {}).get("full_name") or "").strip()
+        or ((session_user or {}).get("email") or "").strip()
+        or (x_operator or "").strip()
+    )
+    if not operator:
+        return JSONResponse({"ok": False, "status": "blocked",
+            "blocking_reasons": ["operator attribution required — authenticate "
+                                 "with a session or send X-Operator"]},
+            status_code=400)
+
+    doc_type = (body.document_type or "").strip().lower()
+    if doc_type not in _MANUAL_LINK_DOC_TYPES:
+        raise HTTPException(status_code=422,
+            detail="document_type must be 'invoice' in this release")
+    expected_ph = (body.expected_preview_hash or "").strip()
+    if not expected_ph:
+        raise HTTPException(status_code=422,
+            detail="expected_preview_hash is required")
+
+    remote_id, resolved_fullnumber = _resolve_manual_link_remote_id(
+        doc_type, body.wfirma_id or "", body.full_number or "")
+
+    db = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    if not getattr(draft, "wfirma_proforma_id", None):
+        raise HTTPException(status_code=422,
+            detail="draft has no linked wFirma proforma")
+    # Positive allowlist (Council): only a posted, not-yet-converted proforma is
+    # linkable. A denylist would silently let cancelled/superseded/posting drafts
+    # through and have their state overwritten to 'converted'.
+    if (getattr(draft, "draft_state", "") or "") not in pildb.LINKABLE_STATES:
+        return JSONResponse({"ok": False, "status": "blocked",
+            "blocking_reasons": [f"draft state {draft.draft_state!r} is not "
+                "linkable — only a posted, not-yet-converted proforma can link an "
+                "existing wFirma document"]},
+            status_code=409)
+
+    # ── Drift check (W-5): re-derive and recompute the hash ──────────────────
+    from ..services import document_reconciler as _drec
+    try:
+        preview = _drec.build_manual_link_preview(
+            draft_id,
+            remote_document_id=remote_id,
+            document_type=doc_type,
+            db_path=db,
+            build_expected_plan=_manual_link_expected_plan,
+        )
+    except Exception as exc:   # never 500 on an upstream/data failure — map to 502
+        raise HTTPException(status_code=502,
+            detail=(f"upstream unavailable during re-check: "
+                    f"{type(exc).__name__}: {exc}"))
+    if preview.get("preview_hash") != expected_ph:
+        return JSONResponse({"ok": False, "status": "drift",
+            "error": ("the remote document or the local draft changed since the "
+                      "preview was loaded — reload the preview before confirming")},
+            status_code=409)
+
+    # ── Conflict policy (W-2): read-then-check BEFORE any persist ─────────────
+    existing_iid = (getattr(draft, "wfirma_invoice_id", None) or "").strip()
+    if existing_iid and existing_iid == remote_id:
+        return JSONResponse({"ok": True, "status": "noop", "draft_id": draft_id,
+            "message": "document already linked to this draft"})
+    if existing_iid and existing_iid != remote_id:
+        return JSONResponse({"ok": False, "status": "conflict",
+            "error": ("draft already carries a different linked document — "
+                      "replacement is not supported in this release")},
+            status_code=409)
+    # Cross-draft uniqueness on the CANONICAL owner (proforma_drafts): the same
+    # remote document must not be linked to two drafts. This is the primary guard.
+    other = pildb.get_draft_by_wfirma_invoice_id(db, remote_id, exclude_draft_id=draft_id)
+    if other is not None:
+        return JSONResponse({"ok": False, "status": "conflict",
+            "error": ("this wFirma document is already linked to another draft — "
+                      "the same document cannot be linked twice")},
+            status_code=409)
+    # Secondary guard: a live (pending) or completed (issued) conversion elsewhere
+    # also claims this invoice — pending is a recoverable in-flight attempt and
+    # must block too (not just issued).
+    existing_link = pildb.get_link_by_invoice(db, remote_id)
+    if existing_link is not None and (existing_link.status or "") in ("pending", "issued"):
+        return JSONResponse({"ok": False, "status": "conflict",
+            "error": ("this wFirma document is already the invoice on another "
+                      f"proforma conversion link (status {existing_link.status!r})")},
+            status_code=409)
+
+    # ── Persist LOCAL remote-reference via the single writer (no direct SQL) ──
+    try:
+        from ..services.conversion_persistence import persist_invoice_to_draft
+        persist_invoice_to_draft(
+            db_path=db,
+            draft_id=draft_id,
+            wfirma_invoice_id=remote_id,
+            wfirma_invoice_number=resolved_fullnumber or "",
+        )
+    except Exception as exc:
+        log.error("[confirm_wfirma_link] persist failed for draft %s: %s",
+                  draft_id, exc)
+        return JSONResponse({"ok": False, "status": "error", "retryable": True,
+            "error": f"persist failed: {type(exc).__name__}"}, status_code=503)
+
+    # ── ONE typed audit event (primary: draft-event log; append-only) ────────
+    try:
+        pildb._record_draft_event(
+            db, draft_id=draft_id,
+            event="wfirma_document_manually_linked",
+            detail_json=json.dumps({
+                "remote_document_id":     remote_id,
+                "remote_document_number": resolved_fullnumber or "",
+                "document_type":          doc_type,
+                "wfirma_proforma_id":     draft.wfirma_proforma_id or "",
+                "operator":               operator,
+                "wfirma_write":           False,
+            }),
+            operator=operator,
+        )
+    except Exception as _de:
+        log.warning("[confirm_wfirma_link] draft-event append skipped: %s", _de)
+    # audit.json timeline (secondary, best-effort)
+    try:
+        from ..services.audit_persist import record_wfirma_document_manually_linked
+        record_wfirma_document_manually_linked(
+            settings.storage_root / "outputs" / draft.batch_id / "audit.json",
+            batch_id=draft.batch_id, client_name=draft.client_name,
+            draft_id=draft_id, wfirma_proforma_id=draft.wfirma_proforma_id or "",
+            remote_document_id=remote_id,
+            remote_document_number=resolved_fullnumber or "",
+            document_type=doc_type, operator=operator,
+        )
+    except Exception as _ae:
+        log.warning("[confirm_wfirma_link] audit.json append skipped: %s", _ae)
+
+    return JSONResponse({
+        "ok": True, "status": "linked", "draft_id": draft_id,
+        "document_type": doc_type,
+        "remote_document_number": resolved_fullnumber or "",
+    })
+
+
 @router.get("/draft/{draft_id}", dependencies=[_auth])
 def get_proforma_draft(draft_id: int) -> JSONResponse:
     """Return the full editable payload for a single draft.
