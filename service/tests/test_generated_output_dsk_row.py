@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def _src() -> str:
-    return (Path(__file__).resolve().parents[1] / "app" / "static" / "dashboard.html").read_text(encoding="utf-8")
+    return (Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
 
 
 # ── Presence ─────────────────────────────────────────────────────────────
