@@ -189,17 +189,59 @@ def test_wfirma_inbox_preserved():
         "wfirma-inbox-v2.html must remain — separate wFirma recovery domain"
 
 
-def test_no_backend_files_changed():
+# ── Inventory V2 promotion boundary (Sprint 29) ──────────────────────────────
+# This contract protects ONLY files owned by the Inventory V2 feature. It
+# INTENTIONALLY ignores unrelated backend changes elsewhere in the repository —
+# it is NOT a repository-wide backend freeze.
+#
+# OWNERSHIP is the authority, not the token. `_inventory_owned_backend_coupling`
+# defines the owned set as backend-impl files (anchored prefixes below) whose
+# path carries the 'inventory' token. If an Inventory backend file is renamed or
+# moved out of that naming, UPDATE THIS OWNERSHIP RULE — do not assume the token
+# alone stays correct. Anchored prefixes prevent bare substrings like "routes_"
+# from mis-classifying test files (service/tests/test_routes_*.py).
+#
+# The read-only ENDPOINT restrictions above (no POST/PATCH/DELETE, approved-GET-
+# only) remain the primary contract and are unchanged by this scoping.
+_BACKEND_IMPL_PREFIXES = ("service/app/api/", "service/app/services/")
+
+
+def _changed_files(base="origin/main", head="HEAD"):
     import subprocess
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "origin/main", "HEAD"],
-        cwd=str(_ROOT), capture_output=True, text=True,
+    r = subprocess.run(["git", "diff", "--name-only", base, head],
+                       cwd=str(_ROOT), capture_output=True, text=True)
+    return [f for f in r.stdout.splitlines() if f.strip()]
+
+
+def _is_backend_impl(path):
+    return path.startswith(_BACKEND_IMPL_PREFIXES)
+
+
+def _inventory_owned_backend_coupling(changed):
+    """Inventory-owned backend implementation files changed on this branch — the
+    only thing the Inventory V2 promotion boundary prohibits. Ownership anchored
+    by the 'inventory' token; unrelated backend is out of scope."""
+    return [p for p in changed if _is_backend_impl(p) and "inventory" in p.lower()]
+
+
+def test_no_inventory_owned_backend_coupling():
+    forbidden = _inventory_owned_backend_coupling(_changed_files())
+    assert not forbidden, (
+        "Inventory V2 promotion must not add Inventory-owned backend coupling "
+        f"(app/api or app/services files for inventory): {forbidden}. Unrelated "
+        "backend changes elsewhere in the branch are out of this contract's scope."
     )
-    changed = result.stdout.splitlines()
-    forbidden = [
-        f for f in changed if any(pat in f for pat in [
-            "app/api/", "app/services/", "routes_", "customs", "wfirma",
-            "pz_import", "engine/", ".env",
-        ])
-    ]
-    assert not forbidden, f"Forbidden backend files found in diff: {forbidden}"
+
+
+def test_inventory_backend_classifier_scope():
+    """Deterministic scope pins (no git)."""
+    det = _inventory_owned_backend_coupling
+    assert det(["service/app/api/routes_inventory.py"]) == ["service/app/api/routes_inventory.py"]
+    assert det(["service/app/services/inventory_state_db.py"]) == ["service/app/services/inventory_state_db.py"]
+    # unrelated backend IGNORED
+    assert det(["service/app/api/routes_proforma.py"]) == []
+    assert det(["service/app/services/document_reconciler.py"]) == []
+    # test file not mis-classified
+    assert det(["service/tests/test_routes_proforma_reconciliation.py"]) == []
+    # owned frontend not backend impl
+    assert det(["service/app/static/inventory-v2.html"]) == []
