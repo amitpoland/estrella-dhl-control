@@ -126,15 +126,99 @@ def test_both_write_paths_produce_identical_shape():
     )
 
 
-def test_both_routes_call_the_shared_helper():
-    """Source-grep pin: neither route may hand-roll the patch again."""
-    for name in ("routes_tracking.py", "routes_ai_bridge.py"):
-        src = (_SVC / "app" / "api" / name).read_text(encoding="utf-8")
-        assert "apply_tracking_update" in src, f"{name} bypasses tracking_patch"
-        assert '"cowork_tracking_required": False' not in src, (
-            f"{name} re-inlines the tracking patch instead of calling "
-            "apply_tracking_update — that is how the two paths drifted before"
-        )
+def _function_source(path, func_name):
+    """Source of ONE function, so pins bind per call site rather than per file."""
+    import ast
+    src = path.read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            return ast.get_source_segment(src, node) or ""
+    raise AssertionError(f"{func_name} not found in {path.name}")
+
+
+_CALL_SITES = [
+    ("routes_tracking.py",  "update_tracking_for_batch"),
+    ("routes_tracking.py",  "submit_cowork_tracking_result"),
+    ("routes_ai_bridge.py", "import_bridge_result"),
+]
+
+
+@pytest.mark.parametrize("filename,func", _CALL_SITES)
+def test_each_call_site_calls_the_shared_helper(filename, func):
+    """Per-FUNCTION pin.
+
+    A whole-file grep is too weak: routes_tracking.py holds TWO call sites, so
+    dropping the helper from submit_cowork_tracking_result while leaving
+    update_tracking_for_batch intact would pass a file-level check silently —
+    and that is precisely the call site the file-level pin only caught by luck.
+    """
+    body = _function_source(_SVC / "app" / "api" / filename, func)
+    assert "apply_tracking_update" in body, (
+        f"{filename}::{func} no longer calls apply_tracking_update — removed, "
+        "or the patch was re-inlined"
+    )
+    assert '"cowork_tracking_required": False' not in body, (
+        f"{filename}::{func} re-inlines the tracking patch instead of calling "
+        "apply_tracking_update — that is how the paths drifted before"
+    )
+
+
+# ── the workflow checkpoint is authorisation-gated ───────────────────────────
+
+def test_advance_workflow_false_still_records_the_evidence():
+    """A non-operator caller records tracking but must not close the step."""
+    audit, _ = _apply(status="delivered", source="claude_cowork",
+                      advance_workflow=False)
+    assert audit["tracking"]["status"] == "delivered"
+    assert audit["tracking"]["api_status"] == "manual"
+    assert audit["tracking"]["cowork_tracking_required"] is False
+    for k in _TOP_LEVEL_KEYS:
+        assert k not in audit, f"{k} written without operator authority"
+
+
+def test_advance_workflow_true_closes_the_step():
+    audit, now = _apply(status="delivered", source="manual", advance_workflow=True)
+    assert audit["tracking_complete"] is True
+    assert audit["tracking_complete_at"] == now
+
+
+def test_advance_workflow_defaults_to_true():
+    """Operator routes must not opt in — only the weaker caller opts out."""
+    audit, _ = _apply(status="delivered", source="manual")
+    assert audit["tracking_complete"] is True
+
+
+def test_bridge_gates_the_checkpoint_on_operator_role():
+    """The bridge must derive advance_workflow from the caller's role.
+
+    /ai-bridge/results/{task_id} is guarded by get_current_user alone, while
+    both /tracking/* writers require require_role("admin","logistics").
+    Consolidating the paths must not let the weakest one close a checkpoint
+    that previously needed an operator.
+    """
+    path = _SVC / "app" / "api" / "routes_ai_bridge.py"
+    body = _function_source(path, "import_bridge_result")
+    # Match the EXPRESSION, not a bare identifier: a docstring mentioning
+    # _OPERATOR_ROLES satisfies a substring check while the code passes
+    # advance_workflow=True. That exact false pass happened while writing this.
+    assert "advance_workflow = _may_close_checkpoint(user)" in body, (
+        "the bridge must derive advance_workflow from the caller — a hardcoded "
+        "advance_workflow=True silently widens who can close the tracking "
+        "checkpoint from operator-only to any authenticated user"
+    )
+    gate = _function_source(path, "_may_close_checkpoint")
+    assert "_OPERATOR_ROLES" in gate and 'get("role")' in gate, (
+        "_may_close_checkpoint must decide on the caller's role"
+    )
+    assert "isinstance(user, dict)" in gate, (
+        "_may_close_checkpoint must fail closed for a non-dict caller: on a "
+        "direct Python call `user` is a FastAPI Depends object, and .get would "
+        "raise AttributeError straight into `except Exception: pass`"
+    )
+    src = (_SVC / "app" / "api" / "routes_ai_bridge.py").read_text(encoding="utf-8")
+    assert 'frozenset({"admin", "logistics"})' in src, (
+        '_OPERATOR_ROLES must mirror require_role("admin", "logistics")'
+    )
 
 
 def test_ai_bridge_patch_holds_the_batch_lock():

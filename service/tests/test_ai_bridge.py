@@ -331,6 +331,59 @@ class TestAiBridgeEndpoints:
         tr = updated.get("tracking", {})
         assert tr.get("cowork_result_received") is True
         assert tr.get("cowork_tracking_required") is False
+        # Fields the shared tracking_patch adds — asserted at the ENDPOINT,
+        # not only in the helper's unit tests.
+        assert tr.get("api_status") == "manual"
+        assert tr.get("updated_at")
+        assert tr.get("status_label") == "Customs"
+
+    def test_tracking_result_does_not_close_checkpoint_without_operator_role(self, tmp_path):
+        """Bridge is guarded by get_current_user only — any authenticated user.
+
+        It must record the tracking evidence but NOT close the tracking_complete
+        checkpoint, which the /tracking/* routes gate behind
+        require_role("admin","logistics"). Called directly here, `user` is not a
+        dict, so the gate must fail closed.
+        """
+        bid, _, ap = _make_batch(tmp_path, extra={
+            "tracking": {"cowork_tracking_required": True},
+        })
+        from app.api.routes_ai_bridge import create_bridge_task, import_bridge_result
+        from app.api.routes_ai_bridge import CreateTaskBody, ImportResultBody
+
+        task_id = create_bridge_task(bid, CreateTaskBody(task_type="tracking_lookup"))["task_id"]
+        import_bridge_result(task_id, ImportResultBody(
+            task_id=task_id,
+            result_data={"tracking": {"status": "customs"}},
+            source="claude_cowork",
+        ))
+        updated = _read_audit(ap)
+        assert updated.get("tracking", {}).get("status") == "customs", (
+            "tracking evidence must still be recorded"
+        )
+        for k in ("tracking_complete", "tracking_complete_source", "tracking_complete_at"):
+            assert k not in updated, (
+                f"{k} was written by a non-operator caller — closing the "
+                "workflow checkpoint requires admin/logistics"
+            )
+
+    def test_tracking_result_closes_checkpoint_for_operator_role(self, tmp_path):
+        """An admin/logistics caller DOES close the checkpoint."""
+        bid, _, ap = _make_batch(tmp_path, extra={
+            "tracking": {"cowork_tracking_required": True},
+        })
+        from app.api.routes_ai_bridge import create_bridge_task, import_bridge_result
+        from app.api.routes_ai_bridge import CreateTaskBody, ImportResultBody
+
+        task_id = create_bridge_task(bid, CreateTaskBody(task_type="tracking_lookup"))["task_id"]
+        import_bridge_result(task_id, ImportResultBody(
+            task_id=task_id,
+            result_data={"tracking": {"status": "customs"}},
+            source="claude_cowork",
+        ), user={"id": "u1", "role": "logistics"})
+        updated = _read_audit(ap)
+        assert updated.get("tracking_complete") is True
+        assert updated.get("tracking_complete_source") == "claude_cowork"
 
     def test_import_result_422_forbidden_field(self, tmp_path):
         """POST /results/{task_id} → 422 when result_data contains forbidden key."""
