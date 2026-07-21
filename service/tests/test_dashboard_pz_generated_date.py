@@ -549,6 +549,15 @@ class TestMixedEraOrdering:
     eras do not overlap — and it is not fixable at read time: correcting it
     requires changing the canonical write convention. What must hold, and is
     asserted here, is that the DISPLAYED date is right in both eras.
+
+    STATUS 2026-07-21 — the write convention IS now fixed.
+    export_service._build_pz_output emits datetime.now().astimezone(), an
+    offset-aware stamp, so newly written canonical values carry no skew and
+    sort at their true instant. This class stays because the false-Z values
+    already written remain on disk (24 in production at the time of the fix)
+    and are still parsed by _parse_pz_generated_at's Z branch. Delete this
+    class and that branch together, once no stored pz_output.generated_at
+    ends in Z.
     """
 
     _CANONICAL = {"pz_output": {"generated_at": "2026-07-20T16:30:00Z"}}

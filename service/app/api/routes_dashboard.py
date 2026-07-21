@@ -286,9 +286,16 @@ def _wfirma_hint(batch_id: str, a: Dict[str, Any] | None = None) -> str:
 #
 # The two fields record the SAME instant under DIFFERENT conventions and must
 # never share a parsing rule:
-#   - pz_output.generated_at is `time.strftime("...Z")` — Poland wall-clock with
-#     an incorrect literal Z. Passed through VERBATIM (operator ruling
-#     2026-07-19); fixing the convention is a write-path change, out of scope.
+#   - pz_output.generated_at is written by export_service._build_pz_output.
+#     Since 2026-07-21 it is `datetime.now().astimezone().isoformat()` — local
+#     time carrying its REAL offset (e.g. +02:00), so the stamp is now
+#     self-describing and sorts at its true instant.
+#     Values written BEFORE that fix are `time.strftime("...Z")` — Warsaw
+#     wall-clock with a literal Z that falsely claims UTC. Those are still on
+#     disk and are still parsed here (see _parse_pz_generated_at), which is why
+#     the Z branch and TestMixedEraOrdering must stay until no legacy value
+#     remains. Either form is passed through VERBATIM (operator ruling
+#     2026-07-19) — the date text is identical under both conventions.
 #   - file_metadata.generated_at is `datetime.now(timezone.utc).isoformat()` —
 #     genuine UTC, so it MUST be converted to Europe/Warsaw before its calendar
 #     date is shown, or PZs generated after 22:00/23:00 UTC show the wrong day.
@@ -311,8 +318,8 @@ def _wfirma_hint(batch_id: str, a: Dict[str, Any] | None = None) -> str:
 #   - SAD/customs dates, or any frontend clock.
 #
 # The stored string is passed through VERBATIM (operator ruling 2026-07-19).
-# _build_pz_output stamps local time with a literal "Z" suffix; correcting that
-# is a write-path change to PZ-generation persistence and is out of scope here.
+# _build_pz_output now stamps local time with its real UTC offset; stamps
+# written before 2026-07-21 carry the legacy literal "Z". Both are read here.
 
 # Never let a missing tz database take the whole module — routes_dashboard is
 # imported by main.py at startup, and deploys robocopy app/ without a pip step,

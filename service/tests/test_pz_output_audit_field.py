@@ -86,6 +86,48 @@ def test_generated_at_is_iso(tmp_path):
     datetime.datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
 
 
+def test_generated_at_carries_a_real_utc_offset_not_a_false_z(tmp_path):
+    """The stamp must describe its own offset.
+
+    It used to be time.strftime("%Y-%m-%dT%H:%M:%SZ") — Warsaw wall-clock with a
+    literal Z claiming UTC, so every reader placed the instant 1-2h late.
+    """
+    import datetime as _dt
+    pdf, xlsx = _make_files(tmp_path)
+    ts = _build_pz_output(pdf, xlsx, _result(), "1234567890", {})["generated_at"]
+
+    assert not ts.endswith("Z"), (
+        f"generated_at still carries a literal Z ({ts!r}); a Warsaw wall-clock "
+        "stamp must not claim UTC"
+    )
+    parsed = _dt.datetime.fromisoformat(ts)
+    assert parsed.tzinfo is not None, f"generated_at must be offset-aware, got {ts!r}"
+
+    # The instant it denotes is now truthful — within a minute of real now.
+    delta = abs((parsed - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
+    assert delta < 60, f"generated_at is off by {delta}s — offset is wrong, not just absent"
+
+
+def test_generated_at_wall_clock_text_is_unchanged_by_the_fix(tmp_path):
+    """The visible date/time text must still be local wall-clock.
+
+    The frontend reads YYYY-MM-DD out of this string textually, so switching to
+    genuine UTC would have shifted the displayed calendar day for any PZ
+    generated late in the local evening. Only the offset was corrected.
+    """
+    import datetime as _dt
+    pdf, xlsx = _make_files(tmp_path)
+    ts = _build_pz_output(pdf, xlsx, _result(), "1234567890", {})["generated_at"]
+    local_now = _dt.datetime.now()
+    assert ts[:10] == local_now.strftime("%Y-%m-%d"), (
+        f"date text {ts[:10]} is not the local calendar day "
+        f"{local_now:%Y-%m-%d} — the displayed day would shift"
+    )
+    assert ts[11:13] == local_now.strftime("%H"), (
+        f"hour text in {ts!r} is not local wall-clock"
+    )
+
+
 def test_mrn_from_result(tmp_path):
     pdf, xlsx = _make_files(tmp_path)
     po = _build_pz_output(pdf, xlsx, _result(mrn="26PLSPECIAL"), "1234567890", {})
