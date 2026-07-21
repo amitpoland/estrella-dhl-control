@@ -46,6 +46,27 @@ _auth  = Depends(get_current_user)
 
 _OUTPUTS = settings.storage_root / "outputs"
 
+# Roles permitted to close the tracking workflow checkpoint. Mirrors
+# routes_tracking._op_auth = require_role("admin", "logistics") -- the authority
+# that owned audit.tracking_complete before the write paths were consolidated.
+_OPERATOR_ROLES = frozenset({"admin", "logistics"})
+
+
+def _may_close_checkpoint(user: Any) -> bool:
+    """True only for an operator-role caller. Fail-closed on anything else.
+
+    `user` is normally the dict from get_current_user. It is deliberately NOT
+    assumed to be one: when this route function is called directly in Python
+    (as several tests do) the parameter default is a FastAPI ``Depends`` object,
+    and ``.get`` on it would raise AttributeError -- swallowed whole by the
+    caller's ``except Exception: pass``, silently skipping the entire tracking
+    patch. Anything that is not a dict yields False: evidence is still recorded,
+    the workflow checkpoint simply is not closed.
+    """
+    if not isinstance(user, dict):
+        return False
+    return user.get("role") in _OPERATOR_ROLES
+
 
 # ── Request / Response models ──────────────────────────────────────────────────
 
@@ -198,6 +219,7 @@ def get_bridge_task(task_id: str) -> Dict[str, Any]:
 def import_bridge_result(
     task_id: str,
     body:    ImportResultBody,
+    user:    Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
     Import a result from an external AI tool.
@@ -510,6 +532,7 @@ def import_bridge_result(
                         last_event = rd.get("last_event", ""),
                         location   = rd.get("location", ""),
                         event_time = rd.get("event_time"),
+                        advance_workflow = _may_close_checkpoint(user),
                     )
 
                     if body.proposal_id:

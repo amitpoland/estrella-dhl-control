@@ -46,6 +46,7 @@ def apply_tracking_update(
     event_time: Optional[str] = None,
     note:       Optional[str] = None,
     now:        Optional[str] = None,
+    advance_workflow: bool = True,
 ) -> str:
     """Patch ``audit`` in place with a human/agent-supplied tracking update.
 
@@ -58,10 +59,22 @@ def apply_tracking_update(
     (disabled / failed / active), and it is what ``shipment-detail.html``
     branches on to stop showing "DHL API disabled" over real tracking data.
 
-    ``tracking_complete`` is set for ANY source: a supplied update satisfies the
-    tracking step whoever produced it. ``tracking_complete_source`` records who
-    that was, so a consumer that needs to distinguish a human confirmation from
-    an agent-inferred one can, without this function having to guess.
+    ``advance_workflow`` controls ONLY the three top-level ``tracking_complete*``
+    keys — the workflow checkpoint. The tracking block itself is written either
+    way, so evidence is never lost.
+
+    It exists because the checkpoint is authorisation-sensitive and the callers
+    are not equally privileged. ``/tracking/batch/{id}/update`` and
+    ``/tracking/{awb}/cowork-result`` require ``require_role("admin",
+    "logistics")``, but ``/ai-bridge/results/{task_id}`` requires only
+    ``get_current_user`` — any authenticated account. Consolidating the three
+    write paths (#973) inadvertently let the weakest of them set a checkpoint
+    that previously needed an operator role. Callers that are not
+    operator-authorised must pass ``advance_workflow=False``; they still record
+    the tracking evidence, they just do not close the step.
+
+    ``tracking_complete_source`` records who supplied it, so a consumer that
+    needs to distinguish a human confirmation from an agent-inferred one can.
     """
     now = now or _time.strftime(_TS_FORMAT)
 
@@ -87,10 +100,12 @@ def apply_tracking_update(
 
     # Top level, not inside `tracking`: this is the workflow checkpoint the
     # dashboard reads, and audit_merge.PRESERVED_KEYS carries these three keys
-    # so a re-process cannot drop the confirmation.
-    audit["tracking_complete"]        = True
-    audit["tracking_complete_source"] = source
-    audit["tracking_complete_at"]     = now
+    # so a re-process cannot drop the confirmation. Gated on advance_workflow
+    # because setting it requires operator authority — see the docstring.
+    if advance_workflow:
+        audit["tracking_complete"]        = True
+        audit["tracking_complete_source"] = source
+        audit["tracking_complete_at"]     = now
 
     return now
 
