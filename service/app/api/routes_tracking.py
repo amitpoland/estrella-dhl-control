@@ -226,8 +226,6 @@ def update_tracking_for_batch(
 
     Safety: never touches clearance_decision. Never sends emails.
     """
-    import time as _time
-
     if "/" in batch_id or ".." in batch_id:
         raise HTTPException(status_code=400, detail="Invalid batch_id.")
 
@@ -322,8 +320,6 @@ def submit_cowork_tracking_result(
     Safety: never triggers emails, never modifies clearance state.
     Only updates tracking evidence and clears the lookup task.
     """
-    import time as _time
-
     batch_id  = body.batch_id or ""
     audit_path: Optional[Any] = None
 
