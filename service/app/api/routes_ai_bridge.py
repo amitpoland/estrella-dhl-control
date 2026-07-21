@@ -37,6 +37,9 @@ from ..services.ai_bridge import (
     import_result,
     list_tasks,
 )
+from ..services.tracking_patch import apply_tracking_update, close_tracking_proposal
+from ..utils.batch_lock import batch_write_lock
+from ..utils.io import write_json_atomic
 
 router = APIRouter(prefix="/api/v1/ai-bridge", tags=["ai_bridge"])
 _auth  = Depends(get_current_user)
@@ -253,7 +256,6 @@ def import_bridge_result(
                 "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "source":    body.source,
             })
-            from ..utils.io import write_json_atomic
             write_json_atomic(audit_path, _current)
         except Exception:
             pass  # safety logging is best-effort
@@ -286,7 +288,6 @@ def import_bridge_result(
             # searched), record a risk flag and do NOT change clearance state.
             from datetime import datetime, timezone
             if matched_n == 0 and unreliable:
-                from ..utils.io import write_json_atomic
                 try:
                     _cur = json.loads(audit_path.read_text(encoding="utf-8"))
                     _cur["email_search_risk"]        = True
@@ -383,7 +384,6 @@ def import_bridge_result(
             # metadata. Status advance is rank-guarded separately so we never
             # downgrade a more-advanced clearance state.
             if dhl_event:
-                from ..utils.io import write_json_atomic
                 from ..config.email_routing import is_dsk_source
                 now_iso = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
                 sender  = dhl_event.get("source_email_from", "")
@@ -437,7 +437,6 @@ def import_bridge_result(
                 None,
             )
             if preclearance_sent or preclearance_ack:
-                from ..utils.io import write_json_atomic
                 _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
                 _cur = json.loads(audit_path.read_text(encoding="utf-8"))
                 _pre = _cur.get("agency_preclearance") or {}
@@ -487,36 +486,37 @@ def import_bridge_result(
         rd_raw = body.result_data
         rd = rd_raw.get("tracking") if isinstance(rd_raw.get("tracking"), dict) else rd_raw
         if rd.get("status"):
-            # Re-read audit (import_result already wrote it) to patch tracking
+            # Re-read audit (import_result already wrote it) to patch tracking.
+            #
+            # Under batch_write_lock: this is a read-modify-write of audit.json
+            # and previously ran unlocked, so a concurrent writer — e.g. an
+            # operator on /tracking/batch/{id}/update — could have its changes
+            # silently overwritten. import_result does not take the lock itself
+            # and batch_write_lock is not reentrant, so acquiring it here is safe.
+            #
+            # The patch is shared with routes_tracking via
+            # services/tracking_patch.py. These were separate hand-written
+            # copies and drifted: this one never gained api_status, updated_at
+            # or the top-level tracking_complete keys, so a lookup closed
+            # through the bridge still showed as "tracking required" and was
+            # reverted by the next re-process.
             try:
-                audit = json.loads(audit_path.read_text(encoding="utf-8"))
-                tr = audit.setdefault("tracking", {})
-                tr.update({
-                    "status":                   rd["status"],
-                    "last_event":               rd.get("last_event", ""),
-                    "last_location":            rd.get("location", ""),
-                    "last_update":              rd.get("event_time"),
-                    "source":                   body.source,
-                    "available":                True,
-                    "cowork_result_received":   True,
-                    "cowork_tracking_required": False,
-                    "cowork_result_at":         _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                })
-                if rd["status"] in ("delivered", "out_for_delivery"):
-                    tr["arrived_warehouse"] = True
+                with batch_write_lock(batch_id):
+                    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+                    now = apply_tracking_update(
+                        audit,
+                        status     = rd["status"],
+                        source     = body.source,
+                        last_event = rd.get("last_event", ""),
+                        location   = rd.get("location", ""),
+                        event_time = rd.get("event_time"),
+                    )
 
-                # Close linked proposal if supplied
-                if body.proposal_id:
-                    for prop in (audit.get("action_proposals") or []):
-                        if (prop.get("proposal_id") == body.proposal_id
-                                and prop.get("type") == "tracking_lookup"):
-                            prop["status"]      = "done"
-                            prop["done_at"]     = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
-                            prop["done_source"] = body.source
-                            break
+                    if body.proposal_id:
+                        close_tracking_proposal(
+                            audit, body.proposal_id, body.source, now)
 
-                from ..utils.io import write_json_atomic
-                write_json_atomic(audit_path, audit)
+                    write_json_atomic(audit_path, audit)
             except Exception:
                 pass  # tracking patch is best-effort — import already succeeded
 
