@@ -55,7 +55,12 @@ def _get_service_version() -> str:
     if v:
         return v
     try:
-        sha = _SHA_FILE.read_text(encoding="utf-8").strip()
+        # utf-8-sig, not utf-8: a BOM-prefixed version.txt (written by
+        # PowerShell's Out-File -Encoding utf8, or edited in Notepad) would
+        # otherwise be served with a leading U+FEFF — str.strip() removes
+        # whitespace, and U+FEFF is not whitespace. utf-8-sig drops a BOM when
+        # present and is a no-op when it is absent.
+        sha = _SHA_FILE.read_text(encoding="utf-8-sig").strip()
         if sha:
             return sha
     except Exception:

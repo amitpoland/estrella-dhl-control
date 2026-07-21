@@ -147,7 +147,13 @@ if ($SkipRobocopy) {
     Add-Result "Robocopy" $true "exit=$LASTEXITCODE  (0-3=OK)"
 
     # -- Write version.txt for /api/v1/webhooks/wfirma/status version field --
-    $head | Out-File -FilePath "C:\PZ\version.txt" -Encoding utf8 -NoNewline
+    # NOT Out-File -Encoding utf8: on Windows PowerShell 5.1 that prepends a
+    # UTF-8 BOM (EF BB BF), and -NoNewline suppresses only the trailing newline.
+    # The reader does read_text(encoding="utf-8").strip(), and Python's strip()
+    # does NOT remove U+FEFF, so the endpoint would then serve "<BOM><sha>".
+    # UTF8Encoding($false) = UTF-8 without BOM.
+    [System.IO.File]::WriteAllText(
+        "C:\PZ\version.txt", $head, (New-Object System.Text.UTF8Encoding $false))
 
     # -- Service restart (between conditions 4 and 5) --------------
     Write-Host "[*]   Restarting PZService..."
