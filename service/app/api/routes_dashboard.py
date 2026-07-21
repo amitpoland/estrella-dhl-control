@@ -494,7 +494,7 @@ def list_batches(
     all_runs: bool = Query(False, alias="all"),
 ) -> List[Dict[str, Any]]:
     """
-    Return completed batches sorted newest-first.
+    Return completed batches sorted newest-first by ``audit.timestamp``.
 
     By default (all=false) deduplicates by (mrn, doc_no) keeping only the
     latest run per document.  Pass ?all=1 to see every run.
@@ -502,6 +502,8 @@ def list_batches(
     if not _OUTPUTS.exists():
         return []
 
+    # mtime here is only a cheap pre-filter for the _MAX_LIST cap — it is NOT
+    # the display order. The list is re-sorted on audit.timestamp below.
     dirs = sorted(_OUTPUTS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
 
     raw: List[Dict[str, Any]] = []
@@ -517,6 +519,15 @@ def list_batches(
         except Exception:
             continue
         raw.append(_batch_summary(a, batch_dir.name))
+
+    # Order by the batch's own processed-at timestamp, not directory mtime.
+    # mtime advances on ANY later write into the folder (PZ regeneration, email
+    # evidence, an audit patch), which pushed genuinely older batches back to
+    # the top and made the list look unordered. ISO-8601 strings sort
+    # chronologically; batches with no timestamp sort last rather than first.
+    # Sorted before dedup so "latest run per document" also means latest by
+    # timestamp, since the dedup below keeps the first occurrence of each key.
+    raw.sort(key=lambda b: b.get("timestamp") or "", reverse=True)
 
     if all_runs:
         return raw
