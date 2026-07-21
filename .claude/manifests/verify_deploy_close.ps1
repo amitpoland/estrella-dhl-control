@@ -19,7 +19,7 @@
     Default: 160.
 
     NOTE: This is NOT the same as the service-level PZ suite tracked in
-    test-baseline.md (tests/test_pz_*.py, currently 221 tests). That suite
+    test-baseline.md (tests/test_pz_*.py, floor 257 passing). That suite
     covers FastAPI routes. The root-level file covers the PZ import-processor
     golden constants. Both exist; this script gates on the root-level one.
 
@@ -55,7 +55,12 @@ param(
     [string]$ExpectedSHA,
 
     [int]$MinPzTests = 160,
-    [int]$MinCarrierTests = 469,
+    # Must track the TABLE in .claude/contracts/test-baseline.md (the stated
+    # single source of truth). Was 469, a 2026-06-23 snapshot, while the floor
+    # had since been raised to 604 (2026-07-18, +20 operator-attribution
+    # tests). A stale-low default is worse than no default: the gate prints
+    # "ALL 8 CONDITIONS PASSED" on a carrier suite up to 135 tests under floor.
+    [int]$MinCarrierTests = 604,
     [string]$RootDir = "C:\PZ-verify",
     [string]$ServiceDir = "C:\PZ-verify\service",
     [string]$LogFile = "C:\PZ\logs\pz_stderr.log",
@@ -88,9 +93,35 @@ $pass1 = $headOk -and $head.StartsWith($ExpectedSHA)
 $detail1 = if ($headOk) { "HEAD=$($head.Substring(0,10))  expected=$ExpectedSHA" } else { "git rev-parse failed: $head" }
 Add-Result "HEAD" $pass1 $detail1
 
+# Abort now rather than run conditions 2-8 against the wrong tree.
+# -RootDir defaults to C:\PZ-verify, which is a shared worktree that is
+# routinely checked out on someone's feature branch. Continuing from here
+# would run the PZ and carrier suites against THAT branch's code and report
+# their counts as if they described the deploy source -- real-looking [OK]
+# rows for a tree that is not being deployed. Fail once, with the fix.
+if (-not $pass1) {
+    Write-Host ""
+    Write-Host "STOP: $RootDir is not at the expected SHA." -ForegroundColor Red
+    Write-Host "  HEAD     : $head"
+    Write-Host "  expected : $ExpectedSHA"
+    $rootBranch = (git -C $RootDir branch --show-current 2>&1).Trim()
+    if (-not $rootBranch) { $rootBranch = "(detached HEAD)" }
+    Write-Host "  branch   : $rootBranch"
+    Write-Host ""
+    Write-Host "  Point -RootDir/-ServiceDir at a worktree checked out on the" -ForegroundColor Yellow
+    Write-Host "  deploy target, e.g.:" -ForegroundColor Yellow
+    Write-Host "    git -C $RootDir worktree add C:\PZ-wt\deploy-main main" -ForegroundColor Yellow
+    Write-Host "    .\verify_deploy_close.ps1 -ExpectedSHA $ExpectedSHA ``" -ForegroundColor Yellow
+    Write-Host "      -RootDir C:\PZ-wt\deploy-main -ServiceDir C:\PZ-wt\deploy-main\service" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  [!!] HEAD             $detail1"
+    Write-Host "RESULT: ABORTED at condition 1 - deploy is NOT closed."
+    exit 1
+}
+
 # -------------------------------------------------------------
 # Condition 2 - PZ regression (root-level test_pz_regression.py)
-# Distinct from service/tests/test_pz_*.py (221 tests, tracked in
+# Distinct from service/tests/test_pz_*.py (floor 257 passing, tracked in
 # test-baseline.md). This checks the golden import-processor suite (~160).
 # -------------------------------------------------------------
 Write-Host "[2/8] Running PZ regression (root-level golden suite)..."
@@ -147,7 +178,13 @@ if ($SkipRobocopy) {
     Add-Result "Robocopy" $true "exit=$LASTEXITCODE  (0-3=OK)"
 
     # -- Write version.txt for /api/v1/webhooks/wfirma/status version field --
-    $head | Out-File -FilePath "C:\PZ\version.txt" -Encoding utf8 -NoNewline
+    # NOT Out-File -Encoding utf8: on Windows PowerShell 5.1 that prepends a
+    # UTF-8 BOM (EF BB BF), and -NoNewline suppresses only the trailing newline.
+    # The reader does read_text(encoding="utf-8").strip(), and Python's strip()
+    # does NOT remove U+FEFF, so the endpoint would then serve "<BOM><sha>".
+    # UTF8Encoding($false) = UTF-8 without BOM.
+    [System.IO.File]::WriteAllText(
+        "C:\PZ\version.txt", $head, (New-Object System.Text.UTF8Encoding $false))
 
     # -- Service restart (between conditions 4 and 5) --------------
     Write-Host "[*]   Restarting PZService..."
