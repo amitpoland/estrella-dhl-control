@@ -113,15 +113,6 @@ def test_config_dhl_auto_scan_enabled_defaults_true():
     assert "True" in src[idx:idx+80]
 
 
-def test_config_dhl_followup_enabled_not_in_this_pr():
-    """dhl_followup_enabled must NOT be in config for PR #456."""
-    src = _CONFIG.read_text(encoding="utf-8", errors="replace")
-    assert "dhl_followup_enabled" not in src, (
-        "dhl_followup_enabled must not be added in PR #456 — "
-        "Lane B config belongs in PR #457"
-    )
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # C. PowerShell script (Lane A only)
 # ══════════════════════════════════════════════════════════════════════════════
