@@ -18,6 +18,7 @@ from typing import Optional
 from ..auth.dependencies import get_current_user, require_role
 from ..core import timeline as tl
 from ..core.config import settings
+from ..services.tracking_patch import apply_tracking_update, close_tracking_proposal
 from ..services.tracking_service import get_tracking_status
 from ..utils.batch_lock import batch_write_lock
 from ..utils.io import write_json_atomic
@@ -240,48 +241,20 @@ def update_tracking_for_batch(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Could not read audit: {exc}")
 
-        now = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Shared with routes_ai_bridge — see services/tracking_patch.py. Both
+        # write paths must produce the same tracking shape; they drifted once.
+        now = apply_tracking_update(
+            audit,
+            status     = body.status,
+            source     = body.source,
+            last_event = body.last_event,
+            location   = body.location,
+            event_time = body.event_time,
+            note       = body.note,
+        )
 
-        # ── Patch tracking block ──────────────────────────────────────────────
-        tr = audit.setdefault("tracking", {})
-        tr.update({
-            "status":                   body.status,
-            "status_label":             body.status.replace("_", " ").title(),
-            "last_event":               body.last_event,
-            "last_location":            body.location,
-            "last_update":              body.event_time,
-            "source":                   body.source,
-            # This endpoint is never the live DHL API, so the per-batch status
-            # is "manual" whoever submitted it. Distinct from get_tracking_mode(),
-            # which reports credential health (disabled / failed / active).
-            "api_status":               "manual",
-            "updated_at":               now,
-            "available":                True,
-            "cowork_result_received":   True,
-            "cowork_tracking_required": False,
-            "cowork_result_at":         now,
-        })
-        if body.note:
-            tr["cowork_result_note"] = body.note
-        if body.status in ("delivered", "out_for_delivery"):
-            tr["arrived_warehouse"] = True
-
-        # ── Close linked tracking_lookup proposal if supplied ─────────────────
         if body.proposal_id:
-            for prop in (audit.get("action_proposals") or []):
-                if (prop.get("proposal_id") == body.proposal_id
-                        and prop.get("type") == "tracking_lookup"):
-                    prop["status"] = "done"
-                    prop["done_at"] = now
-                    prop["done_source"] = body.source
-                    break
-
-        # ── Advance the workflow ──────────────────────────────────────────────
-        # A human-supplied update satisfies the tracking step regardless of
-        # which actor submitted it, so the batch stops asking for a lookup.
-        audit["tracking_complete"]        = True
-        audit["tracking_complete_source"] = body.source
-        audit["tracking_complete_at"]     = now
+            close_tracking_proposal(audit, body.proposal_id, body.source, now)
 
         write_json_atomic(audit_path, audit)
 
@@ -394,25 +367,20 @@ def submit_cowork_tracking_result(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Could not read audit: {exc}")
 
-        tr = audit.setdefault("tracking", {})
-        tr.update({
-            "status":                  body.status,
-            "status_label":            body.status.replace("_", " ").title(),
-            "last_event":              body.last_event,
-            "last_location":           body.last_location,
-            "last_update":             body.event_time,
-            "source":                  body.source,
-            "available":               True,
-            "cowork_result_received":  True,
-            "cowork_tracking_required": False,   # ← clear the lookup task
-            "cowork_result_at":        _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        })
-        if body.note:
-            tr["cowork_result_note"] = body.note
-
-        # Also update arrived_warehouse if status signals delivery/warehouse arrival
-        if body.status in ("delivered", "out_for_delivery"):
-            tr["arrived_warehouse"] = True
+        # Shared with update_tracking_for_batch and routes_ai_bridge — see
+        # services/tracking_patch.py. This was a third hand-written copy of the
+        # same patch and had drifted too: no api_status, no updated_at, and no
+        # top-level tracking_complete, so a cowork result submitted by AWB left
+        # the batch still asking for a lookup.
+        apply_tracking_update(
+            audit,
+            status     = body.status,
+            source     = body.source,
+            last_event = body.last_event,
+            location   = body.last_location,
+            event_time = body.event_time,
+            note       = body.note,
+        )
 
         write_json_atomic(audit_path, audit)
 
