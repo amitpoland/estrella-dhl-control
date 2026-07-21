@@ -137,15 +137,25 @@ def log_event(
     actor:          str = "system",
     detail:         Optional[dict] = None,
 ) -> None:
-    """Append an event to audit.json["timeline"]. Non-fatal — swallows all errors."""
+    """Append an event to audit.json["timeline"]. Non-fatal — swallows all errors.
+
+    The append is a read-modify-write of the whole audit.json and used to run
+    unlocked, so it could race a concurrent batch_write_lock holder: whole-file
+    last-writer-wins meant either the writer's field changes or this timeline
+    entry could be silently lost. It now runs under batch_write_lock.
+
+    batch_write_lock is non-reentrant and this function is called both inside
+    and outside a held lock across ~170 sites, so it acquires only when the
+    current thread does not already hold the batch's lock (holds_batch_lock)
+    and writes directly when it does. Either way the read and write sit in one
+    critical section for the batch.
+    """
     try:
         if not audit_path.exists():
             log.warning("timeline.log_event: audit not found at %s", audit_path)
             return
-        audit = json.loads(audit_path.read_text(encoding="utf-8"))
-        timeline: list = audit.setdefault("timeline", [])
 
-        # Build event and assert integrity before appending
+        # Build event and assert integrity before taking the lock / touching disk.
         _ts = datetime.now(timezone.utc).isoformat()
         _entry: dict = {
             "ts":             _ts,
@@ -154,19 +164,29 @@ def log_event(
             "actor":          actor or "system",
             "detail":         detail,
         }
-        # Integrity guard — ts must always be present
         if "ts" not in _entry or not _entry["ts"]:
             raise ValueError(
                 f"Timeline event integrity failure: 'ts' missing or empty "
                 f"(event={event}, source={trigger_source})"
             )
 
-        timeline.append(_entry)
-        if len(timeline) > _MAX_EVENTS:
-            audit["timeline"] = timeline[-_MAX_EVENTS:]
-        tmp = audit_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(audit, ensure_ascii=False, default=str), encoding="utf-8")
-        tmp.replace(audit_path)
+        def _append() -> None:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            timeline: list = audit.setdefault("timeline", [])
+            timeline.append(_entry)
+            if len(timeline) > _MAX_EVENTS:
+                audit["timeline"] = timeline[-_MAX_EVENTS:]
+            tmp = audit_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(audit, ensure_ascii=False, default=str), encoding="utf-8")
+            tmp.replace(audit_path)
+
+        from ..utils.batch_lock import batch_write_lock, holds_batch_lock
+        batch_id = audit_path.parent.name
+        if holds_batch_lock(batch_id):
+            _append()  # caller's batch_write_lock already covers this write
+        else:
+            with batch_write_lock(batch_id):
+                _append()
     except Exception as exc:
         log.warning("timeline.log_event failed (non-fatal): %s", exc)
 
