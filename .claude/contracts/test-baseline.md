@@ -48,10 +48,13 @@ was not env-conditional but full-suite teardown contamination leaking from four 
 broken by PR #824 (`test_carrier_live_adapter_gate.py` ×3 receiver-phone gate;
 `test_carrier_awb_modal_fields.py::test_receiver_details_email_absent_*` empty-string→omit). With
 those four fixed (test-only), `box_types` and `test_shipment_request_body_forwards_product_code` no
-longer error (0 errors across 3 full-suite runs). One carrier test is now `skip`-superseded in-source
-rather than baseline-listed: `test_carrier_shipment_db.py::test_tracking_ref_not_in_schema`
-(operator decision 2026-07-06 persists `tracking_ref`; surviving AWB-exclusion invariant covered by
-`test_live_result_insert_raises`).
+longer error (0 errors across 3 full-suite runs). The carrier suite now carries **no skips**:
+`test_carrier_shipment_db.py::test_tracking_ref_not_in_schema` was `skip`-superseded in-source from
+2026-07-09 and **deleted 2026-07-19** (see history row) — `tracking_ref` has been a persisted column
+since PR #819, so the assertion was provably false rather than merely unproven. The surviving
+AWB-exclusion invariant (live results are never inserted) is covered by
+`test_carrier_shipment_db.py::test_live_result_insert_raises`, and the persisted-column rationale is
+documented at `service/app/services/carrier/persistence/shipment_db.py:48`.
 
 ---
 
@@ -70,6 +73,7 @@ When a new golden batch is committed or a new test is added:
 
 | Date | PZ required | Carrier required | Reason |
 |------|-------------|------------------|--------|
+| 2026-07-19 | 257 | 604 | **No floor change — dead-test cleanup of the obsolete `tracking_ref` AWB-exclusion invariant (GATE-4 SCHEDULED disposition, operator-ratified 2026-07-19).** `tracking_ref` has been a persisted column since PR #819 (squash `ae6c73b9`, operator decision 2026-07-06 duplicate-AWB incident fix — idempotency replay returns the stored result with zero adapter calls), so both tests asserting `"tracking_ref" not in row` asserted a **provably false** invariant. Deleted: (1) `test_carrier_shipment_db.py::test_tracking_ref_not_in_schema` — carried `@pytest.mark.skip` since the 2026-07-09 reconciliation; a skip that can never be un-skipped is dead code. (2) `test_e2e_carrier_shadow_create.py::test_shipment_db_row_has_no_tracking_ref_column` — was **actively FAILING on `main` and undocumented** (not listed in any exclusion row); outside both metered patterns, so it never tripped a gate. **Floor stays 604: deleting a *skipped* test removes 0 passes.** Fresh creds-set measurement on this branch: carrier `tests/test_carrier_*.py` = **619 passed / 4 documented env fail (`test_carrier_config_defaults.py`) / 0 skipped / 0 errors** — pass count identical to the 2026-07-18 row's measured 619, with the 1 skip now gone; `test_e2e_carrier_shadow_create.py` 17/17 (was 16 pass + 1 fail). Surviving AWB-exclusion invariant `test_live_result_insert_raises` passes and is untouched. No production code changed. Test files + this file changed in the same commit per update protocol. |
 | 2026-07-18 | 257 | 604 | Carrier floor 584→604 (+20): new `test_carrier_operator_attribution.py` adds X-Operator booking attribution coverage (DB `booked_by` column, coordinator fresh/replay preservation, route header→audit→response, sanitiser, do-not-use header fallback). Test file + this file changed in the same commit per update protocol. Bump is the minimal delta attributable to the new file on top of the recorded 584 floor; fresh creds-set full-suite evidence measured **619 pass / 4 documented env fail (`test_carrier_config_defaults.py`) / 1 skip / 0 errors**, so 604 stays conservative below measured. PZ 257 pass / 1 documented #613 fail; root golden 160/160. |
 | 2026-07-16 | 257 | 584 | GATE-4 SCHEDULED disposition from PR #925 deploy gate (no floor change): registered `test_proforma_to_invoice_routes.py::test_dashboard_renders_two_step_convert_flow` as a known-failing exclusion (Issue #927) — stale V1 shipment-detail.html string pins, proven pre-existing on `origin/main` `28784270`, outside both metered suites. Gate-time fresh evidence for #925: PZ 257 pass / 1 documented #613 fail; Carrier 584 pass / 4 documented env fails / 1 skip / 0 err. |
 | 2026-07-16 | 257 | 584 | **Removed** the Issue #927 exclusion row (no floor change): `test_dashboard_renders_two_step_convert_flow` DELETED — its stale V1 shipment-detail.html pins were repointed at the canonical V2 convert surface (`app/static/v2/proforma-detail.jsx` ConvertToInvoiceModal) as 8 new pins in `test_convert_modal_truth.py` §"Issue #927" (entry button, two-step preview→execute, exact confirm token YES_CREATE_FINAL_INVOICE_FROM_PROFORMA, irreversibility warning + acknowledgement checkbox, execute gating, single execute call site). Suite is outside both metered PZ/Carrier patterns; test file + this file changed in the same commit per update protocol. Closes #927. |
