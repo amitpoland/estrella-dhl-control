@@ -32,7 +32,17 @@ _BATCH = "REPAIR_TEST_001"
 @pytest.fixture(scope="module")
 def client():
     from app.main import app
-    return TestClient(app, raise_server_exceptions=False)
+    # The dhl-followup stop/send-now/recalculate routes require an operator
+    # *session* (require_role("admin","logistics")) on top of the X-API-Key.
+    # Inject one by overriding get_current_user, which require_role depends on.
+    from app.auth.dependencies import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "test-admin", "email": "admin@test.local", "role": "admin",
+    }
+    try:
+        yield TestClient(app, raise_server_exceptions=False)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def _headers():
