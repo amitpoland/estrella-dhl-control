@@ -828,6 +828,32 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         "ON proforma_drafts(wfirma_proforma_id)"
     )
 
+    # Cross-draft uniqueness (2B F1): one wFirma invoice must never be linked to
+    # two drafts. The confirm-wfirma-link route pre-checks with a SELECT
+    # (get_draft_by_wfirma_invoice_id) then writes with a separate UPDATE — a
+    # TOCTOU window where two concurrent confirms both pass the SELECT and both
+    # write. This partial UNIQUE index makes the DB reject the second write
+    # atomically (→ IntegrityError → 409), independent of process topology.
+    # Partial: unconverted drafts (NULL / '') are exempt, so it does not
+    # constrain the many drafts that never carry an invoice id.
+    #
+    # Wrapped: pre-existing duplicate ids in some environment would make CREATE
+    # UNIQUE INDEX raise. Never break init_db/startup over it — the route's
+    # code-level SELECT guards remain as the fallback. Production verified clean
+    # (0 duplicates) before shipping this.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_pd_wfirma_invoice_id "
+            "ON proforma_drafts(wfirma_invoice_id) "
+            "WHERE wfirma_invoice_id IS NOT NULL AND wfirma_invoice_id != ''"
+        )
+    except Exception as exc:  # pragma: no cover - only trips on dirty legacy data
+        log.warning(
+            "uq_pd_wfirma_invoice_id not created (pre-existing duplicate "
+            "wfirma_invoice_id?): %s — cross-draft uniqueness falls back to the "
+            "route-level SELECT guard until duplicates are cleaned.", exc,
+        )
+
     # Per-draft event log — mirrors audit.timeline at draft granularity
     # so we don't pollute the per-batch audit with every edit. Keyed by
     # draft_id (stable across restarts).
