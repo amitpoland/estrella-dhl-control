@@ -5428,6 +5428,18 @@ def confirm_wfirma_link(
             wfirma_invoice_id=remote_id,
             wfirma_invoice_number=resolved_fullnumber or "",
         )
+    except sqlite3.IntegrityError:
+        # The uq_pd_wfirma_invoice_id partial-unique index rejected the write:
+        # a concurrent confirm linked this same wFirma document to another draft
+        # in the TOCTOU window after our pre-flight SELECT. This is a genuine
+        # conflict, not a retryable failure — return the same 409 the pre-flight
+        # guard would have (2B F1).
+        log.warning("[confirm_wfirma_link] cross-draft uniqueness hit for "
+                    "draft %s / invoice %s (concurrent link)", draft_id, remote_id)
+        return JSONResponse({"ok": False, "status": "conflict",
+            "error": ("this wFirma document was linked to another draft "
+                      "concurrently — the same document cannot be linked twice")},
+            status_code=409)
     except Exception as exc:
         log.error("[confirm_wfirma_link] persist failed for draft %s: %s",
                   draft_id, exc)
