@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from ..auth.dependencies import get_current_user
 from ..core import timeline as tl
 from ..core.config import settings
+from ..core.logging import get_logger
 from ..services.ai_bridge import (
     FORBIDDEN_FIELDS,
     TASK_TEMPLATES,
@@ -40,6 +41,8 @@ from ..services.ai_bridge import (
 from ..services.tracking_patch import apply_tracking_update, close_tracking_proposal
 from ..utils.batch_lock import batch_write_lock
 from ..utils.io import write_json_atomic
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/ai-bridge", tags=["ai_bridge"])
 _auth  = Depends(get_current_user)
@@ -282,8 +285,11 @@ def import_bridge_result(
                     "source":    body.source,
                 })
                 write_json_atomic(audit_path, _current)
-        except Exception:
-            pass  # safety logging is best-effort
+        except Exception as exc:
+            # best-effort — never block the 422 — but log so a swallowed failure
+            # (incl. a batch_write_lock timeout) is visible, not silent (#992).
+            log.warning("[import_bridge_result] ai_bridge_errors log skipped "
+                        "for %s: %s", batch_id, exc)
         raise HTTPException(status_code=422, detail=str(exc))
 
     # If it's an email_scan result, log inbox-scan + auto-apply DHL detection
@@ -304,8 +310,10 @@ def import_bridge_result(
                 if body.source and "source" not in scan_results:
                     scan_results["source"] = body.source
                 save_email_scan_result(scan_results, _audit_for_store)
-            except Exception:
-                pass  # storage is best-effort — never blocks audit update
+            except Exception as exc:
+                # best-effort — never blocks the audit update — but observable (#992).
+                log.warning("[import_bridge_result] email-intelligence store "
+                            "skipped for %s: %s", batch_id, exc)
 
             # ── 0. Unreliable-zero-result guard ───────────────────────────────
             # If matched==0 but Cowork explicitly flagged search_unreliable
@@ -323,8 +331,10 @@ def import_bridge_result(
                         )
                         _cur["email_search_risk_at"]     = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
                         write_json_atomic(audit_path, _cur)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # best-effort risk flag — observable, not silent (#992).
+                    log.warning("[import_bridge_result] email_search_risk flag "
+                                "skipped for %s: %s", batch_id, exc)
                 tl.log_event(
                     audit_path,
                     "email_scan_unreliable",
@@ -510,8 +520,13 @@ def import_bridge_result(
                             "task_id":        task_id,
                         },
                     )
-        except Exception:
-            pass  # timeline write is best-effort
+        except Exception as exc:
+            # best-effort email_scan post-processing (evidence + clearance
+            # advance + derived-event logging). A batch_write_lock timeout in
+            # the clearance/preclearance blocks lands here — log, don't swallow
+            # silently (#992).
+            log.warning("[import_bridge_result] email_scan post-processing "
+                        "skipped for %s: %s", batch_id, exc)
 
     # If it's a tracking_lookup result, also update cowork flags
     if task.get("task_type") == "tracking_lookup":
@@ -551,8 +566,12 @@ def import_bridge_result(
                             audit, body.proposal_id, body.source, now)
 
                     write_json_atomic(audit_path, audit)
-            except Exception:
-                pass  # tracking patch is best-effort — import already succeeded
+            except Exception as exc:
+                # best-effort — the import already succeeded — but a swallowed
+                # batch_write_lock timeout here means tracking_complete silently
+                # was not written (the exact hazard #992 was filed for). Log it.
+                log.warning("[import_bridge_result] tracking patch skipped "
+                            "for %s: %s", batch_id, exc)
 
     # Log timeline
     tl.log_event(
