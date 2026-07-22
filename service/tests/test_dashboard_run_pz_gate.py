@@ -19,9 +19,7 @@ from pathlib import Path
 _SVC = Path(__file__).parent.parent
 sys.path.insert(0, str(_SVC))
 
-DASHBOARD_HTML = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
-)
+DASHBOARD_HTML = Path(__file__).resolve().parent.parent / "app" / "static" / "dashboard.html"
 
 
 def _src() -> str:
