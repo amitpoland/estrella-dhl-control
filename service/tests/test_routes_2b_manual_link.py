@@ -315,6 +315,44 @@ def test_confirm_conflict_issued_link_elsewhere_409(client, monkeypatch):
     assert persisted == []
 
 
+def test_confirm_conflict_pending_link_elsewhere_409(client, monkeypatch):
+    """#989: a PENDING (in-flight) conversion link elsewhere must block too, not
+    just an issued one — the route comment says 'must block too (not just
+    issued)'. Only the issued case was covered; if the tuple ever dropped
+    "pending" nothing would have caught it."""
+    _enable_confirm(monkeypatch, link=SimpleNamespace(status="pending"))
+    persisted = []
+    monkeypatch.setattr("app.services.conversion_persistence.persist_invoice_to_draft",
+                        lambda **k: persisted.append(k))
+    r = client.post(_CONFIRM.format(1), headers=_authop(),
+                    json={"document_type": "invoice", "wfirma_id": "500001",
+                          "expected_preview_hash": "HASH-OK"})
+    assert r.status_code == 409
+    assert persisted == []
+
+
+def test_confirm_conflict_same_invoice_other_draft_409(client, monkeypatch):
+    """#990: the same wFirma document already linked to a DIFFERENT draft. The
+    PRIMARY cross-draft guard is get_draft_by_wfirma_invoice_id; _enable_confirm
+    does not stub it (in-test it returns None), so this route path was untested.
+    The DB backstop is uq_pd_wfirma_invoice_id (#987, covered in
+    test_2b_cross_draft_uniqueness.py); this pins the friendly-409 route path."""
+    _enable_confirm(monkeypatch)
+    # primary guard: the invoice is already on another draft (id 42, not this one)
+    monkeypatch.setattr(
+        pildb, "get_draft_by_wfirma_invoice_id",
+        lambda db, iid, exclude_draft_id=None: SimpleNamespace(id=42),
+    )
+    persisted = []
+    monkeypatch.setattr("app.services.conversion_persistence.persist_invoice_to_draft",
+                        lambda **k: persisted.append(k))
+    r = client.post(_CONFIRM.format(1), headers=_authop(),
+                    json={"document_type": "invoice", "wfirma_id": "500001",
+                          "expected_preview_hash": "HASH-OK"})
+    assert r.status_code == 409
+    assert persisted == []
+
+
 def test_confirm_noop_same_id_no_event(client, monkeypatch):
     _enable_confirm(monkeypatch, draft=_draft(invoice_id="500001"))
     persisted, events = [], []
