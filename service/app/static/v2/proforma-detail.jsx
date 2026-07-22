@@ -4167,7 +4167,9 @@ function ManualLinkPanel({ draft, draftHook }) {
                     <span style={{ fontWeight: 600 }}>{g.field}</span>
                     <span style={{ marginLeft: 8, color: 'var(--badge-red-text)' }}>{g.severity}</span>
                     <span style={{ marginLeft: 8, color: 'var(--text-3)' }}>{g.resolution_policy}</span>
-                    <div style={{ marginTop: 3, color: 'var(--text-2)' }}>{g.message}</div>
+                    {/* g.label, not g.message: _public_gap withholds message (it
+                        carries raw wFirma entity ids, W-6) and emits a safe label. */}
+                    <div style={{ marginTop: 3, color: 'var(--text-2)' }}>{g.label}</div>
                   </div>
                 ))}
               </div>
