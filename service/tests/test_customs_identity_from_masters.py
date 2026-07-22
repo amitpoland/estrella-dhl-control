@@ -385,6 +385,15 @@ class TestEngineConsigneeOverride:
                 _MINIMAL_BATCH, "TEST_AWB", str(tmp_path),
                 consignee_name="CONSIGNEE_TEST",
                 consignor_name="CONSIGNOR_TEST",
+                # bb36261b (2026-07-09) added a description-resolver guard that
+                # runs BEFORE the PDF call and blocks when a row has no
+                # product_code. _MINIMAL_BATCH deliberately has none, so the
+                # guard short-circuited and the spy was never invoked — this
+                # test has failed since that commit. enforce_guards=False is the
+                # escape hatch that commit added for exactly this case: unit-
+                # testing kwarg wiring without a fully resolved batch. The guard
+                # has its own tests; this one asserts threading only.
+                enforce_guards=False,
             )
         finally:
             cde.generate_polish_description_pdf = original
