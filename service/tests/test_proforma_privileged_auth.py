@@ -178,6 +178,11 @@ _MUTATIONS = [
     ("post", "/api/v1/proforma/draft/999999/post", {"json": {}}),
     ("delete", "/api/v1/proforma/draft/999999", {}),
     ("post", "/api/v1/proforma/draft/999999/send-email", {"json": {}}),
+    # 2B confirm-wfirma-link (state-changing, require_api_key_privileged) — #988.
+    # resolve-wfirma-document is read-only (_auth) and is covered by
+    # _READ_ONLY_POST_ALLOWLIST, not here.
+    ("post", "/api/v1/proforma/draft/999999/confirm-wfirma-link",
+     {"json": {"document_type": "invoice", "wfirma_id": "1", "expected_preview_hash": "x"}}),
 ]
 
 
