@@ -70,6 +70,21 @@ def _generate_pdf(storage_root: Path, batch: dict | None = None) -> dict:
     return pkg
 
 
+def _read_pdf_text_flat(pdf_path: str) -> str:
+    """PDF text with all runs of whitespace collapsed to single spaces.
+
+    The label row is laid out wide enough that the PDF wraps it mid-string:
+    extraction yields 'Co to za towar / What is' on one line and 'this:' on
+    the next, so a raw `"Co to za towar / What is this" in text` check fails
+    even though the label renders correctly. That is a layout artefact, not a
+    missing label — this file already compensates for the same wrapping
+    elsewhere ("check distinguishing phrases separately"), it was just never
+    applied to the label assertions. Flattening keeps the assertion exact
+    instead of weakening it to a substring of a substring.
+    """
+    return " ".join(_read_pdf_text(pdf_path).split())
+
+
 def _read_pdf_text(pdf_path: str) -> str:
     try:
         from pypdf import PdfReader
@@ -87,8 +102,12 @@ def _read_pdf_text(pdf_path: str) -> str:
 def test_labels_are_polish_first(storage):
     pkg = _generate_pdf(storage)
     text = _read_pdf_text(pkg["pdf"]["output_path"])
-    # New: Polish first, English after slash
-    assert "Co to za towar / What is this" in text
+    # New: Polish first, English after slash. Read flattened — the label cell
+    # (LABEL_W = 42mm) wraps this 32-char label, so pypdf returns
+    # "Co to za towar /\nWhat is this:" and a raw substring check fails on a
+    # label that is in fact rendered correctly.
+    assert "Co to za towar / What is this" in _read_pdf_text_flat(
+        pkg["pdf"]["output_path"])
     assert "Z jakiego materia" in text and "Material" in text
     assert "Do czego s" in text and "Purpose" in text
     assert "Ilo" in text and "Quantity" in text
@@ -203,7 +222,8 @@ def test_fallback_when_engine_unreachable(storage, monkeypatch):
     # check distinguishing phrases separately).
     assert "Diamond & Colour Stone" in text
     assert "PT950 Platinum Jewellery RING" in text
-    # Polish-first label still rendered
-    assert "Co to za towar / What is this" in text
+    # Polish-first label still rendered (flattened — see _read_pdf_text_flat)
+    assert "Co to za towar / What is this" in _read_pdf_text_flat(
+        pkg["pdf"]["output_path"])
     # No em-dash composition in the description content
     assert "Diamond & Colour Stone PT950 Platinum Jewellery RING — " not in text
