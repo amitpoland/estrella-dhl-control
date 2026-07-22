@@ -53,7 +53,17 @@ def env(monkeypatch):
 def client(env):
     from fastapi.testclient import TestClient
     from app.main import app
-    return TestClient(app, raise_server_exceptions=False)
+    # The delete route is guarded by require_admin (an admin *session*, not
+    # X-API-Key). Inject an admin the canonical way; the X-API-Key header the
+    # helpers still send is now simply ignored by this route.
+    from app.auth.dependencies import require_admin
+    app.dependency_overrides[require_admin] = lambda: {
+        "id": "test-admin", "email": "admin@test.local", "role": "admin",
+    }
+    try:
+        yield TestClient(app, raise_server_exceptions=False)
+    finally:
+        app.dependency_overrides.pop(require_admin, None)
 
 
 def _make_batch(
