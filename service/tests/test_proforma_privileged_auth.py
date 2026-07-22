@@ -49,6 +49,11 @@ _SRC = _SVC / "app" / "api" / "routes_proforma.py"
 #  test_preview_endpoint_does_not_invoke_wfirma_write).
 _READ_ONLY_POST_ALLOWLIST = {
     "/preview/{batch_id}/{client_name:path}",
+    # 2B manual-link PREVIEW: read-only by contract (no DB/wFirma/audit write),
+    # pinned by test_routes_2b_manual_link.test_resolve_writes_nothing +
+    # test_resolve_no_remote_mutation. The WRITE half (confirm-wfirma-link) is on
+    # _auth_write.
+    "/draft/{draft_id}/resolve-wfirma-document",
 }
 
 

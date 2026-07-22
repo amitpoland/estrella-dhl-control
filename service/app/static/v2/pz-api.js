@@ -446,6 +446,17 @@
     getDraftReconciliation: (draftId) =>
       _get(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/reconciliation`),
 
+    // 2B — READ-ONLY preview of linking a remote wFirma document to a draft.
+    // Transport only: no write, no hash construction here (the backend owns the
+    // opaque preview_hash). body = { document_type, wfirma_id? | full_number? }.
+    resolveWfirmaDocument: (draftId, body) =>
+      _post(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/resolve-wfirma-document`, body || {}),
+
+    // 2B — WRITE (privileged, X-Operator). Echoes the resolve body +
+    // expected_preview_hash. Transport only; never interprets the hash.
+    confirmWfirmaLink: (draftId, body) =>
+      _postM(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/confirm-wfirma-link`, body || {}),
+
     // GET /api/v1/proforma/draft/{draft_id}/preview.html
     // Local EJ-rendered SOURCE-document preview (no wFirma call). URL builder
     // only — reuses the existing preview authority; not a second preview path.

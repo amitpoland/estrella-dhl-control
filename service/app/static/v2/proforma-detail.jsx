@@ -4069,6 +4069,129 @@ function ReconciliationPanel({ draft }) {
 }
 
 
+// 2B — manually link an EXISTING wFirma document to this draft. Read-only preview
+// (Preview) then an explicit privileged Confirm. Composition + transport only: the
+// backend owns comparison, the opaque preview_hash, and all write authority. This
+// panel NEVER renders the preview_hash, any wFirma id, db id, or raw XML.
+function ManualLinkPanel({ draft, draftHook }) {
+  const draftId = draft && draft.id;
+  const hasProforma = !!(draft && draft.wfirma_proforma_id);
+  const alreadyLinked = !!(draft && draft.wfirma_invoice_id);
+  const [st, setSt] = React.useState({ phase: 'idle', mode: 'id', value: '', preview: null, hash: '', result: null, error: null });
+
+  const card = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginTop: 20 };
+  const box  = { padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)' };
+  const inp  = { padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', fontSize: 12, minWidth: 220 };
+
+  // The panel is only meaningful for a posted, not-yet-linked, proforma-derived
+  // draft. Hidden otherwise (Lesson M: a real cancellation would be documented;
+  // this is a not-applicable state, surfaced as a quiet note when already linked).
+  if (!hasProforma) return null;
+
+  const onPreview = () => {
+    const v = (st.value || '').trim();
+    if (!v) { setSt((s) => ({ ...s, error: 'Enter a wFirma id or document number.' })); return; }
+    const bodyReq = { document_type: 'invoice' };
+    if (st.mode === 'id') bodyReq.wfirma_id = v; else bodyReq.full_number = v;
+    setSt((s) => ({ ...s, phase: 'previewing', error: null, preview: null, hash: '', result: null }));
+    window.PzApi.resolveWfirmaDocument(draftId, bodyReq).then((res) => {
+      if (!res || res.ok === false) {
+        setSt((s) => ({ ...s, phase: 'idle', error: (res && (res.error || `error ${res.status || ''}`)) || 'Preview failed.' }));
+        return;
+      }
+      const d = res.data || {};
+      if (d.status === 'no_local_authority') {
+        setSt((s) => ({ ...s, phase: 'idle', error: 'This draft cannot be reconciled (no source proforma).' }));
+        return;
+      }
+      setSt((s) => ({ ...s, phase: 'preview', preview: d, hash: d.preview_hash || '', error: null }));
+    });
+  };
+
+  const onConfirm = () => {
+    const v = (st.value || '').trim();
+    const bodyReq = { document_type: 'invoice', expected_preview_hash: st.hash };
+    if (st.mode === 'id') bodyReq.wfirma_id = v; else bodyReq.full_number = v;
+    setSt((s) => ({ ...s, phase: 'confirming', error: null }));
+    window.PzApi.confirmWfirmaLink(draftId, bodyReq).then((res) => {
+      if (res && res.ok && res.data && res.data.ok) {
+        setSt((s) => ({ ...s, phase: 'done', result: res.data, error: null }));
+        if (draftHook && typeof draftHook.reload === 'function') draftHook.reload();
+        return;
+      }
+      // non-2xx (503 disabled / 409 drift|conflict|editable / 400 operator) or {ok:false}
+      const msg = (res && (res.error || (res.data && res.data.error))) || 'Link failed.';
+      setSt((s) => ({ ...s, phase: 'preview', error: msg }));
+    });
+  };
+
+  let body;
+  if (alreadyLinked && st.phase !== 'done') {
+    body = <div data-testid="pf-link-alreadylinked" style={{ ...box, color: 'var(--text-3)' }}>A wFirma document is already linked to this draft.</div>;
+  } else if (st.phase === 'done') {
+    body = <div data-testid="pf-link-done" style={{ ...box, color: 'var(--badge-green-text)', borderColor: 'var(--badge-green-text)' }}>✓ {st.result && st.result.status === 'noop' ? 'Document was already linked.' : 'Document linked to this draft.'}</div>;
+  } else {
+    const cs = (st.preview && st.preview.candidate_summary) || null;
+    const gaps = (st.preview && st.preview.gaps) || [];
+    const gs = (st.preview && st.preview.gap_summary) || {};
+    const previewing = st.phase === 'previewing';
+    const confirming = st.phase === 'confirming';
+    const inPreview  = st.phase === 'preview';
+    body = (
+      <div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <select data-testid="pf-link-mode" value={st.mode} onChange={(e) => setSt((s) => ({ ...s, mode: e.target.value }))} style={inp}>
+            <option value="id">By wFirma document id</option>
+            <option value="number">By document number</option>
+          </select>
+          <input data-testid="pf-link-value" style={inp} placeholder={st.mode === 'id' ? 'numeric wFirma id' : 'document number'} value={st.value} onChange={(e) => setSt((s) => ({ ...s, value: e.target.value }))} />
+          <Btn variant="outline" small data-testid="pf-link-preview" disabled={previewing || confirming} onClick={onPreview}>{previewing ? 'Checking…' : 'Preview'}</Btn>
+        </div>
+
+        {inPreview || confirming ? (
+          <div style={{ marginTop: 12 }}>
+            {cs ? (
+              <div data-testid="pf-link-candidate" style={{ ...box, marginBottom: 8 }}>
+                Expected: {cs.line_count} line{cs.line_count === 1 ? '' : 's'} · {cs.currency} {cs.expected_total}
+              </div>
+            ) : null}
+            {gaps.length === 0 ? (
+              <div data-testid="pf-link-match" style={{ ...box, color: 'var(--badge-green-text)', borderColor: 'var(--badge-green-text)', marginBottom: 8 }}>✓ Matches the expected invoice — no differences.</div>
+            ) : (
+              <div data-testid="pf-link-mismatch">
+                <div data-testid="pf-link-summary" style={{ ...box, color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-text)', marginBottom: 8 }}>
+                  {gs.total || gaps.length} difference{(gs.total === 1) ? '' : 's'} vs the expected invoice{gs.has_blocking ? ' · blocking' : ''}
+                </div>
+                {gaps.map((g) => (
+                  <div key={g.field} data-testid={`pf-link-gap-${g.field}`} style={{ ...box, marginBottom: 6 }}>
+                    <span style={{ fontWeight: 600 }}>{g.field}</span>
+                    <span style={{ marginLeft: 8, color: 'var(--badge-red-text)' }}>{g.severity}</span>
+                    <span style={{ marginLeft: 8, color: 'var(--text-3)' }}>{g.resolution_policy}</span>
+                    {/* g.label, not g.message: _public_gap withholds message (it
+                        carries raw wFirma entity ids, W-6) and emits a safe label. */}
+                    <div style={{ marginTop: 3, color: 'var(--text-2)' }}>{g.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: 'var(--text-3)', margin: '4px 0 8px' }}>Linking records this wFirma document on the draft. It cannot be undone in this release.</div>
+            <Btn variant="primary" small data-testid="pf-link-confirm" disabled={confirming || !st.hash} onClick={onConfirm}>{confirming ? 'Linking…' : 'Confirm link to this wFirma document'}</Btn>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="pf-manual-link" style={card}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10 }}>Link existing wFirma document</div>
+      {body}
+      {st.error ? <div data-testid="pf-link-error" style={{ ...box, color: 'var(--badge-amber-text)', borderColor: 'var(--badge-amber-text)', marginTop: 8 }}>{st.error}</div> : null}
+    </div>
+  );
+}
+
+
 function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [activeTab,        setActiveTab]        = React.useState('overview');
   const [showConvertModal, setShowConvertModal]  = React.useState(false);
@@ -6397,6 +6520,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
               {/* A2: read-only reconciliation report (presentation over the stable endpoint) */}
               <ReconciliationPanel draft={draft} />
+              <ManualLinkPanel draft={draft} draftHook={draftHook} />
             </div>
           );
         })()}

@@ -1742,6 +1742,36 @@ def get_draft_by_id(db_path: Path, draft_id: int) -> Optional[ProformaDraft]:
     return _row_to_draft(row) if row else None
 
 
+def get_draft_by_wfirma_invoice_id(
+    db_path: Path, invoice_id: str, *, exclude_draft_id: Optional[int] = None,
+) -> Optional[ProformaDraft]:
+    """Read-only: the draft (if any) that already carries this remote invoice id
+    on the proforma_drafts aggregate, optionally excluding one draft id.
+
+    proforma_drafts.wfirma_invoice_id is the CANONICAL RemoteDocumentReference
+    owner, so cross-draft uniqueness of a manual (2B) link is enforced HERE.
+    (get_link_by_invoice covers a different fact — conversion provenance in the
+    proforma_invoice_links table — and is a separate, secondary guard.)
+    """
+    iid = (invoice_id or "").strip()
+    if not iid or not Path(db_path).exists():
+        return None
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+        if exclude_draft_id is not None:
+            row = conn.execute(
+                "SELECT * FROM proforma_drafts WHERE wfirma_invoice_id=? AND id<>? LIMIT 1",
+                (iid, int(exclude_draft_id)),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM proforma_drafts WHERE wfirma_invoice_id=? LIMIT 1",
+                (iid,),
+            ).fetchone()
+    return _row_to_draft(row) if row else None
+
+
 def clone_draft(db_path: Path, source_id: int) -> ProformaDraft:
     """Create a new draft as a deep copy of the source, status=draft, unposted.
 
@@ -2302,6 +2332,14 @@ def auto_create_draft_from_sales_packing(
 # Lifecycle states in which mutation is permitted. Posted/posting/cancelled/
 # superseded/approved drafts MUST NOT be edited.
 EDITABLE_STATES = ("draft", "editing", "post_failed")
+
+# States in which a draft may have an existing wFirma document MANUALLY linked
+# (Campaign 2B). Positive allowlist (not a denylist): only a posted, not-yet-
+# converted proforma is eligible — it has a wfirma_proforma_id (so the post-time
+# product-code billing true-blocker ran) and its lines are frozen. Everything
+# else (draft/editing/post_failed/posting/approved/cancelled/superseded/converted)
+# is NOT linkable, so a new lifecycle state can never accidentally become linkable.
+LINKABLE_STATES = ("posted",)
 
 # Currencies the project deals in. Mirrors the intake-route allowlist.
 ALLOWED_CURRENCIES = ("EUR", "USD", "PLN", "GBP", "CHF", "JPY")
