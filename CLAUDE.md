@@ -814,6 +814,21 @@ a named business rule + test is incomplete by this lesson.
 
 **Reference**: PR `fix/authority-model-separation` (2026-06-22); `service/tests/test_authority_separation.py`; PROJECT_STATE.md DECISIONS section.
 
+### Lesson O — Tightening a route's auth breaks every test that authenticated the old way; migrate the tests in the same PR, never weaken the route (2026-07-22)
+
+**GATE 1 + security-permissions + reviewer-challenge.** When a route's auth dependency is tightened — `require_api_key` → `require_admin` (session/cookie only), or `require_role(...)` added on top of `require_api_key` — every existing test that authenticated via `X-API-Key` starts returning **401 "Not authenticated"**, because `require_admin` / `require_role` both flow through `get_current_user`, which raises 401 with no `pz_session` cookie. This is a **stale-test signal, not a route bug**.
+
+**Binding rules:**
+1. **Same-PR test migration.** Any PR that changes a route's auth dependency MUST, in the same PR, migrate every test exercising that route to the new mechanism. Grep the route path across `tests/` before merging — `X-API-Key`-only tests against a now-session-guarded route are incomplete by this lesson.
+2. **Diagnose 401 correctly.** A route-test 401 after an auth change is triaged by reading the route's current dependency + its `git log -S`, not by assuming a regression. If the tightening was intentional (destructive deletes, operator-explicit actions), the **test** is stale.
+3. **Never downgrade the route to make a test pass.** Fixing a stale-auth test means giving the test an admin session, not relaxing the endpoint. Weakening auth to green a test is a security regression.
+4. **Canonical test fix:** override the session dependency, with cleanup so it cannot leak —
+   `app.dependency_overrides[require_admin] = lambda: {"role": "admin", ...}` (or `get_current_user` for `require_role` routes), popped in a `finally`. Verify leak-free by interleaving with an auth-denial suite (e.g. `test_hr5_privileged_auth`).
+
+**Where it binds**: every PR that adds/changes a route `dependencies=[...]` auth guard; every route test that sends `X-API-Key`.
+
+**Reference**: PR #1004 `fix/dashboard-auth-tests-stale` (2026-07-22) — `test_dashboard_polish_desc_delete` (route hardened `require_api_key`→`require_admin` since introduction `3046186f`) and `test_dashboard_repair` (dhl-followup routes gained `require_role("admin","logistics")`); +10 tests recovered. Related recurring class: X-API-Key automation vs `require_api_key_privileged` (Issue #502 / `test_hr5_privileged_auth`).
+
 ---
 
 ## Frontend Design Standard
