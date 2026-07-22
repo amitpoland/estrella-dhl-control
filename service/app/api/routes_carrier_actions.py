@@ -39,7 +39,11 @@ POST /api/v1/carrier/{batch_id}/label-package   ← Path-DOC (WF4.5)
     Returns: PDF or ZIP bytes containing invoice + packing list + CN23 (non-EU).
     422 {gaps:[...]} when mandatory inputs are missing.
 
-Auth: X-API-Key header via require_api_key (same pattern as routes_pz.py).
+Auth: read routes use require_api_key. Mutation routes (POST) that create a
+shipment/AWB, mark an AWB do-not-use, or generate a document package ALSO
+require role admin|logistics (require_role) — booking a carrier shipment is a
+money-moving, outward-facing action and must not be reachable by a viewer-role
+session holding only an API key. Consistent with the RBAC hardening in #504.
 No live DHL calls in shadow mode.
 """
 from __future__ import annotations
@@ -53,6 +57,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from ..core.security import require_api_key
+from ..auth.dependencies import require_role
 from ..services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
 from ..services.carrier.factory import CarrierConfig
 from ..services.carrier.cmr_number import cmr_document_number
@@ -536,6 +541,7 @@ def create_shipment(
     batch_id: str,
     body: ShipmentRequestBody,
     _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
     coordinator: CarrierCoordinator = Depends(_get_coordinator),
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
@@ -838,6 +844,7 @@ def mark_shipment_do_not_use(
     tracking_ref: str,
     body: DoNotUseBody,
     _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
     db_path: Path = Depends(_get_shipment_db_path),
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
@@ -921,6 +928,7 @@ async def create_label_package(
     batch_id: str,
     body: LabelPackageBody,
     _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
 ) -> Response:
     """Generate the Path-DOC outbound document package for a batch."""
     try:

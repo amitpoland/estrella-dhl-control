@@ -156,3 +156,47 @@ def test_get_status_no_key_returns_401(auth_app):
     client = TestClient(auth_app, raise_server_exceptions=False)
     resp = client.get("/api/v1/carrier/status")
     assert resp.status_code == 401
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RBAC: mutation routes require role admin|logistics (guard upgrade, #504 / #965)
+#
+# require_api_key alone is not enough on these POSTs — a viewer-role session
+# holding an API key must NOT be able to book a shipment, mark an AWB
+# do-not-use, or generate a document package. These assert the require_role
+# gate rejects a viewer with 403, at the auth layer (before any handler body).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from app.auth.dependencies import get_current_user  # noqa: E402
+
+
+def _viewer() -> dict:
+    return {"id": "u1", "role": "viewer", "is_active": 1, "is_approved": 1}
+
+
+@pytest.fixture()
+def viewer_app():
+    """API key accepted, session resolves to a viewer — so require_role should 403."""
+    app = FastAPI()
+    app.include_router(actions_router)
+    app.dependency_overrides[require_api_key] = lambda: None      # key OK
+    app.dependency_overrides[get_current_user] = _viewer          # but role=viewer
+    app.dependency_overrides[_get_carrier_config] = _shadow_config
+    return app
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/v1/carrier/BATCH-001/shipment", {}),
+    ("/api/v1/carrier/BATCH-001/shipment/AWB123/do-not-use", {}),
+    ("/api/v1/carrier/BATCH-001/label-package", {}),
+])
+def test_mutation_routes_reject_viewer_with_403(viewer_app, path, body):
+    client = TestClient(viewer_app, raise_server_exceptions=False)
+    with patch("app.core.config.settings") as mock_settings:
+        mock_settings.awb_address_authority_enabled = False
+        resp = client.post(path, json=body)
+    # 403 (wrong role) — NOT 200/404/422. The gate fires before the handler,
+    # so an unknown batch never reaches shipment/DB logic.
+    assert resp.status_code == 403, (
+        f"{path} must reject a viewer with 403, got {resp.status_code}"
+    )
