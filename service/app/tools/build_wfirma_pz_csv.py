@@ -188,7 +188,9 @@ def render_csv(rows: List[List[str]]) -> str:
 def write_csv(path: Path, rows: List[List[str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = render_csv(rows)
-    path.write_text(text, encoding=CSV_ENCODING)
+    # write_bytes, not write_text: on Windows/py3.9 write_text re-translates the
+    # csv writer's \r\n into \r\r\n, injecting a blank line after every row.
+    path.write_bytes(text.encode(CSV_ENCODING))
 
 
 def build_for_file(src: Path, out_dir: Path) -> Tuple[CsvValidation, Path | None, List[List[str]]]:
