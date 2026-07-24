@@ -345,12 +345,19 @@ def test_stale_lock_is_force_released(tmp_path, monkeypatch):
 # Case 6: timeline-only audit lock (doc_id manually removed)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def test_audit_lock_respected_when_doc_id_manually_removed(tmp_path):
+def test_create_blocked_but_adopt_recovers_when_doc_id_manually_removed(tmp_path):
     """
     Operator deletes wfirma_export.wfirma_pz_doc_id manually (e.g. trying to
-    "reset" the shipment).  The audit timeline still contains
-    EV_WFIRMA_PZ_CREATED.  Both create AND adopt must remain blocked because
-    the timeline is the immutable source of truth.
+    "reset" the shipment).  The audit timeline still contains EV_WFIRMA_PZ_CREATED.
+
+    CREATE must stay blocked (409) — the append-only timeline is the immutable
+    source of truth, so a new PZ is never re-created.
+
+    ADOPT is INTENTIONALLY allowed — the "Confirm Existing PZ" recovery flow
+    (_assert_pz_not_locked recovery-allow branch): the export link is empty, so the
+    shipment "needs recovery" and re-linking an EXISTING wFirma PZ creates nothing
+    new. Guard 4 (cross-batch owner) + Guard 5 (same-id idempotent) catch abuse.
+    Blocking adopt here would break recovery.
     """
     from fastapi import HTTPException
 
@@ -358,7 +365,7 @@ def test_audit_lock_respected_when_doc_id_manually_removed(tmp_path):
     audit["customs_declaration"] = {"mrn": "26PL000000000000"}
     _write_audit(tmp_path, audit)
 
-    # Adopt path — guard fires inside the lock
+    # Adopt path — recovery-allow: NOT blocked when the export link is empty.
     from app.services.wfirma_client import PZFetchResult
     fetch_ok = PZFetchResult(ok=True, pz_doc_id=_DOC_ID, pz_number=_DOC_NO)
     with (
@@ -370,10 +377,9 @@ def test_audit_lock_respected_when_doc_id_manually_removed(tmp_path):
         patch("app.api.routes_wfirma._find_pz_owner_batch", return_value=None),
         patch("app.api.routes_wfirma.tl.log_event"),
     ):
-        with pytest.raises(HTTPException) as exc:
-            _run_adopt(body=_adopt_body(pz_doc_id=_DOC_ID))
-    assert exc.value.status_code == 409
-    assert exc.value.detail["code"] == "PZ_ALREADY_CREATED"
+        resp = _run_adopt(body=_adopt_body(pz_doc_id=_DOC_ID))
+    assert resp.status_code == 200, resp.body
+    assert json.loads(resp.body)["status"] in ("adopted", "already_adopted")
 
     # Create path — guard fires inside the lock
     create_called = MagicMock()
