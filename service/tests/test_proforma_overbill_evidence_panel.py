@@ -99,6 +99,7 @@ def _draft(lines):
 
 def _run_gate(lines, packing_rows, intent="approve"):
     from app.api import routes_proforma as rp
+    from app.services.product_authority_resolver import resolve_batch_product_authority
     with patch.object(rp, "_build_preview", lambda *a, **k: {}), \
          patch.object(rp, "_preflight_approve", lambda *a, **k: None), \
          patch.object(rp, "_resolve_customer", lambda *a, **k: {}), \
@@ -107,7 +108,9 @@ def _run_gate(lines, packing_rows, intent="approve"):
          patch("app.services.design_product_bridge.populate_from_packing",
                lambda *a, **k: {}), \
          patch("app.services.packing_db.get_packing_lines_for_batch",
-               lambda *a, **k: packing_rows):
+               lambda *a, **k: packing_rows), \
+         patch("app.services.cpa_product_service.authority_snapshot",
+               lambda bid, **k: resolve_batch_product_authority(bid, packing_rows=packing_rows)):
         return rp._derive_draft_readiness(_draft(lines), intent=intent)
 
 
