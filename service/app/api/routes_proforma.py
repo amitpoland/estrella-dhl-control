@@ -8861,6 +8861,9 @@ def enrich_proforma_draft_lines(
     return JSONResponse({
         "ok":             True,
         "draft_id":       draft_id,
+        # #1009 — line_count lets the UI report honestly: 0 lines means the
+        # draft is empty (designs unmapped), NOT a successful "0 enriched".
+        "line_count":     len(lines),
         "enriched_count": n_hit,
         "missing_count":  n_miss,
         "draft":          _draft_to_full(refreshed),
