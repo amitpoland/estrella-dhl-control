@@ -14,7 +14,7 @@ Pins:
      mark_draft_issued + mark_draft_failed) still work unchanged.
   8. AWB-style four issued rows surface as ``draft_state='posted'``,
      ``draft_version=1``, null successor pointers.
-  9. ``DRAFT_LIFECYCLE_STATES`` is exported with the eight lifecycle
+  9. ``DRAFT_LIFECYCLE_STATES`` is exported with the nine lifecycle
      states.
 """
 from __future__ import annotations
@@ -296,16 +296,16 @@ def test_awb_six_issued_rows_read_as_posted_v1(tmp_path):
         assert d.service_charges_json      == "[]"
 
 
-# ── 9. DRAFT_LIFECYCLE_STATES exported with eight states ──────────────────
+# ── 9. DRAFT_LIFECYCLE_STATES exported with nine states ──────────────────
 
 def test_draft_lifecycle_states_exported():
     expected = {
         "draft", "editing", "approved",
         "posting", "posted", "post_failed",
-        "cancelled", "superseded",
+        "cancelled", "superseded", "converted",
     }
     assert set(pildb.DRAFT_LIFECYCLE_STATES) == expected
-    assert len(pildb.DRAFT_LIFECYCLE_STATES) == 8
+    assert len(pildb.DRAFT_LIFECYCLE_STATES) == 9
     # Module exports it.
     assert "DRAFT_LIFECYCLE_STATES" in pildb.__all__
 
