@@ -223,7 +223,7 @@ def test_create_blocked_after_adopt(tmp_path):
         patch("app.api.routes_wfirma.build_pz_request_from_batch",
               return_value=MagicMock(ready=True, planned_lines=[], pz_request={})),
         patch("app.api.routes_wfirma._build_rows", return_value=[]),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=[]),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={}),
     ):
         with pytest.raises(HTTPException) as exc:
             _run_create()
@@ -388,7 +388,7 @@ def test_audit_lock_respected_when_doc_id_manually_removed(tmp_path):
         patch("app.api.routes_wfirma.build_pz_request_from_batch",
               return_value=MagicMock(ready=True, planned_lines=[], pz_request={})),
         patch("app.api.routes_wfirma._build_rows", return_value=[]),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=[]),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={}),
     ):
         with pytest.raises(HTTPException) as exc:
             _run_create()
@@ -423,7 +423,7 @@ def test_create_audit_write_failure_returns_structured_warning(tmp_path):
         patch("app.api.routes_wfirma.build_pz_request_from_batch",
               return_value=MagicMock(ready=True, planned_lines=[], pz_request={})),
         patch("app.api.routes_wfirma._build_rows", return_value=[]),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=[]),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={}),
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz",
               return_value=create_ok),
         patch("app.api.routes_wfirma._patch_pz_doc_id",
