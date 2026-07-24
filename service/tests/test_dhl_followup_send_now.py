@@ -36,8 +36,17 @@ def tmp_storage(tmp_path):
 def client(tmp_storage):
     from app.core.config import settings
     from app.main import app
+    # send-now route is [require_api_key, require_role("admin","logistics")];
+    # inject an operator session so require_role passes (X-API-Key alone 401s).
+    from app.auth.dependencies import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "test-admin", "email": "admin@test.local", "role": "admin",
+    }
     with patch.object(settings, "storage_root", tmp_storage):
-        yield TestClient(app)
+        try:
+            yield TestClient(app)
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

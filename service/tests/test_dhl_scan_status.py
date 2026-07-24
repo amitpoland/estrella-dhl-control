@@ -177,9 +177,10 @@ def test_status_helper_uses_write_json_atomic():
     """Status writes must use write_json_atomic (atomic, no partial writes)."""
     src = _ROUTE.read_text(encoding="utf-8", errors="replace")
     assert "_write_scan_status" in src
-    # The helper must call write_json_atomic
+    # The helper must call write_json_atomic — use a generous window; a large
+    # explanatory comment block sits between the def and the call (~427 chars).
     helper_idx = src.index("def _write_scan_status")
-    helper_block = src[helper_idx:helper_idx+300]
+    helper_block = src[helper_idx:helper_idx + 800]
     assert "write_json_atomic" in helper_block
 
 
