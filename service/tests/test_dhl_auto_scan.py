@@ -93,12 +93,16 @@ def test_lane_a_has_lane_label():
     assert '"lane"' in block and '"A"' in block
 
 
-def test_lane_b_not_in_this_pr():
-    """Lane B endpoint must NOT be present — deferred to PR #457."""
+def test_lane_b_present_and_kill_switch_gated():
+    """Lane B (scheduled-followup-check) shipped after PR #456. It must now be
+    present AND remain gated by the DHL_FOLLOWUP_ENABLED kill switch — the
+    deferral guard this replaced is obsolete now that Lane B has landed."""
     src = _ROUTE.read_text(encoding="utf-8", errors="replace")
-    assert "scheduled-followup-check" not in src, (
-        "Lane B (scheduled-followup-check) must not be in PR #456 — "
-        "it belongs in PR #457, deployed after Lane A is verified"
+    assert "scheduled-followup-check" in src, (
+        "Lane B endpoint should be present (shipped post-#456)"
+    )
+    assert "DHL_FOLLOWUP_ENABLED" in src, (
+        "Lane B must remain gated by the DHL_FOLLOWUP_ENABLED kill switch"
     )
 
 
@@ -125,12 +129,14 @@ def test_script_calls_lane_a():
     assert "scheduled-inbox-check" in _SCRIPT.read_text(encoding="utf-8", errors="replace")
 
 
-def test_script_does_not_call_lane_b():
-    """Lane B endpoint must NOT be in the PR #456 script."""
+def test_script_calls_lane_b_throttled():
+    """Lane B shipped after PR #456: the auto-scan script now calls
+    scheduled-followup-check (throttled). Safety is enforced by the
+    DHL_FOLLOWUP_ENABLED kill switch on the endpoint, not by the script
+    omitting the call."""
     src = _SCRIPT.read_text(encoding="utf-8", errors="replace")
-    assert "scheduled-followup-check" not in src, (
-        "Lane B call must not be in the PR #456 script — "
-        "it belongs in PR #457"
+    assert "scheduled-followup-check" in src, (
+        "Lane B call should be present in the auto-scan script (shipped post-#456)"
     )
 
 
