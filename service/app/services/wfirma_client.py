@@ -1198,34 +1198,25 @@ def get_stock(wfirma_good_id: str) -> Dict[str, float]:
     is not found (a stock check for a missing good is an error, not zero stock).
     Raises ConnectionError on network failure.
 
-    API: GET goods/find (conditions.id.eq) — reuses the live goods read path
-    (mirrors get_product_by_code); no new HTTP layer, no caching.
+    API: GET goods/get/{id} (path-based; id in the URL, empty body). Mirrors
+    invoices/get — never a find condition (wFirma ignores id in find).
     Auth: API Key headers (shared transport).
     Key fields: count (current stock), reserved (currently reserved).
     """
     if not wfirma_good_id or not str(wfirma_good_id).strip():
         raise ValueError("get_stock: wfirma_good_id is required")
-    body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<api>
-  <goods>
-    <parameters>
-      <conditions>
-        <condition>
-          <field>id</field>
-          <operator>eq</operator>
-          <value>{_esc(str(wfirma_good_id).strip())}</value>
-        </condition>
-      </conditions>
-      <page><start>0</start><limit>1</limit></page>
-    </parameters>
-  </goods>
-</api>"""
-    http_status, response_text = _http_request("GET", "goods", "find", body)
+    safe_id = str(wfirma_good_id).strip()
+    # Path-based id lookup (goods/get/{id}) via id_suffix (esc-safe), empty body.
+    # wFirma silently IGNORES an id field in a find condition and returns
+    # the FIRST row, so id must never be a find condition — this would read the
+    # wrong good's stock. Mirrors invoices/get and warehouse_document_p_z/get;
+    # enforced by the test_wfirma_fetch_invoice_by_id source-grep guard.
+    http_status, response_text = _http_request("GET", "goods", "get", "", id_suffix=safe_id)
     if http_status >= 400:
-        raise RuntimeError(f"goods/find HTTP {http_status}")
+        raise RuntimeError(f"goods/get HTTP {http_status}")
     code, desc = _parse_status(response_text)
     if code != "OK":
-        raise RuntimeError(f"goods/find wFirma status={code}: {desc}")
+        raise RuntimeError(f"goods/get wFirma status={code}: {desc}")
     root = ET.fromstring(response_text)
     node = root.find(".//good")
     if node is None:

@@ -1202,6 +1202,9 @@ def test_http_request_appends_id_suffix_to_url():
     with (
         _p.object(_wc, "_requests") as mock_req,
         _p.object(settings, "wfirma_company_id", "99999"),
+        _p.object(settings, "wfirma_access_key", "ak"),
+        _p.object(settings, "wfirma_secret_key", "sk"),
+        _p.object(settings, "wfirma_app_key", "appk"),
     ):
         mock_req.request = fake_request
         mock_req.exceptions.RequestException = Exception
