@@ -4617,6 +4617,28 @@ def reset_draft_from_sales_packing(
             },
         }
         rebuilt.append(rebuilt_row)
+
+    # #1008 — preserve operator-authored lines across the rebuild. A packing
+    # re-sync rebuilds editable_lines wholesale from the packing set, which
+    # would silently delete any line the operator added by hand (the only
+    # stopgap when packing carries no product_code). A prior line is
+    # operator-authored when price_source == 'manual'. Carry it forward unless
+    # the rebuild already produced a line for the same product_code (packing is
+    # authoritative for codes it does supply) — this avoids duplicates while
+    # never dropping a manual line. reset_all=True is the explicit full-wipe
+    # escape hatch and intentionally does NOT preserve.
+    manual_preserved: List[Dict[str, Any]] = []
+    if not reset_all:
+        _rebuilt_codes = {str(r.get("product_code") or "").strip() for r in rebuilt}
+        for _pl in (json.loads(d.editable_lines_json or "[]") or []):
+            if str(_pl.get("price_source") or "").strip().lower() != "manual":
+                continue
+            _pc = str(_pl.get("product_code") or "").strip()
+            if _pc and _pc in _rebuilt_codes:
+                continue  # packing re-supplied this code — packing wins
+            manual_preserved.append(_pl)
+        rebuilt.extend(manual_preserved)
+
     rebuilt = _ensure_line_ids(rebuilt)
     # Birth-time name_pl authority (mirrors auto_create): operator/prior →
     # product_descriptions → generator → blank, stamping name_pl_source. Never
@@ -4648,6 +4670,8 @@ def reset_draft_from_sales_packing(
             "reset_all":       bool(reset_all),
             "lines_before":    len(json.loads(d.editable_lines_json or "[]") or []),
             "lines_after":     len(rebuilt),
+            # #1008 — audit how many operator-authored lines survived the sync.
+            "manual_lines_preserved": len(manual_preserved),
             # Same non-authoritative advisory as birth — visibility only.
             "birth_unresolved": reset_unresolved,
         }, ensure_ascii=False, sort_keys=True),
