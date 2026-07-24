@@ -92,7 +92,7 @@ def _stub_route_lookups(monkeypatch, *, missing_product=None,
         }
     monkeypatch.setattr(rp, "_derive_draft_readiness", _stub_readiness)
 
-    def _fake_resolve(name: str, batch_id=None):
+    def _fake_resolve(name: str, batch_id=None, client_contractor_id: str = ""):
         if ambiguous:
             return {"ambiguous": True, "candidates": ["A", "B"],
                     "customer": None, "wfirma_customer_id": "",
@@ -537,7 +537,7 @@ def test_endpoint_blocked_receiver_preflight_fails(client, tmp_path, monkeypatch
     # use separate_contractor with a receiver.
     _stub_route_lookups(monkeypatch)
     from app.api import routes_proforma as rp
-    def _fake_resolve(name: str, batch_id=None):
+    def _fake_resolve(name: str, batch_id=None, client_contractor_id: str = ""):
         return {
             "ambiguous": False, "candidates": [],
             "customer": {
