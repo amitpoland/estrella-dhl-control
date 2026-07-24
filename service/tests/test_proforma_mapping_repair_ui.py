@@ -71,3 +71,52 @@ class TestEnrichEndpointReportsLineCount:
         body = r.json()
         assert "line_count" in body, "response must carry line_count for honest UI reporting"
         assert body["line_count"] == 0
+
+
+class TestUnmappedDesignsSurfacing:
+    """#1009 — a draft must never be silently empty; designs with a design_no
+    but no product_code are surfaced so the operator gets a reason + bind path."""
+
+    class _Draft:
+        def __init__(self, batch_id, cid="", cn=""):
+            self.batch_id = batch_id
+            self.client_contractor_id = cid
+            self.client_name = cn
+
+    def test_lists_unmapped_designs_for_client(self, monkeypatch):
+        from app.api import routes_proforma as rp
+        rows = [
+            {"client_contractor_id": "C1", "client_name": "ACME", "design_no": "D-1", "product_code": ""},
+            {"client_contractor_id": "C1", "client_name": "ACME", "design_no": "D-2", "product_code": ""},
+            {"client_contractor_id": "C1", "client_name": "ACME", "design_no": "D-3", "product_code": "EJL/1-1"},  # mapped
+            {"client_contractor_id": "C2", "client_name": "OTHER", "design_no": "D-9", "product_code": ""},        # other client
+        ]
+        monkeypatch.setattr(rp.ddb, "get_sales_packing_lines", lambda b: rows)
+        out = rp._unmapped_designs_for_draft(self._Draft("B1", cid="C1", cn="ACME"))
+        assert out == ["D-1", "D-2"], "only THIS client's unmapped designs, mapped/other excluded"
+
+    def test_falls_back_to_client_name_when_no_contractor_id(self, monkeypatch):
+        from app.api import routes_proforma as rp
+        rows = [
+            {"client_contractor_id": "", "client_name": "ACME", "design_no": "D-1", "product_code": ""},
+            {"client_contractor_id": "", "client_name": "OTHER", "design_no": "D-2", "product_code": ""},
+        ]
+        monkeypatch.setattr(rp.ddb, "get_sales_packing_lines", lambda b: rows)
+        out = rp._unmapped_designs_for_draft(self._Draft("B1", cid="", cn="ACME"))
+        assert out == ["D-1"]
+
+    def test_empty_when_all_mapped(self, monkeypatch):
+        from app.api import routes_proforma as rp
+        rows = [{"client_contractor_id": "C1", "client_name": "ACME", "design_no": "D-1", "product_code": "EJL/1-1"}]
+        monkeypatch.setattr(rp.ddb, "get_sales_packing_lines", lambda b: rows)
+        assert rp._unmapped_designs_for_draft(self._Draft("B1", cid="C1")) == []
+
+    def test_dedupes_and_sorts(self, monkeypatch):
+        from app.api import routes_proforma as rp
+        rows = [
+            {"client_contractor_id": "C1", "design_no": "D-2", "product_code": ""},
+            {"client_contractor_id": "C1", "design_no": "D-1", "product_code": ""},
+            {"client_contractor_id": "C1", "design_no": "D-1", "product_code": ""},
+        ]
+        monkeypatch.setattr(rp.ddb, "get_sales_packing_lines", lambda b: rows)
+        assert rp._unmapped_designs_for_draft(self._Draft("B1", cid="C1")) == ["D-1", "D-2"]
