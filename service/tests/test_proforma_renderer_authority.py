@@ -481,14 +481,22 @@ class TestJsxBuyerAuthoritySourceGrep:
     def test_jsx_design_no_is_fallback_not_primary(self):
         """design_no must appear AFTER name_pl in the fallback chain, not before."""
         src = self._src()
-        # Find the line with the description fallback chain
-        idx_name_pl  = src.find("ln.name_pl")
-        idx_design_no = src.find("ln.design_no")
-        assert idx_name_pl  != -1, "ln.name_pl not found in proforma-detail.jsx"
-        assert idx_design_no != -1, "ln.design_no not found in proforma-detail.jsx"
+        # Scope to the DESCRIPTION fallback expression, not the standalone
+        # "Design No" table column (`ln.design_no || '—'`) which legitimately
+        # appears earlier in the table. Within the chain, name_pl must precede
+        # design_no.
+        chain_idx = src.find("ln.name_pl || ln.description_pl")
+        assert chain_idx != -1, (
+            "description fallback chain (ln.name_pl || ln.description_pl ...) "
+            "not found in proforma-detail.jsx"
+        )
+        chain = src[chain_idx:chain_idx + 200]
+        idx_name_pl  = chain.find("ln.name_pl")
+        idx_design_no = chain.find("ln.design_no")
+        assert idx_design_no != -1, "ln.design_no not found in the description fallback chain"
         assert idx_name_pl < idx_design_no, (
-            "ln.name_pl must appear before ln.design_no in the fallback chain "
-            "(name_pl is the primary description, design_no is the last-resort fallback)"
+            "ln.name_pl must appear before ln.design_no in the description fallback "
+            "chain (name_pl is the primary description, design_no is the last-resort fallback)"
         )
 
     def test_jsx_never_shows_mapped_null_literal(self):

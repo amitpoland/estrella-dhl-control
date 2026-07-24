@@ -2066,6 +2066,76 @@ def list_attention_drafts(
     return results
 
 
+# ── Birth-time name_pl authority ────────────────────────────────────────────
+# Provenance of a line's Polish commercial name (``name_pl``). Resolution order
+# at draft birth/reset: operator-confirmed → product_descriptions → generator
+# (only if supplied) → blank. name_pl is NEVER fabricated on a PD miss unless a
+# ``desc_generate`` fallback is explicitly provided, and an operator-confirmed
+# value is NEVER overwritten.
+NAME_PL_SOURCE_OPERATOR  = "operator"
+NAME_PL_SOURCE_PD        = "product_descriptions"
+NAME_PL_SOURCE_GENERATED = "generated"
+NAME_PL_SOURCE_BLANK     = "blank"
+
+
+def _birth_resolve_name_pl(
+    lines:         List[Dict[str, Any]],
+    lookup_fn:     Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
+    desc_generate: Optional[Callable[..., Optional[str]]] = None,
+) -> List[Dict[str, Any]]:
+    """Resolve each line's ``name_pl`` and stamp ``name_pl_source`` provenance.
+
+    Order: operator (a pre-existing non-blank name_pl) → product_descriptions
+    (``lookup_fn(product_code)["name_pl"]``) → ``desc_generate`` (from the line's
+    transient ``_gen_attrs``) → blank. Never overwrites an operator value; never
+    fabricates on a PD miss unless ``desc_generate`` is supplied AND yields text.
+    Returns new line dicts (does not mutate the input).
+    """
+    out: List[Dict[str, Any]] = []
+    for ln in lines:
+        row = dict(ln)
+        existing = str(row.get("name_pl") or "").strip()
+        if existing:
+            row["name_pl"] = existing
+            row["name_pl_source"] = NAME_PL_SOURCE_OPERATOR
+            out.append(row)
+            continue
+
+        pc = str(row.get("product_code") or "").strip()
+        pd_name = ""
+        if lookup_fn is not None and pc:
+            try:
+                pd_row = lookup_fn(pc)
+            except Exception:
+                pd_row = None
+            pd_name = str((pd_row or {}).get("name_pl") or "").strip()
+
+        if pd_name:
+            row["name_pl"] = pd_name
+            row["name_pl_source"] = NAME_PL_SOURCE_PD
+            out.append(row)
+            continue
+
+        gen = ""
+        if desc_generate is not None:
+            ga = row.get("_gen_attrs") or {}
+            try:
+                gen = str(desc_generate(
+                    ctg=str(ga.get("ctg") or ""),
+                    kt=str(ga.get("kt") or ""),
+                    col=str(ga.get("col") or ""),
+                    quality=str(ga.get("quality") or ""),
+                ) or "").strip()
+            except Exception:
+                gen = ""
+        if gen:
+            row["name_pl"] = gen
+            row["name_pl_source"] = NAME_PL_SOURCE_GENERATED
+        else:
+            row["name_pl"] = ""
+            row["name_pl_source"] = NAME_PL_SOURCE_BLANK
+        out.append(row)
+    return out
 
 
 def _birth_unresolved_lines(
@@ -2096,6 +2166,8 @@ def _birth_unresolved_lines(
             up = 0.0
         if up <= 0:
             reasons.append("zero_unit_price")
+        if not str(ln.get("name_pl") or "").strip():
+            reasons.append("blank_name_pl")
         if mapping_lookup is not None:
             pc = str(ln.get("product_code") or "").strip()
             mapped = False
@@ -2232,6 +2304,14 @@ def auto_create_draft_from_sales_packing(
         # Carry any operator-confirmed/source name_pl through the birth
         # boundary on the EDITABLE copy only. Blank by default;
         row["name_pl"] = str(ln.get("name_pl") or "").strip()
+        # Transient generator attributes for the name_pl fallback; consumed by
+        # _birth_resolve_name_pl then popped — never persisted.
+        row["_gen_attrs"] = {
+            "ctg":     str(ln.get("ctg") or ""),
+            "kt":      str(ln.get("kt") or ""),
+            "col":     str(ln.get("col") or ""),
+            "quality": str(ln.get("quality") or ""),
+        }
         editable.append(row)
 
     init_db(db_path)
@@ -2288,6 +2368,11 @@ def auto_create_draft_from_sales_packing(
         legacy_status = _normalise_draft_status(_PHASE2_LEGACY_STATUS)
         initial_state = _normalise_draft_state("draft")
 
+        # Birth-time name_pl authority: operator → product_descriptions →
+        # generator → blank, stamping name_pl_source. Fills a blank name_pl
+        # WITHOUT fabricating (PD miss + no generator → stays blank) and never
+        # overwrites an operator-confirmed value.
+        editable = _birth_resolve_name_pl(editable, name_pl_lookup, desc_generate)
         # Pop transient _gen_attrs — never persisted to editable_lines_json.
         # description_pl comes from the canonical description engine (CPA authority),
         # not from birth-time name_pl resolution.
@@ -4522,9 +4607,23 @@ def reset_draft_from_sales_packing(
             # that survives without overwriting a non-blank value.
             "name_pl":      (str(r.get("name_pl") or "").strip()
                              or prior_names.get(product_code, "")),
+            # Transient generator attributes for the name_pl fallback; popped
+            # after enrichment, never persisted.
+            "_gen_attrs":   {
+                "ctg":     str(r.get("ctg") or ""),
+                "kt":      str(r.get("kt") or ""),
+                "col":     str(r.get("col") or ""),
+                "quality": str(r.get("quality") or ""),
+            },
         }
         rebuilt.append(rebuilt_row)
     rebuilt = _ensure_line_ids(rebuilt)
+    # Birth-time name_pl authority (mirrors auto_create): operator/prior →
+    # product_descriptions → generator → blank, stamping name_pl_source. Never
+    # overwrites a non-blank (incoming or re-inherited) value.
+    rebuilt = _birth_resolve_name_pl(rebuilt, name_pl_lookup, desc_generate)
+    for _ln in rebuilt:
+        _ln.pop("_gen_attrs", None)
     reset_unresolved = _birth_unresolved_lines(rebuilt, product_mapping_lookup)
 
     kwargs: Dict[str, Any] = {
