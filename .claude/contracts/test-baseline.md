@@ -29,6 +29,12 @@ unconditional block.
 | `test_carrier_config_defaults.py::test_dhl_express_api_key_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_api_key is None`; `DHL_EXPRESS_API_KEY` is set in the deploy/review env → returns the live key. Passes with env cleared (see above). |
 | `test_carrier_config_defaults.py::test_dhl_express_api_secret_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_api_secret is None`; `DHL_EXPRESS_API_SECRET` set in env. Passes with env cleared. |
 | `test_carrier_config_defaults.py::test_dhl_express_account_number_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_account_number is None`; `DHL_EXPRESS_ACCOUNT_NUMBER` set in env. Passes with env cleared. |
+| `test_proforma_authority_ui.py::TestCanonicalDescription::test_labelled_display_only_not_wfirma_line_name` | #1015 | MISSING UI — the "Display only" / "design_no / product_code" label is absent from V1 `shipment-detail.html` (frozen, Lesson F). Outside both metered suites; no floor impact. |
+| `test_proforma_authority_ui.py::TestBlockedRecordsVisible::test_cm_link_only_when_contractor_id` | #1015 | MISSING UI — the cid-gated customer-master link (`"cid &&"` + `"customer-master"`) is not wired in the blocked-records panel of `shipment-detail.html`. Outside metered suites. |
+| `test_proforma_policy_phase7.py::test_html_has_btn_draft_intelligence` | #1015 | MISSING UI — the draft-intelligence panel is not built in any `app/static/` file; it would surface `detect_operator_override_mismatches` (backend shipped in #1014). Outside metered suites. |
+| `test_proforma_policy_phase7.py::test_html_has_intelligence_panel_testid` | #1015 | MISSING UI — `draft-intelligence-panel` testid absent from all `app/static/`. Outside metered suites. |
+| `test_proforma_policy_phase7.py::test_html_anomaly_row_testid` | #1015 | MISSING UI — `draft-anomaly-row` testid absent from all `app/static/`. Outside metered suites. |
+| `test_proforma_policy_phase7.py::test_html_suggestion_row_testid` | #1015 | MISSING UI — `draft-suggestion-row` testid absent from all `app/static/`. Outside metered suites. |
 
 The PZ metered suite (`tests/test_pz_*.py`) has **no documented failures** as of the #613 fix
 (PR #1006). Required count bumped 257→258 (the +1 attributable to #613). Measured on current
