@@ -51,7 +51,7 @@ def _stub_legacy_create_path(monkeypatch, db_path: Path):
     # Preview is already ready and has lines but no service charges.
     monkeypatch.setattr(
         rp, "_build_preview",
-        lambda bid, cn: {
+        lambda bid, cn, client_contractor_id="": {
             "draft_ready":      True,
             "ready":            True,
             "blocking_reasons": [],
@@ -71,7 +71,7 @@ def _stub_legacy_create_path(monkeypatch, db_path: Path):
     monkeypatch.setattr(
         rp, "_build_proforma_request",
         # ADR-027: now returns (ProformaRequest, List[str]) tuple
-        lambda preview: (wfirma_client.ProformaRequest(
+        lambda preview, client_contractor_id="": (wfirma_client.ProformaRequest(
             client_name="ACME", client_zip="", client_city="",
             lines=[
                 wfirma_client.ReservationLine(
