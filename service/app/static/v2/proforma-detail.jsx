@@ -1092,6 +1092,24 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
+
+  // ── DHL account authority (operator ruling 2026-07-20) ──────────────────
+  // The modal keeps NO account state of its own: the hook holds the server's
+  // verdict from the canonical resolver. It derives no default, picks no
+  // account and never sees a full account number.
+  //
+  // sender_contractor_id is the sender's Client Master record. There is no
+  // sender-side Client Master wiring yet (the shipper identity is still the
+  // env-level DHL_EXPRESS_SHIPPER_* configuration), so prefill supplies it only
+  // when known. While it is absent the backend takes its legacy path — explicit
+  // account, then the environment account — and the panel must NOT gate the
+  // button, otherwise a working sender-paid flow would start blocking.
+  const dhlAccounts = useDhlAccountResolution({
+    senderContractorId:   prefill.sender_contractor_id || null,
+    receiverContractorId: prefill.client_contractor_id || null,
+  });
+  const dhlSenderKnown = !!prefill.sender_contractor_id;
+  const dhlBlocksSubmit = dhlSenderKnown && dhlAccounts.awbBlocked;
   // Customer Master save-confirmation workflow: master = this client's stored
   // record (baseline for the shipping-fields comparison); saveConfirm holds
   // the pending diff panel; savedNote shows after an approved save. Master
@@ -1393,6 +1411,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       shipment_reference: form.shipment_reference || null,
       receiver_vat_id:    form.receiver_vat_id || null,
       receiver_eori:      form.receiver_eori || null,
+      // DHL account decision — the server re-resolves authoritatively through
+      // resolve_dhl_billing_account(); these fields only carry the operator's
+      // inputs to it. Omitted entirely when the sender has no Client Master
+      // record, so the existing sender-paid payload stays byte-identical.
+      ...(dhlSenderKnown ? dhlAccounts.payloadFields : {}),
       special_instructions: form.special_instructions || null,
       box_type_code:      form.box_type_code || null,
       // Per-client shipment scope — the draft's client_name. Scopes the
@@ -1929,6 +1952,14 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               this batch (or could not be ruled out); booking is HELD until the
               operator explicitly confirms creating a NEW shipment record.
               No DHL void, no auto-cancel — the prior AWB stays as it is. */}
+          {/* DHL account — server-resolved; the modal renders, never decides.
+              Hidden while the sender has no Client Master record, because the
+              backend then uses its legacy account path and there is no
+              operator decision to present. */}
+          {dhlSenderKnown && (
+            <DhlAccountPanel state={dhlAccounts} />
+          )}
+
           {legacyConfirm && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
@@ -1963,7 +1994,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
-              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm || legacyConfirm} data-testid="awb-submit-btn">
+              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit} data-testid="awb-submit-btn">
                 {loading ? 'Creating AWB…' : 'Create AWB'}
               </Btn>
             </div>
@@ -6724,6 +6755,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             // save-confirmation workflow (compare + explicit-save target).
             client_contractor_id: (liveDraft && liveDraft.client_contractor_id)
               || (draft && draft.client_contractor_id) || '',
+            // Sender's Client Master record, for DHL account resolution. Empty
+            // until sender-side Client Master wiring exists (the shipper is
+            // still env-level DHL_EXPRESS_SHIPPER_*). While empty the backend
+            // uses its legacy account path and the account panel stays hidden —
+            // the existing sender-paid flow is unaffected.
+            sender_contractor_id: (liveDraft && liveDraft.sender_contractor_id)
+              || (draft && draft.sender_contractor_id) || '',
             client_name:        (liveDraft && liveDraft.client_name)
               || (draft && draft.client_name) || '',
           }}

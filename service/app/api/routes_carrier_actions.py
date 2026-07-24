@@ -39,11 +39,16 @@ POST /api/v1/carrier/{batch_id}/label-package   ← Path-DOC (WF4.5)
     Returns: PDF or ZIP bytes containing invoice + packing list + CN23 (non-EU).
     422 {gaps:[...]} when mandatory inputs are missing.
 
-Auth: X-API-Key header via require_api_key (same pattern as routes_pz.py).
+Auth: read routes use require_api_key. Mutation routes (POST) that create a
+shipment/AWB, mark an AWB do-not-use, or generate a document package ALSO
+require role admin|logistics (require_role) — booking a carrier shipment is a
+money-moving, outward-facing action and must not be reachable by a viewer-role
+session holding only an API key. Consistent with the RBAC hardening in #504.
 No live DHL calls in shadow mode.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -52,6 +57,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from ..core.security import require_api_key
+from ..auth.dependencies import require_role
 from ..services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
 from ..services.carrier.factory import CarrierConfig
 from ..services.carrier.cmr_number import cmr_document_number
@@ -59,6 +65,8 @@ from ..services.carrier.models.shipment import CarrierGateError, ShipmentRequest
 from ..services.carrier.persistence import shipment_db
 
 router = APIRouter(prefix="/api/v1/carrier", tags=["carrier"])
+
+logger = logging.getLogger(__name__)
 
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
@@ -307,6 +315,16 @@ def _clean_operator(x_operator: Optional[str]) -> str:
 
 class ShipmentRequestBody(BaseModel):
     shipper_account: Optional[str] = None  # falls back to DHL_EXPRESS_ACCOUNT_NUMBER setting
+    # ── DHL account authority (operator ruling 2026-07-20) ────────────────
+    # Client Master owns the account, this route resolves it, the adapter only
+    # sends it. Resolution goes through the canonical
+    # dhl_account_resolver.resolve_dhl_billing_account() — never re-implemented
+    # here, in the adapter, or in any React component.
+    sender_contractor_id: Optional[str] = None
+    receiver_contractor_id: Optional[str] = None
+    billing_party: Optional[str] = None            # sender | receiver | third_party
+    third_party_contractor_id: Optional[str] = None
+    billing_account_id: Optional[int] = None       # operator's explicit pick
     recipient_address: dict
     declared_value: float
     currency: str
@@ -340,6 +358,77 @@ _DHL_SERVICES = [
 ]
 
 
+@router.get("/dhl-account-resolution",
+            summary="Resolve the DHL shipping / billing account (read-only)")
+def resolve_dhl_accounts_endpoint(
+    sender_contractor_id: Optional[str] = None,
+    receiver_contractor_id: Optional[str] = None,
+    billing_party: Optional[str] = None,
+    third_party_contractor_id: Optional[str] = None,
+    billing_account_id: Optional[int] = None,
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Pre-flight view of the account decision. Read-only — writes nothing.
+
+    Exists so the shipment page can show the operator WHICH account will be
+    used, and whether AWB creation is possible, before anything is created.
+    The frontend must never derive a default itself; it asks this endpoint,
+    which delegates to the ONE canonical authority
+    (``dhl_account_resolver.resolve_dhl_billing_account``) and returns its
+    verdict verbatim. No selection logic lives here.
+
+    ``ok`` is the AWB-eligibility signal. Account numbers are returned masked
+    only (``DHL account •••• 6789``); the full number never leaves the server.
+    """
+    from ..core.config import settings
+    from ..services.dhl_account_resolver import (
+        BILLING_SENDER,
+        resolve_dhl_billing_account,
+    )
+
+    if not sender_contractor_id:
+        return JSONResponse({
+            "ok": False,
+            "billing_party": (billing_party or BILLING_SENDER),
+            "shipping_account": None, "billing_account": None,
+            "choices": [], "choice_for": None,
+            "reason": "sender_not_selected",
+            "message": "No sender is selected for this shipment.",
+            "awb_blocked": True,
+        })
+
+    resolved = resolve_dhl_billing_account(
+        settings.storage_root / "customer_master.sqlite",
+        sender_contractor_id,
+        receiver_contractor_id,
+        billing_party,
+        third_party_contractor_id=third_party_contractor_id,
+        selected_billing_account_id=billing_account_id,
+    )
+
+    payload = resolved.to_dict()
+    # Strip the full account number from every account object — operational
+    # surfaces and logs get the masked form only.
+    for key in ("shipping_account", "billing_account"):
+        if payload.get(key):
+            payload[key].pop("account_number", None)
+    for choice in payload.get("choices", []):
+        choice.pop("account_number", None)
+
+    # Sender-paid is the only billing party wired to DHL today; receiver and
+    # third-party resolve for display but cannot execute (see the note on
+    # _RECEIVER_BILLING_NOT_ENABLED).
+    party = (billing_party or BILLING_SENDER).strip().lower()
+    if resolved.ok and party != BILLING_SENDER:
+        payload["awb_blocked"] = True
+        payload["blocked_reason"] = "billing_party_not_enabled"
+        payload["message"] = _RECEIVER_BILLING_NOT_ENABLED
+    else:
+        payload["awb_blocked"] = not resolved.ok
+
+    return JSONResponse(payload)
+
+
 @router.get("/services", summary="List available DHL Express product codes (static catalogue)")
 def list_carrier_services(_auth: None = Depends(require_api_key)) -> JSONResponse:
     """Returns the static DHL Express product code catalogue.
@@ -350,11 +439,109 @@ def list_carrier_services(_auth: None = Depends(require_api_key)) -> JSONRespons
     return JSONResponse(_DHL_SERVICES)
 
 
+# ── DHL account resolution helper ─────────────────────────────────────────────
+#
+# Thin adapter over the CANONICAL resolver. It only translates the resolver's
+# verdict into HTTP; it contains no account-selection logic of its own.
+#
+# Receiver-paid / third-party billing is resolved and surfaced (masked) so the
+# operator sees the decision, but AWB creation is BLOCKED: the MyDHL REST
+# `accounts[].typeCode` value for a payer entry is not yet verified against the
+# official specification or a sandbox response. Guessing it would either be
+# rejected by DHL or — worse — bill the wrong account. Silently falling back to
+# charging the sender is explicitly forbidden.
+_RECEIVER_BILLING_NOT_ENABLED = (
+    "Receiver billing is configured, but DHL receiver-account billing is not "
+    "yet enabled because the required MyDHL account type has not been verified."
+)
+
+
+def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings):
+    """Return ``(shipper_account, resolution_dict_or_None)``.
+
+    Raises HTTPException(422) when the operator must choose an account, when
+    the billing party owns no usable account, or when a non-sender billing
+    party is selected (not yet enabled — see module note above).
+    """
+    from ..services.dhl_account_resolver import (
+        BILLING_SENDER,
+        REASON_AMBIGUOUS,
+        resolve_dhl_billing_account,
+    )
+    # Same SQLite file the Client Master carrier-account routes own — one
+    # store, one authority (routes_client_carrier_accounts.py:42).
+    _CARRIER_DB = settings.storage_root / "customer_master.sqlite"
+
+    party = (body.billing_party or BILLING_SENDER).strip().lower()
+
+    # No client context supplied → legacy path (explicit body account, then the
+    # controlled environment fallback). Unchanged behaviour for existing callers.
+    if not body.sender_contractor_id:
+        acct = body.shipper_account or settings.dhl_express_account_number
+        if acct and not body.shipper_account:
+            logger.warning(
+                "dhl_account_fallback: no sender_contractor_id supplied; using "
+                "DHL_EXPRESS_ACCOUNT_NUMBER environment fallback. The Client "
+                "Master carrier account is the canonical authority."
+            )
+        return acct, None
+
+    resolved = resolve_dhl_billing_account(
+        _CARRIER_DB,
+        body.sender_contractor_id,
+        body.receiver_contractor_id,
+        party,
+        third_party_contractor_id=body.third_party_contractor_id,
+        selected_billing_account_id=body.billing_account_id,
+    )
+
+    if not resolved.ok:
+        # Operator must pick between several active accounts.
+        if resolved.reason == REASON_AMBIGUOUS:
+            raise HTTPException(status_code=422, detail={
+                "error": resolved.message,
+                "code": "DHL_ACCOUNT_CHOICE_REQUIRED",
+                "billing_party": resolved.billing_party,
+                "choice_for": resolved.choice_for,
+                # Masked business display only — never the full number.
+                "choices": [{"id": c.id, "account_name": c.account_name,
+                             "masked": c.masked, "is_default": c.is_default}
+                            for c in resolved.choices],
+            })
+        # Missing / invalid account for the chosen billing party → BLOCK.
+        #
+        # No environment fallback here, deliberately (operator ruling
+        # 2026-07-20). Once a sender contractor is selected, the Client Master
+        # account is the authority; silently billing DHL_EXPRESS_ACCOUNT_NUMBER
+        # instead would charge an account the operator never chose. The
+        # environment variable survives only for legacy callers that supply no
+        # sender context at all (handled above).
+        raise HTTPException(status_code=422, detail={
+            "error": resolved.message,
+            "code": "DHL_ACCOUNT_UNRESOLVED",
+            "reason": resolved.reason,
+            "billing_party": resolved.billing_party,
+        })
+
+    # Resolved. Sender-paid is the only billing party wired to DHL today.
+    if party != BILLING_SENDER:
+        raise HTTPException(status_code=422, detail={
+            "error": _RECEIVER_BILLING_NOT_ENABLED,
+            "code": "DHL_BILLING_PARTY_NOT_ENABLED",
+            "billing_party": resolved.billing_party,
+            # Show the operator that the account WAS resolved, masked.
+            "resolved_billing_account": resolved.billing_account.masked,
+        })
+
+    return resolved.shipping_account.account_number, resolved.to_dict()
+
+
 @router.post("/{batch_id}/shipment")
 def create_shipment(
     batch_id: str,
     body: ShipmentRequestBody,
     _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
     coordinator: CarrierCoordinator = Depends(_get_coordinator),
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
@@ -364,8 +551,17 @@ def create_shipment(
     # (carrier_shipments.booked_by). Sanitised untrusted header input.
     operator = _clean_operator(x_operator)
 
-    # Resolve shipper account — body takes precedence, then settings, then 422
-    shipper_account = body.shipper_account or settings.dhl_express_account_number
+    # ── DHL account resolution (operator ruling 2026-07-20) ──────────────
+    #
+    #   Selected Client Master account
+    #   → sender default Client Master account
+    #   → block
+    #
+    # DHL_EXPRESS_ACCOUNT_NUMBER is NOT a step in this chain. It survives only
+    # for legacy callers that supply no sender contractor context at all. Once
+    # a sender is selected, the Client Master account is the authority and a
+    # missing account blocks — it never silently bills the environment account.
+    shipper_account, billing_resolution = _resolve_shipment_accounts(body, settings)
     if not shipper_account:
         raise HTTPException(
             status_code=422,
@@ -648,6 +844,7 @@ def mark_shipment_do_not_use(
     tracking_ref: str,
     body: DoNotUseBody,
     _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
     db_path: Path = Depends(_get_shipment_db_path),
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
@@ -731,6 +928,7 @@ async def create_label_package(
     batch_id: str,
     body: LabelPackageBody,
     _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
 ) -> Response:
     """Generate the Path-DOC outbound document package for a batch."""
     try:

@@ -96,37 +96,155 @@ class TestCorrectApiUsage:
 
 
 # =============================================================================
-# 3. Five tabs exist
+# 3. V1 UI PARITY — six tabs, V1 order and V1 labels
 # =============================================================================
+#
+# V1 is the visual authority (operator directive 2026-07-20). The reference is
+# ClientKycModal in app/static/dashboard.html (FROZEN V1 page). These tests pin
+# the parity contract: same tab ids, same order, same labels, same section
+# headings, same header/footer chrome. Superseded the earlier 5-tab shape
+# ('identity' / 'billing' / 'commercial' / 'sync'), which was a V2-only
+# invention and is intentionally gone.
 
-class TestFiveTabsExist:
-    """Modal must have 5 tabs matching the spec."""
+V1_TAB_IDS = ['basic', 'shipping', 'carriers', 'kyc', 'kuke', 'invoices']
+V1_TAB_LABELS = ['Company / Basic', 'Shipping', 'Carriers',
+                 'KYC / Compliance', 'KUKE & Credit', 'Invoices']
 
-    def test_identity_tab(self):
+
+class TestV1TabParity:
+    """Modal must expose the six V1 tabs, in V1 order, with V1 labels."""
+
+    @pytest.mark.parametrize("tab_id", V1_TAB_IDS)
+    def test_tab_id_present(self, tab_id):
         src = _read(CLIENT_DETAIL)
-        assert "'identity'" in src or '"identity"' in src
+        assert f"'{tab_id}'" in src, f"V1 tab id '{tab_id}' must exist"
 
-    def test_billing_tab(self):
+    @pytest.mark.parametrize("label", V1_TAB_LABELS)
+    def test_tab_label_present(self, label):
         src = _read(CLIENT_DETAIL)
-        assert "'billing'" in src or '"billing"' in src
+        assert label in src, f"V1 tab label '{label}' must exist"
 
-    def test_shipping_tab(self):
+    def test_tab_order_matches_v1(self):
+        """_CD_TABS must list the six tabs in V1 order."""
         src = _read(CLIENT_DETAIL)
-        assert "'shipping'" in src or '"shipping"' in src
+        block = src[src.index("const _CD_TABS"):src.index("];", src.index("const _CD_TABS"))]
+        found = [t for t in V1_TAB_IDS if f"'{t}'" in block]
+        positions = [block.index(f"'{t}'") for t in V1_TAB_IDS]
+        assert found == V1_TAB_IDS, "all six V1 tabs must be in _CD_TABS"
+        assert positions == sorted(positions), \
+            "_CD_TABS order must match V1 (basic, shipping, carriers, kyc, kuke, invoices)"
 
-    def test_commercial_tab(self):
+    def test_every_tab_has_a_panel(self):
         src = _read(CLIENT_DETAIL)
-        assert "'commercial'" in src or '"commercial"' in src
+        for tab_id in V1_TAB_IDS:
+            assert f"tab === '{tab_id}'" in src, f"tab '{tab_id}' must render a panel"
 
-    def test_sync_tab(self):
+    def test_no_v2_only_tab_ids_remain(self):
+        """The pre-parity V2 tab ids must be gone."""
         src = _read(CLIENT_DETAIL)
-        assert "'sync'" in src or '"sync"' in src
+        block = src[src.index("const _CD_TABS"):src.index("];", src.index("const _CD_TABS"))]
+        for stale in ("'identity'", "'billing'", "'commercial'", "'sync'"):
+            assert stale not in block, f"stale V2-only tab {stale} must not be in _CD_TABS"
 
-    def test_tab_labels_present(self):
+
+class TestV1SectionParity:
+    """V1 section headings must be reproduced verbatim."""
+
+    @pytest.mark.parametrize("heading", [
+        'Company / Identity', 'Billing address', 'Contact', 'VAT / Tax numbers', 'Notes',
+        'Bill-to address (from Client Master)', 'Ship-to address',
+        'Saved delivery addresses',
+        # Was V1's 'Carrier accounts'. Operator ruling 2026-07-20 renamed this
+        # section to 'DHL Express accounts' as part of the Carrier tab label
+        # work; the newer ruling supersedes the V1 heading here.
+        'DHL Express accounts',
+        'KYC Status', 'KUKE Insurance', 'Credit',
+        'Document defaults', 'Payment defaults',
+    ])
+    def test_section_heading_present(self, heading):
         src = _read(CLIENT_DETAIL)
-        for label in ['Identity', 'Billing Address', 'Shipping Address',
-                       'Commercial Defaults', 'Sync & Authority']:
-            assert label in src, f"Tab label '{label}' must exist"
+        assert heading in src, f"V1 section heading '{heading}' must exist"
+
+
+class TestV1ChromeParity:
+    """Header, tab strip and footer must match V1 chrome."""
+
+    def test_icon_close_not_text_close(self):
+        """V1 closes with a ✕ icon. 'X Close' was the V2 regression."""
+        src = _read(CLIENT_DETAIL)
+        assert "X Close" not in src, "close control must be the V1 ✕ icon, not 'X Close'"
+        assert "✕" in src, "V1 ✕ close icon must be present"
+
+    def test_v1_modal_width(self):
+        src = _read(CLIENT_DETAIL)
+        assert "maxWidth: 760" in src, "V1 modal is maxWidth 760"
+
+    def test_v1_tab_map_subtitle(self):
+        src = _read(CLIENT_DETAIL)
+        for part in ('Company', 'Shipping', 'Carriers', 'KYC', 'Credit', 'Invoices'):
+            assert part in src
+        assert "wFirma" in src, "header must show the wFirma contractor id"
+
+    def test_v1_footer_buttons(self):
+        """Footer is Cancel + Save (V1 wording, not 'Save to Customer Master')."""
+        src = _read(CLIENT_DETAIL)
+        footer = src[src.index("cd-cancel"):]
+        assert ">Cancel<" in footer
+        assert "Save to Customer Master" not in src, \
+            "V1 footer button is labelled 'Save'"
+
+
+class TestV1SubResourceParity:
+    """V1 shipping-address + carrier-account CRUD must exist, via PzApi only."""
+
+    @pytest.mark.parametrize("method", [
+        "listShippingAddresses", "createShippingAddress",
+        "updateShippingAddress", "deleteShippingAddress",
+        "listCarrierAccounts", "createCarrierAccount",
+        "updateCarrierAccount", "deleteCarrierAccount",
+    ])
+    def test_subresource_method_used(self, method):
+        src = _read(CLIENT_DETAIL)
+        assert f"PzApi.{method}" in src, f"PzApi.{method} must be used"
+
+    @pytest.mark.parametrize("method", [
+        "listShippingAddresses", "createShippingAddress",
+        "updateShippingAddress", "deleteShippingAddress",
+        "listCarrierAccounts", "createCarrierAccount",
+        "updateCarrierAccount", "deleteCarrierAccount",
+    ])
+    def test_subresource_method_defined_in_api(self, method):
+        """Transport lives in pz-api.js (Lesson F), not in the component."""
+        src = _read(V2_DIR / "pz-api.js")
+        assert f"{method}:" in src, f"pz-api.js must define {method}"
+
+    def test_copy_billing_affordance(self):
+        src = _read(CLIENT_DETAIL)
+        assert "Copy billing address" in src
+
+
+class TestCapabilityPreservation:
+    """Lesson M — V2 capabilities with no V1 tab must survive the port."""
+
+    @pytest.mark.parametrize("field", [
+        "freight_fixed_amount_eur", "freight_fixed_amount_usd",
+        "insurance_rate", "ship_to_contractor_id",
+    ])
+    def test_capability_field_still_rendered(self, field):
+        src = _read(CLIENT_DETAIL)
+        assert field in src, f"{field} must not be dropped by the parity port"
+
+    def test_bank_account_not_rendered_as_input(self):
+        """bank_account must NOT be an editable field until the backend is fixed.
+
+        upsert_customer()'s payload dict in customer_master_db.py omits
+        bank_account, so a PUT returns 200 and silently discards the value.
+        V1 has no such field either, so parity and honesty agree here.
+        Re-add the input only in the same change that fixes the payload dict.
+        """
+        src = _read(CLIENT_DETAIL)
+        assert "inp('bank_account'" not in src, \
+            "bank_account input must stay out until upsert_customer persists it"
 
 
 # =============================================================================
@@ -163,15 +281,20 @@ class TestBillToContractorReadOnly:
     """bill_to_contractor_id must be read-only (system-managed)."""
 
     def test_contractor_id_is_readonly(self):
+        """Rendered as read-only metadata, never as an editable input.
+
+        V1 parity: the id shows in the header subtitle and in the collapsed
+        'Record metadata' block on Company / Basic. It must never be bound to
+        a writable input via set('bill_to_contractor_id', ...).
+        """
         src = _read(CLIENT_DETAIL)
-        # The sync tab renders it as read-only metadata
         assert "bill_to_contractor_id" in src
-        # Must appear in the read-only sync tab section
-        idx = src.find("tab === 'sync'")
-        assert idx > 0
-        sync_section = src[idx:idx + 2000]
-        assert "bill_to_contractor_id" in sync_section, \
-            "bill_to_contractor_id must be in Sync & Authority tab (read-only)"
+        assert "cd-ro-contractor-id" in src, \
+            "bill_to_contractor_id must render in the read-only metadata block"
+        assert "set('bill_to_contractor_id'" not in src, \
+            "bill_to_contractor_id must never be operator-editable"
+        assert "inp('bill_to_contractor_id'" not in src, \
+            "bill_to_contractor_id must never render as an editable input"
 
 
 # =============================================================================
@@ -315,13 +438,12 @@ class TestDataTestIds:
         # Verify the pattern exists and all tab IDs are defined
         assert "'cd-tab-'" in src or '"cd-tab-"' in src, \
             "Tab buttons must use cd-tab- prefix for data-testid"
-        for tab_id in ['identity', 'billing', 'shipping', 'commercial', 'sync']:
-            assert f"'{tab_id}'" in src or f'"{tab_id}"' in src, \
-                f"Tab ID {tab_id} must be defined"
+        for tab_id in V1_TAB_IDS:
+            assert f"'{tab_id}'" in src, f"Tab ID {tab_id} must be defined"
 
     def test_confirm_dialog(self):
         src = _read(CLIENT_DETAIL)
-        assert "cd-confirm-dialog" in src
+        assert "cd-confirm-dialog" not in src
 
     def test_loading_state(self):
         src = _read(CLIENT_DETAIL)
@@ -337,11 +459,21 @@ class TestDataTestIds:
 # =============================================================================
 
 class TestSaveButtonLabel:
-    """Save button must say 'Save Changes', not just 'Save'."""
+    """V1 parity: the footer button is labelled 'Save'.
 
-    def test_save_changes_label(self):
+    Was 'Save Changes' — a label that never actually shipped (the pre-parity
+    V2 rendered 'Save to Customer Master', so this assertion was already
+    failing on main). V1's ClientKycModal footer reads 'Save', with
+    'Saving…' while in flight and 'No contractor ID' when unsaveable.
+    """
+
+    def test_save_label_matches_v1(self):
         src = _read(CLIENT_DETAIL)
-        assert "Save Changes" in src
+        footer = src[src.index('data-testid="cd-save"'):]
+        assert "'Save'" in footer, "V1 footer button label is 'Save'"
+        assert "'Saving…'" in footer, "V1 in-flight label is 'Saving…'"
+        assert "'No contractor ID'" in footer, \
+            "V1 disables save with a 'No contractor ID' label"
 
     def test_no_auto_save(self):
         """Must NOT auto-save on field change."""
@@ -355,29 +487,37 @@ class TestSaveButtonLabel:
 
 
 # =============================================================================
-# 12. Confirm dialog before save
+# 12. Save is immediate — no confirm dialog (V1 parity)
 # =============================================================================
 
-class TestConfirmDialog:
-    """Must show a confirm dialog before saving."""
+class TestNoConfirmDialog:
+    """Operator ruling 2026-07-20: Save writes immediately, exactly like V1.
 
-    def test_confirm_before_save(self):
-        src = _read(CLIENT_DETAIL)
-        assert "showConfirm" in src
-        assert "setShowConfirm" in src
+    A Customer Master edit is not an irreversible financial operation;
+    dirty-state, validation and save-error handling are the safeguards.
+    Confirm dialogs are reserved for genuinely irreversible / financially
+    consequential actions.
+    """
 
-    def test_confirm_shows_changed_fields(self):
-        """Confirm dialog must display the changed fields."""
+    def test_no_confirm_dialog_component(self):
         src = _read(CLIENT_DETAIL)
-        assert "computeChanges" in src or "changedFields" in src
+        assert "_CdConfirmDialog" not in src
+        assert "cd-confirm-dialog" not in src
 
-    def test_confirm_has_cancel(self):
+    def test_no_confirm_state(self):
         src = _read(CLIENT_DETAIL)
-        assert "cd-confirm-cancel" in src
+        assert "showConfirm" not in src
+        assert "setShowConfirm" not in src
 
-    def test_confirm_has_save(self):
+    def test_save_button_saves_directly(self):
+        """cd-save must invoke the save handler, not open a dialog."""
         src = _read(CLIENT_DETAIL)
-        assert "cd-confirm-save" in src
+        assert 'data-testid="cd-save" onClick={handleSave}' in src
+
+    def test_changed_field_diff_still_computed(self):
+        """Partial-PUT contract is unchanged — only changed fields are sent."""
+        src = _read(CLIENT_DETAIL)
+        assert "computeChanges" in src and "changedFields" in src
 
 
 # =============================================================================

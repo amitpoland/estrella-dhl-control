@@ -264,8 +264,9 @@ _AREA5_ROUTES: frozenset[str] = frozenset({
     "routes_ai_bridge.py:POST:/results/{task_id}",
     "routes_ai_bridge.py:POST:/tasks/{batch_id}",
     "routes_bot.py:POST:/bot-event",
-    "routes_carrier_actions.py:POST:/{batch_id}/label-package",
-    "routes_carrier_actions.py:POST:/{batch_id}/shipment",
+    # routes_carrier_actions POST /shipment, /label-package, and /do-not-use
+    # were UPGRADED to require_role("admin","logistics") — removed from the
+    # bare-auth allowlist (guard upgrade shrinks the allowlist, per governance).
     "routes_wfirma.py:POST:/shipment/{batch_id}/wfirma/clipboard",
     "routes_wfirma.py:POST:/shipment/{batch_id}/wfirma/products/resolve",
     "routes_wfirma.py:POST:/shipment/{batch_id}/wfirma/products/sync-names",
@@ -301,7 +302,7 @@ _AREA5_ROUTES: frozenset[str] = frozenset({
     # / edit surfaces with NO api-key-only automation caller (verified: static
     # UI JS only; no .ps1 / scripts caller). Bare pending the Area 5 guard
     # burn-down (all Area 5 siblings above are still bare).
-    "routes_carrier_actions.py:POST:/{batch_id}/shipment/{tracking_ref}/do-not-use",
+    # do-not-use UPGRADED to require_role("admin","logistics") — removed here.
     "routes_carrier_shadow.py:POST:/events/process",
     "routes_description_admin.py:POST:/product/{product_code:path}/validate",
     "routes_description_admin.py:PUT:/product/{product_code:path}",
