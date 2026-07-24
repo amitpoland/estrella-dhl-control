@@ -79,10 +79,14 @@ def _pz_failure():
     return PZResult(ok=False, error="wFirma API timeout")
 
 
-def _run(batch_id=_BATCH):
+def _run(batch_id=_BATCH, x_operator=None):
     import asyncio
     from app.api.routes_wfirma import wfirma_pz_create
-    return asyncio.get_event_loop().run_until_complete(wfirma_pz_create(batch_id))
+    # Call the route function directly: FastAPI Header() defaults are not
+    # resolved off-server, so pass x_operator explicitly (the route signature
+    # gained the X-Operator attribution header).
+    return asyncio.get_event_loop().run_until_complete(
+        wfirma_pz_create(batch_id, x_operator=x_operator))
 
 
 # ── Test 1: gate off → 403 before any wFirma call ────────────────────────────
@@ -132,7 +136,7 @@ def test_unresolved_products_block_pz_create():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT_BASE),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=[]),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={}),
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz") as mock_create,
     ):
         result = _run()
@@ -159,7 +163,7 @@ def test_price_conflicts_block_pz_create():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT_BASE),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=products),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in products}),
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz") as mock_create,
     ):
         result = _run()
@@ -185,7 +189,7 @@ def test_ready_preview_calls_create_once():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT_BASE),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=_MAPPED_PRODUCTS),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in _MAPPED_PRODUCTS}),
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz",
               return_value=_pz_success()) as mock_create,
         patch("app.api.routes_wfirma._patch_pz_doc_id", return_value=None),
@@ -212,7 +216,7 @@ def test_success_writes_pz_doc_id_to_audit():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT_BASE),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=products),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in products}),
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz",
               return_value=_pz_success()),
         patch("app.api.routes_wfirma._patch_pz_doc_id", side_effect=fake_patch),
@@ -239,7 +243,7 @@ def test_wfirma_failure_writes_nothing():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT_BASE),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=products),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in products}),
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz",
               return_value=_pz_failure()),
         patch("app.api.routes_wfirma._patch_pz_doc_id",
@@ -290,7 +294,7 @@ def test_success_response_includes_planned_lines():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT_BASE),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=_MAPPED_PRODUCTS),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in _MAPPED_PRODUCTS}),
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz",
               return_value=_pz_success()),
         patch("app.api.routes_wfirma._patch_pz_doc_id", return_value=None),

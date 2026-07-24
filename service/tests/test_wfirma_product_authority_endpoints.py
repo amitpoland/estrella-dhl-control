@@ -85,7 +85,7 @@ def test_existing_product_code_adopts_without_create(_disable_api_key, client, m
     monkeypatch.setattr(wc, "create_product",
                         lambda **kw: create_calls.append(kw) or _WFStub())
     monkeypatch.setattr(wc, "edit_product",
-                        lambda wfid, **kw: edit_calls.append((wfid, kw)) or {})
+                        lambda wfirma_product_id, **kw: edit_calls.append((wfirma_product_id, kw)) or {})
     monkeypatch.setattr(wfdb, "upsert_product",
                         lambda **kw: upsert_calls.append(kw) or "id-1")
 
@@ -124,7 +124,7 @@ def test_no_overwrite_wfirma_untouched(_disable_api_key, client, monkeypatch):
     monkeypatch.setattr(wc, "create_product",
                         lambda **kw: create_calls.append(kw) or _WFStub())
     monkeypatch.setattr(wc, "edit_product",
-                        lambda wfid, **kw: edit_calls.append((wfid, kw)) or {})
+                        lambda wfirma_product_id, **kw: edit_calls.append((wfirma_product_id, kw)) or {})
     monkeypatch.setattr(wfdb, "upsert_product", lambda **kw: "id-1")
 
     # Operator passes a local_expected that DOES differ from wFirma side —
@@ -167,8 +167,8 @@ def test_yes_overwrite_updates_existing_only(_disable_api_key, client, monkeypat
                         lambda **kw: create_calls.append(kw) or _WFStub())
     monkeypatch.setattr(
         wc, "edit_product",
-        lambda wfid, **kw: edit_calls.append((wfid, kw)) or {
-            "wfirma_id": wfid, "name": kw.get("name", "Old name"),
+        lambda wfirma_product_id, **kw: edit_calls.append((wfirma_product_id, kw)) or {
+            "wfirma_id": wfirma_product_id, "name": kw.get("name", "Old name"),
             "code": PRODUCT_CODE, "unit": "szt.",
         },
     )
@@ -190,7 +190,8 @@ def test_yes_overwrite_updates_existing_only(_disable_api_key, client, monkeypat
     assert len(edit_calls) == 1
     edit_id, edit_kwargs = edit_calls[0]
     assert edit_id == "99001"
-    assert edit_kwargs == {"name": "Updated name from operator"}
+    # passthrough forwards operator name + description (None when unset)
+    assert edit_kwargs == {"name": "Updated name from operator", "description": None}
 
 
 def test_yes_overwrite_blocked_when_flag_off(_disable_api_key, client, monkeypatch):
@@ -203,7 +204,7 @@ def test_yes_overwrite_blocked_when_flag_off(_disable_api_key, client, monkeypat
     monkeypatch.setattr(wc, "get_product_by_code", lambda code: _WFStub())
     edit_calls = []
     monkeypatch.setattr(wc, "edit_product",
-                        lambda wfid, **kw: edit_calls.append((wfid, kw)) or {})
+                        lambda wfirma_product_id, **kw: edit_calls.append((wfirma_product_id, kw)) or {})
 
     r = client.post(
         f"/api/v1/wfirma/goods/update-and-adopt/{PRODUCT_CODE}",
@@ -241,7 +242,7 @@ def test_missing_product_code_creates(_disable_api_key, client, monkeypatch):
         lambda **kw: create_calls.append(kw) or _WFStub(wfirma_id="new-id"),
     )
     monkeypatch.setattr(wc, "edit_product",
-                        lambda wfid, **kw: edit_calls.append((wfid, kw)) or {})
+                        lambda wfirma_product_id, **kw: edit_calls.append((wfirma_product_id, kw)) or {})
     monkeypatch.setattr(wfdb, "upsert_product", lambda **kw: "id-1")
 
     r = client.post(
@@ -399,7 +400,10 @@ def test_design_code_never_used_as_product_identity_in_endpoints():
         # 2. design_code must NOT be the path parameter
         assert "{design_code" not in body
         # 3. The identity used is product_code (pc) — verify it's in the body
-        assert "get_product_by_code(pc)" in body or "get_product_by_code(product_code" in body
+        assert ("get_product_by_code(pc)" in body or "get_product_by_code(product_code" in body
+                or "lookup_wfirma_product(pc)" in body or "lookup_wfirma_product(product_code" in body), (
+            f"{handler_name}: must look up wFirma identity by product_code "
+            "(wc.get_product_by_code or the C-1w2 rdb.lookup_wfirma_product passthrough)")
 
 
 def test_design_code_metadata_acceptable_via_description_engine():

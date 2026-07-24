@@ -271,7 +271,7 @@ def test_pz_create_uses_resolved_supplier_not_global_env(tmp_path):
         patch("app.api.routes_wfirma._read_audit", return_value=audit),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=products),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in products}),
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz", side_effect=_fake_create),
         patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz",
               return_value=MagicMock(ok=False, error="test")),
@@ -326,7 +326,7 @@ def test_pz_preview_includes_supplier_resolution_source(tmp_path):
         patch("app.api.routes_wfirma._read_audit", return_value=audit),
         patch("app.api.routes_wfirma._collect_pz_preview_blockers", return_value=[]),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=products),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in products}),
     ):
         result = asyncio.get_event_loop().run_until_complete(
             wfirma_pz_preview("TEST_PREV_001")
@@ -376,7 +376,7 @@ def test_pz_preview_blocker_when_supplier_unresolved(tmp_path):
         patch("app.api.routes_wfirma._read_audit", return_value=audit),
         patch("app.api.routes_wfirma._collect_pz_preview_blockers", return_value=[]),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.wfirma_db.list_products", return_value=products),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in products}),
     ):
         result = asyncio.get_event_loop().run_until_complete(
             wfirma_pz_preview("TEST_PREV_UNRESOLVED")
