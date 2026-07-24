@@ -102,6 +102,7 @@ def test_lifecycle_states_enumerated_in_full():
         "draft", "editing", "approved",
         "posting", "posted", "post_failed",
         "cancelled", "superseded",
+        "converted",
     )
 
 
