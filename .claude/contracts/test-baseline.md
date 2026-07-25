@@ -9,7 +9,7 @@ Referenced by: `deploy_qa_reviewer.md`, `deploy_lead_coordinator.md`, `deploy.md
 
 | Suite | File / pattern | Required pass count | Failure action |
 |-------|---------------|---------------------|----------------|
-| PZ regression | `tests/test_pz_*.py` | **258** | Unconditional deploy block |
+| PZ regression | `tests/test_pz_*.py` | **260** | Unconditional deploy block |
 | Carrier suite | `tests/test_carrier_*.py` | **604** | Unconditional deploy block |
 
 Any test ERROR (not just FAILED) is also an unconditional block.
@@ -37,10 +37,11 @@ unconditional block.
 | `test_proforma_policy_phase7.py::test_html_suggestion_row_testid` | #1015 | MISSING UI — `draft-suggestion-row` testid absent from all `app/static/`. Outside metered suites. |
 
 The PZ metered suite (`tests/test_pz_*.py`) has **no documented failures** as of the #613 fix
-(PR #1006). Required count bumped 257→258 (the +1 attributable to #613). Measured on current
-`main`: **260 passed** — 2 additional `test_pz_*` tests were introduced by later PRs without a
-floor bump; the floor is kept conservative below measured (Carrier convention), and that +2 drift
-is flagged for a future reconciliation. Issue #802 (`test_ai_gateway_contract`) was likewise fixed
+(PR #1006). Required count bumped 257→258 (the +1 attributable to #613), then **258→260
+(2026-07-25) reconciling the long-flagged +2 drift** — the 2 additional `test_pz_*` tests
+introduced by later PRs are now folded into the floor. Fresh clean-env measurement on `main`
+`48cdab25`: **260 passed / 0 failed / 0 errors**, so the floor now equals measured (no remaining
+drift). Issue #802 (`test_ai_gateway_contract`) was likewise fixed
 (PR #1000) and its stale exclusion removed; it is outside the metered PZ pattern, so no floor impact.
 
 **Carrier env-conditional exclusions (4, reconciled 2026-07-09):** the four
@@ -81,6 +82,7 @@ When a new golden batch is committed or a new test is added:
 
 | Date | PZ required | Carrier required | Reason |
 |------|-------------|------------------|--------|
+| 2026-07-25 | 260 | 604 | **PZ floor 258→260 (+2 drift reconciliation); #1021/#1029 add tests outside both metered patterns (zero floor impact).** (1) **Reconciles the long-flagged +2 PZ drift:** `tests/test_pz_*.py` has measured 260 pass since earlier-PR test additions while the floor stayed 258 (kept conservative). Fresh clean-env measurement on `main` `48cdab25`: **260 passed / 0 failed / 0 errors** — floor raised to equal measured, no remaining drift. (2) #1029 added `test_wfirma_client_contract.py::test_http_request_rejects_non_numeric_id_suffix` (+1; guards the URL-encoded `id_suffix` path segment — issue #1028) and #1021 added `test_proforma_mapping_repair_ui.py` + `test_proforma_packing_sync.py` (manual-line preservation + honest re-check + unmapped-designs; 35 pass together in isolation). All three are OUTSIDE `tests/test_pz_*.py` and `tests/test_carrier_*.py` (wfirma/proforma suites), so they contribute **nothing** to either metered floor — recorded per the update protocol (same convention as the #1015/#927 out-of-pattern rows). Both PRs merged + deployed to prod (`48cdab25`, full parity). Carrier `tests/test_carrier_*.py` **619 passed / 4 documented env fail** (floor 604 unchanged), root golden 160/160. |
 | 2026-07-23 | 258 | 604 | PZ floor 257→258 (+1): Issue #613 (`test_pz_batch.py::test_save_json_csv_ui_round_trip`) FIXED and deployed by PR #1006 (`write_bytes` instead of `write_text` — Windows/py3.9 was doubling the csv `\r\n` into `\r\r\n`). Its known-failing exclusion row is removed per the update protocol. Also removed the stale Issue #802 exclusion (`test_ai_gateway_contract.py::test_call_returns_model_response_text`, fixed by PR #1000) — outside the metered PZ pattern, no floor impact. Both were merged without their same-commit baseline update; this row reconciles both. Fresh evidence on `main`: `tests/test_pz_*.py` **260 passed** (258 floor kept conservative below measured; +2 vs 258 is prior drift from later-PR test additions, flagged for reconciliation), root golden 160/160, Carrier 619 pass / 4 documented env fail. This file changed as a post-deploy follow-up (the fix PRs predated it). |
 | 2026-07-19 | 257 | 604 | **No floor change — dead-test cleanup of the obsolete `tracking_ref` AWB-exclusion invariant (GATE-4 SCHEDULED disposition, operator-ratified 2026-07-19).** `tracking_ref` has been a persisted column since PR #819 (squash `ae6c73b9`, operator decision 2026-07-06 duplicate-AWB incident fix — idempotency replay returns the stored result with zero adapter calls), so both tests asserting `"tracking_ref" not in row` asserted a **provably false** invariant. Deleted: (1) `test_carrier_shipment_db.py::test_tracking_ref_not_in_schema` — carried `@pytest.mark.skip` since the 2026-07-09 reconciliation; a skip that can never be un-skipped is dead code. (2) `test_e2e_carrier_shadow_create.py::test_shipment_db_row_has_no_tracking_ref_column` — was **actively FAILING on `main` and undocumented** (not listed in any exclusion row); outside both metered patterns, so it never tripped a gate. **Floor stays 604: deleting a *skipped* test removes 0 passes.** Fresh creds-set measurement on this branch: carrier `tests/test_carrier_*.py` = **619 passed / 4 documented env fail (`test_carrier_config_defaults.py`) / 0 skipped / 0 errors** — pass count identical to the 2026-07-18 row's measured 619, with the 1 skip now gone; `test_e2e_carrier_shadow_create.py` 17/17 (was 16 pass + 1 fail). Surviving AWB-exclusion invariant `test_live_result_insert_raises` passes and is untouched. No production code changed. Test files + this file changed in the same commit per update protocol. |
 | 2026-07-18 | 257 | 604 | Carrier floor 584→604 (+20): new `test_carrier_operator_attribution.py` adds X-Operator booking attribution coverage (DB `booked_by` column, coordinator fresh/replay preservation, route header→audit→response, sanitiser, do-not-use header fallback). Test file + this file changed in the same commit per update protocol. Bump is the minimal delta attributable to the new file on top of the recorded 584 floor; fresh creds-set full-suite evidence measured **619 pass / 4 documented env fail (`test_carrier_config_defaults.py`) / 1 skip / 0 errors**, so 604 stays conservative below measured. PZ 257 pass / 1 documented #613 fail; root golden 160/160. |
