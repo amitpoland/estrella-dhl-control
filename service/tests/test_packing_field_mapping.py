@@ -45,8 +45,10 @@ class TestSizeFieldMapping:
         """size property must be mapped to l.size (or l['size'])."""
         src = self._src()
         # Must contain l.size assignment (not scan_code)
-        assert "l.size" in src or "l['size']" in src or 'l["size"]' in src, (
-            "proforma-detail.jsx: size mapping must read from l.size, not scan_code"
+        assert any(t in src for t in ("l.size", "l['size']", 'l["size"]',
+                                      "pk.size", "pk['size']", 'pk["size"]')), (
+            "proforma-detail.jsx: size mapping must read from the size field "
+            "(l.size / renamed pk.size), not scan_code"
         )
 
     def test_size_does_not_use_scan_code(self):
@@ -142,21 +144,21 @@ class TestV2StaticCacheHeaders:
         # Find the v2 handler block — look for the suffix tuple that includes .jsx
         # The fix adds ".css" to the tuple alongside ".html", ".js", ".jsx"
         v2_block_match = re.search(
-            r'serve_v2_static.*?return Response\(',
+            r'def serve_v2_static.*?max-age=3600',
             src, re.DOTALL
         )
         assert v2_block_match, "Could not find serve_v2_static handler in main.py"
         v2_block = v2_block_match.group(0)
-        assert '".css"' in v2_block or "'.css'" in v2_block, (
-            "main.py serve_v2_static: .css must be in the no-cache suffix list. "
-            "estrella-doc-tokens.css carries print CSS and must never be cached."
+        assert "no-store" in v2_block and "vendor" in v2_block, (
+            "main.py serve_v2_static: non-vendor V2 assets (incl .css) must default "
+            "to no-store; only vendor/*.js is long-cached."
         )
 
     def test_v2_handler_nocache_includes_jsx(self):
         """The /v2/* handler must keep .jsx in its no-cache suffix list."""
         src = self._main_src()
         v2_block_match = re.search(
-            r'serve_v2_static.*?return Response\(',
+            r'def serve_v2_static.*?max-age=3600',
             src, re.DOTALL
         )
         assert v2_block_match, "Could not find serve_v2_static handler in main.py"
@@ -169,7 +171,7 @@ class TestV2StaticCacheHeaders:
         """The /v2/* no-cache response must include 'no-store'."""
         src = self._main_src()
         v2_block_match = re.search(
-            r'serve_v2_static.*?return Response\(',
+            r'def serve_v2_static.*?max-age=3600',
             src, re.DOTALL
         )
         assert v2_block_match
@@ -197,9 +199,28 @@ class TestPrintCSS:
 
     def _print_block(self) -> str:
         src = self._css()
-        m = re.search(r"@media print\s*\{(.+?)(?=\n\})", src, re.DOTALL)
-        assert m, "Could not extract @media print block from estrella-doc-tokens.css"
-        return m.group(1)
+        # The @media print block contains nested rules, so a non-greedy regex
+        # stops at the first nested '}'. There can also be MULTIPLE @media print
+        # blocks — brace-count every one and concatenate.
+        out = []
+        pos = 0
+        while True:
+            i = src.find("@media print", pos)
+            if i == -1:
+                break
+            start = src.index("{", i)
+            depth, j = 0, start
+            while j < len(src):
+                if src[j] == "{":
+                    depth += 1
+                elif src[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            out.append(src[start + 1:j])
+            pos = j + 1
+        return "\n".join(out)
 
     def test_ej_a4_height_auto_in_print(self):
         """@media print must override .ej-a4 height to auto (removes 1123px clip)."""
@@ -237,9 +258,9 @@ class TestPrintCSS:
     def test_proforma_footer_class_present(self):
         """estrella-doc-proforma.jsx must apply ej-proforma-footer class for print unpinning."""
         src = _PROFORMA_DOC.read_text(encoding="utf-8")
-        assert "ej-proforma-footer" in src, (
-            "estrella-doc-proforma.jsx: ej-proforma-footer class must be present on the seller footer div "
-            "so @media print can unpin it from position:absolute"
+        assert "ej-proforma-footer" in src or "ej-company-footer" in src, (
+            "estrella-doc-proforma.jsx: a print-unpinnable seller footer class "
+            "(ej-proforma-footer or renamed ej-company-footer) must be present"
         )
 
     def test_footer_unpin_in_print_css(self):

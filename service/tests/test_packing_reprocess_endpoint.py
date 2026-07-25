@@ -363,8 +363,9 @@ def test_reprocess_endpoint_has_no_external_system_triggers():
             f"reprocess endpoint must not reference {forbidden!r}"
 
 
-def test_dashboard_has_reparse_button_testid():
-    src = (Path(__file__).resolve().parents[1] / "app" / "static" / "dashboard.html").read_text(encoding="utf-8")
+def test_shipment_detail_has_reparse_button_testid():
+    # The per-packing-list reparse button lives on the shipment-detail page.
+    src = (Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
     assert 'data-testid="packing-list-reparse-all"' in src
     assert "packing-list-reparse-summary" in src
     assert "/reprocess" in src

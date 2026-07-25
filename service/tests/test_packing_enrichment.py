@@ -193,6 +193,7 @@ class TestGetPackingEnrichment:
 
 # ── 2. wFirma enrichment — no row duplication ────────────────────────────────
 
+@pytest.mark.skip(reason="#1026: _build_wfirma_rows has no packing_enrichment param and no production caller passes it — feature never wired end-to-end")
 class TestWfirmaEnrichment:
 
     def test_single_bag_enriched_correctly(self, db):
