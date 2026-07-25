@@ -16,6 +16,7 @@ from __future__ import annotations
 
 
 import threading as _threading
+import urllib.parse as _urlparse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
@@ -479,9 +480,16 @@ def _http_request(method: str, module: str, action: str, body_xml: str = "",
     """
     base = _url(module, action)
     if id_suffix:
-        # Insert /{id_suffix} between path and query string.
+        # Insert /{id_suffix} between path and query string. id_suffix becomes a
+        # URL PATH SEGMENT, so it must be URL-encoded — _esc() only XML-escapes
+        # (& < > "), leaving / ? # % to reach the wire and alter the path or
+        # inject query params. Every caller passes a numeric wFirma id, so guard
+        # that contract and fail fast on anything else (#1028).
+        raw = str(id_suffix).strip()
+        if not raw.isdigit():
+            raise ValueError(f"id_suffix must be a numeric wFirma id, got {id_suffix!r}")
         path, _, query = base.partition("?")
-        url = f"{path}/{_esc(id_suffix)}" + (f"?{query}" if query else "")
+        url = f"{path}/{_urlparse.quote(raw, safe='')}" + (f"?{query}" if query else "")
     else:
         url = base
     breaker = get_circuit_breaker("wfirma")

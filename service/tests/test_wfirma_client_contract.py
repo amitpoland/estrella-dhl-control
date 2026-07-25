@@ -1214,6 +1214,29 @@ def test_http_request_appends_id_suffix_to_url():
     assert "company_id=99999" in captured["url"]
 
 
+def test_http_request_rejects_non_numeric_id_suffix():
+    """#1028: id_suffix is a URL path segment — a non-numeric value carrying
+    URL-significant chars (/, ?, #) must raise, never reach the wire."""
+    from unittest.mock import patch as _p
+    called = {"n": 0}
+    def fake_request(method, url, headers=None, data=None, timeout=None):
+        called["n"] += 1
+        raise AssertionError("request must not be made for a rejected id_suffix")
+    with (
+        _p.object(_wc, "_requests") as mock_req,
+        _p.object(settings, "wfirma_company_id", "99999"),
+        _p.object(settings, "wfirma_access_key", "ak"),
+        _p.object(settings, "wfirma_secret_key", "sk"),
+        _p.object(settings, "wfirma_app_key", "appk"),
+    ):
+        mock_req.request = fake_request
+        mock_req.exceptions.RequestException = Exception
+        for bad in ("123?apikey=evil", "1/2", "12#frag", "abc"):
+            with pytest.raises(ValueError, match="numeric wFirma id"):
+                _wc._http_request("GET", "goods", "get", "", id_suffix=bad)
+    assert called["n"] == 0
+
+
 def test_edit_product_raises_on_empty_id():
     with pytest.raises(ValueError, match="wfirma_product_id is required"):
         _wc.edit_product("", name="x")
