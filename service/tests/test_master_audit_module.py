@@ -176,6 +176,8 @@ def test_valid_ops_locked():
         "create", "update", "upsert",
         "delete", "soft_delete", "restore", "hard_delete",
         "transition",
+        # User-management admin actions (additive) — recorded on the unified trail.
+        "approve", "reject", "role", "activate", "deactivate",
     })
 
 
