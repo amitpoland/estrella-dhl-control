@@ -3182,7 +3182,7 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
   const [saving,   setSaving]   = React.useState(false);
   const [rowErr,   setRowErr]   = React.useState({});      // line_id -> message (Authority Gap)
   const [options,  setOptions]  = React.useState(null);    // Product Master options (lazy)
-  const [recheck,  setRecheck]  = React.useState({ busy: false, msg: null, err: null });
+  const [recheck,  setRecheck]  = React.useState({ busy: false, msg: null, warn: null, err: null });
   const [confirmBusy, setConfirmBusy] = React.useState(null);  // line_id being confirmed
   const [confirmErr,  setConfirmErr]  = React.useState({});    // line_id -> message
   // Batch-level packing re-extraction (reuse: POST /packing/{batch}/reprocess —
@@ -3241,14 +3241,33 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
   };
 
   const recheckMapping = () => {
-    if (!expectedUpdatedAt) { setRecheck({ busy: false, msg: null, err: 'Authority Gap — draft lock unavailable.' }); return; }
-    setRecheck({ busy: true, msg: null, err: null });
+    if (!expectedUpdatedAt) { setRecheck({ busy: false, msg: null, warn: null, err: 'Authority Gap — draft lock unavailable.' }); return; }
+    setRecheck({ busy: true, msg: null, warn: null, err: null });
     window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/enrich-from-product-descriptions`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ expected_updated_at: expectedUpdatedAt }),
     })
-      .then(r => { setRecheck({ busy: false, msg: `Re-checked · ${(r && r.enriched_count) || 0} enriched from Product Master · confirmed rows preserved`, err: null }); if (onSaved) onSaved(); return reload(); })
-      .catch(e => setRecheck({ busy: false, msg: null, err: (e && e.message) || 'Re-check failed' }));
+      .then(r => {
+        // #1009 — never report false success. Three distinct outcomes:
+        //   * 0 lines            → draft is empty (designs unmapped) — WARN, not success.
+        //   * some lines missing → partial — WARN with the remaining count.
+        //   * all lines mapped   → genuine success.
+        const lc       = (r && r.line_count)     || 0;
+        const enriched = (r && r.enriched_count) || 0;
+        const missing  = (r && r.missing_count)  || 0;
+        if (lc === 0) {
+          setRecheck({ busy: false, msg: null,
+            warn: 'Nothing to re-check — this draft has no lines. Bind the packing designs to a product code first.', err: null });
+        } else if (missing > 0) {
+          setRecheck({ busy: false, msg: null,
+            warn: `Re-checked · ${enriched} enriched · ${missing} line(s) still missing a product description`, err: null });
+        } else {
+          setRecheck({ busy: false,
+            msg: `Re-checked · ${enriched} enriched from Product Master · all lines mapped`, warn: null, err: null });
+        }
+        if (onSaved) onSaved(); return reload();
+      })
+      .catch(e => setRecheck({ busy: false, msg: null, warn: null, err: (e && e.message) || 'Re-check failed' }));
   };
 
   // Batch re-extraction — re-parses the stored packing files (no re-upload) via
@@ -3447,6 +3466,7 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
             </button>
           </div>
           {recheck.msg && <div data-testid="pf-source-recheck-msg" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginBottom: 6 }}>{recheck.msg}</div>}
+          {recheck.warn && <div data-testid="pf-source-recheck-warn" style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 6 }}>{recheck.warn}</div>}
           {recheck.err && <div data-testid="pf-source-recheck-err" style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 6 }}>Re-check failed · {recheck.err}</div>}
           {lines.length === 0
             ? <div style={{ ...box, color: 'var(--text-3)' }}>No draft lines.</div>

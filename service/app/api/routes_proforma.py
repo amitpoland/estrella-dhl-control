@@ -7207,6 +7207,33 @@ from ..services.cpa_product_service import (  # noqa: E402
 )
 
 
+def _unmapped_designs_for_draft(draft: "pildb.ProformaDraft") -> List[str]:
+    """Designs on THIS draft's client that carry a design_no but no
+    product_code — i.e. sales-packing rows dropped from the draft because
+    product_code (required to bill) is missing. Sorted, de-duplicated.
+
+    #1009 — surfacing these is what keeps a draft from being silently empty:
+    the operator sees "N designs unmapped" and a bind path, not a blank list.
+    Read-only. Client scope: contractor_id when present, else client_name.
+    """
+    cid = (draft.client_contractor_id or "").strip()
+    cn  = (draft.client_name or "").strip()
+    out: List[str] = []
+    for r in (ddb.get_sales_packing_lines(draft.batch_id or "") or []):
+        rcid = str(r.get("client_contractor_id") or "").strip()
+        rcn  = str(r.get("client_name") or "").strip()
+        if cid:
+            if rcid != cid:
+                continue
+        elif cn and rcn != cn:
+            continue
+        dn = str(r.get("design_no") or "").strip()
+        pc = str(r.get("product_code") or "").strip()
+        if dn and not pc and dn not in out:
+            out.append(dn)
+    return sorted(out)
+
+
 def _derive_draft_readiness(
     draft: "pildb.ProformaDraft", *, intent: str,
 ) -> Dict[str, Any]:
@@ -7698,6 +7725,26 @@ def _derive_draft_readiness(
         warnings.append(f"design bridge summary unavailable: "
                         f"{type(exc).__name__}: {exc}")
 
+    # #1009 — a draft must never be SILENTLY empty because packing designs
+    # carry no product_code. See _unmapped_designs_for_draft. Read-only;
+    # fail-open (a scan error is a warning, never a false pass).
+    try:
+        unmapped_designs = _unmapped_designs_for_draft(draft)
+    except Exception as exc:
+        unmapped_designs = []
+        warnings.append(f"unmapped-design scan unavailable: "
+                        f"{type(exc).__name__}: {exc}")
+    if unmapped_designs:
+        _ud_sample = (", ".join(sorted(unmapped_designs)[:10])
+                      + ("…" if len(unmapped_designs) > 10 else ""))
+        _add(
+            f"{len(unmapped_designs)} packing design(s) carry no product code, "
+            f"so their lines were dropped from this draft: {_ud_sample}",
+            "Bind each design to its product code in Product Master, then use "
+            "Re-check mapping (Product Master) — the lines will populate.",
+            "PRODUCT",
+        )
+
     return {
         "ready":             not blockers,
         "intent":            intent,
@@ -7708,6 +7755,7 @@ def _derive_draft_readiness(
         "warnings":          warnings,
         "ambiguous_designs": ambiguous_designs,
         "resolved_designs":  resolved_designs,
+        "unmapped_designs":  sorted(unmapped_designs),
         "vat_resolution":    _vat_resolution,
         "duplicate_product_codes": duplicate_product_codes,
         "product_authority_available": product_authority_available,
@@ -8861,6 +8909,9 @@ def enrich_proforma_draft_lines(
     return JSONResponse({
         "ok":             True,
         "draft_id":       draft_id,
+        # #1009 — line_count lets the UI report honestly: 0 lines means the
+        # draft is empty (designs unmapped), NOT a successful "0 enriched".
+        "line_count":     len(lines),
         "enriched_count": n_hit,
         "missing_count":  n_miss,
         "draft":          _draft_to_full(refreshed),
