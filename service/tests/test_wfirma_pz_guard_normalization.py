@@ -226,40 +226,54 @@ class TestPzAdoptCapabilityFlag:
         from app.core.config import settings
         return {"X-API-KEY": settings.api_key or "test-key"}
 
-    def test_adopt_blocked_when_flag_is_false(self, _client_flag_off):
-        """Guard 0: wfirma_create_pz_allowed=False → 200 with status=blocked
-        before any wFirma call is attempted."""
-        with patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz") as mock_f, \
-             patch("app.api.routes_wfirma.wfirma_client.find_warehouse_pz_by_number") as mock_n:
+    def test_adopt_not_gated_by_create_flag(self, _client_flag_off, _storage):
+        """The create kill-switch (wfirma_create_pz_allowed) INTENTIONALLY does
+        not gate adopt: pz_adopt makes no wFirma WRITE — it only reads to verify
+        the PZ exists, then links audit state locally. Gating adopt on the create
+        flag would force operators to enable creation just to run recovery
+        (routes_wfirma: "Guard 0 ... intentionally NOT applied here"). Adoption
+        must PROCEED with the flag off; Guards 4/5/6 are the real safety rails."""
+        import json as _json
+        from app.services.wfirma_client import PZFetchResult
+        bdir = _storage / "outputs" / "TEST_ADOPT_GATE"
+        bdir.mkdir(parents=True, exist_ok=True)
+        (bdir / "audit.json").write_text(_json.dumps({
+            "batch_id": "TEST_ADOPT_GATE", "timeline": [],
+            "customs_declaration": {"mrn": "26PL000000000000"},
+        }), encoding="utf-8")
+        fetch_ok = PZFetchResult(ok=True, pz_doc_id="183167843", pz_number="PZ 1/2026")
+        with (
+            patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz",
+                  return_value=fetch_ok) as mock_f,
+            patch("app.api.routes_wfirma._find_pz_owner_batch", return_value=None),
+            patch("app.api.routes_wfirma.tl.log_event"),
+        ):
             r = _client_flag_off.post(
                 "/api/v1/upload/shipment/TEST_ADOPT_GATE/wfirma/pz_adopt",
                 headers={**self._auth(), "X-Operator": "test"},
                 json={"pz_doc_id": "183167843"},
             )
+        assert r.status_code == 200, r.text
+        assert r.json().get("status") in ("adopted", "already_adopted"), r.text
+        # adopt READS wFirma to verify the doc (Guard 3); that read is not gated.
+        mock_f.assert_called_once()
 
-        assert r.status_code in (200, 403), r.text
-        body = r.json()
-        # Accept either 403 HTTP or 200+blocked — both are valid governance responses
-        if r.status_code == 200:
-            assert body.get("status") == "blocked", body
-        reasons = body.get("blocking_reasons") or body.get("detail", {}) or {}
-        reason_text = str(reasons)
-        assert "WFIRMA_CREATE_PZ_ALLOWED" in reason_text, reason_text
-        mock_f.assert_not_called()
-        mock_n.assert_not_called()
-
-    def test_adopt_gate_source_check(self):
-        """Source-level: wfirma_pz_adopt checks wfirma_create_pz_allowed,
-        same as wfirma_pz_create. Assert both patterns exist in source."""
+    def test_adopt_does_not_gate_on_create_flag_source_check(self):
+        """Source-level inverse of the old assumption: pz_CREATE gates on
+        wfirma_create_pz_allowed, pz_ADOPT does NOT (Guard 0 intentionally not
+        applied — adopt is a read + local-audit link, not a wFirma write)."""
         src = rw.__file__.replace(".pyc", ".py")
         with open(src, encoding="utf-8") as fh:
             text = fh.read()
-        # Both create and adopt must guard on the same flag
-        occurrences = text.count('getattr(settings, "wfirma_create_pz_allowed", False)')
-        assert occurrences >= 2, (
-            f"Expected wfirma_create_pz_allowed guard in both pz_create and pz_adopt "
-            f"(found {occurrences} occurrences)"
-        )
+        a = text.index("async def wfirma_pz_adopt")
+        b = text.find("\nasync def ", a + 1)
+        adopt_body = text[a:] if b == -1 else text[a:b]
+        assert "Guard 0 (creation kill-switch) intentionally NOT applied" in adopt_body, (
+            "pz_adopt must document that it does NOT apply the create kill-switch")
+        assert 'getattr(settings, "wfirma_create_pz_allowed", False)' not in adopt_body, (
+            "pz_adopt must NOT gate on the create flag (adopt is read + local link)")
+        # pz_create still gates on the flag (elsewhere in the module).
+        assert 'getattr(settings, "wfirma_create_pz_allowed", False)' in text
 
 
 # ── Path B: pz_output evidence normalises "blocked" when MRN not parsed ─────
