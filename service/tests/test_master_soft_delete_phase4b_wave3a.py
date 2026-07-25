@@ -258,10 +258,16 @@ def test_db_schema_contains_no_secret_column_names():
     with tempfile.TemporaryDirectory() as td:
         db = Path(td) / "ms.sqlite"
         init_db(db)
-        with sqlite3.connect(db) as cx:
+        # `with sqlite3.connect` manages the transaction, NOT the handle — the
+        # connection stays open and blocks the Windows TemporaryDirectory cleanup
+        # (WinError 32). Close it explicitly.
+        cx = sqlite3.connect(db)
+        try:
             cols = [r[1] for r in cx.execute(
                 "PRAGMA table_info(carriers_config)"
             ).fetchall()]
+        finally:
+            cx.close()
     for c in cols:
         lc = c.lower()
         for forbidden in _FORBIDDEN_SECRET_TOKENS:
