@@ -30,6 +30,7 @@ ANOMALY_MISSING_HS    = "missing_hs_code"
 ANOMALY_MISSING_PC    = "missing_product_code"
 ANOMALY_PRICE_OUTLIER = "price_outlier"
 ANOMALY_MISSING_NAME_EN = "missing_name_en"
+ANOMALY_OPERATOR_DESCRIPTION_MISMATCH = "operator_description_mismatch"
 
 SEVERITY_HIGH   = "high"
 SEVERITY_MEDIUM = "medium"
@@ -159,6 +160,69 @@ def detect_line_anomalies(
                 ))
 
     return results
+
+
+# ── Operator override vs canonical description ─────────────────────────────────
+
+def detect_operator_override_mismatches(
+    lines:          List[Dict[str, Any]],
+    master_db_path: Optional[Path] = None,
+) -> List[LineAnomaly]:
+    """Surface lines where an operator-confirmed ``name_pl`` diverges from the
+    canonical ``product_descriptions.description_pl``.
+
+    Fires ONLY for lines whose ``name_pl_source == 'operator'`` and only when a
+    canonical ``description_pl`` exists to compare against. A byte-exact match is
+    clean; a combined ``"PL / EN"`` operator value is split on ``' / '`` and each
+    part compared against ``description_pl`` / ``description_en`` (no false
+    positive). Any other divergence is a HIGH-severity anomaly (confidence 1.0).
+    Read-only against the master DB; never writes.
+    """
+    out: List[LineAnomaly] = []
+    if not master_db_path:
+        return out
+    for ln in (lines or []):
+        if str(ln.get("name_pl_source") or "") != "operator":
+            continue
+        pc = str(ln.get("product_code") or "").strip()
+        if not pc:
+            continue
+        canonical_pl = ""
+        canonical_en = ""
+        try:
+            with sqlite3.connect(str(master_db_path)) as con:
+                con.row_factory = sqlite3.Row
+                r = con.execute(
+                    "SELECT description_pl, description_en FROM product_descriptions "
+                    "WHERE product_code=?",
+                    (pc,),
+                ).fetchone()
+            if r is not None:
+                canonical_pl = str(r["description_pl"] or "").strip()
+                canonical_en = str(r["description_en"] or "").strip()
+        except Exception:
+            continue
+        if not canonical_pl:
+            continue  # nothing authoritative to compare against
+        op = str(ln.get("name_pl") or "").strip()
+        if op == canonical_pl:
+            continue  # clean byte-match
+        if " / " in op:
+            pl_part, en_part = (p.strip() for p in op.split(" / ", 1))
+            if pl_part == canonical_pl and canonical_en and en_part == canonical_en:
+                continue  # clean combined "PL / EN" match
+        out.append(LineAnomaly(
+            line_id=ln.get("line_id"),
+            product_code=pc,
+            anomaly_type=ANOMALY_OPERATOR_DESCRIPTION_MISMATCH,
+            severity=SEVERITY_HIGH,
+            message=(
+                f"Operator name_pl '{op}' for {pc} differs from the canonical "
+                f"product_descriptions authority: '{canonical_pl[:80]}'"
+            ),
+            confidence=1.0,
+        ))
+    return out
 
 
 # ── Missing-field inference ────────────────────────────────────────────────────

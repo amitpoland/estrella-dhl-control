@@ -441,3 +441,76 @@ class TestModalCurrency:
     def test_empty_fallback(self):
         assert _modal_currency([]) == "EUR"
         assert _modal_currency([{}]) == "EUR"
+
+
+class TestManualLinePreservationOnReset:
+    """#1008 — a packing re-sync must never silently delete an operator-added
+    (manual) draft line. reset_draft_from_sales_packing rebuilds editable_lines
+    wholesale from the packing set; without preservation, a hand-entered line
+    (the only stopgap when packing carries no product_code) is wiped on the
+    next sync."""
+
+    def _editing_draft(self, db_path):
+        d, _ = pildb.auto_create_draft_from_sales_packing(
+            db_path, batch_id="MB1", client_name="ACME",
+            currency="EUR", lines=[], operator="t")
+        # draft -> editing (reset transitions the lifecycle)
+        return pildb.reset_draft_from_sales_packing(
+            db_path, d.id, operator="t", expected_updated_at=d.updated_at,
+            sales_lines=[])
+
+    def _add_manual(self, db_path, d, code, price):
+        return pildb.add_draft_line(
+            db_path, d.id,
+            line={"product_code": code, "qty": 1, "unit_price": price,
+                  "currency": "EUR", "price_source": "manual"},
+            operator="t", expected_updated_at=d.updated_at)
+
+    def test_manual_line_survives_empty_resync(self, db_path):
+        d = self._editing_draft(db_path)
+        d = self._add_manual(db_path, d, "EJL/26-27/999-1", 100)
+        assert any(l["product_code"] == "EJL/26-27/999-1"
+                   for l in json.loads(d.editable_lines_json))
+        # the exact failing scenario: packing re-sync with an EMPTY set
+        d = pildb.reset_draft_from_sales_packing(
+            db_path, d.id, operator="t", expected_updated_at=d.updated_at,
+            sales_lines=[])
+        after = json.loads(d.editable_lines_json)
+        assert any(l["product_code"] == "EJL/26-27/999-1" for l in after), \
+            "manual line must survive a packing re-sync (#1008)"
+
+    def test_reset_all_is_the_explicit_wipe(self, db_path):
+        d = self._editing_draft(db_path)
+        d = self._add_manual(db_path, d, "EJL/26-27/999-2", 50)
+        d = pildb.reset_draft_from_sales_packing(
+            db_path, d.id, operator="t", expected_updated_at=d.updated_at,
+            sales_lines=[], reset_all=True)
+        assert json.loads(d.editable_lines_json) == [], \
+            "reset_all=True is the explicit full-wipe escape hatch"
+
+    def test_packing_code_wins_no_duplicate(self, db_path):
+        d = self._editing_draft(db_path)
+        d = self._add_manual(db_path, d, "EJL/26-27/999-3", 10)
+        # packing re-supplies the same code -> packing's line replaces the
+        # manual one; no duplicate.
+        d = pildb.reset_draft_from_sales_packing(
+            db_path, d.id, operator="t", expected_updated_at=d.updated_at,
+            sales_lines=[{"product_code": "EJL/26-27/999-3", "qty": 2,
+                          "unit_price": 20}])
+        codes = [l["product_code"] for l in json.loads(d.editable_lines_json)]
+        assert codes.count("EJL/26-27/999-3") == 1
+
+    def test_non_manual_line_is_not_preserved(self, db_path):
+        # a packing-derived line (price_source != 'manual') is NOT carried over
+        # when packing drops it — only operator-authored lines are preserved.
+        d = self._editing_draft(db_path)
+        d = pildb.reset_draft_from_sales_packing(
+            db_path, d.id, operator="t", expected_updated_at=d.updated_at,
+            sales_lines=[{"product_code": "EJL/26-27/999-4", "qty": 1,
+                          "unit_price": 5, "price_source": "packing"}])
+        assert len(json.loads(d.editable_lines_json)) == 1
+        d = pildb.reset_draft_from_sales_packing(
+            db_path, d.id, operator="t", expected_updated_at=d.updated_at,
+            sales_lines=[])
+        assert json.loads(d.editable_lines_json) == [], \
+            "non-manual (packing) lines are not preserved across a sync"

@@ -167,7 +167,7 @@ def test_series_advisory_code_in_routes_proforma():
     src = (
         pathlib.Path(__file__).parent.parent
         / "app" / "api" / "routes_proforma.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     assert "_series_advisories" in src, (
         "_series_advisories variable missing from routes_proforma.py"

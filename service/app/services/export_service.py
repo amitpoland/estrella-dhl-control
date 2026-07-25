@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -456,7 +457,17 @@ def _build_pz_output(
     return {
         "pdf":          pdf_path.name  if pdf_path.exists()  else None,
         "xlsx":         xlsx_path.name if xlsx_path.exists() else None,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # Local time with its REAL UTC offset, e.g. 2026-07-21T23:39:25+02:00.
+        # Was time.strftime("...Z"): Warsaw wall-clock stamped with a literal Z,
+        # which claims UTC and is wrong by the Warsaw offset (+1/+2h). Readers
+        # that trusted the Z placed the instant 1-2h late, and any two batches
+        # compared across that convention could order by the skew rather than by
+        # time (routes_dashboard._parse_pz_generated_at, TestMixedEraOrdering).
+        # The date/time text is unchanged, so the operator-visible calendar day
+        # is identical and no stored value needs rewriting; only the offset
+        # becomes truthful. Values already on disk keep the legacy Z and are
+        # still handled by the reader.
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "mrn":          (result.get("zc429") or {}).get("mrn"),
         "awb":          tracking_no or existing.get("tracking_no") or existing.get("awb"),
     }

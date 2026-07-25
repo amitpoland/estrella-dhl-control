@@ -314,6 +314,12 @@ class Settings(BaseSettings):
     # is a READ-ONLY feature — no writes are gated behind it.
     document_reconciliation_report_enabled: bool = Field(default=False)
 
+    # 2B manual wFirma document link — gates the WRITE endpoint only. When False
+    # (default), POST /api/v1/proforma/draft/{id}/confirm-wfirma-link returns 503.
+    # The READ-ONLY preview (.../resolve-wfirma-document) is ALWAYS available — it
+    # performs no writes. Env: WFIRMA_MANUAL_DOCUMENT_LINK_ENABLED=1.
+    wfirma_manual_document_link_enabled: bool = Field(default=False)
+
     # ── DHL automated email scheduler (Lane A + Lane B) ─────────────────────
     # Lane A: POST /api/v1/dhl/scheduled-inbox-check — inbox scan, every 10 min.
     # Default True. Set DHL_AUTO_SCAN_ENABLED=false to disable.

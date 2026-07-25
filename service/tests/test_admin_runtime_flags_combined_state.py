@@ -327,7 +327,10 @@ def test_classifier_threshold_not_subject_to_combined_state(client):
     assert r.status_code == 200
 
 
-def test_followup_interval_not_subject_to_combined_state(client):
+def test_followup_interval_not_subject_to_combined_state(client, monkeypatch):
+    # Protect the setting so subsequent tests see the default (7200), not 600.
+    monkeypatch.setattr(settings, "dhl_selfclearance_followup_working_interval_sec",
+                        settings.dhl_selfclearance_followup_working_interval_sec)
     r = _post(client, "dhl_selfclearance_followup_working_interval_sec", 600)
     assert r.status_code == 200
 
@@ -827,6 +830,9 @@ def test_lock_not_acquired_for_non_phase_pair_flags(monkeypatch, tmp_path):
     import app.api.routes_admin_runtime_flags as route_mod
     monkeypatch.setattr(settings, "storage_root", tmp_path)
     monkeypatch.setattr(settings, "api_key", "test-key-secret")
+    # Protect non-phase-pair settings mutated by this test so they're restored.
+    monkeypatch.setattr(settings, "dhl_selfclearance_followup_working_interval_sec",
+                        settings.dhl_selfclearance_followup_working_interval_sec)
 
     # Hold all 4 phase locks.
     for phase in ("p2", "p3", "p4", "p5"):

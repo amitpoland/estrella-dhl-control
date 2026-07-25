@@ -414,8 +414,9 @@ def test_diagnostic_block_has_no_external_system_triggers():
                 f"{f.name} must not reference {forbidden!r}"
 
 
-def test_dashboard_renders_diagnostic_block():
-    src = (Path(__file__).resolve().parents[1] / "app" / "static" / "dashboard.html").read_text(encoding="utf-8")
+def test_shipment_detail_renders_diagnostic_block():
+    # The packing-list diagnostic block lives on the shipment-detail page.
+    src = (Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
     assert "packing-list-diagnostic-" in src
     assert "packing-list-diagnostic-toggle-" in src
     assert "Header detected:" in src

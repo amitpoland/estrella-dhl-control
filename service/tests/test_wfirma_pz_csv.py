@@ -187,6 +187,7 @@ def test_write_csv_creates_file_with_bom(tmp_path: Path):
     csvbld.write_csv(out, rows)
     raw = out.read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf"), "UTF-8 BOM missing"
+    assert b"\r\r\n" not in raw, "doubled CRLF — write_text re-translated the csv \\r\\n (use write_bytes)"
 
 
 def test_build_for_file_writes_csv_and_returns_path(tmp_path: Path):

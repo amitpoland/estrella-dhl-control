@@ -97,17 +97,74 @@ sc.exe query PZService
 
 ## Step 7 — Post-deploy verification
 
+### 7a — Liveness (no credentials needed)
+
+The root path is unauthenticated. These are the same two probes
+`verify_deploy_close.ps1` uses for conditions 6 and 7.
+
 ```powershell
-Invoke-WebRequest http://127.0.0.1:47213/api/v1/health
-Invoke-WebRequest https://pz.estrellajewels.eu/api/v1/health
-Invoke-WebRequest http://127.0.0.1:47213/api/v1/carrier/status
-Invoke-WebRequest http://127.0.0.1:47213/api/v1/carrier/STAGE0-TEST/shipment `
-  -Method POST -Body '{"shipper_account":"TEST","recipient_address":{},"declared_value":100,"currency":"EUR","weight_kg":1,"dimensions":{}}' `
-  -ContentType "application/json"
+Invoke-WebRequest 'http://127.0.0.1:47213/'       -UseBasicParsing -TimeoutSec 10
+Invoke-WebRequest 'https://pz.estrellajewels.eu/' -UseBasicParsing -TimeoutSec 15
+```
+
+Both must return 200.
+
+### 7b — API health (REQUIRES the API key)
+
+`/api/v1/*` sits behind `require_api_key`. A bare `Invoke-WebRequest` with no
+header returns **401**, and PowerShell throws on 4xx — so an unauthenticated
+probe looks like a deploy failure when it is only a missing header. Load the
+key from `.env` into a variable; never echo it.
+
+```powershell
+$k = (Select-String -Path C:\PZ\.env -Pattern '^API_KEY=' | Select-Object -First 1).Line -replace '^API_KEY=',''
+$h = @{ 'X-API-Key' = $k }
+
+Invoke-WebRequest 'http://127.0.0.1:47213/api/v1/health'         -Headers $h -UseBasicParsing -TimeoutSec 25
+Invoke-WebRequest 'https://pz.estrellajewels.eu/api/v1/health'   -Headers $h -UseBasicParsing -TimeoutSec 25
+Invoke-WebRequest 'http://127.0.0.1:47213/api/v1/carrier/status' -Headers $h -UseBasicParsing -TimeoutSec 25
+```
+
+All three must return 200.
+
+### 7c — Carrier gate probe — READ BEFORE RUNNING
+
+> **Do NOT send a well-formed shipment payload.**
+> Production runs with `carrier_api_status='live'` and
+> `carrier_live_allowlist='*'`. A schema-valid POST passes the gate, reaches
+> the DHL adapter, and can **create a real shipment**. The payload previously
+> printed in this runbook was schema-valid and must not be used.
+>
+> The old "must return 503" expectation is wrong on this host: 503 fires only
+> when `carrier_api_status='pending'`, which is not the production setting.
+
+Use a deliberately **schema-invalid** body so FastAPI rejects it at validation
+(**422**) before any gate or adapter is reached:
+
+```powershell
+try {
+    Invoke-WebRequest 'http://127.0.0.1:47213/api/v1/carrier/STAGE0-TEST/shipment' `
+      -Method POST -Headers $h -Body '{"__invalid_probe__":true}' `
+      -ContentType 'application/json' -UseBasicParsing -TimeoutSec 25
+    Write-Host "UNEXPECTED: invalid probe was accepted - investigate before closing" -ForegroundColor Red
+} catch {
+    $code = $_.Exception.Response.StatusCode.value__
+    Write-Host "carrier probe -> $code  (expect 422)"
+}
+```
+
+Expected: **422**. Anything else — especially a 2xx — means the invalid body
+was accepted; stop and investigate before closing the deploy.
+
+### 7d — Version marker and logs
+
+```powershell
+python -c "d=open(r'C:\PZ\version.txt','rb').read(); print('BOM!' if d[:3]==b'\xef\xbb\xbf' else 'no-bom', d.decode('utf-8-sig'))"
 Get-Content C:\PZ\logs\pz_stderr.log -Tail 20
 ```
 
-Carrier gate POST must return 503 (gate closed).
+`version.txt` must print `no-bom` and match the deployed SHA. The log tail must
+show `Application startup complete` and no traceback.
 
 ---
 
@@ -133,13 +190,21 @@ only want to verify the post-deploy state.
 
 ```
 Pulled SHA:
-Tests:           PZ [x/160]  Carrier [x/469]
+Tests:           PZ regression [x/160]  Carrier [x/604]  PZ suite [x/257]
 Sync result:     robocopy exit [n]
 Service status:  [RUNNING | ERROR]
-Local health:    [200 | ERROR]
-Public health:   [200 | ERROR]
-Carrier gate:    [pending | other]
-Gate POST 503:   [yes | no]
-Rollback:        git revert <sha> --no-edit
+Root liveness:   local [200] public [200]          (7a, unauthenticated)
+API health:      local [200] public [200]          (7b, with X-API-Key)
+Carrier status:  [200 | other]
+Carrier probe:   [422 expected | other]            (7c, schema-invalid body)
+version.txt:     [no-bom + matches SHA | PROBLEM]
+Backup path:     C:\PZ\bak\app-pre-deploy-<ts>     (restores the PREVIOUS SHA)
+Rollback:        robocopy <backup> C:\PZ\app /E  +  restart PZService
 READY / BLOCKED:
 ```
+
+Carrier floor is **604** per the table in `.claude/contracts/test-baseline.md`,
+which is the single source of truth. `git revert` is deliberately NOT the
+rollback line: it rewrites the repo, not `C:\PZ`, and production is not a git
+checkout. Rollback is a robocopy restore from the pre-deploy backup taken in
+Step 5, followed by a service restart.

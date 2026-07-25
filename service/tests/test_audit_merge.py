@@ -333,9 +333,72 @@ def test_preserved_keys_includes_all_required_workflow_fields():
         "manual_status_flags", "tracking_overrides", "operator_notes",
         "wfirma_export",
         "description_corrections",
+        # Written by routes_tracking.update_tracking_for_batch, never by the
+        # engine. Without preservation a full re-process drops the operator's
+        # tracking confirmation and the batch asks for the lookup all over
+        # again. See TestTrackingCompletePreservation below for the round-trip.
+        "tracking_complete", "tracking_complete_source", "tracking_complete_at",
     }
     missing = required - set(PRESERVED_KEYS)
     assert not missing, f"Required workflow fields missing from PRESERVED_KEYS: {missing}"
+
+
+# ── Operator tracking confirmation survives regeneration ─────────────────────
+# audit.tracking was already preserved, but the three TOP-LEVEL keys written
+# alongside it were not, so a re-process silently reverted a batch to
+# "tracking still required". The lock above pins their membership; these pin
+# the behaviour that membership is supposed to buy.
+
+class TestTrackingCompletePreservation:
+    _OVERLAY = {
+        "tracking_complete":        True,
+        "tracking_complete_source": "manual",
+        "tracking_complete_at":     "2026-07-20T23:41:07Z",
+        "tracking": {
+            "status":                   "delivered",
+            "api_status":               "manual",
+            "source":                   "manual",
+            "updated_at":               "2026-07-20T23:41:07Z",
+            "cowork_tracking_required": False,
+        },
+    }
+
+    def _merged(self):
+        existing = {**_existing(), **self._OVERLAY}
+        return merge_regenerated_audit(existing, _regenerated())
+
+    def test_tracking_complete_survives_regeneration(self):
+        m = self._merged()
+        assert m["tracking_complete"] is True, (
+            "a full re-process dropped the operator's tracking confirmation"
+        )
+
+    def test_tracking_complete_source_and_at_survive(self):
+        m = self._merged()
+        assert m["tracking_complete_source"] == "manual"
+        assert m["tracking_complete_at"] == "2026-07-20T23:41:07Z"
+
+    def test_tracking_block_survives_with_its_new_fields(self):
+        m = self._merged()
+        assert m["tracking"]["api_status"] == "manual"
+        assert m["tracking"]["updated_at"] == "2026-07-20T23:41:07Z"
+        assert m["tracking"]["cowork_tracking_required"] is False
+
+    def test_engine_absence_does_not_resurrect_the_lookup_task(self):
+        """The engine never writes these keys, so the regenerated side has no
+        opinion. The overlay must win rather than the key vanishing."""
+        regen = _regenerated()
+        assert "tracking_complete" not in regen
+        m = self._merged()
+        assert m["tracking_complete"] is True
+
+    def test_batch_never_tracking_completed_stays_absent(self):
+        """Preservation must not invent the flag for batches that never had it —
+        that would mark untracked shipments done."""
+        m = merge_regenerated_audit(_existing(), _regenerated())
+        assert not m.get("tracking_complete"), (
+            f"tracking_complete appeared from nowhere: {m.get('tracking_complete')!r}"
+        )
 
 
 # ── G3 (MASTER-EXEC-1 Campaign Run 8): description_corrections preservation ──

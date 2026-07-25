@@ -251,6 +251,11 @@ _AREA4_ROUTES: frozenset[str] = frozenset({
     "routes_proforma.py:POST:/draft/{draft_id}/conflicts/{conflict_id}/resolve",
     "routes_proforma.py:POST:/draft/{draft_id}/import-sales-prices",
     "routes_proforma.py:POST:/draft/{draft_id}/resolve-ambiguity",
+    # 2B manual wFirma link: read-only PREVIEW POST on require_api_key. Writes
+    # nothing (pinned by test_resolve_writes_nothing / test_resolve_no_remote_mutation);
+    # the state-changing confirm-wfirma-link sits on require_api_key_privileged and
+    # is intentionally NOT here. Same read-only-POST shape as resolve-ambiguity above.
+    "routes_proforma.py:POST:/draft/{draft_id}/resolve-wfirma-document",
     "routes_reservations.py:POST:/product-master/sync/{batch_id}",
 })
 

@@ -559,5 +559,5 @@ def test_fetch_invoices_raises_on_http_error():
 
 def test_db_module_does_not_import_wfirma_client():
     src = (Path(__file__).resolve().parents[1] / "app" / "services" /
-           "customer_invoice_snapshot_db.py").read_text()
+           "customer_invoice_snapshot_db.py").read_text(encoding="utf-8")
     assert "wfirma_client" not in src

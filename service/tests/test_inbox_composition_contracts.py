@@ -314,7 +314,7 @@ class TestDskProjectorDegradation:
         import app.api.routes_dsk as dsk_mod
         monkeypatch.setattr(dsk_mod, "_DSK_OUTPUT_DIR", tmp_path)
 
-        result = asyncio.get_event_loop().run_until_complete(get_audit_log())
+        result = asyncio.run(get_audit_log())
         body = json.loads(result.body)
         assert body == []
 

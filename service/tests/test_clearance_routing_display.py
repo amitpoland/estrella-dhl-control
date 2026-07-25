@@ -137,7 +137,14 @@ def test_builder_is_pure_no_email_no_dhl_trigger():
 # ── Frontend source-grep ─────────────────────────────────────────────────
 
 def test_dashboard_clearance_routing_card_renders_new_fields():
-    dash = (Path(__file__).resolve().parents[1] / "app" / "static" / "dashboard.html").read_text(encoding="utf-8")
+    # The clearance routing card lives in shipment-detail.html, not
+    # dashboard.html. bbef5ca3 (2026-05-17 11:05) added the card to
+    # dashboard.html and wrote this test against it; 015d90df the same evening
+    # (17:09) extracted BatchDetailPage into shipment-detail.html and took the
+    # card with it, without updating this path. The test has read the wrong
+    # file ever since — the card itself was never lost (all six data-testids
+    # and all three source labels are present in shipment-detail.html).
+    dash = (Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html").read_text(encoding="utf-8")
     assert 'data-testid="clearance-routing-card"' in dash
     assert 'data-testid="clearance-path-label"' in dash
     assert 'data-testid="clearance-decision-value"' in dash

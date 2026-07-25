@@ -160,12 +160,14 @@ def test_upsert_design_rejects_bad_code(tmp_path: Path):
 def client(tmp_path: Path, monkeypatch):
     """FastAPI TestClient with an isolated master_data.sqlite + no API key."""
     monkeypatch.setenv("API_KEY", "")  # disables auth dependency
-    # Re-import the routes module so _DB_PATH binds to a temp path.
-    import importlib
-    from app.core import config as cfg_mod
-    cfg_mod.settings.storage_root = tmp_path  # type: ignore[assignment]
+    # Rebind _DB_PATH straight to a temp DB; monkeypatch restores it on
+    # teardown. Assigning settings.storage_root and reloading the module
+    # instead left BOTH permanently pointing at a deleted tmp_path for
+    # every test that ran afterwards.
     from app.api import routes_master_data
-    importlib.reload(routes_master_data)
+    monkeypatch.setattr(
+        routes_master_data, "_DB_PATH", tmp_path / "master_data.sqlite",
+    )
     from fastapi import FastAPI
     app = FastAPI()
     app.include_router(routes_master_data.designs_router)
@@ -205,8 +207,14 @@ def test_route_put_get_delete(client):
     # DELETE
     r = client.delete("/api/v1/designs/EJ-RING-001")
     assert r.status_code == 204
+    # Phase 4B Wave 1: DELETE soft-deletes by default (row retained, active=False;
+    # ?hard=true for permanent). GET still resolves it; the default active-only
+    # list no longer includes it.
     r = client.get("/api/v1/designs/EJ-RING-001")
-    assert r.status_code == 404
+    assert r.status_code == 200
+    assert r.json()["active"] is False
+    r = client.get("/api/v1/designs/")
+    assert r.json()["count"] == 0
 
 
 def test_route_put_validation_error(client):
@@ -231,5 +239,7 @@ def test_route_list_filters(client):
     client.put("/api/v1/designs/B", json={"design_family": "Pendant", "active": False})
     r = client.get("/api/v1/designs/?active=true")
     assert {d["design_code"] for d in r.json()["designs"]} == {"A"}
-    r = client.get("/api/v1/designs/?design_family=Pendant")
+    # B was created active=False; the list defaults to active-only, so filtering
+    # by family alone excludes it — pass active=false to include the inactive row.
+    r = client.get("/api/v1/designs/?design_family=Pendant&active=false")
     assert {d["design_code"] for d in r.json()["designs"]} == {"B"}

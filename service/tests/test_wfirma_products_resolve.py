@@ -130,11 +130,11 @@ def test_already_mapped_product_skipped():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        # C-1e: resolve reads the already-mapped cache via rdb.get_cached_products_batch.
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch",
+        # C-1e: resolve reads the already-mapped cache via _par.get_registered_goods_state_batch.
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch",
               return_value={"EJL/26-27/013-1": {"wfirma_product_id": "48611875",
                                                 "product_name": "Wisiorek"}}),
-        patch("app.api.routes_wfirma.rdb.list_cached_products",
+        patch("app.api.routes_wfirma.rdb.list_mirror_products",
               return_value=[{"product_code": "EJL/26-27/013-1", "wfirma_product_id": "48611875"}]),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code") as mock_find,
     ):
@@ -176,11 +176,11 @@ def test_goods_find_match_saved_to_db():
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        # C-1e: resolve reads the local cache via rdb.get_cached_products_batch —
+        # C-1e: resolve reads the local cache via _par.get_registered_goods_state_batch —
         # empty cache forces the goods/find path.
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch", return_value={}),
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch", return_value={}),
         patch("app.api.routes_wfirma.rdb.register_product_identity", side_effect=fake_register),
-        patch("app.api.routes_wfirma.rdb.list_cached_products",
+        patch("app.api.routes_wfirma.rdb.list_mirror_products",
               return_value=[{"product_code": "EJL/26-27/013-1", "wfirma_product_id": "48611875"}]),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code",
               return_value=found_product),
@@ -215,8 +215,8 @@ def test_missing_gate_off_reported_not_created(tmp_path):
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         # C-1e: reads routed through rdb sync layer.
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch", return_value={}),
-        patch("app.api.routes_wfirma.rdb.list_cached_products", return_value=[]),
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch", return_value={}),
+        patch("app.api.routes_wfirma.rdb.list_mirror_products", return_value=[]),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code", return_value=None),
         patch("app.api.routes_wfirma.wfirma_client.create_product") as mock_create,
         patch("app.api.routes_wfirma.settings") as mock_settings,
@@ -263,8 +263,8 @@ def test_missing_gate_on_creates_product(tmp_path):
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         # C-1e: reads routed through rdb sync layer.
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch", return_value={}),
-        patch("app.api.routes_wfirma.rdb.list_cached_products",
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch", return_value={}),
+        patch("app.api.routes_wfirma.rdb.list_mirror_products",
               return_value=[{"product_code": "EJL/26-27/013-NEW", "wfirma_product_id": "99999999"}]),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code", return_value=None),
         patch("app.api.routes_wfirma.wfirma_client.create_product", return_value=created_product),
@@ -319,9 +319,9 @@ def test_create_failure_writes_no_mapping(tmp_path):
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         # C-1e: reads routed through rdb sync layer.
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch", return_value={}),
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch", return_value={}),
         patch("app.api.routes_wfirma.rdb.register_product_identity", side_effect=fake_register),
-        patch("app.api.routes_wfirma.rdb.list_cached_products", return_value=[]),
+        patch("app.api.routes_wfirma.rdb.list_mirror_products", return_value=[]),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code", return_value=None),
         patch("app.api.routes_wfirma.wfirma_client.create_product",
               side_effect=RuntimeError("wFirma API timeout")),
@@ -370,12 +370,12 @@ def test_idempotent_rerun_increments_already_mapped():
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         # C-1e: reads routed through rdb sync layer.
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch",
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch",
               return_value={
                   "EJL/26-27/013-1": {"wfirma_product_id": "48611875", "product_name": "Wisiorek"},
                   "EJL/26-27/013-2": {"wfirma_product_id": "48612067", "product_name": "Wisiorek"},
               }),
-        patch("app.api.routes_wfirma.rdb.list_cached_products", return_value=db_entries),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={e["product_code"]: e["wfirma_product_id"] for e in db_entries}),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code") as mock_find,
         patch("app.api.routes_wfirma.wfirma_client.create_product") as mock_create,
     ):
@@ -417,12 +417,12 @@ def test_ready_for_pz_true_when_all_mapped(tmp_path):
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         # C-1e: reads routed through rdb sync layer.
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch",
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch",
               return_value={
                   "EJL/26-27/013-1": {"wfirma_product_id": "48611875", "product_name": "Wisiorek"},
                   "EJL/26-27/013-2": {"wfirma_product_id": "48612067", "product_name": "Wisiorek"},
               }),
-        patch("app.api.routes_wfirma.rdb.list_cached_products", return_value=db_entries),
+        patch("app.api.routes_wfirma._mirror_product_map", return_value={e["product_code"]: e["wfirma_product_id"] for e in db_entries}),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code") as mock_find,
         patch("app.api.routes_wfirma.settings") as mock_settings,
     ):
@@ -468,8 +468,8 @@ def test_c1e_goods_find_path_writes_mirror(tmp_path):
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         # Empty cache forces goods/find path (write site 1).
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch", return_value={}),
-        patch("app.api.routes_wfirma.rdb.list_cached_products",
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch", return_value={}),
+        patch("app.api.routes_wfirma.rdb.list_mirror_products",
               return_value=[{"product_code": pc, "wfirma_product_id": wfid}]),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code",
               return_value=found_product),
@@ -531,8 +531,8 @@ def test_c1e_found_path_collision_returns_per_item_error(tmp_path):
         patch("app.api.routes_wfirma._read_audit", return_value=_AUDIT),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
-        patch("app.api.routes_wfirma.rdb.get_cached_products_batch", return_value={}),
-        patch("app.api.routes_wfirma.rdb.list_cached_products", return_value=[]),
+        patch("app.api.routes_wfirma._par.get_registered_goods_state_batch", return_value={}),
+        patch("app.api.routes_wfirma.rdb.list_mirror_products", return_value=[]),
         patch("app.api.routes_wfirma.wfirma_client.get_product_by_code",
               return_value=found_second),
         patch("app.api.routes_wfirma.settings") as mock_settings,

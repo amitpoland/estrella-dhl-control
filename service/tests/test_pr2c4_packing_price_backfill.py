@@ -107,7 +107,7 @@ def _make_packing_line(tmp_path: Path, *, batch_id: str = "TEST-BATCH",
 def test_extractor_reads_value_column_into_unit_price():
     """Test 1: extract_packing returns unit_price > 0 for SUOKKO XLSX."""
     from app.services.invoice_packing_extractor import extract_packing
-    rows, _parser, _ver = extract_packing(_SUOKKO_XLSX)
+    rows, _parser, _ver, _meta = extract_packing(_SUOKKO_XLSX)
     nonzero = [r for r in rows if float(r.get("unit_price", 0) or 0) > 0]
     assert len(nonzero) > 0, "Expected some rows with unit_price > 0 from Value column"
     # First row should be JBR00257 with 1046.52
@@ -120,7 +120,7 @@ def test_extractor_reads_value_column_into_unit_price():
 def test_routes_packing_copies_unit_price_to_unit_price_eur():
     """Test 2: routes_packing line_records have unit_price_eur from extractor unit_price."""
     from app.services.invoice_packing_extractor import extract_packing
-    rows, _, _ = extract_packing(_SUOKKO_XLSX)
+    rows, _, _, _ = extract_packing(_SUOKKO_XLSX)
     # Simulate what routes_packing does
     for row in rows:
         upe = float(row.get("unit_price", 0) or 0)

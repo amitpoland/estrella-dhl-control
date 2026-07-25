@@ -49,6 +49,11 @@ _SRC = _SVC / "app" / "api" / "routes_proforma.py"
 #  test_preview_endpoint_does_not_invoke_wfirma_write).
 _READ_ONLY_POST_ALLOWLIST = {
     "/preview/{batch_id}/{client_name:path}",
+    # 2B manual-link PREVIEW: read-only by contract (no DB/wFirma/audit write),
+    # pinned by test_routes_2b_manual_link.test_resolve_writes_nothing +
+    # test_resolve_no_remote_mutation. The WRITE half (confirm-wfirma-link) is on
+    # _auth_write.
+    "/draft/{draft_id}/resolve-wfirma-document",
 }
 
 
@@ -173,6 +178,11 @@ _MUTATIONS = [
     ("post", "/api/v1/proforma/draft/999999/post", {"json": {}}),
     ("delete", "/api/v1/proforma/draft/999999", {}),
     ("post", "/api/v1/proforma/draft/999999/send-email", {"json": {}}),
+    # 2B confirm-wfirma-link (state-changing, require_api_key_privileged) — #988.
+    # resolve-wfirma-document is read-only (_auth) and is covered by
+    # _READ_ONLY_POST_ALLOWLIST, not here.
+    ("post", "/api/v1/proforma/draft/999999/confirm-wfirma-link",
+     {"json": {"document_type": "invoice", "wfirma_id": "1", "expected_preview_hash": "x"}}),
 ]
 
 

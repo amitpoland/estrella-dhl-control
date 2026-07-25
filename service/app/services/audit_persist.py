@@ -48,6 +48,7 @@ EV_PROFORMA_CANCELLED               = "proforma_cancelled"
 EV_PROFORMA_CONVERTED_TO_INVOICE    = "proforma_converted_to_invoice"
 EV_INVOICE_APPROVAL_ATTEMPT         = "invoice_approval_attempt"
 EV_INVOICE_LINK_RECONCILED          = "invoice_link_reconciled"
+EV_WFIRMA_DOCUMENT_MANUALLY_LINKED  = "wfirma_document_manually_linked"
 EV_INVENTORY_DIRECT_DISPATCH_MARKED = "inventory_direct_dispatch_marked"
 EV_WFIRMA_PZ_MAPPING_REFRESHED      = "wfirma_pz_mapping_refreshed"
 
@@ -482,6 +483,74 @@ def record_invoice_link_reconciled(
 
     return {"appended": True, "wfirma_proforma_id": pid,
             "wfirma_invoice_id": iid, "reason": "appended"}
+
+
+def record_wfirma_document_manually_linked(
+    audit_path: Path,
+    *,
+    batch_id:               str,
+    client_name:            str,
+    draft_id:               int,
+    wfirma_proforma_id:     str,
+    remote_document_id:     str,
+    remote_document_number: str,
+    document_type:          str,
+    operator:               str,
+) -> Dict[str, Any]:
+    """Append a ``wfirma_document_manually_linked`` timeline event recording that
+    an operator (privileged) linked an EXISTING wFirma document to a proforma-
+    derived draft after a read-only preview + confirm-time drift check (2B).
+
+    LOCAL-state repair only — NO wFirma write. Idempotent on
+    ``(batch_id, draft_id, remote_document_id)``. Append-only. Secondary to the
+    primary proforma_draft_events record; best-effort (caller wraps in try/except).
+    """
+    pid = (wfirma_proforma_id or "").strip()
+    rid = (remote_document_id  or "").strip()
+    if not rid:
+        return {"appended": False, "reason": "remote_document_id is empty"}
+
+    audit = _load(audit_path)
+    if audit is None:
+        return {"appended": False, "reason": "audit.json missing or unreadable"}
+
+    timeline = audit.get("timeline") or []
+    if isinstance(timeline, list):
+        for entry in timeline:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("event") != EV_WFIRMA_DOCUMENT_MANUALLY_LINKED:
+                continue
+            d = entry.get("detail") or {}
+            if (d.get("batch_id") == batch_id
+                    and str(d.get("draft_id")) == str(draft_id)
+                    and (d.get("remote_document_id") or "") == rid):
+                return {"appended": False, "reason": "already recorded"}
+
+    try:
+        tl.log_event(
+            audit_path, EV_WFIRMA_DOCUMENT_MANUALLY_LINKED, "operator",
+            operator or "operator",
+            detail={
+                "batch_id":               batch_id,
+                "client_name":            client_name,
+                "draft_id":               int(draft_id),
+                "wfirma_proforma_id":     pid,
+                "remote_document_id":     rid,
+                "remote_document_number": remote_document_number or "",
+                "document_type":          document_type or "",
+                "operator":               operator or "",
+                "wfirma_write":           False,
+            },
+        )
+    except Exception as exc:
+        log.warning(
+            "audit_persist.record_wfirma_document_manually_linked timeline "
+            "emit failed (non-fatal): %s", exc,
+        )
+        return {"appended": False, "reason": f"timeline emit failed: {exc}"}
+
+    return {"appended": True, "reason": "appended"}
 
 
 # ── Human invoice approval boundary ──────────────────────────────────────────

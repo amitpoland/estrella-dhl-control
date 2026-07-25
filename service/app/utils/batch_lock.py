@@ -32,6 +32,30 @@ from ..core.config import settings
 
 log = logging.getLogger(__name__)
 
+# Batch ids whose lock the CURRENT thread already holds. batch_write_lock is
+# non-reentrant on both platforms, so a second acquire on the same thread would
+# deadlock. Code that must do a locked read-modify-write but may already be
+# inside a batch_write_lock (e.g. timeline.log_event, called both inside and
+# outside the lock across ~170 sites) checks holds_batch_lock() and only
+# acquires when it is not already held. Thread-local: FastAPI runs sync
+# endpoints in a threadpool, so each request is its own thread.
+import threading as _threading_hold
+
+_held = _threading_hold.local()
+
+
+def _held_set() -> set:
+    s = getattr(_held, "batches", None)
+    if s is None:
+        s = set()
+        _held.batches = s
+    return s
+
+
+def holds_batch_lock(batch_id: str) -> bool:
+    """True if the current thread already holds batch_write_lock(batch_id)."""
+    return batch_id in _held_set()
+
 
 def _lock_path(batch_id: str) -> Path:
     return settings.storage_root / "outputs" / batch_id / ".audit.lock"
@@ -53,16 +77,24 @@ if sys.platform == "win32":
             if batch_id not in _win_locks:
                 _win_locks[batch_id] = _threading.Lock()
             lock = _win_locks[batch_id]
+        if holds_batch_lock(batch_id):
+            # Same thread already holds this batch's lock; re-acquiring the
+            # non-reentrant Lock would deadlock. The existing hold already
+            # serialises this critical section — proceed without a second lock.
+            yield
+            return
         acquired = lock.acquire(timeout=timeout_seconds)
         if not acquired:
             raise TimeoutError(
                 f"Could not acquire batch lock for {batch_id} "
                 f"within {timeout_seconds}s"
             )
+        _held_set().add(batch_id)
         log.debug("[batch_lock] Acquired lock for %s", batch_id)
         try:
             yield
         finally:
+            _held_set().discard(batch_id)
             lock.release()
             log.debug("[batch_lock] Released lock for %s", batch_id)
 
@@ -83,6 +115,13 @@ else:
 
         Raises TimeoutError if the lock cannot be acquired within *timeout_seconds*.
         """
+        if holds_batch_lock(batch_id):
+            # Same thread already holds it. A second flock() from this process
+            # on a fresh fd would block against its own lock — deadlock. The
+            # outer hold already serialises this section.
+            yield
+            return
+
         lp = _lock_path(batch_id)
         lp.parent.mkdir(parents=True, exist_ok=True)
 
@@ -108,9 +147,11 @@ else:
                         f"within {timeout_seconds}s"
                     )
 
+            _held_set().add(batch_id)
             log.debug("[batch_lock] Acquired lock for %s", batch_id)
             yield
         finally:
+            _held_set().discard(batch_id)
             try:
                 _fcntl.flock(fd, _fcntl.LOCK_UN)
             except Exception:

@@ -184,7 +184,7 @@ def test_packing_authority_unavailable_blocks_readiness(seeded, tmp_path):
     from app.core.config import settings
     from app.api import routes_proforma as rp
     with patch.object(settings, "storage_root", tmp_path), \
-         patch("app.services.product_authority_resolver.resolve_batch_product_authority",
+         patch("app.services.cpa_product_service.authority_snapshot",
                side_effect=_unavailable_snapshot):
         ready = rp._derive_draft_readiness(seeded, intent="post")
     assert ready["ready"] is False, ready
@@ -202,7 +202,7 @@ def test_approve_post_convert_all_blocked_when_authority_unavailable(seeded, tmp
     from app.api import routes_proforma as rp
     for intent in ("approve", "post", "convert"):
         with patch.object(settings, "storage_root", tmp_path), \
-             patch("app.services.product_authority_resolver.resolve_batch_product_authority",
+             patch("app.services.cpa_product_service.authority_snapshot",
                    side_effect=_unavailable_snapshot):
             ready = rp._derive_draft_readiness(seeded, intent=intent)
         assert ready["ready"] is False, (intent, ready)

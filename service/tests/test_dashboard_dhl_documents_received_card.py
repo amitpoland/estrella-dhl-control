@@ -22,9 +22,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DASHBOARD = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
-)
+DASHBOARD = Path(__file__).resolve().parents[1] / "app" / "static" / "shipment-detail.html"
 
 
 def _src() -> str:

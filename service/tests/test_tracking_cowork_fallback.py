@@ -266,6 +266,15 @@ class TestCoworkResultEndpoint:
         updated = _read_audit(ap)
         assert updated["tracking"]["status"] == "in_transit"
         assert updated["tracking"]["last_event"] == "Departed customs facility"
+        # Fields the shared tracking_patch adds, asserted at the ENDPOINT.
+        # This call site previously wrote none of them, so a batch closed by
+        # AWB scan kept asking for a tracking lookup. It is an operator-role
+        # route (require_role admin/logistics), so it DOES close the checkpoint.
+        assert updated["tracking"]["api_status"] == "manual"
+        assert updated["tracking"]["updated_at"]
+        assert updated["tracking_complete"] is True
+        assert updated["tracking_complete_source"] == "operator_manual"
+        assert updated["tracking_complete_at"]
 
     def test_result_clears_cowork_tracking_required(self, tmp_path):
         """POST cowork-result sets cowork_tracking_required=False."""

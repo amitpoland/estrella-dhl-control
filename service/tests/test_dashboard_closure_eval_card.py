@@ -14,15 +14,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DASHBOARD = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/static/dashboard.html"
-)
-ROUTES_LIFECYCLE = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/api/routes_lifecycle.py"
-)
-SHIPMENT_CLOSURE = Path(
-    "/Users/amitgupta/Downloads/CLI/service/app/services/shipment_closure.py"
-)
+_SVC = Path(__file__).resolve().parents[1]
+DASHBOARD = _SVC / "app" / "static" / "shipment-detail.html"
+ROUTES_LIFECYCLE = _SVC / "app" / "api" / "routes_lifecycle.py"
+SHIPMENT_CLOSURE = _SVC / "app" / "services" / "shipment_closure.py"
 
 
 def _src() -> str:

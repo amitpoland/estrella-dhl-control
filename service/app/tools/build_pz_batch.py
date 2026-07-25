@@ -274,7 +274,9 @@ def save_csv(batch: PZBatch, out_dir: Path) -> Path:
             "towar",
             "",                               # Kod EAN
         ])
-    p.write_text(buf.getvalue(), encoding="utf-8-sig")
+    # write_bytes, not write_text: on Windows/py3.9 write_text re-translates the
+    # csv writer's \r\n into \r\r\n, injecting a blank line after every row.
+    p.write_bytes(buf.getvalue().encode("utf-8-sig"))
     return p
 
 

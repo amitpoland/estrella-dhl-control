@@ -181,7 +181,7 @@ def test_cm_payment_fallback_in_routes_proforma_source():
     src = (
         pathlib.Path(__file__).parent.parent
         / "app" / "api" / "routes_proforma.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     assert "preferred_payment_method" in src, (
         "CM preferred_payment_method reference missing from routes_proforma.py"
