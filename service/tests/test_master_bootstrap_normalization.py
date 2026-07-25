@@ -461,8 +461,12 @@ class TestBootstrapAuditPins:
         """Hardcoded series IDs (15827088, 15827921, 15827163) are only in tool
         scripts, not in the main app routes or services."""
         import pathlib, glob
-        app_files = glob.glob("app/**/*.py", recursive=True)
-        tool_files = glob.glob("app/tools/**/*.py", recursive=True)
+        # Normalise separators: on Windows the two globs return MIXED forms
+        # (app\tools\x.py vs app/tools\x.py — literal prefix keeps its slashes,
+        # the ** match uses backslashes), breaking both the tool-file exclusion
+        # and the models/schema allowlist below.
+        app_files = [f.replace("\\", "/") for f in glob.glob("app/**/*.py", recursive=True)]
+        tool_files = [f.replace("\\", "/") for f in glob.glob("app/tools/**/*.py", recursive=True)]
         non_tool_app = [f for f in app_files if f not in tool_files]
         for fpath in non_tool_app:
             src = pathlib.Path(fpath).read_text(encoding="utf-8")
