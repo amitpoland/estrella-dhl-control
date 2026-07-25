@@ -7740,8 +7740,8 @@ def _derive_draft_readiness(
         _add(
             f"{len(unmapped_designs)} packing design(s) carry no product code, "
             f"so their lines were dropped from this draft: {_ud_sample}",
-            "Bind each design to its product code (Resolve design mapping), "
-            "then re-check readiness — the lines will populate.",
+            "Bind each design to its product code in Product Master, then use "
+            "Re-check mapping (Product Master) — the lines will populate.",
             "PRODUCT",
         )
 
