@@ -130,7 +130,26 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             api_secret=self._config.api_secret,
             api_url=self._config.api_url,
             api_path=self._api_path(),
-            account=self._config.account_number or request.shipper_account,
+            # Rate/AWB account parity (operator ruling 2026-07-20).
+            #
+            # The rates query MUST use the SAME account the shipment will be
+            # created with. request.shipper_account is the account the route
+            # resolved through the canonical authority
+            # (dhl_account_resolver.resolve_dhl_billing_account) and is exactly
+            # what _build_shipment_body sends as accounts[0].number below.
+            #
+            # The precedence used to be the other way round — config first —
+            # so a resolved Client Master account was silently overridden here
+            # by DHL_EXPRESS_ACCOUNT_NUMBER while AWB creation still used the
+            # resolved one. Rate entitlements were then queried against a
+            # different account than the shipment was posted on.
+            #
+            # The config value survives only as the legacy fallback for callers
+            # with no sender context; in that flow the route has already put
+            # that same env account into request.shipper_account, so behaviour
+            # is unchanged. The adapter still derives nothing and never reads
+            # the Client Master store.
+            account=request.shipper_account or self._config.account_number,
             origin_cc=origin_cc,
             origin_city=settings.dhl_express_shipper_city or "",
             origin_postal=settings.dhl_express_shipper_postal_code or "",

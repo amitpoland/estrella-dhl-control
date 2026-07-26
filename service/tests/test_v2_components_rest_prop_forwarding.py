@@ -134,10 +134,18 @@ class TestKnownCallerTestids:
     If these move or get renamed, browser-verification selectors break."""
 
     def test_client_detail_btn_testids(self):
+        """cd-confirm-save / cd-confirm-cancel were dropped 2026-07-20 together
+        with the confirmation dialog itself (operator ruling: V1 saves
+        immediately; a Customer Master edit is not an irreversible financial
+        operation). The remaining three selectors still guard the 2026-06-10
+        regression. The forwarding mechanism itself stays covered by
+        TestBtn / TestInput above."""
         src = (SERVICE_DIR / "app" / "static" / "v2" / "client-detail.jsx").read_text(encoding="utf-8")
-        for tid in ("cd-save", "cd-confirm-save", "cd-confirm-cancel", "cd-cancel", "cd-close"):
+        for tid in ("cd-save", "cd-cancel", "cd-close"):
             assert f'data-testid="{tid}"' in src, \
-                f"client-detail.jsx must keep data-testid=\"{tid}\" on its Btn"
+                f"client-detail.jsx must keep data-testid=\"{tid}\""
+        assert "cd-confirm-dialog" not in src, \
+            "the Save confirmation dialog must stay removed (V1 parity)"
 
     def test_master_page_input_and_card_testids(self):
         src = (SERVICE_DIR / "app" / "static" / "v2" / "master-page.jsx").read_text(encoding="utf-8")

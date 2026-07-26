@@ -598,6 +598,37 @@
     importCustomersCsv: (file, commit) =>
       _uploadCsv(`${BASE}/customer-master/import/csv${commit ? '?commit=true' : ''}`, file),
 
+    // ── Customer Master sub-resources ────────────────────────────────────
+    // Transport only (Lesson F): the Customer Master owns the authority; these
+    // are the shipping-address and carrier-account child collections that the
+    // V1 Client Master already consumed. Responses:
+    //   addresses → { count, addresses: [...] }
+    //   accounts  → { count, accounts:  [...] }
+
+    // GET/POST/PUT/DELETE /api/v1/customer-master/{cid}/shipping-addresses
+    // NOTE the trailing slash on list/create: both routers declare those
+    // handlers at "/" (routes_client_addresses.py, routes_client_carrier_accounts.py).
+    // Calling them slash-less makes Starlette answer 307 and the browser
+    // re-issue the request — every list/create would hit the network twice.
+    listShippingAddresses: (contractorId) =>
+      _get(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/shipping-addresses/`),
+    createShippingAddress: (contractorId, body) =>
+      _postM(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/shipping-addresses/`, body),
+    updateShippingAddress: (contractorId, addrId, body) =>
+      _put(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/shipping-addresses/${addrId}`, body),
+    deleteShippingAddress: (contractorId, addrId) =>
+      _del(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/shipping-addresses/${addrId}`),
+
+    // GET/POST/PUT/DELETE /api/v1/customer-master/{cid}/carrier-accounts
+    listCarrierAccounts: (contractorId) =>
+      _get(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/carrier-accounts/`),
+    createCarrierAccount: (contractorId, body) =>
+      _postM(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/carrier-accounts/`, body),
+    updateCarrierAccount: (contractorId, acctId, body) =>
+      _put(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/carrier-accounts/${acctId}`, body),
+    deleteCarrierAccount: (contractorId, acctId) =>
+      _del(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/carrier-accounts/${acctId}`),
+
     // ── Packing — link-as-sales backfill ─────────────────────────────────
     // GET /api/v1/packing/{batch_id}/packing-documents
     // Returns { ok, data: { batch_id, count, documents: [{ id,
@@ -646,6 +677,17 @@
     //            box_type_code, weight_kg, dimensions, declared_value, currency }
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
+
+    // GET /api/v1/carrier/dhl-account-resolution — read-only pre-flight view of
+    // the DHL account decision. Delegates to the ONE canonical authority
+    // (dhl_account_resolver). The UI must never derive a default itself.
+    // Returns { ok, billing_party, shipping_account, billing_account, choices,
+    //           choice_for, reason, message, awb_blocked } — accounts masked only.
+    resolveDhlAccounts: (params) =>
+      _get(`${BASE}/carrier/dhl-account-resolution?` +
+           new URLSearchParams(
+             Object.entries(params || {}).filter(([, v]) => v !== null && v !== undefined && v !== '')
+           ).toString()),
 
     // GET /api/v1/carrier/{batch_id}/shipment?client_ref={client_name}
     // The carrier shipment that belongs to THIS client's draft (404 when none).
