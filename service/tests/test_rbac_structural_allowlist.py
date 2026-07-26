@@ -179,8 +179,9 @@ _AREA3_ROUTES: frozenset[str] = frozenset({
     "routes_upload.py:POST:/shipment/{batch_id}/process",
     "routes_upload.py:POST:/shipment/{batch_id}/sad",
     "routes_upload.py:POST:/shipment/{batch_id}/set_pz",
-    "routes_warehouse.py:POST:/locations",
-    "routes_warehouse.py:POST:/scan",
+    # NB: routes_warehouse POST /scan and /locations were UPGRADED to _auth_write
+    # (require_api_key_privileged) in SEC-WAREHOUSE-APIKEY-1 — no longer bare, so
+    # removed from this allowlist (allowlist shrinks per governance).
     # ── Wave 5–7 additions (recorded 2026-07-13) ──────────────────────────────
     # Operator-facing PZ / warehouse / intake / inventory surfaces added across
     # Waves 5–7. All are session-cookie operator actions with NO api-key-only
@@ -201,7 +202,8 @@ _AREA3_ROUTES: frozenset[str] = frozenset({
     # NB: routes_upload document delete/replace are NOT listed here — Wave 8
     # hardening (PR #910, MEDIUM-2) upgraded both to _write_auth (privileged),
     # so they are no longer bare and must not appear in this allowlist.
-    "routes_warehouse_receipt.py:POST:/confirm",
+    # NB: routes_warehouse_receipt POST /confirm UPGRADED to _auth_write
+    # (require_api_key_privileged) in SEC-WAREHOUSE-APIKEY-1 — removed from allowlist.
 })
 
 # Area 4 — Proforma
