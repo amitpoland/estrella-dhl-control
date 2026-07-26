@@ -7,18 +7,22 @@ session, letting a read-only role escalate. The route is removed; warehouse writ
 require a write-capable role (require_api_key_privileged); the browser authenticates by
 session cookie and never fetches/stores/sends the shared key.
 
-Mix of structural source pins (fast, boot-free) and behavioral role-matrix tests on an
-isolated app with the real privileged gate.
+Design: positive authorization tests exercise the REAL auth dependency
+(require_api_key_privileged) and mock ONLY the warehouse business-service boundary
+(warehouse_db). A 200 with the business function called exactly once is the success
+proof — a downstream 500 is NEVER treated as success. No real warehouse DB is touched.
 """
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.auth.dependencies as authdeps
+import app.services.warehouse_db as wdb_mod
 from app.api.routes_warehouse import router as warehouse_router
 from app.api.routes_warehouse_receipt import router as receipt_router
 from app.core.config import settings
@@ -27,119 +31,139 @@ _APP = Path(__file__).resolve().parents[1] / "app"
 _API = _APP / "api"
 _STATIC = _APP / "static"
 
+_SCAN_BODY = {"scan_code": "SC1", "action": "RECEIVE",
+              "to_location": "T1", "operator": "op", "note": "n"}
 
-# ── isolated app + client ─────────────────────────────────────────────────────
+
+# ── fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
 def client():
     app = FastAPI()
     app.include_router(warehouse_router)
     app.include_router(receipt_router)
-    # raise_server_exceptions=False: auth runs BEFORE business logic; a post-auth
-    # 500 (e.g. warehouse_db not initialised in this isolated app) still proves the
-    # gate ALLOWED the request — we assert on auth (401/403), not business success.
-    return TestClient(app, raise_server_exceptions=False)
+    # raise_server_exceptions default (True): an unexpected post-auth 500 raises
+    # loudly — it can never be silently mistaken for authorization success.
+    return TestClient(app)
 
 
 @pytest.fixture()
 def enforce_key(monkeypatch):
-    # Gate only enforces when api_key is configured and env != prod-misconfig.
+    # The gate only enforces when api_key is configured.
     monkeypatch.setattr(settings, "api_key", "TESTKEY_WAREHOUSE", raising=False)
     monkeypatch.setattr(settings, "environment", "dev", raising=False)
     return "TESTKEY_WAREHOUSE"
 
 
+@pytest.fixture()
+def mock_scan(monkeypatch):
+    """Mock ONLY the business boundary: warehouse_db.record_scan + get_movement_history."""
+    m = MagicMock(return_value={
+        "current_location": "T1", "current_status": "IN_STOCK",
+        "updated_at": "2026-07-26T00:00:00Z", "unknown_location": False,
+    })
+    monkeypatch.setattr(wdb_mod, "record_scan", m)
+    monkeypatch.setattr(wdb_mod, "get_movement_history", lambda *a, **k: [])
+    return m
+
+
 def _as_role(monkeypatch, role):
     monkeypatch.setattr(authdeps, "get_current_user_optional",
-                        lambda pz_session=None: {"id": 1, "role": role, "is_active": True, "is_approved": True})
+                        lambda pz_session=None: {"id": 1, "role": role,
+                                                 "is_active": True, "is_approved": True})
 
 
-# ── 1. no route serializes settings.api_key ──────────────────────────────────
+# ── structural pins ──────────────────────────────────────────────────────────
 
 def test_no_api_route_serializes_settings_api_key():
-    offenders = []
-    for p in _API.glob("*.py"):
-        src = p.read_text(encoding="utf-8")
-        if '"api_key": settings.api_key' in src or "'api_key': settings.api_key" in src:
-            offenders.append(p.name)
+    offenders = [p.name for p in _API.glob("*.py")
+                 if '"api_key": settings.api_key' in p.read_text(encoding="utf-8")
+                 or "'api_key': settings.api_key" in p.read_text(encoding="utf-8")]
     assert offenders == [], f"routes serialize settings.api_key: {offenders}"
 
 
 def test_routes_warehouse_has_no_settings_api_key():
-    src = (_API / "routes_warehouse.py").read_text(encoding="utf-8")
-    assert "settings.api_key" not in src
+    assert "settings.api_key" not in (_API / "routes_warehouse.py").read_text(encoding="utf-8")
 
-
-# ── 2. /config removed ───────────────────────────────────────────────────────
 
 def test_config_route_removed_from_source():
     src = (_API / "routes_warehouse.py").read_text(encoding="utf-8")
-    assert 'get("/config")' not in src
-    assert "def warehouse_config" not in src
+    assert 'get("/config")' not in src and "def warehouse_config" not in src
+
+
+def test_all_warehouse_writes_use_privileged_gate():
+    wh = (_API / "routes_warehouse.py").read_text(encoding="utf-8")
+    rc = (_API / "routes_warehouse_receipt.py").read_text(encoding="utf-8")
+    assert "_auth_write = Depends(require_api_key_privileged)" in wh
+    assert "_auth_write = Depends(require_api_key_privileged)" in rc
+    assert '@router.post("/scan", dependencies=[_auth_write])' in wh
+    assert '@router.post("/locations", dependencies=[_auth_write])' in wh
+    assert '@router.post("/confirm", dependencies=[_auth_write])' in rc
 
 
 def test_config_route_returns_404(client):
     assert client.get("/api/v1/warehouse/config").status_code == 404
 
 
-# ── 3-5. write-route auth matrix (real privileged gate) ──────────────────────
+# ── POSITIVE authorization (real gate; business mocked; proves execution) ─────
 
-def test_unauthenticated_write_rejected(client, enforce_key):
-    # no X-API-Key, no session cookie
-    r = client.post("/api/v1/warehouse/scan", json={"scan_code": "X", "action": "RECEIVE"})
-    assert r.status_code == 401
-
-
-def test_read_only_role_write_forbidden(client, enforce_key, monkeypatch):
-    _as_role(monkeypatch, "viewer")
-    r = client.post("/api/v1/warehouse/scan",
-                    json={"scan_code": "X", "action": "RECEIVE"},
-                    cookies={"pz_session": "sess"})
-    assert r.status_code == 403
-
-
-def test_write_capable_role_allowed(client, enforce_key, monkeypatch):
+def test_logistics_session_executes_write(client, enforce_key, monkeypatch, mock_scan):
     _as_role(monkeypatch, "logistics")
-    r = client.post("/api/v1/warehouse/scan",
-                    json={"scan_code": "NO_SUCH_CODE", "action": "RECEIVE"},
-                    cookies={"pz_session": "sess"})
-    # auth PASSED — anything but 401/403 proves the gate allowed the write-capable role.
-    assert r.status_code not in (401, 403)
+    r = client.post("/api/v1/warehouse/scan", json=_SCAN_BODY, cookies={"pz_session": "sess"})
+    assert r.status_code == 200, r.text
+    assert mock_scan.call_count == 1  # business function executed exactly once
+    kw = mock_scan.call_args.kwargs
+    assert kw["scan_code"] == "SC1"
+    assert kw["action"] == "RECEIVE"
+    assert kw["to_location"] == "T1"
+    assert kw["operator"] == "op"
+    assert r.json()["ok"] is True
 
 
-# ── 6. browser flow works without X-API-Key (session cookie only) ────────────
-
-def test_session_write_without_api_key(client, enforce_key, monkeypatch):
-    _as_role(monkeypatch, "logistics")
-    r = client.post("/api/v1/warehouse/scan",
-                    json={"scan_code": "NO_SUCH_CODE", "action": "RECEIVE"},
-                    cookies={"pz_session": "sess"})  # NO X-API-Key header
-    assert r.status_code not in (401, 403)
+def test_admin_session_executes_write(client, enforce_key, monkeypatch, mock_scan):
+    _as_role(monkeypatch, "admin")
+    r = client.post("/api/v1/warehouse/scan", json=_SCAN_BODY, cookies={"pz_session": "sess"})
+    assert r.status_code == 200, r.text
+    assert mock_scan.call_count == 1
 
 
-# ── 7. invalid API key rejected ──────────────────────────────────────────────
-
-def test_invalid_api_key_rejected(client, enforce_key):
-    r = client.post("/api/v1/warehouse/scan",
-                    json={"scan_code": "X", "action": "RECEIVE"},
-                    headers={"X-API-Key": "WRONG_KEY"})
-    assert r.status_code == 401
-
-
-# ── 8. verified automation flow preserved (valid X-API-Key) ──────────────────
-
-def test_api_key_automation_preserved(client, enforce_key):
-    r = client.post("/api/v1/warehouse/scan",
-                    json={"scan_code": "NO_SUCH_CODE", "action": "RECEIVE"},
+def test_api_key_automation_executes_write(client, enforce_key, mock_scan):
+    # valid X-API-Key, NO session cookie → automation compatibility through
+    # require_api_key_privileged is proven by a successful execution.
+    r = client.post("/api/v1/warehouse/scan", json=_SCAN_BODY,
                     headers={"X-API-Key": enforce_key})
-    assert r.status_code not in (401, 403)  # automation authorized
+    assert r.status_code == 200, r.text
+    assert mock_scan.call_count == 1
 
 
-# ── 9. no frontend API-key retrieval remnants ────────────────────────────────
+# ── NEGATIVE authorization (business must NOT execute) ────────────────────────
+
+def test_unauthenticated_rejected(client, enforce_key, mock_scan):
+    r = client.post("/api/v1/warehouse/scan", json=_SCAN_BODY)
+    assert r.status_code == 401
+    assert mock_scan.call_count == 0
+
+
+@pytest.mark.parametrize("role", ["viewer", "auditor", "master_viewer"])
+def test_read_only_roles_forbidden(client, enforce_key, monkeypatch, mock_scan, role):
+    _as_role(monkeypatch, role)
+    r = client.post("/api/v1/warehouse/scan", json=_SCAN_BODY, cookies={"pz_session": "sess"})
+    assert r.status_code == 403
+    assert mock_scan.call_count == 0
+
+
+def test_invalid_api_key_rejected(client, enforce_key, mock_scan):
+    r = client.post("/api/v1/warehouse/scan", json=_SCAN_BODY,
+                    headers={"X-API-Key": "FRESH_WRONG_KEY"})
+    assert r.status_code == 401
+    assert mock_scan.call_count == 0
+
+
+# ── no frontend API-key retrieval remnants ───────────────────────────────────
 
 @pytest.mark.parametrize("page", ["warehouse.html", "dashboard.html"])
 def test_no_frontend_key_retrieval_remnants(page):
     src = (_STATIC / page).read_text(encoding="utf-8")
-    assert "/warehouse/config" not in src, f"{page} still references the removed /config route"
+    assert "/warehouse/config" not in src, f"{page} still references removed /config"
     assert "X-API-Key" not in src, f"{page} still sends X-API-Key"
-    assert "d.api_key" not in src and ".api_key" not in src, f"{page} still reads an api_key field"
+    assert ".api_key" not in src, f"{page} still reads an api_key field"
