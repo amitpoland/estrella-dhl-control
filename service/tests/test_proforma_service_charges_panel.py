@@ -25,6 +25,11 @@ Pins:
   11. Source-grep: suggestion panel header says 'Advisory preview' not 'Suggestions'.
   12. Source-grep: charge-suggestion-panel 'Apply' button is NOT rendered when
       alreadyApplied is true (dup-prevention logic).
+  13. Source-grep (Draft #73 repair): handleFetchChargeSuggestions unwraps the
+      transport envelope — stores r.data (the domain body), NOT the {ok,data}
+      wrapper — so draft_currency / freight / insurance render instead of a
+      spurious '—' / 'Not available'. The buggy setChargeSuggestion(r) wrapper
+      form must be gone.
 """
 from __future__ import annotations
 
@@ -318,4 +323,46 @@ def test_apply_button_not_rendered_when_already_applied():
     assert "?" in segment or "alreadyApplied" in segment, (
         "Slice-2: 'Already applied' and btn-apply-charge must be in mutually "
         "exclusive ternary branches (separated by alreadyApplied conditional)"
+    )
+
+
+# ── Pin 13: charge-suggestion transport envelope is unwrapped (Draft #73) ─────
+
+def test_charge_suggestions_unwrap_transport_envelope():
+    """Draft #73 repair: the transport helper (_call) wraps every success as
+    { ok, data }. The advisory panel reads draft_currency / freight / insurance
+    off the DOMAIN body, so handleFetchChargeSuggestions must store r.data, not
+    the wrapper. Storing the wrapper is what produced the '—' currency and the
+    'Not available' freight/insurance while Customer Master actually held values.
+    """
+    # The fix: unwrap once, storing the domain body.
+    assert "setChargeSuggestion(r.data)" in _JSX_TEXT, (
+        "Draft #73: handleFetchChargeSuggestions must store r.data (the domain "
+        "charge-suggestion body), matching the r.data unwrap convention used at "
+        "every other call site in this file"
+    )
+    # The buggy form (storing the raw {ok,data} wrapper) must be gone. Note this
+    # exact substring does NOT match 'setChargeSuggestion(r.data)' because '.data'
+    # follows 'r' there, not a closing paren.
+    assert "setChargeSuggestion(r)" not in _JSX_TEXT, (
+        "Draft #73: the wrapper-storing bug 'setChargeSuggestion(r)' must be "
+        "removed — it left draft_currency/freight/insurance undefined on the panel"
+    )
+
+
+def test_charge_suggestions_success_guard_requires_data():
+    """Draft #73 repair: the success guard must require both r.ok AND r.data so a
+    truthy-but-dataless response falls into the error branch instead of storing an
+    empty/absent body that would silently render 'Not available'."""
+    idx = _JSX_TEXT.index("handleFetchChargeSuggestions")
+    body = _JSX_TEXT[idx: idx + 900]
+    assert "r.ok && r.data" in body, (
+        "Draft #73: handleFetchChargeSuggestions must guard on 'r.ok && r.data' "
+        "before storing the unwrapped body"
+    )
+    # The old loose guard that accepted any non-false ok (and stored the wrapper)
+    # must not survive in this handler.
+    assert "r.ok !== false" not in body, (
+        "Draft #73: the loose 'r.ok !== false' guard must be replaced by "
+        "'r.ok && r.data'"
     )

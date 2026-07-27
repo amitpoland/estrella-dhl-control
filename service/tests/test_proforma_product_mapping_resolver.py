@@ -16,6 +16,11 @@ What is verified:
   E. Backend routes for all 4 paths exist in routes_wfirma_capabilities.py.
   F. ProformaReadinessPanel receives draftLines + reloadReadiness props at the
      call site, satisfying the prop-threading requirement.
+  G. Gateway-error presentation (Draft #73 repair): doSearch routes failures
+     through _friendlySearchError, which converts an upstream HTTP 50x/429 or a
+     raw HTML gateway page into a concise retryable message, while letting
+     genuine structured backend errors through unchanged. No HTML body is ever
+     surfaced to the operator, and the manual retry (phase:'idle') is preserved.
 """
 from __future__ import annotations
 
@@ -443,4 +448,72 @@ class TestReadinessPanelPropThreading:
         assert "<ProductMappingResolver" in panel_body, (
             "ProductMappingResolver must be rendered inside ProformaReadinessPanel "
             "(between its function definition and the next top-level function)"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# G. Gateway-error presentation — Draft #73 repair
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGatewaySearchErrorPresentation:
+    """doSearch must sanitise upstream gateway/HTML failures into a concise,
+    retryable message without hiding genuine structured backend errors."""
+
+    def _do_search_body(self) -> str:
+        m = re.search(r"(const\s+doSearch\s*=\s*async.*?\n  \};)", _JSX_SRC, re.DOTALL)
+        assert m, "doSearch async function not found in proforma-detail.jsx"
+        return m.group(1)
+
+    def test_friendly_search_error_helper_exists(self):
+        assert "_friendlySearchError" in _JSX_SRC, (
+            "Draft #73: a _friendlySearchError helper must classify the transport "
+            "error before it is shown to the operator"
+        )
+
+    def test_do_search_routes_error_through_helper(self):
+        body = self._do_search_body()
+        assert "_friendlySearchError(r)" in body, (
+            "Draft #73: doSearch's failure branch must call _friendlySearchError(r) "
+            "instead of interpolating the raw r.error"
+        )
+        # The old raw-error interpolation must be gone from doSearch.
+        assert "Search failed: ${r.error" not in body, (
+            "Draft #73: doSearch must no longer interpolate the raw r.error "
+            "(which leaked HTML gateway pages) into the message"
+        )
+
+    def test_gateway_and_html_are_classified(self):
+        idx = _JSX_SRC.index("_friendlySearchError")
+        helper = _JSX_SRC[idx: idx + 500]
+        # HTTP 50x / 429 status wording and raw HTML documents must both trigger
+        # the friendly path.
+        assert "50" in helper and "429" in helper, (
+            "Draft #73: _friendlySearchError must recognise HTTP 50x and 429 gateway codes"
+        )
+        assert "DOCTYPE" in helper or "<html" in helper, (
+            "Draft #73: _friendlySearchError must recognise raw HTML gateway pages"
+        )
+        assert "temporarily unavailable" in helper, (
+            "Draft #73: the gateway branch must render a concise "
+            "'temporarily unavailable' retry message, not the HTML body"
+        )
+
+    def test_structured_errors_fall_through_unchanged(self):
+        idx = _JSX_SRC.index("_friendlySearchError")
+        helper = _JSX_SRC[idx: idx + 500]
+        # Non-gateway (genuine structured backend) errors must retain a meaningful
+        # message — the helper returns `Search failed: ${msg}` for those.
+        assert "Search failed: ${msg}" in helper, (
+            "Draft #73: _friendlySearchError must preserve a meaningful "
+            "'Search failed: <message>' for genuine structured backend errors "
+            "(it must not blanket every error as 'wFirma unavailable')"
+        )
+
+    def test_manual_retry_preserved(self):
+        body = self._do_search_body()
+        # On failure the resolver returns to phase 'idle', which re-renders the
+        # btn-resolve-mapping-{code} button so the operator can retry.
+        assert "phase: 'idle'" in body, (
+            "Draft #73: doSearch's failure branch must reset phase to 'idle' so the "
+            "Resolve mapping retry button remains available"
         )
