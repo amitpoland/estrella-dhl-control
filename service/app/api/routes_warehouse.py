@@ -3,9 +3,6 @@ routes_warehouse.py — Physical movement tracking API.
 
 Endpoints
 ---------
-  GET  /api/v1/warehouse/config
-       Session-protected: returns api_key for use by the scanner UI.
-
   POST /api/v1/warehouse/scan
        Record a scan (RECEIVE / MOVE / PICK / PACK / DISPATCH / RETURN).
        Updates inventory_current_location and appends an event.
@@ -23,6 +20,9 @@ Endpoints
        List every item currently at a location.
 
 Movement is PHYSICAL ONLY. Never alters invoice / PZ / wFirma values.
+
+Scanning (POST /scan) is OPTIONAL traceability — it is never a prerequisite for
+receipt, location, inventory, sample/return, packing, dispatch, or manual workflows.
 """
 from __future__ import annotations
 
@@ -32,15 +32,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from ..core.config import settings
 from ..core.logging import get_logger
-from ..core.security import require_api_key
-from ..auth.dependencies import get_current_user
+from ..core.security import require_api_key, require_api_key_privileged
 from ..services import warehouse_db as wdb
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/warehouse", tags=["warehouse"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)             # reads: X-API-Key or any valid session
+_auth_write = Depends(require_api_key_privileged)  # writes: X-API-Key or session with a write-capable role (logistics/…)
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
@@ -64,24 +63,23 @@ class LocationRequest(BaseModel):
     active:        bool = True
 
 
-# ── GET /config ──────────────────────────────────────────────────────────────
-
-@router.get("/config")
-def warehouse_config(user: dict = Depends(get_current_user)) -> JSONResponse:
-    """
-    Session-protected. Returns the API key so the scanner UI can authenticate
-    subsequent warehouse API calls. Never call this from untrusted clients.
-    """
-    return JSONResponse({"api_key": settings.api_key or ""})
+# NOTE: the former GET /config route (which returned the shared admin key to the
+# browser) was REMOVED — it distributed an admin-equivalent shared secret to any
+# authenticated session (SEC-WAREHOUSE-APIKEY-1). The scanner UI now authenticates
+# by session cookie; warehouse writes require a write-capable role below.
 
 
 # ── POST /scan ───────────────────────────────────────────────────────────────
 
-@router.post("/scan", dependencies=[_auth])
+@router.post("/scan", dependencies=[_auth_write])
 def warehouse_scan(req: ScanRequest) -> JSONResponse:
     """
-    Record a scan event. Returns the updated current-location row.
+    OPTIONAL event-recording endpoint. A physical scan is *traceability only* and
+    is NOT a prerequisite for receipt confirmation, location declaration, inventory,
+    sample-out, return, packing, dispatch, or any manual workflow — those endpoints
+    operate independently and never call record_scan.
 
+    Records a scan event and returns the updated current-location row.
     404 if the scan_code is unknown to packing_lines.
     400 if the action verb isn't allowed.
     """
@@ -163,7 +161,7 @@ def get_inventory(scan_code: str) -> JSONResponse:
 
 # ── Locations ────────────────────────────────────────────────────────────────
 
-@router.post("/locations", dependencies=[_auth])
+@router.post("/locations", dependencies=[_auth_write])
 def create_location(req: LocationRequest) -> JSONResponse:
     loc_id = wdb.upsert_location(
         location_code = req.location_code,

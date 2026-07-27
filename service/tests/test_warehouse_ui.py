@@ -221,32 +221,14 @@ class TestLocationsList:
             assert "location_code" in loc
 
 
-# ── 6. Config endpoint (api_key delivery) ────────────────────────────────────
+# ── 6. Config endpoint REMOVED (SEC-WAREHOUSE-APIKEY-1) ───────────────────────
 
-class TestConfigEndpoint:
-    def test_config_returns_401_without_session(self, client):
-        """No session cookie → 401. The endpoint is not publicly accessible."""
-        r = client.get("/api/v1/warehouse/config")
-        assert r.status_code == 401
+class TestConfigEndpointRemoved:
+    """The former GET /config route returned settings.api_key (an admin-equivalent
+    shared secret) to any authenticated session — an authenticated-but-unsafe
+    disclosure enabling read-only-role escalation. It was REMOVED. The browser now
+    authenticates by session cookie; full coverage in
+    test_warehouse_apikey_disclosure.py."""
 
-    def test_config_returns_api_key_with_session(self, client):
-        """
-        Authenticated session → 200 with api_key field.
-
-        Uses dependency_override to inject a mock user (avoids wiring a full
-        auth DB inside TestClient lifespan). The auth mechanism itself is
-        tested in the auth test suite; here we only verify response contract.
-        """
-        from app.auth.dependencies import get_current_user
-
-        mock_user = {"id": "mock-uid", "email": "scanner@test.internal",
-                     "role": "logistics", "is_active": True}
-
-        app.dependency_overrides[get_current_user] = lambda: mock_user
-        try:
-            r = client.get("/api/v1/warehouse/config")
-            assert r.status_code == 200
-            body = r.json()
-            assert "api_key" in body
-        finally:
-            app.dependency_overrides.pop(get_current_user, None)
+    def test_config_route_no_longer_registered(self, client):
+        assert client.get("/api/v1/warehouse/config").status_code == 404

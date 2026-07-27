@@ -25,11 +25,12 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..core.security import require_api_key
+from ..core.security import require_api_key, require_api_key_privileged
 from ..services import warehouse_receipt as wrcpt
 
 router = APIRouter(prefix="/api/v1/warehouse/receipt", tags=["warehouse"])
-_auth  = Depends(require_api_key)
+_auth       = Depends(require_api_key)             # reads: X-API-Key or any valid session
+_auth_write = Depends(require_api_key_privileged)  # writes: X-API-Key or session with a write-capable role
 
 
 @router.get("/{batch_id:path}", dependencies=[_auth])
@@ -54,7 +55,7 @@ class ConfirmReceiptRequest(BaseModel):
     source_documents: Optional[List[str]] = None
 
 
-@router.post("/confirm", dependencies=[_auth])
+@router.post("/confirm", dependencies=[_auth_write])
 def confirm_receipt(
     req: ConfirmReceiptRequest,
     x_operator: str = Header(default="", alias="X-Operator"),
