@@ -45,6 +45,7 @@ from app.api.routes_carrier_actions import (
     _get_shipment_db_path,
     router as actions_router,
 )
+from app.auth.dependencies import get_current_user
 from app.core.security import require_api_key
 from app.services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
 from app.services.carrier.factory import CarrierConfig
@@ -205,6 +206,10 @@ def _route_app(tmp_path):
     app = FastAPI()
     app.include_router(actions_router)
     app.dependency_overrides[require_api_key] = lambda: None
+    # POST /shipment is role-gated (require_role -> get_current_user); supply a logistics session.
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": 1, "email": "t@test.internal", "role": "logistics",
+        "is_active": True, "is_approved": True}
     app.dependency_overrides[_get_carrier_config] = lambda: CarrierConfig(status="shadow")
     root = tmp_path / "carrier"
     root.mkdir(parents=True, exist_ok=True)
