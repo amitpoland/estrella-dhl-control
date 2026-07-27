@@ -12,7 +12,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes_carrier_actions import router as actions_router
+from app.auth.dependencies import get_current_user
 from app.core.security import require_api_key
+
+
+def _logistics_user():
+    # POST /shipment is role-gated (require_role -> get_current_user, PR #1002).
+    return {"id": 1, "email": "t@test.internal", "role": "logistics",
+            "is_active": True, "is_approved": True}
 
 
 # ── Test setup ─────────────────────────────────────────────────────────────────
@@ -40,6 +47,7 @@ def app_with_authority_flag_off():
         return mock_coord
 
     app.dependency_overrides[require_api_key] = _no_auth
+    app.dependency_overrides[get_current_user] = _logistics_user
 
     # Mock settings with flag OFF
     with patch('app.core.config.settings') as mock_settings:
@@ -74,6 +82,7 @@ def app_with_authority_flag_on():
         return mock_coord
 
     app.dependency_overrides[require_api_key] = _no_auth
+    app.dependency_overrides[get_current_user] = _logistics_user
 
     # Mock settings with flag ON
     with patch('app.core.config.settings') as mock_settings:

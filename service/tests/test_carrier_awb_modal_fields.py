@@ -254,6 +254,20 @@ def client():
     return TestClient(app, raise_server_exceptions=True)
 
 
+@pytest.fixture(autouse=True)
+def _logistics_session():
+    # POST /{batch_id}/shipment is role-gated (require_role("admin","logistics"), PR #1002).
+    # require_role resolves get_current_user, so supply a write-capable session for this
+    # module. Harmless to the GET/unit tests here (they don't use require_role).
+    from app.main import app as _app
+    from app.auth.dependencies import get_current_user as _gcu
+    _app.dependency_overrides[_gcu] = lambda: {
+        "id": 1, "email": "t@test.internal", "role": "logistics",
+        "is_active": True, "is_approved": True}
+    yield
+    _app.dependency_overrides.pop(_gcu, None)
+
+
 def test_list_carrier_services_returns_list(client):
     resp = client.get("/api/v1/carrier/services", headers={"X-API-Key": "test"})
     assert resp.status_code == 200
