@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 import app.auth.dependencies as authdeps
 import app.services.warehouse_db as wdb_mod
+import app.services.warehouse_receipt as wrcpt_mod
 from app.api.routes_warehouse import router as warehouse_router
 from app.api.routes_warehouse_receipt import router as receipt_router
 from app.core.config import settings
@@ -134,6 +135,42 @@ def test_api_key_automation_executes_write(client, enforce_key, mock_scan):
                     headers={"X-API-Key": enforce_key})
     assert r.status_code == 200, r.text
     assert mock_scan.call_count == 1
+
+
+# ── SCAN IS OPTIONAL: non-scan writes must NOT require/call a scan ───────────
+# record_scan is wired to raise immediately if touched; a successful status proves
+# the endpoint is independent of scanning (no scan prerequisite, no record_scan call).
+
+def _forbid_scan(monkeypatch):
+    monkeypatch.setattr(wdb_mod, "record_scan",
+                        MagicMock(side_effect=AssertionError(
+                            "scanning is OPTIONAL — record_scan must not be called")))
+
+
+def test_locations_write_independent_of_scan(client, enforce_key, monkeypatch):
+    _as_role(monkeypatch, "logistics")
+    _forbid_scan(monkeypatch)
+    up = MagicMock(return_value="loc-1")
+    monkeypatch.setattr(wdb_mod, "upsert_location", up)
+    r = client.post("/api/v1/warehouse/locations",
+                    json={"location_code": "T1", "location_type": "tray"},
+                    cookies={"pz_session": "sess"})
+    assert r.status_code == 200, r.text          # succeeds with NO prior scan
+    assert up.call_count == 1                     # its own business fn ran
+    assert r.json()["ok"] is True
+
+
+def test_receipt_confirm_independent_of_scan(client, enforce_key, monkeypatch):
+    _as_role(monkeypatch, "logistics")
+    _forbid_scan(monkeypatch)
+    cr = MagicMock(return_value={"batch_id": "B1", "confirmed_lines": 1})
+    monkeypatch.setattr(wrcpt_mod, "confirm_receipt", cr)
+    r = client.post("/api/v1/warehouse/receipt/confirm",
+                    json={"batch_id": "B1", "lines": [{"accepted_qty": 1}]},
+                    cookies={"pz_session": "sess"})
+    assert r.status_code == 200, r.text          # succeeds with NO prior scan
+    assert cr.call_count == 1
+    assert r.json()["ok"] is True
 
 
 # ── NEGATIVE authorization (business must NOT execute) ────────────────────────

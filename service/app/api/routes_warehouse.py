@@ -20,6 +20,9 @@ Endpoints
        List every item currently at a location.
 
 Movement is PHYSICAL ONLY. Never alters invoice / PZ / wFirma values.
+
+Scanning (POST /scan) is OPTIONAL traceability — it is never a prerequisite for
+receipt, location, inventory, sample/return, packing, dispatch, or manual workflows.
 """
 from __future__ import annotations
 
@@ -71,8 +74,12 @@ class LocationRequest(BaseModel):
 @router.post("/scan", dependencies=[_auth_write])
 def warehouse_scan(req: ScanRequest) -> JSONResponse:
     """
-    Record a scan event. Returns the updated current-location row.
+    OPTIONAL event-recording endpoint. A physical scan is *traceability only* and
+    is NOT a prerequisite for receipt confirmation, location declaration, inventory,
+    sample-out, return, packing, dispatch, or any manual workflow — those endpoints
+    operate independently and never call record_scan.
 
+    Records a scan event and returns the updated current-location row.
     404 if the scan_code is unknown to packing_lines.
     400 if the action verb isn't allowed.
     """
