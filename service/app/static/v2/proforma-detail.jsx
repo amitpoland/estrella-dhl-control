@@ -2384,12 +2384,26 @@ function ProductMappingResolver({ unmappedCodes, draftLines, reloadReadiness }) 
   const ss = (code, patch) =>
     setPerCode(prev => ({ ...prev, [code]: { ...gs(code), ...patch } }));
 
+  // Map a transport error into an operator-friendly line. A wFirma/tunnel gateway
+  // failure arrives as a raw HTML error page (HTTP 50x / 429) sliced into r.error;
+  // show a concise "retry" message instead of dumping HTML at the operator. r.status
+  // is 0 for proxy-HTML errors, so classify off the message text. Genuine structured
+  // backend errors (validation, 4xx with a real message) fall through unchanged so we
+  // never hide a real application error behind "wFirma unavailable".
+  const _friendlySearchError = (r) => {
+    const msg = (r && r.error) || 'unknown error';
+    if (/^HTTP\s+(50\d|429)/.test(msg) || /<!DOCTYPE|<html/i.test(msg)) {
+      return 'wFirma is temporarily unavailable (gateway error). Wait a moment, then click Resolve mapping to retry.';
+    }
+    return `Search failed: ${msg}`;
+  };
+
   // doSearch — safe read-only wFirma lookup. Only fires on explicit operator click.
   const doSearch = async (code) => {
     ss(code, { phase: 'searching', error: null, createBlocked: null });
     const r = await window.PzApi.wfirmaGoodsSearch(code);
     if (!r.ok) {
-      ss(code, { phase: 'idle', error: `Search failed: ${r.error || 'unknown error'}` });
+      ss(code, { phase: 'idle', error: _friendlySearchError(r) });
       return;
     }
     const d = r.data || {};
@@ -5745,8 +5759,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const id = liveDraft.id || (draft && draft.id);
     window.PzApi.suggestServiceCharges(id)
       .then(r => {
-        if (r && r.ok !== false) {
-          setChargeSuggestion(r);
+        // _call() wraps the backend body as { ok, data }; the advisory panel reads
+        // draft_currency / freight / insurance off the domain body, so store r.data
+        // (not the transport wrapper) or those fields are undefined → the panel shows
+        // a spurious "—" currency and "Not available". Unwrap once, here, matching the
+        // r.data convention used at every other call site in this file.
+        if (r && r.ok && r.data) {
+          setChargeSuggestion(r.data);
         } else {
           setChargeSuggestion({ error: (r && r.error) || 'Could not load suggestions.' });
         }
