@@ -5854,7 +5854,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // apply-service-charges is idempotent: an existing charge is SKIPPED, not
         // recalculated. Surface that so the operator is not misled into thinking a
         // stale amount was refreshed (edit the charge, or remove + recalculate).
-        const skip = (r && r.skipped || []).find(s => (s.charge_type || '') === chargeType);
+        // NOTE: the transport helper (_postM) normalises to { ok, data } — the
+        // backend's `skipped` array lives at r.data.skipped, NOT r.skipped. Reading
+        // the envelope here silently swallowed every skip reason (incl. the
+        // "freight_service_id not configured" block), so the guard never fired.
+        const skip = (r && r.data && r.data.skipped || []).find(s => (s.charge_type || '') === chargeType);
         if (skip) throw new Error(skip.reason || `${chargeType} already exists — edit it to change the amount`);
         draftHook && draftHook.reload && draftHook.reload();
         return r;
@@ -7192,6 +7196,17 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
             const s = suggestion[type] || {};
             const alreadyApplied = s.already_applied || existingTypes.includes(type);
             const blocked = !s.available || s.blocked_reason;
+            // Read-only provenance: when the advisory resolved the wFirma service
+            // *identity* from the ID already saved on THIS draft (because Customer
+            // Master has none), say so explicitly. The amount is still Customer
+            // Master's; this note never implies a write to Customer Master.
+            const fallbackNote = (!blocked && s.service_id_source === 'saved_draft_fallback') ? (
+              <span data-testid={`charge-svc-source-${type}`}
+                    title={"Calculated from the Customer Master amount/rate using the service product already saved on this draft. Customer Master itself has no service ID configured for this charge type."}
+                    style={{ fontSize: 11, color: 'var(--text-2)', fontStyle: 'italic' }}>
+                ↳ from draft-saved service product (svc {s.wfirma_service_id})
+              </span>
+            ) : null;
             return (
               <div key={type} data-testid={`suggestion-row-${type}`} style={{
                 display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4,
@@ -7239,8 +7254,10 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
                     );
                   })()
                 ) : alreadyApplied ? (
-                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                    Already applied ({fmtAmt(s.amount, s.currency)})
+                  <span style={{ fontSize: 12, color: 'var(--text-2)', display: 'flex',
+                                 flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                    <span>Already applied ({fmtAmt(s.amount, s.currency)})</span>
+                    {fallbackNote}
                   </span>
                 ) : (
                   <React.Fragment>
@@ -7248,6 +7265,7 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
                       {fmtAmt(s.amount, s.currency)}
                       {s.label ? ` — ${s.label}` : ''}
                     </span>
+                    {fallbackNote}
                     {canEdit && (
                       <button
                         data-testid={`btn-apply-charge-${type}`}

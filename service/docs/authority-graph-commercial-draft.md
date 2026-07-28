@@ -182,3 +182,84 @@ draft authority graph:
 
 7. Adding a new commercial default field → add to `CustomerMaster` dataclass ONLY.
    Do not add to `wfirma_customers` table.
+
+---
+
+## Appendix — 2026-07-28: Draft-saved service-ID contextual fallback (identity resolution; shared by preview + explicit Apply)
+
+**Status: REFERENCE — appended entry. Reconciles a duplicated-authority symptom first**
+**observed on a USD proforma draft (referenced below as "the reporting draft").**
+
+### Conflict 3 — freight/insurance service ID exists on a saved draft but not on CustomerMaster (MEDIUM)
+
+| Location | Field | Role |
+|----------|-------|------|
+| `CustomerMaster.freight_service_id` / `insurance_service_id` | wFirma service-product ID | **Canonical owner of the recurring default** |
+| `proforma_service_charges_db` saved charge line (`wfirma_service_id`) | same semantic value, scoped to ONE draft | **Authoritative for that specific draft only** |
+
+The reporting draft is the concrete case: CustomerMaster holds the freight amount (`28`) and
+the insurance rate (`0.0045`) but has **no** `freight_service_id` / `insurance_service_id`,
+while the draft already carries valid saved service IDs (freight `13002743`, insurance
+`13102217`) and both charges are already applied. Before this rule the advisory
+(`pick_freight` / `compute_insurance_suggestion`) blocked purely because the CustomerMaster
+service ID was missing — so the preview showed "not configured" even though a valid service
+product demonstrably existed on the draft (the contradiction: charge applied AND
+"not configured").
+
+### Resolution rule (shared by the read-only preview `GET /draft/{id}/suggest-service-charges` AND the explicit `POST /draft/{id}/apply-service-charges`)
+
+Service-**identity** resolution order, per charge type (identical in preview and Apply):
+
+1. `CustomerMaster.<type>_service_id` present → `service_id_source == "customer_master"`
+   (CustomerMaster always wins when it has the ID).
+2. else the SAME draft's saved charge line of the SAME `charge_type` carries a non-empty
+   `wfirma_service_id` → `service_id_source == "saved_draft_fallback"` (contextual fallback).
+3. else → blocked, `service_id_source == "unresolved"`.
+
+Invariants (pinned by `service/tests/test_service_id_draft_fallback.py`):
+
+- **The AMOUNT is ALWAYS CustomerMaster's.** The draft fallback supplies the service
+  *identity* only, never an amount. If identity resolves via fallback but CustomerMaster has
+  no amount for the draft currency, the call still blocks on the amount, not the ID.
+- **The fallback NEVER mutates CustomerMaster** and never writes it back automatically.
+- **Cross-type isolation**: a freight saved ID can only satisfy freight; insurance only
+  insurance. Never infer a service ID from labels, amounts, previous invoices, or another
+  customer.
+- **The explicit-selected WRITE/apply path (`apply_service_charges`) resolves service
+  identity with the SAME fixed order as the preview** (`customer_master` →
+  `saved_draft_fallback` → `unresolved`), so Apply never rejects an identity the preview
+  accepted — there is no split authority between preview and execution. Apply mutates ONLY the
+  charge types the operator explicitly listed in the request `apply` array; it never applies a
+  suggestion automatically, and the read-only preview performs no writes at all. Behaviour by
+  case, per selected type:
+  - **CM-resolved AND a charge of that type already exists** → idempotent **skip** (the
+    standing persisted charge is never clobbered).
+  - **fallback-resolved (CM has no id, the draft's same-type saved charge does)** → the
+    existing charge's **amount is updated in place FROM Customer Master**, the saved
+    (draft-sourced) `wfirma_service_id` is **preserved**, and Customer Master is **not**
+    written. Because a fallback id can only exist on an already-present charge, this is exactly
+    the "re-apply from Customer Master onto an existing charge" case.
+  - **neither** → **skipped** (`unresolved`).
+  The amount always comes from Customer Master; the fallback supplies identity only.
+  `service_id_source` is a response field only and is never persisted. Posting/conversion gates
+  continue reading the saved draft charges, not advisory preview state.
+- **Malformed persisted data is never a valid fallback target.** A fallback re-apply updates an
+  existing charge only when that charge carries a valid non-zero `charge_id`.
+  `update_draft_service_charge` locates its target by `int(c.get("charge_id") or 0) ==
+  charge_id`, so `apply_service_charges` refuses to call it with `charge_id == 0` (which would
+  otherwise silently match a `charge_id`-less row) and instead fails safe by placing the type in
+  `skipped`.
+- Consistent with **Lesson N**: freight/insurance advisory preview is advisory and never a
+  fiscal blocker.
+
+The UI surfaces provenance read-only: when `service_id_source == "saved_draft_fallback"` the
+advisory row shows an italic "↳ from draft-saved service product (svc …)" note
+(`data-testid="charge-svc-source-<type>"`). Promoting a confirmed draft service ID into
+CustomerMaster is a SEPARATE, operator-approved, audited action — **not built in this change**
+(gated on explicit operator approval + `/security-review` because it writes CustomerMaster).
+
+**Rule for future development (extends rules 1–2 above):** both the preview and the explicit
+Apply resolver MAY accept a same-draft saved service ID as an identity-only fallback (never
+written back to Customer Master), but the CustomerMaster amount authority and the
+no-CM-write invariant are absolute. Do not widen the fallback to other drafts, other customers,
+or label/amount inference.
