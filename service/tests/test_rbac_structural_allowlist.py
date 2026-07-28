@@ -78,6 +78,13 @@ _PRIVILEGED_AUTH_NAMES: frozenset[str] = frozenset({
     "require_role",
     "require_admin",
     "require_role_or_apikey",
+    # require_api_key_privileged is require_api_key PLUS a fail-closed write-capable
+    # role gate (app/core/security.py): session callers not in _WRITE_CAPABLE_ROLES
+    # get 403. It guards mutations / executions / kill-switches, so it is privileged,
+    # not bare. Omitting it here silently misclassified every route guarded solely by
+    # it as unauthenticated ("none"), and left privileged routes sitting in the bare
+    # allowlist. See test_require_api_key_privileged_is_privileged.
+    "require_api_key_privileged",
     # extend here when new privileged guards are introduced
 })
 
@@ -189,10 +196,9 @@ _AREA3_ROUTES: frozenset[str] = frozenset({
     # They remain bare pending the Area 3 guard burn-down (every Area 3 sibling
     # above is still bare — upgrading these individually would fork the area).
     "routes_inventory.py:POST:/fiscal-reconciliation/run",
-    "routes_inventory_returns.py:POST:/pieces/{piece_id}/correction/archive-proposal",
-    "routes_inventory_returns.py:POST:/pieces/{piece_id}/correction/identity",
-    "routes_inventory_returns.py:POST:/pieces/{piece_id}/qc-disposition",
-    "routes_inventory_returns.py:POST:/pieces/{piece_id}/reversal/{reversal_target}",
+    # NB: routes_inventory_returns correction/archive-proposal, correction/identity,
+    # qc-disposition, and reversal/{reversal_target} are NOT listed — all four are
+    # guarded by require_api_key_privileged (privileged), so they are not bare.
     "routes_packing.py:DELETE:/{batch_id}/document/{document_id}",
     "routes_packing.py:POST:/{batch_id}/approve-header-mapping",
     "routes_packing.py:POST:/{batch_id}/manual-sales-allocation",
@@ -207,32 +213,15 @@ _AREA3_ROUTES: frozenset[str] = frozenset({
 })
 
 # Area 4 — Proforma
+# 2026-07-25 classifier reconciliation: routes_proforma.py routes carrying the
+# `_auth_write = Depends(require_api_key_privileged)` guard were previously invisible
+# to this audit (the guard name was not in _PRIVILEGED_AUTH_NAMES) and so sat here as
+# "bare". With the guard now recognised, they classify as privileged and are removed
+# from the bare allowlist. The two genuinely-bare proforma.py routes below —
+# POST /preview and POST /draft/{draft_id}/resolve-wfirma-document — use
+# `_auth = Depends(require_api_key)` (read-only previews) and correctly remain.
 _AREA4_ROUTES: frozenset[str] = frozenset({
-    "routes_proforma.py:DELETE:/draft/{draft_id}/lines/{line_id}",
-    "routes_proforma.py:DELETE:/draft/{draft_id}/service-charges/{charge_id}",
-    "routes_proforma.py:DELETE:/service-charges/{batch_id}/{client_name}/{charge_type}",
-    "routes_proforma.py:PATCH:/draft/{draft_id}",
-    "routes_proforma.py:PATCH:/draft/{draft_id}/lines/{line_id}",
-    "routes_proforma.py:POST:/adopt-issued/{batch_id}/{client_name:path}",
-    "routes_proforma.py:POST:/cancel-issued-for-reissue/{batch_id}/{client_name:path}",
-    "routes_proforma.py:POST:/create/{batch_id}/{client_name:path}",
-    "routes_proforma.py:POST:/draft/{draft_id}/approve",
-    "routes_proforma.py:POST:/draft/{draft_id}/bulk-price-recovery",
-    "routes_proforma.py:POST:/draft/{draft_id}/cancel",
-    "routes_proforma.py:POST:/draft/{draft_id}/clone",
-    "routes_proforma.py:POST:/draft/{draft_id}/enrich-from-product-descriptions",
-    "routes_proforma.py:POST:/draft/{draft_id}/lines",
-    "routes_proforma.py:POST:/draft/{draft_id}/post",
-    "routes_proforma.py:POST:/draft/{draft_id}/re-open",
-    "routes_proforma.py:POST:/draft/{draft_id}/reset-from-sales-packing",
-    "routes_proforma.py:POST:/draft/{draft_id}/send-email",
-    "routes_proforma.py:POST:/draft/{draft_id}/service-charges",
-    # 2026-07-17 consolidation: both to-invoice execute routes upgraded to
-    # _auth_write (privileged) — removed from the bare allowlist.
     "routes_proforma.py:POST:/preview/{batch_id}/{client_name:path}",
-    "routes_proforma.py:POST:/service-charges/{batch_id}/{client_name:path}",
-    "routes_proforma.py:POST:/{wfirma_id}/refresh-line-names",
-    "routes_proforma.py:PUT:/service-products/{charge_type}",
     "routes_proforma_adopt.py:POST:/adopt-issued/{batch_id}",
     "routes_proforma_adopt.py:POST:/enrich-fullnumber/{batch_id}",
     "routes_reservations.py:POST:/products/import-purchase-packing",
@@ -241,18 +230,12 @@ _AREA4_ROUTES: frozenset[str] = frozenset({
     "routes_reservations.py:POST:/reservations/{queue_id}/reset",
     "routes_reservations.py:POST:/wfirma/products/sync-by-codes",
     # ── Wave 5–7 additions (recorded 2026-07-13) ──────────────────────────────
-    # Proforma draft edit/conflict/pricing operator surfaces + product-master
-    # auto-sync trigger added across Waves 5–7. Session-cookie operator actions
-    # with NO api-key-only automation caller (verified: static UI JS only).
-    # Bare pending the Area 4 guard burn-down (all Area 4 siblings above are
-    # still bare).
-    "routes_proforma.py:DELETE:/draft/{draft_id}",
-    "routes_proforma.py:POST:/draft/{draft_id}/apply-customer-address",
-    "routes_proforma.py:POST:/draft/{draft_id}/apply-service-charges",
-    "routes_proforma.py:POST:/draft/{draft_id}/conflicts/scan",
-    "routes_proforma.py:POST:/draft/{draft_id}/conflicts/{conflict_id}/resolve",
-    "routes_proforma.py:POST:/draft/{draft_id}/import-sales-prices",
-    "routes_proforma.py:POST:/draft/{draft_id}/resolve-ambiguity",
+    # The reservations product-master auto-sync trigger below is a session-cookie
+    # operator action with NO api-key-only automation caller (verified: static UI
+    # JS only) and remains bare pending the Area 4 guard burn-down. The proforma.py
+    # draft edit/conflict/pricing routes formerly listed here were found to already
+    # carry require_api_key_privileged (privileged) and were removed on 2026-07-25
+    # by the classifier reconciliation described at the top of Area 4.
     # 2B manual wFirma link: read-only PREVIEW POST on require_api_key. Writes
     # nothing (pinned by test_resolve_writes_nothing / test_resolve_no_remote_mutation);
     # the state-changing confirm-wfirma-link sits on require_api_key_privileged and
@@ -600,6 +583,9 @@ class TestRbacStructuralAllowlist:
          document delete/replace upgraded to _write_auth (MEDIUM-2), so both were
          withheld from the Area 3 additions above. Net Wave 5–7 additions: 27.
          Total: 142.)
+        (Classifier reconciliation 2026-07-25: recognised require_api_key_privileged
+         as a privileged guard; -33 routes that already carried it (29 routes_proforma
+         + 4 routes_inventory_returns) drop out of the bare allowlist. Total: 108.)
         """
         routes = _all_mutation_routes()
         bare_count = sum(1 for r in routes if r.auth_level == "bare")
@@ -629,4 +615,27 @@ class TestRbacStructuralAllowlist:
         assert privileged_count >= 60, (
             f"Privileged route count dropped to {privileged_count} — "
             "a Phase C guard upgrade may have accidentally removed a real RBAC guard."
+        )
+
+    def test_require_api_key_privileged_is_privileged(self) -> None:
+        """require_api_key_privileged must be classified as a privileged guard.
+
+        It is require_api_key PLUS a fail-closed write-capable-role gate
+        (app/core/security.py:require_api_key_privileged): session callers not in
+        _WRITE_CAPABLE_ROLES get 403. Regression pin for the classifier blind spot
+        where the guard was absent from _PRIVILEGED_AUTH_NAMES, so every route
+        guarded solely by it classified as unauthenticated ("none") and privileged
+        routes were left sitting in the bare allowlist.
+        """
+        assert "require_api_key_privileged" in _PRIVILEGED_AUTH_NAMES
+        assert _auth_level_from_name("require_api_key_privileged") == "privileged"
+
+        # A concrete real route guarded by require_api_key_privileged (inline
+        # dependencies=[Depends(require_api_key_privileged)]) must classify as
+        # privileged — never bare, never none.
+        by_key = {r.allowlist_key: r.auth_level for r in _all_mutation_routes()}
+        key = "routes_inventory_returns.py:POST:/pieces/{piece_id}/qc-disposition"
+        assert by_key.get(key) == "privileged", (
+            f"{key} is guarded by require_api_key_privileged but classified "
+            f"{by_key.get(key)!r} — privileged-guard recognition has regressed."
         )
