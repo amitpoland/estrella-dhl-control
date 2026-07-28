@@ -366,3 +366,41 @@ def test_charge_suggestions_success_guard_requires_data():
         "Draft #73: the loose 'r.ok !== false' guard must be replaced by "
         "'r.ok && r.data'"
     )
+
+
+# ── Pin 14: saved-draft-fallback provenance note (advisory authority) ─────────
+
+def test_fallback_provenance_note_only_rendered_when_not_blocked():
+    """Advisory fallback req 11: when the wFirma service *identity* was resolved
+    from the ID already saved on THIS draft (Customer Master has none), the panel
+    must explain that provenance — and must NOT render the note on the blocked /
+    unresolved path, so a fallback note can never contradict an 'unresolved' state.
+
+    The render condition is exactly `!blocked && s.service_id_source ===
+    'saved_draft_fallback'`: the leading `!blocked` guarantees no note appears
+    while the charge is blocked/unresolved.
+    """
+    assert "charge-svc-source-" in _JSX_TEXT, (
+        "Advisory fallback: the provenance note must carry a "
+        "data-testid='charge-svc-source-{type}' so it is testable and visible"
+    )
+    assert "!blocked && s.service_id_source === 'saved_draft_fallback'" in _JSX_TEXT, (
+        "Advisory fallback: the provenance note must render only when NOT blocked "
+        "AND the source is 'saved_draft_fallback' — never on the unresolved path, "
+        "so it cannot contradict a blocked/unresolved message"
+    )
+
+
+def test_fallback_provenance_note_states_cm_amount_authority():
+    """Advisory fallback req: the note text must make clear the AMOUNT is still
+    Customer Master's and the fallback only supplied the service identity — it must
+    never imply a Customer Master write."""
+    assert "already saved on this draft" in _JSX_TEXT, (
+        "Advisory fallback: the provenance note must say the service product was "
+        "'already saved on this draft'"
+    )
+    # The note attributes the amount/rate to Customer Master (identity-only fallback).
+    assert "Customer Master amount/rate" in _JSX_TEXT, (
+        "Advisory fallback: the note must attribute the amount/rate to Customer "
+        "Master, making explicit the draft only supplied the service identity"
+    )

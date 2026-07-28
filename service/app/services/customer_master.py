@@ -182,8 +182,13 @@ def pick_freight(
     service_id_source = "customer_master"
     label = c.freight_label_en or c.freight_label_pl
     if not service_id:
-        if draft_service_id:
-            service_id = str(draft_service_id)
+        # A blank / whitespace-only / None saved ID is malformed → treat it as
+        # absent, never as a usable fallback identity (contract: "Empty or
+        # malformed draft service ID is rejected"). Strip so a padded value like
+        # "  13002743  " resolves to the clean SKU.
+        _fallback_id = str(draft_service_id).strip() if draft_service_id is not None else ""
+        if _fallback_id:
+            service_id = _fallback_id
             service_id_source = "saved_draft_fallback"
             if not label:
                 label = draft_service_label
@@ -330,8 +335,13 @@ def compute_insurance_suggestion(
     service_id_source = "customer_master"
     label = c.insurance_label_en or c.insurance_label_pl
     if not service_id:
-        if draft_service_id:
-            service_id = str(draft_service_id)
+        # A blank / whitespace-only / None saved ID is malformed → treat it as
+        # absent, never as a usable fallback identity (contract: "Empty or
+        # malformed draft service ID is rejected"). Strip so a padded value like
+        # "  13102217  " resolves to the clean SKU.
+        _fallback_id = str(draft_service_id).strip() if draft_service_id is not None else ""
+        if _fallback_id:
+            service_id = _fallback_id
             service_id_source = "saved_draft_fallback"
             if not label:
                 label = draft_service_label

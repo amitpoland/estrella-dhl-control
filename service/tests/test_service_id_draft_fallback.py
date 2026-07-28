@@ -68,6 +68,10 @@ def _make_cm(
     def _d(x):
         return Decimal(str(x)) if x is not None else None
     return SimpleNamespace(
+        # Identity fields read by the route's blocked-freight repair context
+        # (_freight_authority_block deep-links the exact CM record to edit).
+        bill_to_contractor_id="99001",
+        bill_to_name="TestClient",
         freight_fixed_amount_eur=_d(freight_fixed_amount_eur),
         freight_fixed_amount_usd=_d(freight_fixed_amount_usd),
         freight_service_id=freight_service_id,
@@ -143,6 +147,27 @@ def test_freight_fallback_does_not_mutate_customer_master():
     assert cm.freight_service_id is None
 
 
+@pytest.mark.parametrize("bad_id", ["", "   ", "\t", None])
+def test_freight_empty_or_malformed_draft_service_id_rejected(bad_id):
+    # Contract req 6: an empty / whitespace-only / None saved ID is malformed and
+    # must be REJECTED, never accepted as a fallback identity. The result stays
+    # unresolved exactly as if no fallback had been supplied.
+    cm = _make_cm(freight_fixed_amount_usd=28, freight_service_id=None)
+    r = pick_freight(cm, "USD", draft_service_id=bad_id)
+    assert r["ok"] is False and r["blocked"] is True
+    assert r["service_id_source"] == "unresolved"
+    assert "freight_service_id" in r["reason"]
+
+
+def test_freight_padded_draft_service_id_is_stripped():
+    # A padded-but-valid saved ID resolves to the clean SKU (not "  13002743  ").
+    cm = _make_cm(freight_fixed_amount_usd=28, freight_service_id=None)
+    r = pick_freight(cm, "USD", draft_service_id="  13002743  ")
+    assert r["ok"] is True
+    assert r["service_id_source"] == "saved_draft_fallback"
+    assert r["wfirma_service_id"] == "13002743"
+
+
 # ── Insurance: source labelling ──────────────────────────────────────────────
 
 def test_insurance_source_customer_master_when_cm_has_service_id():
@@ -190,6 +215,17 @@ def test_insurance_amount_always_from_cm_even_with_fallback_identity():
     assert r["ok"] is False and r["blocked"] is True
     assert r["service_id_source"] == "saved_draft_fallback"
     assert "no insurance amount configured" in r["reason"]
+
+
+@pytest.mark.parametrize("bad_id", ["", "   ", "\t", None])
+def test_insurance_empty_or_malformed_draft_service_id_rejected(bad_id):
+    # Contract req 6, insurance side: an empty / whitespace-only / None saved ID
+    # is malformed → rejected, stays unresolved.
+    cm = _make_cm(insurance_rate="0.0045", insurance_service_id=None)
+    r = compute_insurance_suggestion(cm, "USD", Decimal("10000"), draft_service_id=bad_id)
+    assert r["ok"] is False and r["blocked"] is True
+    assert r["service_id_source"] == "unresolved"
+    assert "insurance_service_id" in r["reason"]
 
 
 # ── Route-level: cross-type isolation + end-to-end wiring ─────────────────────
@@ -284,3 +320,77 @@ def test_route_both_types_resolve_via_their_own_saved_ids(client):
     # Both are already applied on the draft, so the UI shows them as applied.
     assert body["freight"]["already_applied"] is True
     assert body["insurance"]["already_applied"] is True
+
+
+def test_route_insurance_fallback_does_not_leak_into_freight(client):
+    """Reverse of the freight-leak test: a draft that saved ONLY an insurance
+    service ID must let insurance resolve via fallback while freight stays
+    unresolved — the insurance ID never satisfies freight. Pins cross-type
+    isolation in both directions."""
+    from app.api import routes_proforma
+
+    cm = _make_cm(
+        freight_fixed_amount_usd=28, freight_service_id=None,
+        insurance_rate="0.0045", insurance_service_id=None,
+    )
+    draft = SimpleNamespace(
+        id=73,
+        service_charges_json=json.dumps([
+            {"charge_type": "insurance", "amount": "45.00", "currency": "USD",
+             "wfirma_service_id": "13102217", "label": "Insurance"},
+        ]),
+        editable_lines_json=json.dumps([{"qty": 10, "unit_price": 1000}]),
+    )
+
+    with patch.object(routes_proforma, "_suggest_lookup",
+                      return_value=(draft, "USD", cm, None)):
+        r = client.get(
+            "/api/v1/proforma/draft/73/suggest-service-charges",
+            headers=_auth_headers(),
+        )
+    assert r.status_code == 200
+    body = r.json()
+
+    # Insurance resolves via its own draft-saved ID.
+    assert body["insurance"]["available"] is True
+    assert body["insurance"]["service_id_source"] == "saved_draft_fallback"
+    assert body["insurance"]["wfirma_service_id"] == "13102217"
+
+    # Freight has NO saved freight ID to fall back on → stays unresolved.
+    # The insurance ID must not satisfy it.
+    assert body["freight"]["available"] is False
+    assert body["freight"]["service_id_source"] == "unresolved"
+    assert body["freight"]["wfirma_service_id"] is None
+
+
+def test_route_preview_does_not_mutate_draft_service_charges(client):
+    """Contract req 5 + 8: the advisory preview is read-only. The draft's saved
+    charge rows must be byte-identical before and after the GET — no write path
+    may run during a suggestion."""
+    from app.api import routes_proforma
+
+    cm = _make_cm(
+        freight_fixed_amount_usd=28, freight_service_id=None,
+        insurance_rate="0.0045", insurance_service_id=None,
+    )
+    saved_json = json.dumps([
+        {"charge_type": "freight", "amount": "28.00", "currency": "USD",
+         "wfirma_service_id": "13002743", "label": "FedEx"},
+        {"charge_type": "insurance", "amount": "45.00", "currency": "USD",
+         "wfirma_service_id": "13102217", "label": "Insurance"},
+    ])
+    draft = SimpleNamespace(
+        id=73,
+        service_charges_json=saved_json,
+        editable_lines_json=json.dumps([{"qty": 10, "unit_price": 1000}]),
+    )
+
+    with patch.object(routes_proforma, "_suggest_lookup",
+                      return_value=(draft, "USD", cm, None)):
+        r = client.get(
+            "/api/v1/proforma/draft/73/suggest-service-charges",
+            headers=_auth_headers(),
+        )
+    assert r.status_code == 200
+    # The draft's saved charges are unchanged by the read-only preview.
+    assert draft.service_charges_json == saved_json
