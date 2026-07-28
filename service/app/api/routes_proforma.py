@@ -9893,31 +9893,65 @@ def apply_service_charges(
         _Dec(str(ln.get("qty", 0) or 0)) * _Dec(str(ln.get("unit_price", 0) or 0))
         for ln in lines
     )
-    # WRITE PATH — Customer Master is the sole write authority for the persisted
-    # charge. Unlike the read-only advisory (suggest_service_charges), these calls
-    # DELIBERATELY pass NO draft_service_id: the saved-draft service-ID fallback is
-    # a read-only *display* convenience and must never seed a persisted charge.
-    # If CM lacks the service id, the suggestion blocks → the charge lands in
-    # `skipped`, never applied. Do NOT add draft_service_id= here to "fix" the
-    # asymmetry — that would let a non-CM identity be written automatically,
-    # which the fallback design forbids.
+    # WRITE PATH — the persisted charge AMOUNT always comes from Customer Master
+    # (the sole amount authority). The wFirma service *identity* is resolved with
+    # the SAME fixed order the read-only advisory (suggest_service_charges) uses,
+    # so explicit Apply never rejects an identity the preview accepted — no split
+    # authority between preview and execution:
+    #   1. Customer Master service id           → "customer_master"
+    #   2. same-draft, same-charge-type saved id → "saved_draft_fallback"
+    #   3. neither                               → blocked / skipped ("unresolved")
+    # The saved-draft fallback supplies IDENTITY ONLY and is NEVER written back to
+    # Customer Master. Such an id can only exist when a charge of that type is
+    # already on the draft, so the fallback path is exactly the "re-apply from
+    # Customer Master onto an existing charge" case — handled below as an in-place
+    # amount update that PRESERVES the existing (draft-sourced) service identity.
+    saved_svc: Dict[str, Dict[str, Any]] = {}
+    existing_by_type: Dict[str, Dict[str, Any]] = {}
+    for _ch in existing_charges:
+        _ct = (_ch.get("charge_type") or "").lower()
+        if not _ct:
+            continue
+        if _ct not in existing_by_type:
+            existing_by_type[_ct] = _ch
+        _sid = _ch.get("wfirma_service_id")
+        if _sid and _ct not in saved_svc:
+            saved_svc[_ct] = {"id": str(_sid), "label": _ch.get("label")}
+
     suggestions: Dict[str, Any] = {}
     if "freight" in apply_types:
-        suggestions["freight"] = pick_freight(cm, draft_currency)
+        _fr = saved_svc.get("freight") or {}
+        suggestions["freight"] = pick_freight(
+            cm, draft_currency,
+            draft_service_id=_fr.get("id"), draft_service_label=_fr.get("label"),
+        )
     if "insurance" in apply_types:
-        suggestions["insurance"] = compute_insurance_suggestion(cm, draft_currency, sales_total)
+        _in = saved_svc.get("insurance") or {}
+        suggestions["insurance"] = compute_insurance_suggestion(
+            cm, draft_currency, sales_total,
+            draft_service_id=_in.get("id"), draft_service_label=_in.get("label"),
+        )
 
     applied: list = []
     skipped: list = []
     current_updated_at = expected
 
     for ctype in apply_types:
-        if ctype in applied_types_now:
-            skipped.append({"charge_type": ctype, "reason": f"{ctype} charge already exists on this draft"})
-            continue
         suggestion = suggestions.get(ctype, {})
         if not suggestion.get("ok"):
+            # Identity unresolved (no CM id AND no saved-draft id) OR no CM amount.
             skipped.append({"charge_type": ctype, "reason": suggestion.get("reason", f"no {ctype} data")})
+            continue
+
+        source  = suggestion.get("service_id_source")
+        already = ctype in applied_types_now
+
+        # A charge of this type already exists AND its identity resolved from
+        # Customer Master (not the draft fallback): idempotent skip — re-applying
+        # must not clobber the standing persisted charge. Preserves the one-per-
+        # type idempotency contract (test_apply_already_existing_type_skipped).
+        if already and source != "saved_draft_fallback":
+            skipped.append({"charge_type": ctype, "reason": f"{ctype} charge already exists on this draft"})
             continue
 
         charge = {
@@ -9930,24 +9964,55 @@ def apply_service_charges(
             # the resulting amount is a frozen 'calculated' resolution.
             "resolution":        commercial_charge_authority.RESOLUTION_CALCULATED,
         }
-        if ctype == "insurance" and suggestion.get("formula_basis"):
-            charge["formula_basis"] = suggestion["formula_basis"]
+        if ctype == "insurance":
+            charge["formula_basis"] = suggestion.get("formula_basis")
 
         try:
-            refreshed = pildb.add_draft_service_charge(
-                _proforma_db_path(),
-                int(draft_id),
-                charge,
-                operator,
-                current_updated_at,
-            )
-            # Chain updated_at so next add uses the refreshed timestamp
+            if already:
+                # FALLBACK RE-APPLY: Customer Master has no service id for this
+                # type, but the draft already carries one. Honour the SAME identity
+                # the preview shows — update the existing charge's amount FROM
+                # Customer Master in place, PRESERVING the existing service
+                # identity. This is the only explicit-Apply write that touches an
+                # existing charge, and it runs solely because the operator
+                # explicitly selected this charge type in the Apply request.
+                existing_charge = existing_by_type.get(ctype) or {}
+                charge_id = int(existing_charge.get("charge_id") or 0)
+                refreshed = pildb.update_draft_service_charge(
+                    _proforma_db_path(),
+                    int(draft_id),
+                    charge_id,
+                    {
+                        "amount":            charge["amount"],
+                        "currency":          draft_currency,
+                        "wfirma_service_id": charge["wfirma_service_id"],
+                        "resolution":        commercial_charge_authority.RESOLUTION_CALCULATED,
+                        "formula_basis":     charge.get("formula_basis"),
+                    },
+                    operator,
+                    current_updated_at,
+                )
+            else:
+                refreshed = pildb.add_draft_service_charge(
+                    _proforma_db_path(),
+                    int(draft_id),
+                    charge,
+                    operator,
+                    current_updated_at,
+                )
+            # Chain updated_at so the next write uses the refreshed timestamp
             current_updated_at = refreshed.updated_at or current_updated_at
             applied_types_now.add(ctype)
-            applied.append({**charge, "charge_id": next(
-                c["charge_id"] for c in (json.loads(refreshed.service_charges_json or "[]") or [])
-                if c.get("charge_type") == ctype
-            )})
+            _persisted = next(
+                (c for c in (json.loads(refreshed.service_charges_json or "[]") or [])
+                 if c.get("charge_type") == ctype),
+                {},
+            )
+            applied.append({
+                **charge,
+                "charge_id":         _persisted.get("charge_id"),
+                "service_id_source": source,
+            })
             d = refreshed  # keep in sync for final response
         except (pildb.DraftNotFound, pildb.DraftConflict, pildb.DraftNotEditable) as exc:
             raise HTTPException(status_code=409, detail=str(exc))

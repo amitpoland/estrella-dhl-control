@@ -25,8 +25,16 @@ Invariants:
     blocks on the amount.
   * The fallback NEVER mutates the Customer Master record.
   * freight's saved ID can only satisfy freight; insurance's only insurance.
-  * The WRITE/apply path never passes a fallback, so a fallback identity can
-    never be persisted as a charge automatically.
+  * The explicit WRITE/apply path (`POST .../apply-service-charges`) resolves
+    service identity with the SAME fixed order as the preview, so it never
+    rejects an identity the preview accepted (no preview/execution split
+    authority). Because a same-draft fallback ID can only exist when a charge of
+    that type is ALREADY on the draft, the fallback case on Apply is an in-place
+    amount update (amount from Customer Master, existing service identity
+    preserved) — NOT a fresh auto-inserted charge, and NEVER a Customer Master
+    write. Nothing is ever applied unless the operator explicitly selected that
+    charge type and invoked Apply. See the apply-path tests below and
+    test_proforma_customer_authority.py.
 """
 from __future__ import annotations
 
