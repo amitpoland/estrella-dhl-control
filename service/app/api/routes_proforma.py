@@ -9741,8 +9741,23 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
         existing_charges = []
     applied_types = {(c.get("charge_type") or "").lower() for c in existing_charges}
 
+    # Saved-draft service IDs, per charge type, for a read-only contextual
+    # fallback when Customer Master lacks the service ID. IDENTITY ONLY — the
+    # amount is always resolved from Customer Master. Never written back to CM.
+    saved_svc: Dict[str, Dict[str, Any]] = {}
+    for _ch in existing_charges:
+        _ct = (_ch.get("charge_type") or "").lower()
+        _sid = _ch.get("wfirma_service_id")
+        if _ct and _sid and _ct not in saved_svc:
+            saved_svc[_ct] = {"id": str(_sid), "label": _ch.get("label")}
+
     # Freight suggestion
-    freight_result = pick_freight(cm, draft_currency)
+    _fr_saved = saved_svc.get("freight") or {}
+    freight_result = pick_freight(
+        cm, draft_currency,
+        draft_service_id=_fr_saved.get("id"),
+        draft_service_label=_fr_saved.get("label"),
+    )
     if freight_result.get("ok"):
         from decimal import Decimal as _Dec
         freight_entry = {
@@ -9752,6 +9767,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "currency":        draft_currency,
             "label":           freight_result.get("label"),
             "wfirma_service_id": freight_result["wfirma_service_id"],
+            "service_id_source": freight_result.get("service_id_source"),
             "blocked_reason":  None,
         }
     else:
@@ -9765,6 +9781,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "currency":        None,
             "label":           None,
             "wfirma_service_id": None,
+            "service_id_source": freight_result.get("service_id_source"),
             "blocked_reason":  freight_result.get("reason", "no freight data"),
             "freight_authority": _freight_authority_block(cm, freight_result),
         }
@@ -9779,7 +9796,12 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
         _Dec(str(ln.get("qty", 0) or 0)) * _Dec(str(ln.get("unit_price", 0) or 0))
         for ln in lines
     )
-    ins_result = compute_insurance_suggestion(cm, draft_currency, sales_total)
+    _ins_saved = saved_svc.get("insurance") or {}
+    ins_result = compute_insurance_suggestion(
+        cm, draft_currency, sales_total,
+        draft_service_id=_ins_saved.get("id"),
+        draft_service_label=_ins_saved.get("label"),
+    )
     if ins_result.get("ok"):
         ins_entry = {
             "available":       True,
@@ -9788,6 +9810,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "currency":        draft_currency,
             "label":           ins_result.get("label"),
             "wfirma_service_id": ins_result["wfirma_service_id"],
+            "service_id_source": ins_result.get("service_id_source"),
             "formula_basis":   ins_result.get("formula_basis"),
             "blocked_reason":  None,
         }
@@ -9799,6 +9822,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "currency":        None,
             "label":           None,
             "wfirma_service_id": None,
+            "service_id_source": ins_result.get("service_id_source"),
             "formula_basis":   None,
             "blocked_reason":  ins_result.get("reason", "no insurance data"),
         }

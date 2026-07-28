@@ -115,6 +115,8 @@ def pick_freight(
     operator_override: Optional[Decimal] = None,
     *,
     override: Optional[Decimal] = None,   # backward-compat alias for operator_override
+    draft_service_id: Optional[str] = None,
+    draft_service_label: Optional[str] = None,
 ) -> Union[Optional[Decimal], Dict[str, Any]]:
     """Decide the freight amount for this customer.
 
@@ -127,11 +129,13 @@ def pick_freight(
 
     **Currency-aware path** (``draft_currency`` is supplied):
         Returns a dict::
-            {"ok": True,  "amount": Decimal, "wfirma_service_id": str, "label": str|None}
+            {"ok": True,  "amount": Decimal, "wfirma_service_id": str,
+             "label": str|None, "service_id_source": str}
           or
-            {"ok": False, "blocked": True, "reason": str}
+            {"ok": False, "blocked": True, "reason": str,
+             "service_id_source": str}
 
-        Priority:
+        Amount priority (Customer Master is the ONLY amount authority):
             1. ``operator_override`` always wins.
             2. EUR draft → ``freight_fixed_amount_eur``.
             3. USD draft → ``freight_fixed_amount_usd``.
@@ -139,9 +143,20 @@ def pick_freight(
                and ``freight_last_amount`` + ``freight_mode == 'fixed'`` are set →
                use ``freight_last_amount`` with a deprecation log.
 
+        Service-ID (identity) resolution — ``service_id_source`` names it:
+            1. ``freight_service_id`` on Customer Master → ``"customer_master"``.
+            2. ``draft_service_id`` (a service ID already saved on THIS draft),
+               used only as a read-only contextual fallback when Customer Master
+               has none → ``"saved_draft_fallback"``.
+            3. neither available → blocked, ``"unresolved"``.
+
+        The draft fallback supplies the wFirma service *identity* only so a
+        read-only advisory can still compute; it NEVER supplies the amount and
+        is NEVER written back to Customer Master by this function (promotion to
+        a Customer Master default is a separate, explicitly-audited action).
+
         No cross-currency fallback: an EUR draft never uses USD amounts and
-        vice versa.  ``freight_service_id`` must be configured or the call
-        is blocked.
+        vice versa.
     """
     # Resolve backward-compat `override=` kwarg → same as operator_override
     _effective_override = operator_override if operator_override is not None else override
@@ -157,16 +172,28 @@ def pick_freight(
     # ── Currency-aware path ────────────────────────────────────────────────────
     ccy = (draft_currency or "").upper()
 
-    # Service ID is always required
+    # Service ID authority resolution (identity only — never the amount).
+    #   1. Customer Master freight_service_id            → "customer_master"
+    #   2. same-draft saved freight service ID (fallback) → "saved_draft_fallback"
+    #   3. neither                                        → blocked, "unresolved"
+    # The draft fallback lets a read-only advisory compute when Customer Master
+    # lacks the ID; it is never written back to Customer Master here.
     service_id = c.freight_service_id
-    if not service_id:
-        return {
-            "ok": False, "blocked": True,
-            "field": "freight_service_id",
-            "reason": "freight_service_id is not configured for this customer",
-        }
-
+    service_id_source = "customer_master"
     label = c.freight_label_en or c.freight_label_pl
+    if not service_id:
+        if draft_service_id:
+            service_id = str(draft_service_id)
+            service_id_source = "saved_draft_fallback"
+            if not label:
+                label = draft_service_label
+        else:
+            return {
+                "ok": False, "blocked": True,
+                "field": "freight_service_id",
+                "service_id_source": "unresolved",
+                "reason": "freight_service_id is not configured for this customer",
+            }
 
     # Operator override always wins
     if _effective_override is not None:
@@ -175,6 +202,7 @@ def pick_freight(
             "amount": Decimal(_effective_override),
             "wfirma_service_id": service_id,
             "label": label,
+            "service_id_source": service_id_source,
         }
 
     if ccy == "EUR":
@@ -185,6 +213,7 @@ def pick_freight(
                 "amount": Decimal(amount),
                 "wfirma_service_id": service_id,
                 "label": label,
+                "service_id_source": service_id_source,
             }
         # Backward-compat: fall through to freight_last_amount for EUR fixed mode only
         if c.freight_last_amount is not None and (c.freight_mode or "") == "fixed":
@@ -198,10 +227,12 @@ def pick_freight(
                 "wfirma_service_id": service_id,
                 "label": label,
                 "legacy_fallback": True,
+                "service_id_source": service_id_source,
             }
         return {
             "ok": False, "blocked": True,
             "field": "freight_fixed_amount_eur",
+            "service_id_source": service_id_source,
             "reason": "no EUR freight amount configured (freight_fixed_amount_eur is not set)",
         }
 
@@ -213,10 +244,12 @@ def pick_freight(
                 "amount": Decimal(amount),
                 "wfirma_service_id": service_id,
                 "label": label,
+                "service_id_source": service_id_source,
             }
         return {
             "ok": False, "blocked": True,
             "field": "freight_fixed_amount_usd",
+            "service_id_source": service_id_source,
             "reason": "no USD freight amount configured (freight_fixed_amount_usd is not set)",
         }
 
@@ -227,6 +260,7 @@ def pick_freight(
             # (this is a draft-side problem, not missing freight authority), so
             # there is no missing `field` to deep-link to.
             "field": None,
+            "service_id_source": service_id_source,
             "reason": (
                 f"draft_currency {ccy!r} is not supported; "
                 "only EUR and USD are accepted"
@@ -238,19 +272,33 @@ def compute_insurance_suggestion(
     c: CustomerMaster,
     draft_currency: str,
     draft_sales_total: Decimal,
+    *,
+    draft_service_id: Optional[str] = None,
+    draft_service_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compute an insurance service-charge suggestion for a draft.
 
     Returns a dict::
         {"ok": True,  "amount": Decimal, "wfirma_service_id": str,
-         "label": str|None, "formula_basis": dict|None}
+         "label": str|None, "formula_basis": dict|None, "service_id_source": str}
       or
-        {"ok": False, "blocked": True, "reason": str}
+        {"ok": False, "blocked": True, "reason": str, "service_id_source": str}
 
     Blocked when:
     - ``insurance_enabled`` is False
-    - ``insurance_service_id`` is missing
+    - ``insurance_service_id`` is missing AND no ``draft_service_id`` fallback
     - no configured amount for the given currency
+
+    Service-ID (identity) resolution — ``service_id_source`` names it:
+        1. ``insurance_service_id`` on Customer Master → ``"customer_master"``.
+        2. ``draft_service_id`` (a service ID already saved on THIS draft),
+           used only as a read-only contextual fallback when Customer Master
+           has none → ``"saved_draft_fallback"``.
+        3. neither available → blocked, ``"unresolved"``.
+
+    The draft fallback supplies the wFirma service *identity* only; the amount
+    always comes from Customer Master (fixed field or rate formula), and the
+    fallback is never written back to Customer Master by this function.
 
     Modes
     -----
@@ -270,27 +318,40 @@ def compute_insurance_suggestion(
     if not c.insurance_enabled:
         return {
             "ok": False, "blocked": True,
+            "service_id_source": "unresolved",
             "reason": "insurance is disabled for this customer",
         }
 
+    # Service ID authority resolution (identity only — never the amount).
+    #   1. Customer Master insurance_service_id           → "customer_master"
+    #   2. same-draft saved insurance service ID (fallback) → "saved_draft_fallback"
+    #   3. neither                                         → blocked, "unresolved"
     service_id = c.insurance_service_id
+    service_id_source = "customer_master"
+    label = c.insurance_label_en or c.insurance_label_pl
     if not service_id:
-        return {
-            "ok": False, "blocked": True,
-            "reason": "insurance_service_id is not configured for this customer",
-        }
+        if draft_service_id:
+            service_id = str(draft_service_id)
+            service_id_source = "saved_draft_fallback"
+            if not label:
+                label = draft_service_label
+        else:
+            return {
+                "ok": False, "blocked": True,
+                "service_id_source": "unresolved",
+                "reason": "insurance_service_id is not configured for this customer",
+            }
 
     ccy = (draft_currency or "").upper()
     if ccy not in ("EUR", "USD"):
         return {
             "ok": False, "blocked": True,
+            "service_id_source": service_id_source,
             "reason": (
                 f"draft_currency {ccy!r} is not supported; "
                 "only EUR and USD are accepted"
             ),
         }
-
-    label = c.insurance_label_en or c.insurance_label_pl
 
     if ccy == "EUR":
         fixed   = c.insurance_fixed_amount_eur
@@ -307,6 +368,7 @@ def compute_insurance_suggestion(
             "wfirma_service_id": service_id,
             "label": label,
             "formula_basis": None,
+            "service_id_source": service_id_source,
         }
 
     # Formula mode
@@ -332,10 +394,12 @@ def compute_insurance_suggestion(
             "wfirma_service_id": service_id,
             "label": label,
             "formula_basis": formula_basis,
+            "service_id_source": service_id_source,
         }
 
     return {
         "ok": False, "blocked": True,
+        "service_id_source": service_id_source,
         "reason": (
             f"no insurance amount configured for {ccy} "
             "(no fixed amount and no rate set)"

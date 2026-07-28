@@ -7192,6 +7192,17 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
             const s = suggestion[type] || {};
             const alreadyApplied = s.already_applied || existingTypes.includes(type);
             const blocked = !s.available || s.blocked_reason;
+            // Read-only provenance: when the advisory resolved the wFirma service
+            // *identity* from the ID already saved on THIS draft (because Customer
+            // Master has none), say so explicitly. The amount is still Customer
+            // Master's; this note never implies a write to Customer Master.
+            const fallbackNote = (!blocked && s.service_id_source === 'saved_draft_fallback') ? (
+              <span data-testid={`charge-svc-source-${type}`}
+                    title={"Calculated from the Customer Master amount/rate using the service product already saved on this draft. Customer Master itself has no service ID configured for this charge type."}
+                    style={{ fontSize: 11, color: 'var(--text-2)', fontStyle: 'italic' }}>
+                ↳ from draft-saved service product (svc {s.wfirma_service_id})
+              </span>
+            ) : null;
             return (
               <div key={type} data-testid={`suggestion-row-${type}`} style={{
                 display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4,
@@ -7239,8 +7250,10 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
                     );
                   })()
                 ) : alreadyApplied ? (
-                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                    Already applied ({fmtAmt(s.amount, s.currency)})
+                  <span style={{ fontSize: 12, color: 'var(--text-2)', display: 'flex',
+                                 flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                    <span>Already applied ({fmtAmt(s.amount, s.currency)})</span>
+                    {fallbackNote}
                   </span>
                 ) : (
                   <React.Fragment>
@@ -7248,6 +7261,7 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
                       {fmtAmt(s.amount, s.currency)}
                       {s.label ? ` — ${s.label}` : ''}
                     </span>
+                    {fallbackNote}
                     {canEdit && (
                       <button
                         data-testid={`btn-apply-charge-${type}`}
