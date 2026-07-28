@@ -828,3 +828,64 @@ class TestApplyServiceChargesFallback:
         assert ap.status_code == 200, ap.text
         applied = {c["charge_type"]: c for c in ap.json()["applied"]}
         assert applied["freight"]["service_id_source"] == "saved_draft_fallback"
+
+    @staticmethod
+    def _strip_charge_id(tmp: Path, draft_id: int, charge_type: str) -> str:
+        """Corrupt the persisted draft so the given charge type carries a valid
+        wfirma_service_id (still a fallback identity) but NO charge_id — i.e. a
+        malformed persisted row. Returns the draft's (unchanged) updated_at so the
+        caller can drive the optimistic-concurrency apply call."""
+        db = tmp / "proforma_links.db"
+        with _s.connect(str(db)) as conn:
+            scj, updated_at = conn.execute(
+                "SELECT service_charges_json, updated_at FROM proforma_drafts WHERE id=?",
+                (draft_id,),
+            ).fetchone()
+            charges = json.loads(scj or "[]") or []
+            for c in charges:
+                if (c.get("charge_type") or "").lower() == charge_type:
+                    c.pop("charge_id", None)  # malformed: no charge_id at all
+            conn.execute(
+                "UPDATE proforma_drafts SET service_charges_json=? WHERE id=?",
+                (json.dumps(charges), draft_id),
+            )
+            conn.commit()
+        return updated_at
+
+    def test_apply_fallback_malformed_charge_id_fails_safe(self, client, fresh):
+        """DEFENSIVE: a fallback re-apply target with no valid charge_id must NEVER
+        be updated. update_draft_service_charge matches by
+        ``int(c.get('charge_id') or 0) == charge_id``, so calling it with 0 would
+        silently match a malformed charge_id-less row. The endpoint must fail safe:
+        the type lands in ``skipped`` (not ``applied``), nothing is mutated (amount
+        stays the pre-existing 50, not CM's 120), and NO draft_service_charge_updated
+        event is emitted. Malformed persisted draft data is never a valid fallback."""
+        draft_id, ua, cm = self._seed_draft_with_saved_freight(client, fresh)
+        # Corrupt AFTER seeding so the saved wfirma_service_id (fallback identity)
+        # survives but the charge_id is gone.
+        ua = self._strip_charge_id(fresh, draft_id, "freight")
+        events_before = _events(fresh, draft_id)
+
+        r = client.post(
+            f"/api/v1/proforma/draft/{draft_id}/apply-service-charges",
+            json={"expected_updated_at": ua, "apply": ["freight"]},
+            headers=_auth_header(),
+        )
+        # Fails safe with a normal 200 envelope — freight is skipped, not applied.
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert [c["charge_type"] for c in d["applied"]] == []
+        skipped = {c["charge_type"]: c for c in d["skipped"]}
+        assert "freight" in skipped
+        assert "charge_id" in skipped["freight"]["reason"]
+
+        # No mutation: amount is still the pre-existing 50, id still present in JSON.
+        freight = [c for c in d["draft"]["service_charges"]
+                   if c["charge_type"] == "freight"]
+        assert len(freight) == 1
+        assert float(freight[0]["amount"]) == 50.00
+
+        # No spurious update event was written (would prove update was called w/ 0).
+        events_after = _events(fresh, draft_id)
+        assert events_after.count("draft_service_charge_updated") == \
+            events_before.count("draft_service_charge_updated")

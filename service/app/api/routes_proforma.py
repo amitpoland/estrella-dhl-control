@@ -9977,7 +9977,24 @@ def apply_service_charges(
                 # existing charge, and it runs solely because the operator
                 # explicitly selected this charge type in the Apply request.
                 existing_charge = existing_by_type.get(ctype) or {}
-                charge_id = int(existing_charge.get("charge_id") or 0)
+                try:
+                    charge_id = int(existing_charge.get("charge_id") or 0)
+                except (TypeError, ValueError):
+                    charge_id = 0
+                if charge_id <= 0:
+                    # DEFENSIVE: a fallback re-apply can only target a persisted
+                    # charge with a valid charge_id. update_draft_service_charge
+                    # matches by ``int(c.get("charge_id") or 0) == charge_id``, so
+                    # calling it with 0 would silently match a malformed row that
+                    # carries no charge_id. Never do that — fail safe, skip, and
+                    # do NOT treat malformed persisted draft data as a valid
+                    # fallback target.
+                    skipped.append({
+                        "charge_type": ctype,
+                        "reason": f"{ctype} charge is missing a valid charge_id; "
+                                  "cannot update in place",
+                    })
+                    continue
                 refreshed = pildb.update_draft_service_charge(
                     _proforma_db_path(),
                     int(draft_id),
