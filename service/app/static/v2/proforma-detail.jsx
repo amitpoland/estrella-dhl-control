@@ -1092,6 +1092,24 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
+
+  // ── DHL account authority (operator ruling 2026-07-20) ──────────────────
+  // The modal keeps NO account state of its own: the hook holds the server's
+  // verdict from the canonical resolver. It derives no default, picks no
+  // account and never sees a full account number.
+  //
+  // sender_contractor_id is the sender's Client Master record. There is no
+  // sender-side Client Master wiring yet (the shipper identity is still the
+  // env-level DHL_EXPRESS_SHIPPER_* configuration), so prefill supplies it only
+  // when known. While it is absent the backend takes its legacy path — explicit
+  // account, then the environment account — and the panel must NOT gate the
+  // button, otherwise a working sender-paid flow would start blocking.
+  const dhlAccounts = useDhlAccountResolution({
+    senderContractorId:   prefill.sender_contractor_id || null,
+    receiverContractorId: prefill.client_contractor_id || null,
+  });
+  const dhlSenderKnown = !!prefill.sender_contractor_id;
+  const dhlBlocksSubmit = dhlSenderKnown && dhlAccounts.awbBlocked;
   // Customer Master save-confirmation workflow: master = this client's stored
   // record (baseline for the shipping-fields comparison); saveConfirm holds
   // the pending diff panel; savedNote shows after an approved save. Master
@@ -1393,6 +1411,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       shipment_reference: form.shipment_reference || null,
       receiver_vat_id:    form.receiver_vat_id || null,
       receiver_eori:      form.receiver_eori || null,
+      // DHL account decision — the server re-resolves authoritatively through
+      // resolve_dhl_billing_account(); these fields only carry the operator's
+      // inputs to it. Omitted entirely when the sender has no Client Master
+      // record, so the existing sender-paid payload stays byte-identical.
+      ...(dhlSenderKnown ? dhlAccounts.payloadFields : {}),
       special_instructions: form.special_instructions || null,
       box_type_code:      form.box_type_code || null,
       // Per-client shipment scope — the draft's client_name. Scopes the
@@ -1929,6 +1952,14 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               this batch (or could not be ruled out); booking is HELD until the
               operator explicitly confirms creating a NEW shipment record.
               No DHL void, no auto-cancel — the prior AWB stays as it is. */}
+          {/* DHL account — server-resolved; the modal renders, never decides.
+              Hidden while the sender has no Client Master record, because the
+              backend then uses its legacy account path and there is no
+              operator decision to present. */}
+          {dhlSenderKnown && (
+            <DhlAccountPanel state={dhlAccounts} />
+          )}
+
           {legacyConfirm && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
@@ -1963,7 +1994,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
-              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm || legacyConfirm} data-testid="awb-submit-btn">
+              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit} data-testid="awb-submit-btn">
                 {loading ? 'Creating AWB…' : 'Create AWB'}
               </Btn>
             </div>
@@ -2353,12 +2384,26 @@ function ProductMappingResolver({ unmappedCodes, draftLines, reloadReadiness }) 
   const ss = (code, patch) =>
     setPerCode(prev => ({ ...prev, [code]: { ...gs(code), ...patch } }));
 
+  // Map a transport error into an operator-friendly line. A wFirma/tunnel gateway
+  // failure arrives as a raw HTML error page (HTTP 50x / 429) sliced into r.error;
+  // show a concise "retry" message instead of dumping HTML at the operator. r.status
+  // is 0 for proxy-HTML errors, so classify off the message text. Genuine structured
+  // backend errors (validation, 4xx with a real message) fall through unchanged so we
+  // never hide a real application error behind "wFirma unavailable".
+  const _friendlySearchError = (r) => {
+    const msg = (r && r.error) || 'unknown error';
+    if (/^HTTP\s+(50\d|429)/.test(msg) || /<!DOCTYPE|<html/i.test(msg)) {
+      return 'wFirma is temporarily unavailable (gateway error). Wait a moment, then click Resolve mapping to retry.';
+    }
+    return `Search failed: ${msg}`;
+  };
+
   // doSearch — safe read-only wFirma lookup. Only fires on explicit operator click.
   const doSearch = async (code) => {
     ss(code, { phase: 'searching', error: null, createBlocked: null });
     const r = await window.PzApi.wfirmaGoodsSearch(code);
     if (!r.ok) {
-      ss(code, { phase: 'idle', error: `Search failed: ${r.error || 'unknown error'}` });
+      ss(code, { phase: 'idle', error: _friendlySearchError(r) });
       return;
     }
     const d = r.data || {};
@@ -5714,8 +5759,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const id = liveDraft.id || (draft && draft.id);
     window.PzApi.suggestServiceCharges(id)
       .then(r => {
-        if (r && r.ok !== false) {
-          setChargeSuggestion(r);
+        // _call() wraps the backend body as { ok, data }; the advisory panel reads
+        // draft_currency / freight / insurance off the domain body, so store r.data
+        // (not the transport wrapper) or those fields are undefined → the panel shows
+        // a spurious "—" currency and "Not available". Unwrap once, here, matching the
+        // r.data convention used at every other call site in this file.
+        if (r && r.ok && r.data) {
+          setChargeSuggestion(r.data);
         } else {
           setChargeSuggestion({ error: (r && r.error) || 'Could not load suggestions.' });
         }
@@ -5804,7 +5854,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // apply-service-charges is idempotent: an existing charge is SKIPPED, not
         // recalculated. Surface that so the operator is not misled into thinking a
         // stale amount was refreshed (edit the charge, or remove + recalculate).
-        const skip = (r && r.skipped || []).find(s => (s.charge_type || '') === chargeType);
+        // NOTE: the transport helper (_postM) normalises to { ok, data } — the
+        // backend's `skipped` array lives at r.data.skipped, NOT r.skipped. Reading
+        // the envelope here silently swallowed every skip reason (incl. the
+        // "freight_service_id not configured" block), so the guard never fired.
+        const skip = (r && r.data && r.data.skipped || []).find(s => (s.charge_type || '') === chargeType);
         if (skip) throw new Error(skip.reason || `${chargeType} already exists — edit it to change the amount`);
         draftHook && draftHook.reload && draftHook.reload();
         return r;
@@ -6744,6 +6798,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             // save-confirmation workflow (compare + explicit-save target).
             client_contractor_id: (liveDraft && liveDraft.client_contractor_id)
               || (draft && draft.client_contractor_id) || '',
+            // Sender's Client Master record, for DHL account resolution. Empty
+            // until sender-side Client Master wiring exists (the shipper is
+            // still env-level DHL_EXPRESS_SHIPPER_*). While empty the backend
+            // uses its legacy account path and the account panel stays hidden —
+            // the existing sender-paid flow is unaffected.
+            sender_contractor_id: (liveDraft && liveDraft.sender_contractor_id)
+              || (draft && draft.sender_contractor_id) || '',
             client_name:        (liveDraft && liveDraft.client_name)
               || (draft && draft.client_name) || '',
           }}
@@ -7135,6 +7196,17 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
             const s = suggestion[type] || {};
             const alreadyApplied = s.already_applied || existingTypes.includes(type);
             const blocked = !s.available || s.blocked_reason;
+            // Read-only provenance: when the advisory resolved the wFirma service
+            // *identity* from the ID already saved on THIS draft (because Customer
+            // Master has none), say so explicitly. The amount is still Customer
+            // Master's; this note never implies a write to Customer Master.
+            const fallbackNote = (!blocked && s.service_id_source === 'saved_draft_fallback') ? (
+              <span data-testid={`charge-svc-source-${type}`}
+                    title={"Calculated from the Customer Master amount/rate using the service product already saved on this draft. Customer Master itself has no service ID configured for this charge type."}
+                    style={{ fontSize: 11, color: 'var(--text-2)', fontStyle: 'italic' }}>
+                ↳ from draft-saved service product (svc {s.wfirma_service_id})
+              </span>
+            ) : null;
             return (
               <div key={type} data-testid={`suggestion-row-${type}`} style={{
                 display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4,
@@ -7182,8 +7254,10 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
                     );
                   })()
                 ) : alreadyApplied ? (
-                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                    Already applied ({fmtAmt(s.amount, s.currency)})
+                  <span style={{ fontSize: 12, color: 'var(--text-2)', display: 'flex',
+                                 flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                    <span>Already applied ({fmtAmt(s.amount, s.currency)})</span>
+                    {fallbackNote}
                   </span>
                 ) : (
                   <React.Fragment>
@@ -7191,6 +7265,7 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
                       {fmtAmt(s.amount, s.currency)}
                       {s.label ? ` — ${s.label}` : ''}
                     </span>
+                    {fallbackNote}
                     {canEdit && (
                       <button
                         data-testid={`btn-apply-charge-${type}`}

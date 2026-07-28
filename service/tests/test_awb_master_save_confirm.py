@@ -99,9 +99,16 @@ class TestBookingGate:
         assert "createCarrierShipment" in booking
 
     def test_submit_button_disabled_while_panel_open(self):
-        # legacyConfirm added by the legacy-rebook gate (ADR-proforma-cmr-
-        # short-number §Known limitation) — see test_awb_legacy_rebook_confirm.py.
-        assert "disabled={loading || isPending || !!saveConfirm || legacyConfirm}" in JSX
+        # Intent: every gate must appear in the submit button's disabled
+        # expression. Asserted per-guard rather than as one literal string so
+        # that adding a further gate (e.g. dhlBlocksSubmit, the server-owned
+        # DHL account verdict) does not falsely fail this test while still
+        # proving each existing guard is intact.
+        m = re.search(r'data-testid="awb-submit-btn"', JSX)
+        assert m, "submit button must exist"
+        btn = JSX[max(0, m.start() - 400):m.start()]
+        for guard in ("loading", "isPending", "!!saveConfirm", "legacyConfirm"):
+            assert guard in btn, f"submit button must stay gated on {guard}"
 
     def test_yes_books_only_after_successful_save(self):
         """Yes → updateCustomerMaster; doBooking() only in the r.ok branch;

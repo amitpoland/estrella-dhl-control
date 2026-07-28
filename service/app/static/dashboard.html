@@ -1561,9 +1561,8 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
   const [drawerOpen,         setDrawerOpen]         = React.useState(false);
 
   // Phase B.1 — sample-out / sample-return mutation state.
-  // API key is fetched via /api/v1/warehouse/config (same convention as
-  // warehouse.html). Routes require X-API-Key when settings.api_key is set.
-  const [inventoryApiKey, setInventoryApiKey] = React.useState('');
+  // Authenticated by session cookie (credentials:'include'); inventory writes are
+  // role-gated server-side (privileged write role). No shared key in the browser.
   const [actionBusy,      setActionBusy]      = React.useState(false);
   const [actionError,     setActionError]     = React.useState('');
   const [sampleOutForm,   setSampleOutForm]   = React.useState({
@@ -1591,15 +1590,6 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
     notes:                    '',
   });
   const [returnFromProducerNotes, setReturnFromProducerNotes] = React.useState('');
-
-  React.useEffect(() => {
-    let cancelled = false;
-    fetch('/api/v1/warehouse/config', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (!cancelled && d && d.api_key) setInventoryApiKey(d.api_key); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
 
   const lookupPiece = React.useCallback(async () => {
     const code = (pieceLookupCode || '').trim();
@@ -1647,7 +1637,6 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          ...(inventoryApiKey ? { 'X-API-Key': inventoryApiKey } : {}),
         },
         body: JSON.stringify(body),
       },
@@ -1659,7 +1648,7 @@ function InventoryPage({ batches, onViewShipment, onNav, onToast }) {
       throw new Error(`${code}${detail ? ': ' + detail : ''}`);
     }
     return res.json().catch(() => ({}));
-  }, [inventoryApiKey]);
+  }, []);
 
   const submitSampleOut = React.useCallback(async () => {
     if (!pieceDetail || !pieceDetail.state) return;

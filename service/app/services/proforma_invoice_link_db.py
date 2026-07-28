@@ -3717,6 +3717,28 @@ def update_draft_service_charge(
         else:
             charge["wfirma_service_id"] = str(wsid).strip()
 
+    if "formula_basis" in updates:
+        # Replace the whole formula_basis dict (used when a re-application
+        # recomputes an insurance premium from Customer Master and must persist
+        # the fresh basis). Mirrors add_draft_service_charge's forbidden-key
+        # guard so CIF / customs / import / pz_ / sad_ / zc429_ can never leak in.
+        fb_new = updates.get("formula_basis")
+        if fb_new is None:
+            charge["formula_basis"] = None
+        elif isinstance(fb_new, dict):
+            for k in fb_new:
+                if any(
+                    str(k).startswith(pfx) or str(k) == pfx
+                    for pfx in _FORBIDDEN_FORMULA_BASIS_PREFIXES
+                ):
+                    raise ValueError(
+                        f"formula_basis key {k!r} is not allowed; "
+                        "only sales_total, rate_pct, minimum_eur, minimum_usd are permitted"
+                    )
+            charge["formula_basis"] = fb_new
+        else:
+            raise ValueError("formula_basis must be a JSON object")
+
     if "rate_pct" in updates:
         rate = updates.get("rate_pct")
         fb = dict(charge.get("formula_basis") or {})

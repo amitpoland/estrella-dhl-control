@@ -29,6 +29,7 @@ from app.api.routes_carrier_shadow import (
     _get_shadow_log_db_path,
     router as shadow_router,
 )
+from app.auth.dependencies import get_current_user
 from app.core.security import require_api_key
 from app.services.carrier.factory import CarrierConfig
 from app.services.carrier.models.shipment import (
@@ -44,6 +45,13 @@ from app.services.carrier.persistence import shadow_log_db, shipment_db
 
 def _no_auth() -> None:
     return None
+
+
+# POST /{batch_id}/shipment is role-gated (require_role("admin","logistics"), PR #1002).
+# require_role resolves get_current_user, so tests must supply a write-capable session user.
+def _logistics_user() -> dict:
+    return {"id": 1, "email": "t@test.internal", "role": "logistics",
+            "is_active": True, "is_approved": True}
 
 
 def _shadow_config() -> CarrierConfig:
@@ -69,6 +77,7 @@ def test_app():
     app.include_router(shadow_router)
     app.include_router(actions_router)
     app.dependency_overrides[require_api_key] = _no_auth
+    app.dependency_overrides[get_current_user] = _logistics_user
     return app
 
 

@@ -186,8 +186,9 @@ _AREA3_ROUTES: frozenset[str] = frozenset({
     "routes_upload.py:POST:/shipment/{batch_id}/process",
     "routes_upload.py:POST:/shipment/{batch_id}/sad",
     "routes_upload.py:POST:/shipment/{batch_id}/set_pz",
-    "routes_warehouse.py:POST:/locations",
-    "routes_warehouse.py:POST:/scan",
+    # NB: routes_warehouse POST /scan and /locations were UPGRADED to _auth_write
+    # (require_api_key_privileged) in SEC-WAREHOUSE-APIKEY-1 — no longer bare, so
+    # removed from this allowlist (allowlist shrinks per governance).
     # ── Wave 5–7 additions (recorded 2026-07-13) ──────────────────────────────
     # Operator-facing PZ / warehouse / intake / inventory surfaces added across
     # Waves 5–7. All are session-cookie operator actions with NO api-key-only
@@ -207,7 +208,8 @@ _AREA3_ROUTES: frozenset[str] = frozenset({
     # NB: routes_upload document delete/replace are NOT listed here — Wave 8
     # hardening (PR #910, MEDIUM-2) upgraded both to _write_auth (privileged),
     # so they are no longer bare and must not appear in this allowlist.
-    "routes_warehouse_receipt.py:POST:/confirm",
+    # NB: routes_warehouse_receipt POST /confirm UPGRADED to _auth_write
+    # (require_api_key_privileged) in SEC-WAREHOUSE-APIKEY-1 — removed from allowlist.
 })
 
 # Area 4 — Proforma
@@ -247,8 +249,9 @@ _AREA5_ROUTES: frozenset[str] = frozenset({
     "routes_ai_bridge.py:POST:/results/{task_id}",
     "routes_ai_bridge.py:POST:/tasks/{batch_id}",
     "routes_bot.py:POST:/bot-event",
-    "routes_carrier_actions.py:POST:/{batch_id}/label-package",
-    "routes_carrier_actions.py:POST:/{batch_id}/shipment",
+    # routes_carrier_actions POST /shipment, /label-package, and /do-not-use
+    # were UPGRADED to require_role("admin","logistics") — removed from the
+    # bare-auth allowlist (guard upgrade shrinks the allowlist, per governance).
     "routes_wfirma.py:POST:/shipment/{batch_id}/wfirma/clipboard",
     "routes_wfirma.py:POST:/shipment/{batch_id}/wfirma/products/resolve",
     "routes_wfirma.py:POST:/shipment/{batch_id}/wfirma/products/sync-names",
@@ -284,7 +287,7 @@ _AREA5_ROUTES: frozenset[str] = frozenset({
     # / edit surfaces with NO api-key-only automation caller (verified: static
     # UI JS only; no .ps1 / scripts caller). Bare pending the Area 5 guard
     # burn-down (all Area 5 siblings above are still bare).
-    "routes_carrier_actions.py:POST:/{batch_id}/shipment/{tracking_ref}/do-not-use",
+    # do-not-use UPGRADED to require_role("admin","logistics") — removed here.
     "routes_carrier_shadow.py:POST:/events/process",
     "routes_description_admin.py:POST:/product/{product_code:path}/validate",
     "routes_description_admin.py:PUT:/product/{product_code:path}",

@@ -258,43 +258,40 @@ function fmtTime(iso) {
 }
 
 // ── API helper ───────────────────────────────────────────────────────────────
-function makeApi(apiKey) {
-  const headers = k => ({
-    'Content-Type': 'application/json',
-    ...(k ? { 'X-API-Key': k } : {}),
-  });
+// Session-authenticated only. The browser authenticates by its pz_session cookie
+// (credentials:'include'); it never fetches, stores, or sends the shared API key.
+// Warehouse writes are role-gated server-side (privileged write role).
+function makeApi() {
+  const headers = () => ({ 'Content-Type': 'application/json' });
   return {
-    scan: (body, key) =>
+    scan: (body) =>
       fetch('/api/v1/warehouse/scan', {
         method: 'POST',
-        headers: headers(key),
+        headers: headers(),
         credentials: 'include',
         body: JSON.stringify(body),
       }).then(r => r.json().then(d => ({ ok: r.ok, status: r.status, data: d }))),
-    inventory: (scanCode, key) =>
+    inventory: (scanCode) =>
       fetch(`/api/v1/warehouse/inventory/${encodeURIComponent(scanCode)}`, {
-        headers: headers(key),
+        headers: headers(),
         credentials: 'include',
       }).then(r => r.json().then(d => ({ ok: r.ok, data: d }))),
-    locations: (key) =>
+    locations: () =>
       fetch('/api/v1/warehouse/locations', {
-        headers: headers(key),
+        headers: headers(),
         credentials: 'include',
       }).then(r => r.json().then(d => ({ ok: r.ok, data: d }))),
-    config: () =>
-      fetch('/api/v1/warehouse/config', { credentials: 'include' })
-        .then(r => r.json()),
   };
 }
 
 // ── ScanForm ─────────────────────────────────────────────────────────────────
-function ScanForm({ locations, onResult, busy, setBusy, apiKey }) {
+function ScanForm({ locations, onResult, busy, setBusy }) {
   const [form, setForm] = useState({
     scan_code: '', action: 'RECEIVE', to_location: '', operator: '', note: ''
   });
   const [err, setErr] = useState('');
   const scanRef = useRef(null);
-  const api = makeApi(apiKey);
+  const api = makeApi();
 
   // Autofocus scan_code on mount
   useEffect(() => { scanRef.current?.focus(); }, []);
@@ -313,7 +310,7 @@ function ScanForm({ locations, onResult, busy, setBusy, apiKey }) {
         to_location: form.to_location.trim(),
         operator:    form.operator.trim(),
         note:        form.note.trim(),
-      }, apiKey);
+      });
       if (!ok) {
         setErr(data?.detail || `Error ${data?.status}`);
       } else {
@@ -505,7 +502,6 @@ function App() {
   const [theme, setTheme] = useState(() =>
     window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   );
-  const [apiKey,    setApiKey]    = useState('');
   const [locations, setLocations] = useState([]);
   const [result,    setResult]    = useState(null);
   const [history,   setHistory]   = useState([]);
@@ -519,15 +515,10 @@ function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  // Load API key + locations + version on mount
+  // Load locations + version on mount (session-authenticated; no shared key)
   useEffect(() => {
-    const api = makeApi('');
-    api.config()
-      .then(d => {
-        const key = d.api_key || '';
-        setApiKey(key);
-        return api.locations(key);
-      })
+    const api = makeApi();
+    api.locations()
       .then(({ ok, data }) => {
         if (ok) setLocations(data.locations || []);
       })
@@ -546,8 +537,8 @@ function App() {
     setHistSC(sc);
     setHistLoad(true);
     try {
-      const api = makeApi(apiKey);
-      const { ok, data: inv } = await api.inventory(sc, apiKey);
+      const api = makeApi();
+      const { ok, data: inv } = await api.inventory(sc);
       if (ok) setHistory(inv.history || []);
     } finally {
       setHistLoad(false);
@@ -577,7 +568,6 @@ function App() {
             onResult={handleResult}
             busy={busy}
             setBusy={setBusy}
-            apiKey={apiKey}
           />
           <ResultPanel result={result} />
         </div>
