@@ -9893,6 +9893,14 @@ def apply_service_charges(
         _Dec(str(ln.get("qty", 0) or 0)) * _Dec(str(ln.get("unit_price", 0) or 0))
         for ln in lines
     )
+    # WRITE PATH — Customer Master is the sole write authority for the persisted
+    # charge. Unlike the read-only advisory (suggest_service_charges), these calls
+    # DELIBERATELY pass NO draft_service_id: the saved-draft service-ID fallback is
+    # a read-only *display* convenience and must never seed a persisted charge.
+    # If CM lacks the service id, the suggestion blocks → the charge lands in
+    # `skipped`, never applied. Do NOT add draft_service_id= here to "fix" the
+    # asymmetry — that would let a non-CM identity be written automatically,
+    # which the fallback design forbids.
     suggestions: Dict[str, Any] = {}
     if "freight" in apply_types:
         suggestions["freight"] = pick_freight(cm, draft_currency)

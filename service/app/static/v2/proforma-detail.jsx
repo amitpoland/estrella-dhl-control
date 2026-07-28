@@ -5854,7 +5854,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // apply-service-charges is idempotent: an existing charge is SKIPPED, not
         // recalculated. Surface that so the operator is not misled into thinking a
         // stale amount was refreshed (edit the charge, or remove + recalculate).
-        const skip = (r && r.skipped || []).find(s => (s.charge_type || '') === chargeType);
+        // NOTE: the transport helper (_postM) normalises to { ok, data } — the
+        // backend's `skipped` array lives at r.data.skipped, NOT r.skipped. Reading
+        // the envelope here silently swallowed every skip reason (incl. the
+        // "freight_service_id not configured" block), so the guard never fired.
+        const skip = (r && r.data && r.data.skipped || []).find(s => (s.charge_type || '') === chargeType);
         if (skip) throw new Error(skip.reason || `${chargeType} already exists — edit it to change the amount`);
         draftHook && draftHook.reload && draftHook.reload();
         return r;
