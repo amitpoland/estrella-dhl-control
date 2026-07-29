@@ -476,9 +476,14 @@ def test_health_probe_authenticates_without_weakening_route():
         "the health request must carry the auth header"
     )
     # The route the validator hits must remain guarded -- making /health anonymous to
-    # satisfy the validator is the forbidden fix.
+    # satisfy the validator is the forbidden fix. Match within the decorator window
+    # (not a single greedy line) so a routine multi-line reformat of the decorator
+    # does not produce a false CI block.
     route = _read(ROUTES_PZ)
-    assert re.search(r'@router\.get\("/health".*dependencies=\[_auth\]', route), (
+    m = re.search(r'@router\.get\("/health"', route)
+    assert m, "the /health route decorator must exist"
+    decorator = route[m.start():m.start() + 300]
+    assert "dependencies=[_auth]" in decorator, (
         "the /health route must remain authenticated (dependencies=[_auth])"
     )
     assert "_auth = Depends(require_api_key)" in route, (
@@ -528,3 +533,21 @@ def test_health_probe_fails_explicitly_when_credential_missing():
         "the unavailable-credential branch must record a FAILED result, never a silent pass"
     )
     assert "credential unavailable" in val
+
+
+def test_health_env_read_is_defensive_and_dotenv_faithful():
+    """An unreadable .env must FAIL structurally (return $null -> explicit per-URL
+    FAIL), never crash the Stop-mode validator; and the value must be parsed like
+    python-dotenv (the service's own loader) so a healthy .env carrying an inline
+    comment on the API_KEY line is not sent as a wrong key and rejected 401."""
+    val = _read(VALIDATOR)
+    # Defensive read: the .env Get-Content is guarded so a permission error returns
+    # $null instead of terminating the script before the check table prints.
+    assert re.search(
+        r"try\s*\{[^}]*Get-Content[^}]*\}\s*catch\s*\{\s*return \$null\s*\}", val, re.DOTALL
+    ), "the .env read must be wrapped so an unreadable file fails structurally, not fatally"
+    # python-dotenv-faithful inline-comment stripping on unquoted values.
+    assert ".IndexOf(' #')" in val, (
+        "an unquoted value's inline comment ( whitespace + '#' ) must be stripped to "
+        "match python-dotenv, or a commented API_KEY line 401s a healthy deploy"
+    )

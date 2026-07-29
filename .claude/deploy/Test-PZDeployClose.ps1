@@ -48,14 +48,34 @@ function Get-HealthApiKey {
     $varName = $Cfg.health_auth_env_var
     if (-not $envFile -or -not $varName) { return $null }
     if (-not (Test-Path $envFile)) { return $null }
-    foreach ($line in Get-Content $envFile -Encoding UTF8) {
+    # A present-but-UNREADABLE .env (e.g. a service-account-only ACL that denies the
+    # deploying user) must FAIL the health check with a structured per-URL result, NOT
+    # crash the whole validator: $ErrorActionPreference is 'Stop', so an unguarded
+    # Get-Content would terminate the script before the check table or rollback check
+    # ever printed. Read defensively and return $null; the caller records an explicit FAIL.
+    try { $lines = Get-Content $envFile -Encoding UTF8 -ErrorAction Stop }
+    catch { return $null }
+    foreach ($line in $lines) {
         $t = $line.Trim()
         if ($t.StartsWith('#')) { continue }
         $eq = $t.IndexOf('=')
         if ($eq -lt 1) { continue }
         # Exact name match so e.g. ANTHROPIC_API_KEY never satisfies API_KEY.
         if ($t.Substring(0, $eq).Trim() -ne $varName) { continue }
-        $val = $t.Substring($eq + 1).Trim().Trim('"').Trim("'")
+        # Parse the value the SAME way python-dotenv (which the service loads with) does,
+        # or the validator could send a credential the service rejects on a healthy .env:
+        # a quoted value keeps everything inside the quotes; an unquoted value has an
+        # inline comment ( whitespace + '#' ) stripped. A '#' with no leading space is
+        # part of the value (keys may contain '#'), matching python-dotenv exactly.
+        $val = $t.Substring($eq + 1).Trim()
+        if ($val.StartsWith('"') -or $val.StartsWith("'")) {
+            $val = $val.Trim().Trim('"').Trim("'")
+        }
+        else {
+            $c = $val.IndexOf(' #')
+            if ($c -ge 0) { $val = $val.Substring(0, $c) }
+            $val = $val.Trim()
+        }
         if ($val) { return $val }
     }
     return $null
@@ -119,7 +139,10 @@ foreach ($u in $cfg.health_urls) {
         continue
     }
     try {
-        $r = Invoke-WebRequest $u -Headers @{ "X-API-Key" = $healthKey } -UseBasicParsing -TimeoutSec 15
+        # Cache-Control:no-cache so an edge/CDN (the https URL front) cannot answer a
+        # health probe from a stale 200 primed before this deploy -- the probe must
+        # reflect the CURRENTLY deployed backend, not a cached response.
+        $r = Invoke-WebRequest $u -Headers @{ "X-API-Key" = $healthKey; "Cache-Control" = "no-cache" } -UseBasicParsing -TimeoutSec 15
         Add-Result "health $u" ($r.StatusCode -eq 200) "HTTP $($r.StatusCode)"
     }
     catch {
