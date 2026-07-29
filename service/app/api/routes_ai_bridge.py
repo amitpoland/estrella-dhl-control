@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from ..auth.dependencies import get_current_user
 from ..core import timeline as tl
 from ..core.config import settings
+from ..core.logging import get_logger
 from ..services.ai_bridge import (
     FORBIDDEN_FIELDS,
     TASK_TEMPLATES,
@@ -37,11 +38,37 @@ from ..services.ai_bridge import (
     import_result,
     list_tasks,
 )
+from ..services.tracking_patch import apply_tracking_update, close_tracking_proposal
+from ..utils.batch_lock import batch_write_lock
+from ..utils.io import write_json_atomic
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/ai-bridge", tags=["ai_bridge"])
 _auth  = Depends(get_current_user)
 
 _OUTPUTS = settings.storage_root / "outputs"
+
+# Roles permitted to close the tracking workflow checkpoint. Mirrors
+# routes_tracking._op_auth = require_role("admin", "logistics") -- the authority
+# that owned audit.tracking_complete before the write paths were consolidated.
+_OPERATOR_ROLES = frozenset({"admin", "logistics"})
+
+
+def _may_close_checkpoint(user: Any) -> bool:
+    """True only for an operator-role caller. Fail-closed on anything else.
+
+    `user` is normally the dict from get_current_user. It is deliberately NOT
+    assumed to be one: when this route function is called directly in Python
+    (as several tests do) the parameter default is a FastAPI ``Depends`` object,
+    and ``.get`` on it would raise AttributeError -- swallowed whole by the
+    caller's ``except Exception: pass``, silently skipping the entire tracking
+    patch. Anything that is not a dict yields False: evidence is still recorded,
+    the workflow checkpoint simply is not closed.
+    """
+    if not isinstance(user, dict):
+        return False
+    return user.get("role") in _OPERATOR_ROLES
 
 
 # ── Request / Response models ──────────────────────────────────────────────────
@@ -195,6 +222,7 @@ def get_bridge_task(task_id: str) -> Dict[str, Any]:
 def import_bridge_result(
     task_id: str,
     body:    ImportResultBody,
+    user:    Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
     Import a result from an external AI tool.
@@ -243,20 +271,25 @@ def import_bridge_result(
         )
     except ValueError as exc:
         # ── Safety logging: append rejection to audit["ai_bridge_errors"] ────
+        # Under batch_write_lock: read-modify-write of audit.json; unlocked it
+        # could lose a concurrent writer's changes (#991). Re-entrancy-safe.
         try:
-            _current = json.loads(audit_path.read_text(encoding="utf-8"))
-            _errs = _current.setdefault("ai_bridge_errors", [])
-            _errs.append({
-                "task_id":   task_id,
-                "task_type": task.get("task_type"),
-                "reason":    str(exc),
-                "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "source":    body.source,
-            })
-            from ..utils.io import write_json_atomic
-            write_json_atomic(audit_path, _current)
-        except Exception:
-            pass  # safety logging is best-effort
+            with batch_write_lock(batch_id):
+                _current = json.loads(audit_path.read_text(encoding="utf-8"))
+                _errs = _current.setdefault("ai_bridge_errors", [])
+                _errs.append({
+                    "task_id":   task_id,
+                    "task_type": task.get("task_type"),
+                    "reason":    str(exc),
+                    "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "source":    body.source,
+                })
+                write_json_atomic(audit_path, _current)
+        except Exception as exc:
+            # best-effort — never block the 422 — but log so a swallowed failure
+            # (incl. a batch_write_lock timeout) is visible, not silent (#992).
+            log.warning("[import_bridge_result] ai_bridge_errors log skipped "
+                        "for %s: %s", batch_id, exc)
         raise HTTPException(status_code=422, detail=str(exc))
 
     # If it's an email_scan result, log inbox-scan + auto-apply DHL detection
@@ -277,8 +310,10 @@ def import_bridge_result(
                 if body.source and "source" not in scan_results:
                     scan_results["source"] = body.source
                 save_email_scan_result(scan_results, _audit_for_store)
-            except Exception:
-                pass  # storage is best-effort — never blocks audit update
+            except Exception as exc:
+                # best-effort — never blocks the audit update — but observable (#992).
+                log.warning("[import_bridge_result] email-intelligence store "
+                            "skipped for %s: %s", batch_id, exc)
 
             # ── 0. Unreliable-zero-result guard ───────────────────────────────
             # If matched==0 but Cowork explicitly flagged search_unreliable
@@ -286,18 +321,20 @@ def import_bridge_result(
             # searched), record a risk flag and do NOT change clearance state.
             from datetime import datetime, timezone
             if matched_n == 0 and unreliable:
-                from ..utils.io import write_json_atomic
                 try:
-                    _cur = json.loads(audit_path.read_text(encoding="utf-8"))
-                    _cur["email_search_risk"]        = True
-                    _cur["email_search_risk_reason"] = (
-                        scan_results.get("zero_result_reason")
-                        or "Cowork returned 0 despite AWB/invoice identifiers"
-                    )
-                    _cur["email_search_risk_at"]     = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    write_json_atomic(audit_path, _cur)
-                except Exception:
-                    pass
+                    with batch_write_lock(batch_id):  # #991: locked RMW
+                        _cur = json.loads(audit_path.read_text(encoding="utf-8"))
+                        _cur["email_search_risk"]        = True
+                        _cur["email_search_risk_reason"] = (
+                            scan_results.get("zero_result_reason")
+                            or "Cowork returned 0 despite AWB/invoice identifiers"
+                        )
+                        _cur["email_search_risk_at"]     = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        write_json_atomic(audit_path, _cur)
+                except Exception as exc:
+                    # best-effort risk flag — observable, not silent (#992).
+                    log.warning("[import_bridge_result] email_search_risk flag "
+                                "skipped for %s: %s", batch_id, exc)
                 tl.log_event(
                     audit_path,
                     "email_scan_unreliable",
@@ -370,45 +407,50 @@ def import_bridge_result(
                 "agency_email_sent":             4,
                 "delivered":                     5,
             }
-            current = json.loads(audit_path.read_text(encoding="utf-8"))
-            current_status = current.get("clearance_status", "")
-            current_rank   = _STATUS_ORDER.get(current_status, 0)
+            # #991: atomic read-modify-write of clearance state. The rank guard
+            # (read current_rank → conditionally advance clearance_status) must
+            # be atomic against any concurrent writer, or a stale-rank read here
+            # could downgrade a more-advanced clearance status. Whole span is
+            # under the per-batch lock; the log_event below self-locks (#982).
+            with batch_write_lock(batch_id):
+                current = json.loads(audit_path.read_text(encoding="utf-8"))
+                current_status = current.get("clearance_status", "")
+                current_rank   = _STATUS_ORDER.get(current_status, 0)
 
-            derived = scan_results.get("derived_events") or []
-            dhl_event = next(
-                (e for e in derived if e.get("event") == "dhl_customs_email_received"),
-                None,
-            )
-            # Write dhl_email evidence ALWAYS when detected — informational
-            # metadata. Status advance is rank-guarded separately so we never
-            # downgrade a more-advanced clearance state.
-            if dhl_event:
-                from ..utils.io import write_json_atomic
-                from ..config.email_routing import is_dsk_source
-                now_iso = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
-                sender  = dhl_event.get("source_email_from", "")
-                received_at = dhl_event.get("timestamp") or now_iso
-                current["dhl_email"] = {
-                    "received":     True,
-                    "source":       "ai_bridge_cowork",
-                    "sender":       sender,
-                    "subject":      dhl_event.get("source_email_subject", ""),
-                    "ticket":       dhl_event.get("ticket", ""),
-                    "request_type": dhl_event.get("request_type", "unknown"),
-                    "received_at":  received_at,
-                    "confidence":   dhl_event.get("confidence", ""),
-                    "applied_via_task_id": task_id,
-                }
-                if dhl_event.get("ticket"):
-                    current["dhl_ticket"] = dhl_event["ticket"]
-                if is_dsk_source(sender):
-                    current["dsk_received"]    = True
-                    current["dsk_source"]      = sender
-                    current["dsk_received_at"] = received_at
-                if current_rank < _STATUS_ORDER["dhl_email_received"]:
-                    current["clearance_status"]      = "dhl_email_received"
-                    current["clearance_updated_at"]  = now_iso
-                write_json_atomic(audit_path, current)
+                derived = scan_results.get("derived_events") or []
+                dhl_event = next(
+                    (e for e in derived if e.get("event") == "dhl_customs_email_received"),
+                    None,
+                )
+                # Write dhl_email evidence ALWAYS when detected — informational
+                # metadata. Status advance is rank-guarded separately so we never
+                # downgrade a more-advanced clearance state.
+                if dhl_event:
+                    from ..config.email_routing import is_dsk_source
+                    now_iso = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    sender  = dhl_event.get("source_email_from", "")
+                    received_at = dhl_event.get("timestamp") or now_iso
+                    current["dhl_email"] = {
+                        "received":     True,
+                        "source":       "ai_bridge_cowork",
+                        "sender":       sender,
+                        "subject":      dhl_event.get("source_email_subject", ""),
+                        "ticket":       dhl_event.get("ticket", ""),
+                        "request_type": dhl_event.get("request_type", "unknown"),
+                        "received_at":  received_at,
+                        "confidence":   dhl_event.get("confidence", ""),
+                        "applied_via_task_id": task_id,
+                    }
+                    if dhl_event.get("ticket"):
+                        current["dhl_ticket"] = dhl_event["ticket"]
+                    if is_dsk_source(sender):
+                        current["dsk_received"]    = True
+                        current["dsk_source"]      = sender
+                        current["dsk_received_at"] = received_at
+                    if current_rank < _STATUS_ORDER["dhl_email_received"]:
+                        current["clearance_status"]      = "dhl_email_received"
+                        current["clearance_updated_at"]  = now_iso
+                    write_json_atomic(audit_path, current)
                 tl.log_event(
                     audit_path,
                     "dhl_customs_email_received",
@@ -437,28 +479,28 @@ def import_bridge_result(
                 None,
             )
             if preclearance_sent or preclearance_ack:
-                from ..utils.io import write_json_atomic
                 _now = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
-                _cur = json.loads(audit_path.read_text(encoding="utf-8"))
-                _pre = _cur.get("agency_preclearance") or {}
-                if preclearance_sent:
-                    _pre.update({
-                        "source":     "ai_bridge_cowork",
-                        "sent_at":    preclearance_sent.get("timestamp") or _now,
-                        "subject":    preclearance_sent.get("source_email_subject", ""),
-                        "from":       preclearance_sent.get("source_email_from", ""),
-                        "confidence": preclearance_sent.get("confidence", ""),
-                        "applied_via_task_id": task_id,
-                    })
-                if preclearance_ack:
-                    _pre["acknowledgement"] = {
-                        "from":       preclearance_ack.get("source_email_from", ""),
-                        "subject":    preclearance_ack.get("source_email_subject", ""),
-                        "timestamp":  preclearance_ack.get("timestamp") or _now,
-                        "confidence": preclearance_ack.get("confidence", ""),
-                    }
-                _cur["agency_preclearance"] = _pre
-                write_json_atomic(audit_path, _cur)
+                with batch_write_lock(batch_id):  # #991: locked RMW
+                    _cur = json.loads(audit_path.read_text(encoding="utf-8"))
+                    _pre = _cur.get("agency_preclearance") or {}
+                    if preclearance_sent:
+                        _pre.update({
+                            "source":     "ai_bridge_cowork",
+                            "sent_at":    preclearance_sent.get("timestamp") or _now,
+                            "subject":    preclearance_sent.get("source_email_subject", ""),
+                            "from":       preclearance_sent.get("source_email_from", ""),
+                            "confidence": preclearance_sent.get("confidence", ""),
+                            "applied_via_task_id": task_id,
+                        })
+                    if preclearance_ack:
+                        _pre["acknowledgement"] = {
+                            "from":       preclearance_ack.get("source_email_from", ""),
+                            "subject":    preclearance_ack.get("source_email_subject", ""),
+                            "timestamp":  preclearance_ack.get("timestamp") or _now,
+                            "confidence": preclearance_ack.get("confidence", ""),
+                        }
+                    _cur["agency_preclearance"] = _pre
+                    write_json_atomic(audit_path, _cur)
 
             # ── 4. Other derived events (forwards, agency replies, etc.) ─────
             # Agency pre-clearance events are still logged here; the dedicated
@@ -478,8 +520,13 @@ def import_bridge_result(
                             "task_id":        task_id,
                         },
                     )
-        except Exception:
-            pass  # timeline write is best-effort
+        except Exception as exc:
+            # best-effort email_scan post-processing (evidence + clearance
+            # advance + derived-event logging). A batch_write_lock timeout in
+            # the clearance/preclearance blocks lands here — log, don't swallow
+            # silently (#992).
+            log.warning("[import_bridge_result] email_scan post-processing "
+                        "skipped for %s: %s", batch_id, exc)
 
     # If it's a tracking_lookup result, also update cowork flags
     if task.get("task_type") == "tracking_lookup":
@@ -487,38 +534,44 @@ def import_bridge_result(
         rd_raw = body.result_data
         rd = rd_raw.get("tracking") if isinstance(rd_raw.get("tracking"), dict) else rd_raw
         if rd.get("status"):
-            # Re-read audit (import_result already wrote it) to patch tracking
+            # Re-read audit (import_result already wrote it) to patch tracking.
+            #
+            # Under batch_write_lock: this is a read-modify-write of audit.json
+            # and previously ran unlocked, so a concurrent writer — e.g. an
+            # operator on /tracking/batch/{id}/update — could have its changes
+            # silently overwritten. import_result does not take the lock itself
+            # and batch_write_lock is not reentrant, so acquiring it here is safe.
+            #
+            # The patch is shared with routes_tracking via
+            # services/tracking_patch.py. These were separate hand-written
+            # copies and drifted: this one never gained api_status, updated_at
+            # or the top-level tracking_complete keys, so a lookup closed
+            # through the bridge still showed as "tracking required" and was
+            # reverted by the next re-process.
             try:
-                audit = json.loads(audit_path.read_text(encoding="utf-8"))
-                tr = audit.setdefault("tracking", {})
-                tr.update({
-                    "status":                   rd["status"],
-                    "last_event":               rd.get("last_event", ""),
-                    "last_location":            rd.get("location", ""),
-                    "last_update":              rd.get("event_time"),
-                    "source":                   body.source,
-                    "available":                True,
-                    "cowork_result_received":   True,
-                    "cowork_tracking_required": False,
-                    "cowork_result_at":         _time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                })
-                if rd["status"] in ("delivered", "out_for_delivery"):
-                    tr["arrived_warehouse"] = True
+                with batch_write_lock(batch_id):
+                    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+                    now = apply_tracking_update(
+                        audit,
+                        status     = rd["status"],
+                        source     = body.source,
+                        last_event = rd.get("last_event", ""),
+                        location   = rd.get("location", ""),
+                        event_time = rd.get("event_time"),
+                        advance_workflow = _may_close_checkpoint(user),
+                    )
 
-                # Close linked proposal if supplied
-                if body.proposal_id:
-                    for prop in (audit.get("action_proposals") or []):
-                        if (prop.get("proposal_id") == body.proposal_id
-                                and prop.get("type") == "tracking_lookup"):
-                            prop["status"]      = "done"
-                            prop["done_at"]     = _time.strftime("%Y-%m-%dT%H:%M:%SZ")
-                            prop["done_source"] = body.source
-                            break
+                    if body.proposal_id:
+                        close_tracking_proposal(
+                            audit, body.proposal_id, body.source, now)
 
-                from ..utils.io import write_json_atomic
-                write_json_atomic(audit_path, audit)
-            except Exception:
-                pass  # tracking patch is best-effort — import already succeeded
+                    write_json_atomic(audit_path, audit)
+            except Exception as exc:
+                # best-effort — the import already succeeded — but a swallowed
+                # batch_write_lock timeout here means tracking_complete silently
+                # was not written (the exact hazard #992 was filed for). Log it.
+                log.warning("[import_bridge_result] tracking patch skipped "
+                            "for %s: %s", batch_id, exc)
 
     # Log timeline
     tl.log_event(

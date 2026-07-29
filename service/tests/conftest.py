@@ -231,8 +231,8 @@ _SQLITE_SIDECAR_SUFFIXES = (".db-shm", ".db-wal", ".db-journal", ".db-wal-summar
 # email_evidence/ — DHL email evidence attachments
 #
 # If tests begin writing to these directories, remove the exclusion and fix
-# the test isolation instead.  Each exclusion here is intentional debt; see
-# the GitHub issue filed alongside this change for the follow-up audit.
+# the test isolation instead.  Each exclusion here is intentional debt, tracked
+# in GitHub issue #996 (removal condition + acceptance criteria).
 _BACKGROUND_SERVICE_DIRS = frozenset({
     "ai_bridge",
     "outputs",

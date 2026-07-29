@@ -235,7 +235,16 @@ class TestAuditStore:
 
 # ── API envelope ─────────────────────────────────────────────────────────────
 
-app.dependency_overrides[require_api_key] = lambda: None
+@pytest.fixture(autouse=True)
+def _bypass_auth():
+    # app is the shared app.main singleton — a module-level override here
+    # fires at collection and disables auth for every test collected after
+    # it, silently breaking 401 assertions across the suite.
+    app.dependency_overrides[require_api_key] = lambda: None
+    yield
+    app.dependency_overrides.pop(require_api_key, None)
+
+
 client = TestClient(app)
 
 

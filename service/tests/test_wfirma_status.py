@@ -156,6 +156,45 @@ def test_version_reads_git_sha_txt_when_no_env(tmp_path: Path):
         assert _get_service_version() == "abc1234567890"
 
 
+def test_version_strips_utf8_bom_if_present(tmp_path: Path):
+    """A BOM-prefixed version.txt must not surface in the served version.
+
+    str.strip() removes whitespace; U+FEFF is not whitespace, so a file written
+    by PowerShell 5.1's `Out-File -Encoding utf8` (which always prepends
+    EF BB BF) would otherwise be served as "﻿<sha>".
+    """
+    sha_file = tmp_path / "version.txt"
+    sha_file.write_bytes(b"\xef\xbb\xbf" + b"abc1234567890")
+    env = {k: v for k, v in os.environ.items() if k != "PZ_VERSION"}
+    with patch("app.api.routes_webhooks_wfirma_status._SHA_FILE", sha_file), \
+         patch.dict(os.environ, env, clear=True):
+        assert _get_service_version() == "abc1234567890"
+
+
+def test_deploy_close_writes_version_txt_without_bom():
+    """verify_deploy_close.ps1 must not write version.txt via Out-File -Encoding utf8.
+
+    Source-grep pin: PowerShell 5.1 emits a UTF-8 BOM for that encoding, which
+    corrupts the value this module serves. The script must use
+    UTF8Encoding($false).
+    """
+    script = Path(__file__).resolve().parents[2] / ".claude" / "manifests" / "verify_deploy_close.ps1"
+    if not script.exists():
+        pytest.skip("verify_deploy_close.ps1 not present in this checkout")
+    src = script.read_text(encoding="utf-8")
+    assert "version.txt" in src, "script no longer writes version.txt — update this pin"
+    # Ignore comment lines: the fix itself documents the Out-File hazard by name.
+    code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+    offenders = [ln.strip() for ln in code if "Out-File" in ln]
+    assert not offenders, (
+        "verify_deploy_close.ps1 writes via Out-File; on PowerShell 5.1 "
+        f"-Encoding utf8 prepends a UTF-8 BOM that str.strip() will not remove: {offenders}"
+    )
+    assert "UTF8Encoding" in src, (
+        "version.txt must be written with UTF8Encoding($false) (UTF-8, no BOM)"
+    )
+
+
 def test_version_unknown_when_neither_env_nor_file():
     env = {k: v for k, v in os.environ.items() if k != "PZ_VERSION"}
     missing = Path("/nonexistent/version.txt")

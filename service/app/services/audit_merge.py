@@ -87,6 +87,12 @@ PRESERVED_KEYS: tuple = (
     # Workflow checkpoints
     "pz_confirmed",
     "pz_confirmed_at",
+    # Written by routes_tracking.update_tracking_for_batch, never by the
+    # engine — without preservation a re-process drops the operator's
+    # tracking update and the batch asks for the lookup all over again.
+    "tracking_complete",
+    "tracking_complete_source",
+    "tracking_complete_at",
     "recheck",
     # WorkDrive sync state
     "workdrive_synced",

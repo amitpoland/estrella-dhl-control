@@ -114,27 +114,28 @@ def test_call_returns_model_response_text():
         APIStatusError=Exception,
     )
 
-    from app.services.ai_call_ledger import prompt_hash, estimate_tokens, estimate_cost
-    mock_ledger = MagicMock()
-    mock_ledger.prompt_hash = prompt_hash
-    mock_ledger.estimate_tokens = estimate_tokens
-    mock_ledger.estimate_cost = estimate_cost
-    mock_ledger.get_daily_cost_usd.return_value = 0.0
-
-    mock_redactor = MagicMock()
-    mock_redactor.redact_pair.return_value = ("system", "user")
-
+    # #798: patch the ledger/redactor FUNCTIONS the gateway calls, on their real
+    # modules — not the modules themselves. The gateway imports both lazily
+    # (`from . import ai_call_ledger as ledger` / `ai_redactor as redactor`), and
+    # the autouse _isolate_ai_gateway fixture evicts those submodules per test.
+    # Swapping the module (attribute- or sys.modules-patch) is defeated the moment
+    # anything re-imports the submodule and re-sets the package attribute (the
+    # hasattr shortcut then skips sys.modules). Patching the functions is
+    # immune to that: patch re-imports the real module and replaces the callable
+    # the gateway actually invokes. prompt_hash / estimate_* stay real (pure).
+    # anthropic is mocked, so nothing reaches the live API or needs a key.
     with patch.dict("sys.modules", {"app.core.config": config_mod, "anthropic": mock_anthropic}):
-        with patch("app.services.ai_call_ledger", mock_ledger):
-            with patch("app.services.ai_redactor", mock_redactor):
-                result = ai_gateway.call(
-                    system="system", user="user",
-                    task_type="test_task", service_name="test_svc",
-                )
+        with patch("app.services.ai_call_ledger.record") as mock_record, \
+             patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+             patch("app.services.ai_redactor.redact_pair", return_value=("system", "user")):
+            result = ai_gateway.call(
+                system="system", user="user",
+                task_type="test_task", service_name="test_svc",
+            )
 
     assert result == '{"result": "ok"}'
     mock_client.messages.create.assert_called_once()
-    mock_ledger.record.assert_called_once()
+    mock_record.assert_called_once()
 
 
 # ── Model selection ───────────────────────────────────────────────────────────
@@ -270,12 +271,12 @@ def test_call_blocked_when_budget_exhausted():
     config_mod = MagicMock(); config_mod.settings = fake_settings
     mock_anthropic_cls = MagicMock()
 
-    mock_ledger = MagicMock()
-    mock_ledger.get_daily_cost_usd.return_value = 1.5  # over budget
-
+    # #798: patch the ledger function on the real module (module-swap is fragile
+    # here — see test_call_returns_model_response_text). Budget check runs before
+    # the client is built, so no redactor/anthropic mock is reached.
     with patch.dict("sys.modules", {"app.core.config": config_mod,
                                     "anthropic": MagicMock(Anthropic=mock_anthropic_cls)}):
-        with patch("app.services.ai_call_ledger", mock_ledger):
+        with patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=1.5):  # over budget
             result = ai_gateway.call(system="s", user="u", task_type="test", service_name="test")
 
     assert result is None
@@ -297,20 +298,13 @@ def test_call_allowed_when_budget_zero_unlimited():
         APIStatusError=Exception,
     )
 
-    from app.services.ai_call_ledger import prompt_hash, estimate_tokens, estimate_cost
-    mock_ledger = MagicMock()
-    mock_ledger.prompt_hash = prompt_hash
-    mock_ledger.estimate_tokens = estimate_tokens
-    mock_ledger.estimate_cost = estimate_cost
-    mock_ledger.get_daily_cost_usd.return_value = 999.0  # high but budget=0 = unlimited
-
-    mock_redactor = MagicMock()
-    mock_redactor.redact_pair.return_value = ("s", "u")
-
+    # #798: function-patch on the real modules (module-swap is fragile here).
+    # budget=0 means unlimited, so the 999.0 daily cost must NOT block.
     with patch.dict("sys.modules", {"app.core.config": config_mod, "anthropic": mock_anthropic}):
-        with patch("app.services.ai_call_ledger", mock_ledger):
-            with patch("app.services.ai_redactor", mock_redactor):
-                result = ai_gateway.call(system="s", user="u", task_type="test", service_name="test")
+        with patch("app.services.ai_call_ledger.record"), \
+             patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=999.0), \
+             patch("app.services.ai_redactor.redact_pair", return_value=("s", "u")):
+            result = ai_gateway.call(system="s", user="u", task_type="test", service_name="test")
 
     assert result == "ok"
 
@@ -332,23 +326,15 @@ def test_ledger_record_called_on_success():
         APIStatusError=Exception,
     )
 
-    from app.services.ai_call_ledger import prompt_hash, estimate_tokens, estimate_cost
-    mock_ledger = MagicMock()
-    mock_ledger.prompt_hash = prompt_hash
-    mock_ledger.estimate_tokens = estimate_tokens
-    mock_ledger.estimate_cost = estimate_cost
-    mock_ledger.get_daily_cost_usd.return_value = 0.0
-
-    mock_redactor = MagicMock()
-    mock_redactor.redact_pair.return_value = ("s", "u")
-
+    # #798: function-patch on the real modules; assert on the patched record.
     with patch.dict("sys.modules", {"app.core.config": config_mod, "anthropic": mock_anthropic}):
-        with patch("app.services.ai_call_ledger", mock_ledger):
-            with patch("app.services.ai_redactor", mock_redactor):
-                ai_gateway.call(system="s", user="u", task_type="t", service_name="svc")
+        with patch("app.services.ai_call_ledger.record") as mock_record, \
+             patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+             patch("app.services.ai_redactor.redact_pair", return_value=("s", "u")):
+            ai_gateway.call(system="s", user="u", task_type="t", service_name="svc")
 
-    mock_ledger.record.assert_called_once()
-    entry = mock_ledger.record.call_args[0][0]
+    mock_record.assert_called_once()
+    entry = mock_record.call_args[0][0]
     assert entry["success"] is True
     assert entry["service"] == "svc"
     assert entry["task_type"] == "t"
@@ -369,25 +355,18 @@ def test_ledger_record_called_on_failure():
         APIStatusError=ConnectionError,
     )
 
-    from app.services.ai_call_ledger import prompt_hash, estimate_tokens, estimate_cost
-    mock_ledger = MagicMock()
-    mock_ledger.prompt_hash = prompt_hash
-    mock_ledger.estimate_tokens = estimate_tokens
-    mock_ledger.estimate_cost = estimate_cost
-    mock_ledger.get_daily_cost_usd.return_value = 0.0
-
-    mock_redactor = MagicMock()
-    mock_redactor.redact_pair.return_value = ("s", "u")
-
+    # #798: function-patch on the real modules; the API call raises, so the
+    # failure path must still record (success=False).
     with patch.dict("sys.modules", {"app.core.config": config_mod, "anthropic": mock_anthropic}):
-        with patch("app.services.ai_call_ledger", mock_ledger):
-            with patch("app.services.ai_redactor", mock_redactor):
-                result = ai_gateway.call(system="s", user="u", task_type="t", service_name="svc",
-                                         max_tokens=100)
+        with patch("app.services.ai_call_ledger.record") as mock_record, \
+             patch("app.services.ai_call_ledger.get_daily_cost_usd", return_value=0.0), \
+             patch("app.services.ai_redactor.redact_pair", return_value=("s", "u")):
+            result = ai_gateway.call(system="s", user="u", task_type="t", service_name="svc",
+                                     max_tokens=100)
 
     assert result is None
-    mock_ledger.record.assert_called_once()
-    entry = mock_ledger.record.call_args[0][0]
+    mock_record.assert_called_once()
+    entry = mock_record.call_args[0][0]
     assert entry["success"] is False
 
 

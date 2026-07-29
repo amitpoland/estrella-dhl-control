@@ -18,8 +18,8 @@ from pathlib import Path
 _TIMELINE = Path(__file__).parent.parent / "app" / "core" / "timeline.py"
 _PACKING  = Path(__file__).parent.parent / "app" / "api" / "routes_packing.py"
 
-_tl_src  = _TIMELINE.read_text()
-_pk_src  = _PACKING.read_text()
+_tl_src  = _TIMELINE.read_text(encoding="utf-8")
+_pk_src  = _PACKING.read_text(encoding="utf-8")
 
 
 # ── Constants exist in timeline.py ───────────────────────────────────────────

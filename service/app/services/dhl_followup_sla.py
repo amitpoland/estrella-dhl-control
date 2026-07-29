@@ -30,7 +30,28 @@ log = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-POLAND_TZ              = ZoneInfo("Europe/Warsaw")
+# A missing tz database must not break DHL follow-up / DSK / agency SLA at
+# request time. zoneinfo needs the `tzdata` package on Windows (declared in
+# service/requirements.txt), and deploys robocopy app/ with no pip step, so an
+# unguarded lookup here fails the first call to every module that imports this
+# constant — dhl_followup_sla, agency_sla_engine, dhl_dsk_chase_sla.
+#
+# The fallback is the host's CURRENT local offset as a fixed-offset tzinfo, not
+# None: POLAND_TZ is passed to datetime.now() and dt.replace(tzinfo=...), where
+# None yields NAIVE datetimes and a TypeError the moment they meet an aware one.
+# Fixed-offset loses DST transitions, so a degraded process that lives across a
+# switchover is an hour out on working-window maths — logged, and still better
+# than a crash or a naive/aware explosion. Never UTC: Warsaw is 1–2h ahead and
+# WORK_START/WORK_END are Warsaw wall-clock.
+try:
+    POLAND_TZ          = ZoneInfo("Europe/Warsaw")
+except Exception as _tz_exc:                                   # ZoneInfoNotFoundError
+    POLAND_TZ          = datetime.now().astimezone().tzinfo    # fixed local offset
+    log.warning(
+        "dhl_followup_sla: ZoneInfo('Europe/Warsaw') unavailable (%s). Falling back "
+        "to the host's local offset (%s) — DST transitions are NOT tracked. "
+        "Install tzdata>=2024.1.", _tz_exc, POLAND_TZ,
+    )
 WORK_START             = time(8, 0)
 WORK_END               = time(16, 0)
 INITIAL_WAIT_HOURS     = 4

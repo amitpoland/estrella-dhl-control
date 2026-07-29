@@ -61,8 +61,18 @@ def _make_app(monkeypatch, *, flag: bool):
 
     monkeypatch.setattr(core_config.settings, "wfirma_sync_customers_allowed", flag,
                         raising=False)
+    # Master endpoints mix require_api_key / require_role_or_apikey (flag-off calls
+    # require_api_key directly) / require_admin (session). Cover all: disable
+    # api-key auth + role enforcement and inject an admin via get_current_user.
+    monkeypatch.setattr(core_config.settings, "api_key", "", raising=False)
+    monkeypatch.setattr(core_config.settings, "master_role_enforcement", False, raising=False)
     app = FastAPI()
     app.include_router(routes_customer_master.router)
+    from service.app.auth.dependencies import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "t", "email": "a@test", "role": "admin",
+        "is_active": True, "is_approved": True,
+    }
     app.dependency_overrides[core_security.require_api_key] = lambda: True
     return TestClient(app)
 

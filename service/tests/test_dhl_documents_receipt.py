@@ -68,6 +68,12 @@ def client(tmp_storage, monkeypatch) -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_api_key] = lambda: None
+    # Route also requires require_role("admin","logistics"); inject an operator
+    # session (local app instance, so no global-override cleanup needed).
+    from app.auth.dependencies import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "test-admin", "email": "admin@test.local", "role": "admin",
+    }
     return TestClient(app, raise_server_exceptions=True)
 
 

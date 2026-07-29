@@ -421,6 +421,8 @@ ALLOWED_API_PREFIXES = (
     "/api/v1/stones",
     "/api/v1/warehouses",
     "/api/v1/master/audit",
+    "/api/v1/box-types",            # box-types master CRUD (routes_box_types.py)
+    "/api/v1/description-admin",    # product-description admin on the product page
 )
 
 
@@ -868,8 +870,12 @@ def test_phase5_app_renders_detail_when_customer_selected(html):
 def test_phase5_back_button_clears_detail(html):
     assert 'data-testid="customer-detail-back"' in html
     assert "onBack" in html
-    # Nav switching also clears detail mode.
-    assert "setActiveKey(e.key); setDetailCustomer(null)" in html
+    # Nav switching also clears detail mode. The handler was refactored into a
+    # named navTo(key) { setActiveKey(key); setDetailCustomer(null); }; assert the
+    # meaningful invariant (nav/back clears the open detail) rather than an exact
+    # inline form.
+    assert "setDetailCustomer(null)" in html
+    assert "setActiveKey(key); setDetailCustomer(null)" in html
 
 
 def test_phase5_carrier_subresource_uses_reference_picker(html):

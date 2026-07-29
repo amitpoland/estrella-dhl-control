@@ -814,6 +814,34 @@ a named business rule + test is incomplete by this lesson.
 
 **Reference**: PR `fix/authority-model-separation` (2026-06-22); `service/tests/test_authority_separation.py`; PROJECT_STATE.md DECISIONS section.
 
+### Lesson O — Tightening a route's auth breaks every test that authenticated the old way; migrate the tests in the same PR, never weaken the route (2026-07-22)
+
+**GATE 1 + security-permissions + reviewer-challenge.** When a route's auth dependency is tightened — `require_api_key` → `require_admin` (session/cookie only), or `require_role(...)` added on top of `require_api_key` — every existing test that authenticated via `X-API-Key` starts returning **401 "Not authenticated"**, because `require_admin` / `require_role` both flow through `get_current_user`, which raises 401 with no `pz_session` cookie. This is a **stale-test signal, not a route bug**.
+
+**Binding rules:**
+1. **Same-PR test migration.** Any PR that changes a route's auth dependency MUST, in the same PR, migrate every test exercising that route to the new mechanism. Grep the route path across `tests/` before merging — `X-API-Key`-only tests against a now-session-guarded route are incomplete by this lesson.
+2. **Diagnose 401 correctly.** A route-test 401 after an auth change is triaged by reading the route's current dependency + its `git log -S`, not by assuming a regression. If the tightening was intentional (destructive deletes, operator-explicit actions), the **test** is stale.
+3. **Never downgrade the route to make a test pass.** Fixing a stale-auth test means giving the test an admin session, not relaxing the endpoint. Weakening auth to green a test is a security regression.
+4. **Canonical test fix:** override the session dependency, with cleanup so it cannot leak —
+   `app.dependency_overrides[require_admin] = lambda: {"role": "admin", ...}` (or `get_current_user` for `require_role` routes), popped in a `finally`. Verify leak-free by interleaving with an auth-denial suite (e.g. `test_hr5_privileged_auth`).
+
+**Where it binds**: every PR that adds/changes a route `dependencies=[...]` auth guard; every route test that sends `X-API-Key`.
+
+**Reference**: PR #1004 `fix/dashboard-auth-tests-stale` (2026-07-22) — `test_dashboard_polish_desc_delete` (route hardened `require_api_key`→`require_admin` since introduction `3046186f`) and `test_dashboard_repair` (dhl-followup routes gained `require_role("admin","logistics")`); +10 tests recovered. Related recurring class: X-API-Key automation vs `require_api_key_privileged` (Issue #502 / `test_hr5_privileged_auth`).
+
+### Lesson P — robocopy `/XO` from a fresh git worktree re-copies the whole tree (mtime, not content); verify the deployed content diff, never trust the "blast radius" (2026-07-23)
+
+**7-AGENT GATE + Step 5 sync.** `robocopy /XO` ("exclude older") decides what to copy by **file timestamp**, not content. A `git worktree add` checkout stamps **every** file's mtime to the moment of checkout, so a deploy run from a *fresh* worktree makes robocopy see the entire `service/app` tree as "newer" and re-copy all of it — even when only 1–2 files differ in content. Origin `C:\PZ-verify` is a *persistent* checkout where only pulled files get fresh mtimes, which is why the standard `/XO` command is incremental there; a throwaway worktree defeats that.
+
+**Binding rules:**
+1. **Content, not the copy list, is the deploy truth.** Before declaring a blast radius, diff by hash: `Get-FileHash` (or `diff -rq`) between `C:\PZ\app` and the source `service/app`. State the **content** delta to the gate, and re-verify **content diff == 0** (source-identical) after the sync — do not report robocopy's copied-file count as the blast radius.
+2. **A whole-tree re-copy is acceptable only when content-verified.** If the post-sync content diff is 0, production == the deploy SHA and the over-copy is a functional no-op. If it is non-zero and unexplained, STOP — the source diverged from what was reviewed.
+3. **Prefer an incremental source, or copy the changed files explicitly.** Deploy from the persistent `C:\PZ-verify` checkout when it is clean and on-SHA; when it is not (and a worktree is used), either scope robocopy to the explicit changed files or accept the whole-tree copy *after* the hash-diff proof.
+
+**Where it binds**: every Step 5 robocopy sync, especially any deploy run from a `C:\PZ-wt\*` worktree instead of `C:\PZ-verify`.
+
+**Reference**: PR #1006 deploy (2026-07-23) — deployed from worktree `C:\PZ-wt\deploy1006` because `C:\PZ-verify` was detached/dirty; `/XO` re-copied the full app tree though only 2 CSV-writer files differed. Caught by the post-sync `Get-FileHash` parity check (content diff = 0 → correct), not by the copy log.
+
 ---
 
 ## Frontend Design Standard

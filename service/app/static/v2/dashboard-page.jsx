@@ -40,6 +40,35 @@ function _money(v) {
   return window.fmtMoney2 ? window.fmtMoney2(v, { locale: 'pl-PL' }) : _fmt(v);
 }
 
+function _pzDate(v) {
+  // Render the canonical `pz_generated_at` as DD.MM.YYYY.
+  //
+  // The date components are read TEXTUALLY from the stored stamp rather than
+  // through `new Date(...)`. The backend passes the engine's stamp through
+  // verbatim (operator ruling 2026-07-19) and that stamp is a wall-clock
+  // reading carrying a literal "Z"; running it through the browser clock would
+  // re-zone it and could shift the displayed day for PZs generated near
+  // midnight. Reading the components shows the day exactly as recorded.
+  //
+  // Legacy batches (no pz_output) arrive already converted to Europe/Warsaw by
+  // the backend resolver, so reading the components is correct for them too —
+  // the UI never learns which authority a row came from.
+  //
+  // Never fabricates: anything absent or unparseable renders as an em-dash.
+  if (typeof v !== 'string') return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v.trim());
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : '—';
+}
+
+function _pzDateValue(v) {
+  // Ordering key for the PZ Generated column: a real epoch-millis comparison,
+  // never a comparison of formatted display strings. NaN (missing/invalid)
+  // is reported as null so the shared null-last rule in `sorted` applies.
+  if (typeof v !== 'string' || !v.trim()) return null;
+  const t = Date.parse(v.trim());
+  return Number.isNaN(t) ? null : t;
+}
+
 function _safeHttpUrl(u) {
   // Only allow http(s) tracking links — never render a javascript:/data:/vbscript:
   // href even if the backend field were ever poisoned (defence in depth).
@@ -52,8 +81,10 @@ function DashboardPage({ onViewShipment }) {
   const [loading, setLoading] = React.useState(true);
   const [error,   setError]   = React.useState(null);
   const [filter,  setFilter]  = React.useState('all');
-  const [sortCol, setSortCol] = React.useState(null);
-  const [sortDir, setSortDir] = React.useState('asc');
+  // Default view: newest PZ generation first. This mirrors the order the
+  // backend already returns, so the initial render and the sorted render agree.
+  const [sortCol, setSortCol] = React.useState('pz_generated_at');
+  const [sortDir, setSortDir] = React.useState('desc');
 
   const load = React.useCallback(() => {
     setLoading(true); setError(null);
@@ -88,12 +119,20 @@ function DashboardPage({ onViewShipment }) {
   const sorted = React.useMemo(() => {
     if (!sortCol) return filtered;
     const copy = filtered.slice();
+    const isDateCol = sortCol === 'pz_generated_at';
     copy.sort((a, b) => {
-      const av = a[sortCol], bv = b[sortCol];
+      // Date column compares parsed timestamps; every other column keeps its
+      // existing string comparison unchanged.
+      const av = isDateCol ? _pzDateValue(a[sortCol]) : a[sortCol];
+      const bv = isDateCol ? _pzDateValue(b[sortCol]) : b[sortCol];
       if (av === bv) return 0;
+      // Missing values resolve BEFORE the direction flip, so they stay last in
+      // both ascending and descending views.
       if (av === null || av === undefined || av === '') return 1;
       if (bv === null || bv === undefined || bv === '') return -1;
-      const r = String(av).localeCompare(String(bv), undefined, { numeric: true });
+      const r = isDateCol
+        ? (av < bv ? -1 : 1)
+        : String(av).localeCompare(String(bv), undefined, { numeric: true });
       return sortDir === 'asc' ? r : -r;
     });
     return copy;
@@ -189,6 +228,7 @@ function DashboardPage({ onViewShipment }) {
                   <TH col="sad_status">SAD Status</TH>
                   <TH col="mrn">MRN</TH>
                   <TH col="pz_status">PZ Status</TH>
+                  <TH col="pz_generated_at">PZ Generated</TH>
                   <TH col="net">Net Value</TH>
                   <TH col="gross">Gross Value</TH>
                   <TH col="duty">Duty A00</TH>
@@ -232,6 +272,7 @@ function DashboardPage({ onViewShipment }) {
                       <td style={{ padding: '10px 12px' }}>{row.sad_status ? <Badge status={row.sad_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
                       <td style={{ padding: '10px 12px', color: 'var(--text)', fontSize: 11, fontFamily: 'monospace' }}>{_fmt(row.mrn)}</td>
                       <td style={{ padding: '10px 12px' }}>{row.pz_status ? <Badge status={row.pz_status} small /> : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                      <td data-testid="shipments-hub-pz-generated" style={{ padding: '10px 12px', color: 'var(--text-2)', fontSize: 11, whiteSpace: 'nowrap' }}>{_pzDate(row.pz_generated_at)}</td>
                       <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{_money(row.net)}</td>
                       <td style={{ padding: '10px 12px', color: 'var(--text)', fontWeight: 500, textAlign: 'right' }}>{_money(row.gross)}</td>
                       <td style={{ padding: '10px 12px', color: GOLD, fontWeight: 700, textAlign: 'right' }}>{_money(row.duty)}</td>

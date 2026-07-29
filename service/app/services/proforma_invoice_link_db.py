@@ -828,6 +828,32 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         "ON proforma_drafts(wfirma_proforma_id)"
     )
 
+    # Cross-draft uniqueness (2B F1): one wFirma invoice must never be linked to
+    # two drafts. The confirm-wfirma-link route pre-checks with a SELECT
+    # (get_draft_by_wfirma_invoice_id) then writes with a separate UPDATE — a
+    # TOCTOU window where two concurrent confirms both pass the SELECT and both
+    # write. This partial UNIQUE index makes the DB reject the second write
+    # atomically (→ IntegrityError → 409), independent of process topology.
+    # Partial: unconverted drafts (NULL / '') are exempt, so it does not
+    # constrain the many drafts that never carry an invoice id.
+    #
+    # Wrapped: pre-existing duplicate ids in some environment would make CREATE
+    # UNIQUE INDEX raise. Never break init_db/startup over it — the route's
+    # code-level SELECT guards remain as the fallback. Production verified clean
+    # (0 duplicates) before shipping this.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_pd_wfirma_invoice_id "
+            "ON proforma_drafts(wfirma_invoice_id) "
+            "WHERE wfirma_invoice_id IS NOT NULL AND wfirma_invoice_id != ''"
+        )
+    except Exception as exc:  # pragma: no cover - only trips on dirty legacy data
+        log.warning(
+            "uq_pd_wfirma_invoice_id not created (pre-existing duplicate "
+            "wfirma_invoice_id?): %s — cross-draft uniqueness falls back to the "
+            "route-level SELECT guard until duplicates are cleaned.", exc,
+        )
+
     # Per-draft event log — mirrors audit.timeline at draft granularity
     # so we don't pollute the per-batch audit with every edit. Keyed by
     # draft_id (stable across restarts).
@@ -1742,6 +1768,36 @@ def get_draft_by_id(db_path: Path, draft_id: int) -> Optional[ProformaDraft]:
     return _row_to_draft(row) if row else None
 
 
+def get_draft_by_wfirma_invoice_id(
+    db_path: Path, invoice_id: str, *, exclude_draft_id: Optional[int] = None,
+) -> Optional[ProformaDraft]:
+    """Read-only: the draft (if any) that already carries this remote invoice id
+    on the proforma_drafts aggregate, optionally excluding one draft id.
+
+    proforma_drafts.wfirma_invoice_id is the CANONICAL RemoteDocumentReference
+    owner, so cross-draft uniqueness of a manual (2B) link is enforced HERE.
+    (get_link_by_invoice covers a different fact — conversion provenance in the
+    proforma_invoice_links table — and is a separate, secondary guard.)
+    """
+    iid = (invoice_id or "").strip()
+    if not iid or not Path(db_path).exists():
+        return None
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_drafts_table(conn)
+        if exclude_draft_id is not None:
+            row = conn.execute(
+                "SELECT * FROM proforma_drafts WHERE wfirma_invoice_id=? AND id<>? LIMIT 1",
+                (iid, int(exclude_draft_id)),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM proforma_drafts WHERE wfirma_invoice_id=? LIMIT 1",
+                (iid,),
+            ).fetchone()
+    return _row_to_draft(row) if row else None
+
+
 def clone_draft(db_path: Path, source_id: int) -> ProformaDraft:
     """Create a new draft as a deep copy of the source, status=draft, unposted.
 
@@ -2010,6 +2066,76 @@ def list_attention_drafts(
     return results
 
 
+# ── Birth-time name_pl authority ────────────────────────────────────────────
+# Provenance of a line's Polish commercial name (``name_pl``). Resolution order
+# at draft birth/reset: operator-confirmed → product_descriptions → generator
+# (only if supplied) → blank. name_pl is NEVER fabricated on a PD miss unless a
+# ``desc_generate`` fallback is explicitly provided, and an operator-confirmed
+# value is NEVER overwritten.
+NAME_PL_SOURCE_OPERATOR  = "operator"
+NAME_PL_SOURCE_PD        = "product_descriptions"
+NAME_PL_SOURCE_GENERATED = "generated"
+NAME_PL_SOURCE_BLANK     = "blank"
+
+
+def _birth_resolve_name_pl(
+    lines:         List[Dict[str, Any]],
+    lookup_fn:     Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
+    desc_generate: Optional[Callable[..., Optional[str]]] = None,
+) -> List[Dict[str, Any]]:
+    """Resolve each line's ``name_pl`` and stamp ``name_pl_source`` provenance.
+
+    Order: operator (a pre-existing non-blank name_pl) → product_descriptions
+    (``lookup_fn(product_code)["name_pl"]``) → ``desc_generate`` (from the line's
+    transient ``_gen_attrs``) → blank. Never overwrites an operator value; never
+    fabricates on a PD miss unless ``desc_generate`` is supplied AND yields text.
+    Returns new line dicts (does not mutate the input).
+    """
+    out: List[Dict[str, Any]] = []
+    for ln in lines:
+        row = dict(ln)
+        existing = str(row.get("name_pl") or "").strip()
+        if existing:
+            row["name_pl"] = existing
+            row["name_pl_source"] = NAME_PL_SOURCE_OPERATOR
+            out.append(row)
+            continue
+
+        pc = str(row.get("product_code") or "").strip()
+        pd_name = ""
+        if lookup_fn is not None and pc:
+            try:
+                pd_row = lookup_fn(pc)
+            except Exception:
+                pd_row = None
+            pd_name = str((pd_row or {}).get("name_pl") or "").strip()
+
+        if pd_name:
+            row["name_pl"] = pd_name
+            row["name_pl_source"] = NAME_PL_SOURCE_PD
+            out.append(row)
+            continue
+
+        gen = ""
+        if desc_generate is not None:
+            ga = row.get("_gen_attrs") or {}
+            try:
+                gen = str(desc_generate(
+                    ctg=str(ga.get("ctg") or ""),
+                    kt=str(ga.get("kt") or ""),
+                    col=str(ga.get("col") or ""),
+                    quality=str(ga.get("quality") or ""),
+                ) or "").strip()
+            except Exception:
+                gen = ""
+        if gen:
+            row["name_pl"] = gen
+            row["name_pl_source"] = NAME_PL_SOURCE_GENERATED
+        else:
+            row["name_pl"] = ""
+            row["name_pl_source"] = NAME_PL_SOURCE_BLANK
+        out.append(row)
+    return out
 
 
 def _birth_unresolved_lines(
@@ -2040,6 +2166,8 @@ def _birth_unresolved_lines(
             up = 0.0
         if up <= 0:
             reasons.append("zero_unit_price")
+        if not str(ln.get("name_pl") or "").strip():
+            reasons.append("blank_name_pl")
         if mapping_lookup is not None:
             pc = str(ln.get("product_code") or "").strip()
             mapped = False
@@ -2176,6 +2304,14 @@ def auto_create_draft_from_sales_packing(
         # Carry any operator-confirmed/source name_pl through the birth
         # boundary on the EDITABLE copy only. Blank by default;
         row["name_pl"] = str(ln.get("name_pl") or "").strip()
+        # Transient generator attributes for the name_pl fallback; consumed by
+        # _birth_resolve_name_pl then popped — never persisted.
+        row["_gen_attrs"] = {
+            "ctg":     str(ln.get("ctg") or ""),
+            "kt":      str(ln.get("kt") or ""),
+            "col":     str(ln.get("col") or ""),
+            "quality": str(ln.get("quality") or ""),
+        }
         editable.append(row)
 
     init_db(db_path)
@@ -2232,6 +2368,11 @@ def auto_create_draft_from_sales_packing(
         legacy_status = _normalise_draft_status(_PHASE2_LEGACY_STATUS)
         initial_state = _normalise_draft_state("draft")
 
+        # Birth-time name_pl authority: operator → product_descriptions →
+        # generator → blank, stamping name_pl_source. Fills a blank name_pl
+        # WITHOUT fabricating (PD miss + no generator → stays blank) and never
+        # overwrites an operator-confirmed value.
+        editable = _birth_resolve_name_pl(editable, name_pl_lookup, desc_generate)
         # Pop transient _gen_attrs — never persisted to editable_lines_json.
         # description_pl comes from the canonical description engine (CPA authority),
         # not from birth-time name_pl resolution.
@@ -2302,6 +2443,14 @@ def auto_create_draft_from_sales_packing(
 # Lifecycle states in which mutation is permitted. Posted/posting/cancelled/
 # superseded/approved drafts MUST NOT be edited.
 EDITABLE_STATES = ("draft", "editing", "post_failed")
+
+# States in which a draft may have an existing wFirma document MANUALLY linked
+# (Campaign 2B). Positive allowlist (not a denylist): only a posted, not-yet-
+# converted proforma is eligible — it has a wfirma_proforma_id (so the post-time
+# product-code billing true-blocker ran) and its lines are frozen. Everything
+# else (draft/editing/post_failed/posting/approved/cancelled/superseded/converted)
+# is NOT linkable, so a new lifecycle state can never accidentally become linkable.
+LINKABLE_STATES = ("posted",)
 
 # Currencies the project deals in. Mirrors the intake-route allowlist.
 ALLOWED_CURRENCIES = ("EUR", "USD", "PLN", "GBP", "CHF", "JPY")
@@ -3568,6 +3717,28 @@ def update_draft_service_charge(
         else:
             charge["wfirma_service_id"] = str(wsid).strip()
 
+    if "formula_basis" in updates:
+        # Replace the whole formula_basis dict (used when a re-application
+        # recomputes an insurance premium from Customer Master and must persist
+        # the fresh basis). Mirrors add_draft_service_charge's forbidden-key
+        # guard so CIF / customs / import / pz_ / sad_ / zc429_ can never leak in.
+        fb_new = updates.get("formula_basis")
+        if fb_new is None:
+            charge["formula_basis"] = None
+        elif isinstance(fb_new, dict):
+            for k in fb_new:
+                if any(
+                    str(k).startswith(pfx) or str(k) == pfx
+                    for pfx in _FORBIDDEN_FORMULA_BASIS_PREFIXES
+                ):
+                    raise ValueError(
+                        f"formula_basis key {k!r} is not allowed; "
+                        "only sales_total, rate_pct, minimum_eur, minimum_usd are permitted"
+                    )
+            charge["formula_basis"] = fb_new
+        else:
+            raise ValueError("formula_basis must be a JSON object")
+
     if "rate_pct" in updates:
         rate = updates.get("rate_pct")
         fb = dict(charge.get("formula_basis") or {})
@@ -4458,9 +4629,45 @@ def reset_draft_from_sales_packing(
             # that survives without overwriting a non-blank value.
             "name_pl":      (str(r.get("name_pl") or "").strip()
                              or prior_names.get(product_code, "")),
+            # Transient generator attributes for the name_pl fallback; popped
+            # after enrichment, never persisted.
+            "_gen_attrs":   {
+                "ctg":     str(r.get("ctg") or ""),
+                "kt":      str(r.get("kt") or ""),
+                "col":     str(r.get("col") or ""),
+                "quality": str(r.get("quality") or ""),
+            },
         }
         rebuilt.append(rebuilt_row)
+
+    # #1008 — preserve operator-authored lines across the rebuild. A packing
+    # re-sync rebuilds editable_lines wholesale from the packing set, which
+    # would silently delete any line the operator added by hand (the only
+    # stopgap when packing carries no product_code). A prior line is
+    # operator-authored when price_source == 'manual'. Carry it forward unless
+    # the rebuild already produced a line for the same product_code (packing is
+    # authoritative for codes it does supply) — this avoids duplicates while
+    # never dropping a manual line. reset_all=True is the explicit full-wipe
+    # escape hatch and intentionally does NOT preserve.
+    manual_preserved: List[Dict[str, Any]] = []
+    if not reset_all:
+        _rebuilt_codes = {str(r.get("product_code") or "").strip() for r in rebuilt}
+        for _pl in (json.loads(d.editable_lines_json or "[]") or []):
+            if str(_pl.get("price_source") or "").strip().lower() != "manual":
+                continue
+            _pc = str(_pl.get("product_code") or "").strip()
+            if _pc and _pc in _rebuilt_codes:
+                continue  # packing re-supplied this code — packing wins
+            manual_preserved.append(_pl)
+        rebuilt.extend(manual_preserved)
+
     rebuilt = _ensure_line_ids(rebuilt)
+    # Birth-time name_pl authority (mirrors auto_create): operator/prior →
+    # product_descriptions → generator → blank, stamping name_pl_source. Never
+    # overwrites a non-blank (incoming or re-inherited) value.
+    rebuilt = _birth_resolve_name_pl(rebuilt, name_pl_lookup, desc_generate)
+    for _ln in rebuilt:
+        _ln.pop("_gen_attrs", None)
     reset_unresolved = _birth_unresolved_lines(rebuilt, product_mapping_lookup)
 
     kwargs: Dict[str, Any] = {
@@ -4485,6 +4692,8 @@ def reset_draft_from_sales_packing(
             "reset_all":       bool(reset_all),
             "lines_before":    len(json.loads(d.editable_lines_json or "[]") or []),
             "lines_after":     len(rebuilt),
+            # #1008 — audit how many operator-authored lines survived the sync.
+            "manual_lines_preserved": len(manual_preserved),
             # Same non-authoritative advisory as birth — visibility only.
             "birth_unresolved": reset_unresolved,
         }, ensure_ascii=False, sort_keys=True),

@@ -25,6 +25,11 @@ Pins:
   11. Source-grep: suggestion panel header says 'Advisory preview' not 'Suggestions'.
   12. Source-grep: charge-suggestion-panel 'Apply' button is NOT rendered when
       alreadyApplied is true (dup-prevention logic).
+  13. Source-grep (Draft #73 repair): handleFetchChargeSuggestions unwraps the
+      transport envelope — stores r.data (the domain body), NOT the {ok,data}
+      wrapper — so draft_currency / freight / insurance render instead of a
+      spurious '—' / 'Not available'. The buggy setChargeSuggestion(r) wrapper
+      form must be gone.
 """
 from __future__ import annotations
 
@@ -318,4 +323,84 @@ def test_apply_button_not_rendered_when_already_applied():
     assert "?" in segment or "alreadyApplied" in segment, (
         "Slice-2: 'Already applied' and btn-apply-charge must be in mutually "
         "exclusive ternary branches (separated by alreadyApplied conditional)"
+    )
+
+
+# ── Pin 13: charge-suggestion transport envelope is unwrapped (Draft #73) ─────
+
+def test_charge_suggestions_unwrap_transport_envelope():
+    """Draft #73 repair: the transport helper (_call) wraps every success as
+    { ok, data }. The advisory panel reads draft_currency / freight / insurance
+    off the DOMAIN body, so handleFetchChargeSuggestions must store r.data, not
+    the wrapper. Storing the wrapper is what produced the '—' currency and the
+    'Not available' freight/insurance while Customer Master actually held values.
+    """
+    # The fix: unwrap once, storing the domain body.
+    assert "setChargeSuggestion(r.data)" in _JSX_TEXT, (
+        "Draft #73: handleFetchChargeSuggestions must store r.data (the domain "
+        "charge-suggestion body), matching the r.data unwrap convention used at "
+        "every other call site in this file"
+    )
+    # The buggy form (storing the raw {ok,data} wrapper) must be gone. Note this
+    # exact substring does NOT match 'setChargeSuggestion(r.data)' because '.data'
+    # follows 'r' there, not a closing paren.
+    assert "setChargeSuggestion(r)" not in _JSX_TEXT, (
+        "Draft #73: the wrapper-storing bug 'setChargeSuggestion(r)' must be "
+        "removed — it left draft_currency/freight/insurance undefined on the panel"
+    )
+
+
+def test_charge_suggestions_success_guard_requires_data():
+    """Draft #73 repair: the success guard must require both r.ok AND r.data so a
+    truthy-but-dataless response falls into the error branch instead of storing an
+    empty/absent body that would silently render 'Not available'."""
+    idx = _JSX_TEXT.index("handleFetchChargeSuggestions")
+    body = _JSX_TEXT[idx: idx + 900]
+    assert "r.ok && r.data" in body, (
+        "Draft #73: handleFetchChargeSuggestions must guard on 'r.ok && r.data' "
+        "before storing the unwrapped body"
+    )
+    # The old loose guard that accepted any non-false ok (and stored the wrapper)
+    # must not survive in this handler.
+    assert "r.ok !== false" not in body, (
+        "Draft #73: the loose 'r.ok !== false' guard must be replaced by "
+        "'r.ok && r.data'"
+    )
+
+
+# ── Pin 14: saved-draft-fallback provenance note (advisory authority) ─────────
+
+def test_fallback_provenance_note_only_rendered_when_not_blocked():
+    """Advisory fallback req 11: when the wFirma service *identity* was resolved
+    from the ID already saved on THIS draft (Customer Master has none), the panel
+    must explain that provenance — and must NOT render the note on the blocked /
+    unresolved path, so a fallback note can never contradict an 'unresolved' state.
+
+    The render condition is exactly `!blocked && s.service_id_source ===
+    'saved_draft_fallback'`: the leading `!blocked` guarantees no note appears
+    while the charge is blocked/unresolved.
+    """
+    assert "charge-svc-source-" in _JSX_TEXT, (
+        "Advisory fallback: the provenance note must carry a "
+        "data-testid='charge-svc-source-{type}' so it is testable and visible"
+    )
+    assert "!blocked && s.service_id_source === 'saved_draft_fallback'" in _JSX_TEXT, (
+        "Advisory fallback: the provenance note must render only when NOT blocked "
+        "AND the source is 'saved_draft_fallback' — never on the unresolved path, "
+        "so it cannot contradict a blocked/unresolved message"
+    )
+
+
+def test_fallback_provenance_note_states_cm_amount_authority():
+    """Advisory fallback req: the note text must make clear the AMOUNT is still
+    Customer Master's and the fallback only supplied the service identity — it must
+    never imply a Customer Master write."""
+    assert "already saved on this draft" in _JSX_TEXT, (
+        "Advisory fallback: the provenance note must say the service product was "
+        "'already saved on this draft'"
+    )
+    # The note attributes the amount/rate to Customer Master (identity-only fallback).
+    assert "Customer Master amount/rate" in _JSX_TEXT, (
+        "Advisory fallback: the note must attribute the amount/rate to Customer "
+        "Master, making explicit the draft only supplied the service identity"
     )

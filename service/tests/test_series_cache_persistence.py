@@ -410,7 +410,7 @@ class TestGetDictionariesRegression:
 
     def test_main_py_startup_uses_init_and_stale_check(self):
         import pathlib
-        src = pathlib.Path("app/main.py").read_text()
+        src = pathlib.Path("app/main.py").read_text(encoding="utf-8")
         assert "init_series_cache" in src
         assert "load_cache_from_disk" in src
         assert "is_cache_stale" in src

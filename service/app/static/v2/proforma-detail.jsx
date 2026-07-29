@@ -1092,6 +1092,24 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
+
+  // ── DHL account authority (operator ruling 2026-07-20) ──────────────────
+  // The modal keeps NO account state of its own: the hook holds the server's
+  // verdict from the canonical resolver. It derives no default, picks no
+  // account and never sees a full account number.
+  //
+  // sender_contractor_id is the sender's Client Master record. There is no
+  // sender-side Client Master wiring yet (the shipper identity is still the
+  // env-level DHL_EXPRESS_SHIPPER_* configuration), so prefill supplies it only
+  // when known. While it is absent the backend takes its legacy path — explicit
+  // account, then the environment account — and the panel must NOT gate the
+  // button, otherwise a working sender-paid flow would start blocking.
+  const dhlAccounts = useDhlAccountResolution({
+    senderContractorId:   prefill.sender_contractor_id || null,
+    receiverContractorId: prefill.client_contractor_id || null,
+  });
+  const dhlSenderKnown = !!prefill.sender_contractor_id;
+  const dhlBlocksSubmit = dhlSenderKnown && dhlAccounts.awbBlocked;
   // Customer Master save-confirmation workflow: master = this client's stored
   // record (baseline for the shipping-fields comparison); saveConfirm holds
   // the pending diff panel; savedNote shows after an approved save. Master
@@ -1393,6 +1411,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       shipment_reference: form.shipment_reference || null,
       receiver_vat_id:    form.receiver_vat_id || null,
       receiver_eori:      form.receiver_eori || null,
+      // DHL account decision — the server re-resolves authoritatively through
+      // resolve_dhl_billing_account(); these fields only carry the operator's
+      // inputs to it. Omitted entirely when the sender has no Client Master
+      // record, so the existing sender-paid payload stays byte-identical.
+      ...(dhlSenderKnown ? dhlAccounts.payloadFields : {}),
       special_instructions: form.special_instructions || null,
       box_type_code:      form.box_type_code || null,
       // Per-client shipment scope — the draft's client_name. Scopes the
@@ -1929,6 +1952,14 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               this batch (or could not be ruled out); booking is HELD until the
               operator explicitly confirms creating a NEW shipment record.
               No DHL void, no auto-cancel — the prior AWB stays as it is. */}
+          {/* DHL account — server-resolved; the modal renders, never decides.
+              Hidden while the sender has no Client Master record, because the
+              backend then uses its legacy account path and there is no
+              operator decision to present. */}
+          {dhlSenderKnown && (
+            <DhlAccountPanel state={dhlAccounts} />
+          )}
+
           {legacyConfirm && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
@@ -1963,7 +1994,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
-              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm || legacyConfirm} data-testid="awb-submit-btn">
+              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit} data-testid="awb-submit-btn">
                 {loading ? 'Creating AWB…' : 'Create AWB'}
               </Btn>
             </div>
@@ -2353,12 +2384,26 @@ function ProductMappingResolver({ unmappedCodes, draftLines, reloadReadiness }) 
   const ss = (code, patch) =>
     setPerCode(prev => ({ ...prev, [code]: { ...gs(code), ...patch } }));
 
+  // Map a transport error into an operator-friendly line. A wFirma/tunnel gateway
+  // failure arrives as a raw HTML error page (HTTP 50x / 429) sliced into r.error;
+  // show a concise "retry" message instead of dumping HTML at the operator. r.status
+  // is 0 for proxy-HTML errors, so classify off the message text. Genuine structured
+  // backend errors (validation, 4xx with a real message) fall through unchanged so we
+  // never hide a real application error behind "wFirma unavailable".
+  const _friendlySearchError = (r) => {
+    const msg = (r && r.error) || 'unknown error';
+    if (/^HTTP\s+(50\d|429)/.test(msg) || /<!DOCTYPE|<html/i.test(msg)) {
+      return 'wFirma is temporarily unavailable (gateway error). Wait a moment, then click Resolve mapping to retry.';
+    }
+    return `Search failed: ${msg}`;
+  };
+
   // doSearch — safe read-only wFirma lookup. Only fires on explicit operator click.
   const doSearch = async (code) => {
     ss(code, { phase: 'searching', error: null, createBlocked: null });
     const r = await window.PzApi.wfirmaGoodsSearch(code);
     if (!r.ok) {
-      ss(code, { phase: 'idle', error: `Search failed: ${r.error || 'unknown error'}` });
+      ss(code, { phase: 'idle', error: _friendlySearchError(r) });
       return;
     }
     const d = r.data || {};
@@ -3182,7 +3227,7 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
   const [saving,   setSaving]   = React.useState(false);
   const [rowErr,   setRowErr]   = React.useState({});      // line_id -> message (Authority Gap)
   const [options,  setOptions]  = React.useState(null);    // Product Master options (lazy)
-  const [recheck,  setRecheck]  = React.useState({ busy: false, msg: null, err: null });
+  const [recheck,  setRecheck]  = React.useState({ busy: false, msg: null, warn: null, err: null });
   const [confirmBusy, setConfirmBusy] = React.useState(null);  // line_id being confirmed
   const [confirmErr,  setConfirmErr]  = React.useState({});    // line_id -> message
   // Batch-level packing re-extraction (reuse: POST /packing/{batch}/reprocess —
@@ -3241,14 +3286,33 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
   };
 
   const recheckMapping = () => {
-    if (!expectedUpdatedAt) { setRecheck({ busy: false, msg: null, err: 'Authority Gap — draft lock unavailable.' }); return; }
-    setRecheck({ busy: true, msg: null, err: null });
+    if (!expectedUpdatedAt) { setRecheck({ busy: false, msg: null, warn: null, err: 'Authority Gap — draft lock unavailable.' }); return; }
+    setRecheck({ busy: true, msg: null, warn: null, err: null });
     window.EstrellaShared.apiFetch(`/api/v1/proforma/draft/${draftId}/enrich-from-product-descriptions`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ expected_updated_at: expectedUpdatedAt }),
     })
-      .then(r => { setRecheck({ busy: false, msg: `Re-checked · ${(r && r.enriched_count) || 0} enriched from Product Master · confirmed rows preserved`, err: null }); if (onSaved) onSaved(); return reload(); })
-      .catch(e => setRecheck({ busy: false, msg: null, err: (e && e.message) || 'Re-check failed' }));
+      .then(r => {
+        // #1009 — never report false success. Three distinct outcomes:
+        //   * 0 lines            → draft is empty (designs unmapped) — WARN, not success.
+        //   * some lines missing → partial — WARN with the remaining count.
+        //   * all lines mapped   → genuine success.
+        const lc       = (r && r.line_count)     || 0;
+        const enriched = (r && r.enriched_count) || 0;
+        const missing  = (r && r.missing_count)  || 0;
+        if (lc === 0) {
+          setRecheck({ busy: false, msg: null,
+            warn: 'Nothing to re-check — this draft has no lines. Bind the packing designs to a product code first.', err: null });
+        } else if (missing > 0) {
+          setRecheck({ busy: false, msg: null,
+            warn: `Re-checked · ${enriched} enriched · ${missing} line(s) still missing a product description`, err: null });
+        } else {
+          setRecheck({ busy: false,
+            msg: `Re-checked · ${enriched} enriched from Product Master · all lines mapped`, warn: null, err: null });
+        }
+        if (onSaved) onSaved(); return reload();
+      })
+      .catch(e => setRecheck({ busy: false, msg: null, warn: null, err: (e && e.message) || 'Re-check failed' }));
   };
 
   // Batch re-extraction — re-parses the stored packing files (no re-upload) via
@@ -3447,6 +3511,7 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
             </button>
           </div>
           {recheck.msg && <div data-testid="pf-source-recheck-msg" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginBottom: 6 }}>{recheck.msg}</div>}
+          {recheck.warn && <div data-testid="pf-source-recheck-warn" style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 6 }}>{recheck.warn}</div>}
           {recheck.err && <div data-testid="pf-source-recheck-err" style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginBottom: 6 }}>Re-check failed · {recheck.err}</div>}
           {lines.length === 0
             ? <div style={{ ...box, color: 'var(--text-3)' }}>No draft lines.</div>
@@ -4064,6 +4129,129 @@ function ReconciliationPanel({ draft }) {
       <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10 }}>Reconciliation</div>
       {body}
       {docActions}
+    </div>
+  );
+}
+
+
+// 2B — manually link an EXISTING wFirma document to this draft. Read-only preview
+// (Preview) then an explicit privileged Confirm. Composition + transport only: the
+// backend owns comparison, the opaque preview_hash, and all write authority. This
+// panel NEVER renders the preview_hash, any wFirma id, db id, or raw XML.
+function ManualLinkPanel({ draft, draftHook }) {
+  const draftId = draft && draft.id;
+  const hasProforma = !!(draft && draft.wfirma_proforma_id);
+  const alreadyLinked = !!(draft && draft.wfirma_invoice_id);
+  const [st, setSt] = React.useState({ phase: 'idle', mode: 'id', value: '', preview: null, hash: '', result: null, error: null });
+
+  const card = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginTop: 20 };
+  const box  = { padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)' };
+  const inp  = { padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', fontSize: 12, minWidth: 220 };
+
+  // The panel is only meaningful for a posted, not-yet-linked, proforma-derived
+  // draft. Hidden otherwise (Lesson M: a real cancellation would be documented;
+  // this is a not-applicable state, surfaced as a quiet note when already linked).
+  if (!hasProforma) return null;
+
+  const onPreview = () => {
+    const v = (st.value || '').trim();
+    if (!v) { setSt((s) => ({ ...s, error: 'Enter a wFirma id or document number.' })); return; }
+    const bodyReq = { document_type: 'invoice' };
+    if (st.mode === 'id') bodyReq.wfirma_id = v; else bodyReq.full_number = v;
+    setSt((s) => ({ ...s, phase: 'previewing', error: null, preview: null, hash: '', result: null }));
+    window.PzApi.resolveWfirmaDocument(draftId, bodyReq).then((res) => {
+      if (!res || res.ok === false) {
+        setSt((s) => ({ ...s, phase: 'idle', error: (res && (res.error || `error ${res.status || ''}`)) || 'Preview failed.' }));
+        return;
+      }
+      const d = res.data || {};
+      if (d.status === 'no_local_authority') {
+        setSt((s) => ({ ...s, phase: 'idle', error: 'This draft cannot be reconciled (no source proforma).' }));
+        return;
+      }
+      setSt((s) => ({ ...s, phase: 'preview', preview: d, hash: d.preview_hash || '', error: null }));
+    });
+  };
+
+  const onConfirm = () => {
+    const v = (st.value || '').trim();
+    const bodyReq = { document_type: 'invoice', expected_preview_hash: st.hash };
+    if (st.mode === 'id') bodyReq.wfirma_id = v; else bodyReq.full_number = v;
+    setSt((s) => ({ ...s, phase: 'confirming', error: null }));
+    window.PzApi.confirmWfirmaLink(draftId, bodyReq).then((res) => {
+      if (res && res.ok && res.data && res.data.ok) {
+        setSt((s) => ({ ...s, phase: 'done', result: res.data, error: null }));
+        if (draftHook && typeof draftHook.reload === 'function') draftHook.reload();
+        return;
+      }
+      // non-2xx (503 disabled / 409 drift|conflict|editable / 400 operator) or {ok:false}
+      const msg = (res && (res.error || (res.data && res.data.error))) || 'Link failed.';
+      setSt((s) => ({ ...s, phase: 'preview', error: msg }));
+    });
+  };
+
+  let body;
+  if (alreadyLinked && st.phase !== 'done') {
+    body = <div data-testid="pf-link-alreadylinked" style={{ ...box, color: 'var(--text-3)' }}>A wFirma document is already linked to this draft.</div>;
+  } else if (st.phase === 'done') {
+    body = <div data-testid="pf-link-done" style={{ ...box, color: 'var(--badge-green-text)', borderColor: 'var(--badge-green-text)' }}>✓ {st.result && st.result.status === 'noop' ? 'Document was already linked.' : 'Document linked to this draft.'}</div>;
+  } else {
+    const cs = (st.preview && st.preview.candidate_summary) || null;
+    const gaps = (st.preview && st.preview.gaps) || [];
+    const gs = (st.preview && st.preview.gap_summary) || {};
+    const previewing = st.phase === 'previewing';
+    const confirming = st.phase === 'confirming';
+    const inPreview  = st.phase === 'preview';
+    body = (
+      <div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <select data-testid="pf-link-mode" value={st.mode} onChange={(e) => setSt((s) => ({ ...s, mode: e.target.value }))} style={inp}>
+            <option value="id">By wFirma document id</option>
+            <option value="number">By document number</option>
+          </select>
+          <input data-testid="pf-link-value" style={inp} placeholder={st.mode === 'id' ? 'numeric wFirma id' : 'document number'} value={st.value} onChange={(e) => setSt((s) => ({ ...s, value: e.target.value }))} />
+          <Btn variant="outline" small data-testid="pf-link-preview" disabled={previewing || confirming} onClick={onPreview}>{previewing ? 'Checking…' : 'Preview'}</Btn>
+        </div>
+
+        {inPreview || confirming ? (
+          <div style={{ marginTop: 12 }}>
+            {cs ? (
+              <div data-testid="pf-link-candidate" style={{ ...box, marginBottom: 8 }}>
+                Expected: {cs.line_count} line{cs.line_count === 1 ? '' : 's'} · {cs.currency} {cs.expected_total}
+              </div>
+            ) : null}
+            {gaps.length === 0 ? (
+              <div data-testid="pf-link-match" style={{ ...box, color: 'var(--badge-green-text)', borderColor: 'var(--badge-green-text)', marginBottom: 8 }}>✓ Matches the expected invoice — no differences.</div>
+            ) : (
+              <div data-testid="pf-link-mismatch">
+                <div data-testid="pf-link-summary" style={{ ...box, color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-text)', marginBottom: 8 }}>
+                  {gs.total || gaps.length} difference{(gs.total === 1) ? '' : 's'} vs the expected invoice{gs.has_blocking ? ' · blocking' : ''}
+                </div>
+                {gaps.map((g) => (
+                  <div key={g.field} data-testid={`pf-link-gap-${g.field}`} style={{ ...box, marginBottom: 6 }}>
+                    <span style={{ fontWeight: 600 }}>{g.field}</span>
+                    <span style={{ marginLeft: 8, color: 'var(--badge-red-text)' }}>{g.severity}</span>
+                    <span style={{ marginLeft: 8, color: 'var(--text-3)' }}>{g.resolution_policy}</span>
+                    {/* g.label, not g.message: _public_gap withholds message (it
+                        carries raw wFirma entity ids, W-6) and emits a safe label. */}
+                    <div style={{ marginTop: 3, color: 'var(--text-2)' }}>{g.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: 'var(--text-3)', margin: '4px 0 8px' }}>Linking records this wFirma document on the draft. It cannot be undone in this release.</div>
+            <Btn variant="primary" small data-testid="pf-link-confirm" disabled={confirming || !st.hash} onClick={onConfirm}>{confirming ? 'Linking…' : 'Confirm link to this wFirma document'}</Btn>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="pf-manual-link" style={card}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10 }}>Link existing wFirma document</div>
+      {body}
+      {st.error ? <div data-testid="pf-link-error" style={{ ...box, color: 'var(--badge-amber-text)', borderColor: 'var(--badge-amber-text)', marginTop: 8 }}>{st.error}</div> : null}
     </div>
   );
 }
@@ -5571,8 +5759,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const id = liveDraft.id || (draft && draft.id);
     window.PzApi.suggestServiceCharges(id)
       .then(r => {
-        if (r && r.ok !== false) {
-          setChargeSuggestion(r);
+        // _call() wraps the backend body as { ok, data }; the advisory panel reads
+        // draft_currency / freight / insurance off the domain body, so store r.data
+        // (not the transport wrapper) or those fields are undefined → the panel shows
+        // a spurious "—" currency and "Not available". Unwrap once, here, matching the
+        // r.data convention used at every other call site in this file.
+        if (r && r.ok && r.data) {
+          setChargeSuggestion(r.data);
         } else {
           setChargeSuggestion({ error: (r && r.error) || 'Could not load suggestions.' });
         }
@@ -5661,7 +5854,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // apply-service-charges is idempotent: an existing charge is SKIPPED, not
         // recalculated. Surface that so the operator is not misled into thinking a
         // stale amount was refreshed (edit the charge, or remove + recalculate).
-        const skip = (r && r.skipped || []).find(s => (s.charge_type || '') === chargeType);
+        // NOTE: the transport helper (_postM) normalises to { ok, data } — the
+        // backend's `skipped` array lives at r.data.skipped, NOT r.skipped. Reading
+        // the envelope here silently swallowed every skip reason (incl. the
+        // "freight_service_id not configured" block), so the guard never fired.
+        const skip = (r && r.data && r.data.skipped || []).find(s => (s.charge_type || '') === chargeType);
         if (skip) throw new Error(skip.reason || `${chargeType} already exists — edit it to change the amount`);
         draftHook && draftHook.reload && draftHook.reload();
         return r;
@@ -6397,6 +6594,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
               {/* A2: read-only reconciliation report (presentation over the stable endpoint) */}
               <ReconciliationPanel draft={draft} />
+              <ManualLinkPanel draft={draft} draftHook={draftHook} />
             </div>
           );
         })()}
@@ -6600,6 +6798,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             // save-confirmation workflow (compare + explicit-save target).
             client_contractor_id: (liveDraft && liveDraft.client_contractor_id)
               || (draft && draft.client_contractor_id) || '',
+            // Sender's Client Master record, for DHL account resolution. Empty
+            // until sender-side Client Master wiring exists (the shipper is
+            // still env-level DHL_EXPRESS_SHIPPER_*). While empty the backend
+            // uses its legacy account path and the account panel stays hidden —
+            // the existing sender-paid flow is unaffected.
+            sender_contractor_id: (liveDraft && liveDraft.sender_contractor_id)
+              || (draft && draft.sender_contractor_id) || '',
             client_name:        (liveDraft && liveDraft.client_name)
               || (draft && draft.client_name) || '',
           }}
@@ -6991,6 +7196,17 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
             const s = suggestion[type] || {};
             const alreadyApplied = s.already_applied || existingTypes.includes(type);
             const blocked = !s.available || s.blocked_reason;
+            // Read-only provenance: when the advisory resolved the wFirma service
+            // *identity* from the ID already saved on THIS draft (because Customer
+            // Master has none), say so explicitly. The amount is still Customer
+            // Master's; this note never implies a write to Customer Master.
+            const fallbackNote = (!blocked && s.service_id_source === 'saved_draft_fallback') ? (
+              <span data-testid={`charge-svc-source-${type}`}
+                    title={"Calculated from the Customer Master amount/rate using the service product already saved on this draft. Customer Master itself has no service ID configured for this charge type."}
+                    style={{ fontSize: 11, color: 'var(--text-2)', fontStyle: 'italic' }}>
+                ↳ from draft-saved service product (svc {s.wfirma_service_id})
+              </span>
+            ) : null;
             return (
               <div key={type} data-testid={`suggestion-row-${type}`} style={{
                 display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4,
@@ -7038,8 +7254,10 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
                     );
                   })()
                 ) : alreadyApplied ? (
-                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                    Already applied ({fmtAmt(s.amount, s.currency)})
+                  <span style={{ fontSize: 12, color: 'var(--text-2)', display: 'flex',
+                                 flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                    <span>Already applied ({fmtAmt(s.amount, s.currency)})</span>
+                    {fallbackNote}
                   </span>
                 ) : (
                   <React.Fragment>
@@ -7047,6 +7265,7 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
                       {fmtAmt(s.amount, s.currency)}
                       {s.label ? ` — ${s.label}` : ''}
                     </span>
+                    {fallbackNote}
                     {canEdit && (
                       <button
                         data-testid={`btn-apply-charge-${type}`}

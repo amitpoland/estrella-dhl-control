@@ -152,7 +152,7 @@ def _make_packing_xlsx(tmp_path: Path, *, currency_in_header: bool,
 def test_parser_extracts_unit_price_from_excel(tmp_path):
     from app.services.invoice_packing_extractor import extract_packing
     p = _make_packing_xlsx(tmp_path, currency_in_header=True)
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert len(rows) == 1
     assert float(rows[0]["unit_price"]) == 306.0
 
@@ -160,14 +160,14 @@ def test_parser_extracts_unit_price_from_excel(tmp_path):
 def test_parser_extracts_currency_from_header(tmp_path):
     from app.services.invoice_packing_extractor import extract_packing
     p = _make_packing_xlsx(tmp_path, currency_in_header=True)
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert rows[0]["currency"] == "EUR"
 
 
 def test_parser_extracts_currency_from_preamble(tmp_path):
     from app.services.invoice_packing_extractor import extract_packing
     p = _make_packing_xlsx(tmp_path, currency_in_header=False)
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert rows[0]["currency"] == "EUR"
 
 
@@ -175,7 +175,7 @@ def test_parser_currency_token_usd(tmp_path):
     from app.services.invoice_packing_extractor import extract_packing
     p = _make_packing_xlsx(tmp_path, currency_in_header=True,
                             value_label="Value (USD)")
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert rows[0]["currency"] == "USD"
 
 

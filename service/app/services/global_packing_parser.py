@@ -125,15 +125,15 @@ _INV_NO_RE = re.compile(r"\b(\d{3}/\d{4}-\d{4})\b")
 # ── Safe float ────────────────────────────────────────────────────────────────
 
 def _safe_float(val: Any) -> float:
-    """Convert any value to float. Returns 0.0 on error — never raises."""
-    if val is None:
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    try:
-        return float(str(val).replace(",", "").strip())
-    except (ValueError, TypeError):
-        return 0.0
+    """Convert any value to float. Returns 0.0 on error — never raises.
+
+    Delegates to the canonical packing normaliser so both parsers agree on
+    comma handling; this module previously stripped every comma, turning the
+    decimal-comma form "1234,56" into 123456.0 (a silent 100x overstatement).
+    """
+    from .invoice_packing_extractor import _safe_float as _canonical  # noqa: PLC0415
+
+    return _canonical(val)
 
 
 # ── Header detection ──────────────────────────────────────────────────────────

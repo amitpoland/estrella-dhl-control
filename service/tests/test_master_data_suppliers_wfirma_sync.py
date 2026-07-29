@@ -242,12 +242,22 @@ def _make_app(monkeypatch, *, flag: bool):
     # Override the flag on the singleton settings
     monkeypatch.setattr(core_config.settings, "wfirma_sync_suppliers_allowed", flag,
                         raising=False)
-    # Stub auth
+    # Stub auth. Master write endpoints use require_role_or_apikey, which (with
+    # role enforcement off) calls require_api_key DIRECTLY — not via FastAPI
+    # Depends — so a dependency_overrides stub misses it. Disable api-key auth +
+    # role enforcement so the degrade path passes for read AND write endpoints.
     monkeypatch.setattr(core_security, "require_api_key", lambda: True, raising=False)
+    monkeypatch.setattr(core_config.settings, "api_key", "", raising=False)
+    monkeypatch.setattr(core_config.settings, "master_role_enforcement", False, raising=False)
 
     app = FastAPI()
     app.include_router(routes_suppliers.router)
-    # Override dependency to bypass auth in tests
+    # sync/apply uses require_admin (session); inject an admin via get_current_user.
+    from service.app.auth.dependencies import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "t", "email": "a@test", "role": "admin",
+        "is_active": True, "is_approved": True,
+    }
     app.dependency_overrides[core_security.require_api_key] = lambda: True
     return TestClient(app)
 

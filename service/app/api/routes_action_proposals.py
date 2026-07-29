@@ -884,6 +884,11 @@ def approve_proposal(
 
     if proposal["status"] == "rejected":
         raise HTTPException(status_code=409, detail="Cannot approve a rejected proposal.")
+    # #439: already-approved must 409, not silently re-approve (which would
+    # overwrite approved_by). Under two concurrent operators this turns a racing
+    # second approve into a clean conflict instead of a silent re-apply.
+    if proposal["status"] == "approved":
+        raise HTTPException(status_code=409, detail="Proposal is already approved.")
     if proposal["status"] in ("queued", "sent"):
         raise HTTPException(
             status_code=409,
@@ -1031,6 +1036,15 @@ def reject_proposal(
 
     batch_id, audit, proposal = _resolve_proposal(proposal_id)
 
+    # #439: rejecting an already-approved proposal was silently allowed — the
+    # dangerous cross-action flip (operator A approves, operator B rejects the
+    # same item). Require an explicit re-open first; the concurrent rejecter
+    # gets a clean 409 instead of a silent approved→rejected transition.
+    if proposal["status"] == "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot reject an already-approved proposal; re-open it first.",
+        )
     if proposal["status"] in ("queued", "sent"):
         raise HTTPException(
             status_code=409,

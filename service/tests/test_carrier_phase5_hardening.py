@@ -22,9 +22,9 @@ _MODELS  = Path(__file__).parent.parent / "app" / "services" / "carrier" / "mode
 _SDB     = Path(__file__).parent.parent / "app" / "services" / "carrier" / "persistence" / "shipment_db.py"
 _COORD   = Path(__file__).parent.parent / "app" / "services" / "carrier" / "coordinator.py"
 
-_models_src = _MODELS.read_text()
-_sdb_src    = _SDB.read_text()
-_coord_src  = _COORD.read_text()
+_models_src = _MODELS.read_text(encoding="utf-8")
+_sdb_src    = _SDB.read_text(encoding="utf-8")
+_coord_src  = _COORD.read_text(encoding="utf-8")
 
 
 def test_shipment_result_has_service_product():

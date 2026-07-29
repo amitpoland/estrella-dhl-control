@@ -16,6 +16,7 @@ from __future__ import annotations
 
 
 import threading as _threading
+import urllib.parse as _urlparse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
@@ -479,9 +480,16 @@ def _http_request(method: str, module: str, action: str, body_xml: str = "",
     """
     base = _url(module, action)
     if id_suffix:
-        # Insert /{id_suffix} between path and query string.
+        # Insert /{id_suffix} between path and query string. id_suffix becomes a
+        # URL PATH SEGMENT, so it must be URL-encoded — _esc() only XML-escapes
+        # (& < > "), leaving / ? # % to reach the wire and alter the path or
+        # inject query params. Every caller passes a numeric wFirma id, so guard
+        # that contract and fail fast on anything else (#1028).
+        raw = str(id_suffix).strip()
+        if not raw.isdigit():
+            raise ValueError(f"id_suffix must be a numeric wFirma id, got {id_suffix!r}")
         path, _, query = base.partition("?")
-        url = f"{path}/{_esc(id_suffix)}" + (f"?{query}" if query else "")
+        url = f"{path}/{_urlparse.quote(raw, safe='')}" + (f"?{query}" if query else "")
     else:
         url = base
     breaker = get_circuit_breaker("wfirma")
@@ -1198,34 +1206,25 @@ def get_stock(wfirma_good_id: str) -> Dict[str, float]:
     is not found (a stock check for a missing good is an error, not zero stock).
     Raises ConnectionError on network failure.
 
-    API: GET goods/find (conditions.id.eq) — reuses the live goods read path
-    (mirrors get_product_by_code); no new HTTP layer, no caching.
+    API: GET goods/get/{id} (path-based; id in the URL, empty body). Mirrors
+    invoices/get — never a find condition (wFirma ignores id in find).
     Auth: API Key headers (shared transport).
     Key fields: count (current stock), reserved (currently reserved).
     """
     if not wfirma_good_id or not str(wfirma_good_id).strip():
         raise ValueError("get_stock: wfirma_good_id is required")
-    body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<api>
-  <goods>
-    <parameters>
-      <conditions>
-        <condition>
-          <field>id</field>
-          <operator>eq</operator>
-          <value>{_esc(str(wfirma_good_id).strip())}</value>
-        </condition>
-      </conditions>
-      <page><start>0</start><limit>1</limit></page>
-    </parameters>
-  </goods>
-</api>"""
-    http_status, response_text = _http_request("GET", "goods", "find", body)
+    safe_id = str(wfirma_good_id).strip()
+    # Path-based id lookup (goods/get/{id}) via id_suffix (esc-safe), empty body.
+    # wFirma silently IGNORES an id field in a find condition and returns
+    # the FIRST row, so id must never be a find condition — this would read the
+    # wrong good's stock. Mirrors invoices/get and warehouse_document_p_z/get;
+    # enforced by the test_wfirma_fetch_invoice_by_id source-grep guard.
+    http_status, response_text = _http_request("GET", "goods", "get", "", id_suffix=safe_id)
     if http_status >= 400:
-        raise RuntimeError(f"goods/find HTTP {http_status}")
+        raise RuntimeError(f"goods/get HTTP {http_status}")
     code, desc = _parse_status(response_text)
     if code != "OK":
-        raise RuntimeError(f"goods/find wFirma status={code}: {desc}")
+        raise RuntimeError(f"goods/get wFirma status={code}: {desc}")
     root = ET.fromstring(response_text)
     node = root.find(".//good")
     if node is None:

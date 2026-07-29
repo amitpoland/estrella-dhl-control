@@ -331,8 +331,8 @@ def test_unknown_method_returns_error(tmp_path, monkeypatch):
 
 def test_polish_desc_route_does_not_require_pz():
     """Read the route source: Polish description handler must NOT call any PZ guard."""
-    src = open("/Users/amitgupta/Downloads/CLI/service/app/api/routes_dhl_clearance.py",
-               "r", encoding="utf-8").read()
+    _routes_dhl = Path(__file__).resolve().parents[1] / "app" / "api" / "routes_dhl_clearance.py"
+    src = _routes_dhl.read_text(encoding="utf-8")
     idx = src.find('@router.post("/generate-description/')
     assert idx > 0
     section = src[idx:idx + 5000]
@@ -342,8 +342,8 @@ def test_polish_desc_route_does_not_require_pz():
 
 def test_dsk_route_does_not_require_pz():
     """DSK generation route must NOT call any PZ guard."""
-    src = open("/Users/amitgupta/Downloads/CLI/service/app/api/routes_dsk.py",
-               "r", encoding="utf-8").read()
+    _routes_dsk = Path(__file__).resolve().parents[1] / "app" / "api" / "routes_dsk.py"
+    src = _routes_dsk.read_text(encoding="utf-8")
     assert "guard_pz_requires_sad" not in src
     assert "pz_status" not in src
 

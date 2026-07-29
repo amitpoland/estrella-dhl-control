@@ -180,7 +180,7 @@ def test_mcp_send_returns_disabled():
 
 def test_followup_evidence_check_path_exists():
     """Spot-check: the follow-up code path imports email_evidence_store.get_summary."""
-    src = Path("/Users/amitgupta/Downloads/CLI/service/app/services/active_shipment_monitor.py").read_text()
+    src = (_SVC / "app" / "services" / "active_shipment_monitor.py").read_text(encoding="utf-8")
     assert "email_evidence_store" in src
     assert "get_summary" in src
 

@@ -402,7 +402,16 @@ def _find_text(el: ET.Element, path: str) -> Optional[str]:
 
 
 def _safe_float(val: Any) -> float:
-    """Convert to float safely, return 0.0 on failure."""
+    """Convert to float safely, return 0.0 on failure.
+
+    DELIBERATELY NOT the packing normaliser in invoice_packing_extractor, and
+    must not be "harmonised" with it. Customs XML (PUESC/ZC429/SAD) is
+    machine-generated in the Polish locale: the comma is ALWAYS the decimal
+    separator and values are never digit-grouped. A netMass of "1,554" is
+    1.554 kg. The packing rule reads a comma followed by exactly three digits
+    as a thousands separator -- correct for EJL packing lists, but it would
+    turn that same weight into 1554.0 here.
+    """
     if val is None:
         return 0.0
     try:

@@ -287,7 +287,7 @@ def test_carrier_is_dhl_only():
         "Carrier system must reference DHL"
     # No FedEx adapters should be referenced
     from pathlib import Path
-    factory = (Path(_CARRIER).parent.parent / "services" / "carrier" / "factory.py").read_text()
+    factory = (Path(_CARRIER).parent.parent / "services" / "carrier" / "factory.py").read_text(encoding="utf-8")
     assert "FedEx" not in factory and "fedex" not in factory.lower(), \
         "Carrier factory must not reference FedEx — DHL Express only"
 

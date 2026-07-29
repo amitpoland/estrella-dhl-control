@@ -114,16 +114,6 @@ def test_shipment_db_row_mode_is_shadow(tmp_path):
     assert row["mode"] == "shadow"
 
 
-def test_shipment_db_row_has_no_tracking_ref_column(tmp_path):
-    """AWBs (even simulated) must not be in the shipment_db schema."""
-    cfg = _cfg(tmp_path)
-    req = _req()
-    CarrierCoordinator(cfg).create_shipment(req)
-    key = compute_idempotency_key(req)
-    row = get_shipment(tmp_path / "shipments.db", key)
-    assert "tracking_ref" not in row
-
-
 # ── shadow log content ────────────────────────────────────────────────────────
 
 

@@ -103,8 +103,12 @@ def test_carrier_runtime_does_not_read_local_carriers_config():
         if not p.exists():
             continue
         src = p.read_text(encoding="utf-8", errors="ignore")
-        for forbidden in ("carriers_config", "master_data_db",
-                          "from ..services.master_data_db"):
+        # The rule is specifically about carrier CONFIG/credentials (the
+        # carriers_config table) — those belong in .env, not the operator-editable
+        # master-data DB. Reading get_box_type (packaging dimensions/tare) from
+        # master_data_db is a legitimate, unrelated reference-data lookup and is
+        # NOT forbidden. Ban only carriers_config, not the whole module.
+        for forbidden in ("carriers_config",):
             assert forbidden not in src, \
                 f"Carrier runtime must not reference master-data carrier config: {p} ↩ {forbidden}"
 

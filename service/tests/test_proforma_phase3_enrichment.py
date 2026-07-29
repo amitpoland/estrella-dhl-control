@@ -16,9 +16,28 @@ _WFIRMA_CLIENT = Path(__file__).parent.parent / "app" / "services" / "wfirma_cli
 _PIL_DB        = Path(__file__).parent.parent / "app" / "services" / "proforma_invoice_link_db.py"
 _ROUTES        = Path(__file__).parent.parent / "app" / "api" / "routes_proforma.py"
 
-_wfirma_src = _WFIRMA_CLIENT.read_text()
-_pildb_src  = _PIL_DB.read_text()
-_routes_src = _ROUTES.read_text()
+_wfirma_src = _WFIRMA_CLIENT.read_text(encoding="utf-8")
+_pildb_src  = _PIL_DB.read_text(encoding="utf-8")
+_routes_src = _ROUTES.read_text(encoding="utf-8")
+
+
+def test_module_level_source_reads_use_explicit_utf8():
+    """Regression pin for the module-level source reads above.
+
+    routes_proforma.py carries a UTF-8 BOM + non-ASCII punctuation, so a bare
+    ``.read_text()`` (platform-default encoding) raises UnicodeDecodeError at
+    COLLECTION on Windows/cp1252 and aborts the whole run. This asserts each of
+    the three source-file reads is explicitly utf-8 — and that none reverts to
+    the platform default. (A self-referential ``'read_text(encoding="utf-8")' in
+    __file__`` check would be tautological: the assertion body itself carries
+    that string, so it would pass even after a regression.)
+    """
+    src = Path(__file__).read_text(encoding="utf-8")
+    for var in ("_WFIRMA_CLIENT", "_PIL_DB", "_ROUTES"):
+        assert f'{var}.read_text(encoding="utf-8")' in src, \
+            f"{var} module-level read must be explicit utf-8"
+        assert f"{var}.read_text()" not in src, \
+            f"{var} must not be read with the platform-default encoding"
 
 
 def test_fetch_proforma_enrichment_exists():
@@ -83,13 +102,6 @@ def test_renderer_shows_wfirma_dates():
 
 
 # ── DB round-trip tests ───────────────────────────────────────────────────────
-
-def _build_db() -> tuple[Path, sqlite3.Connection]:
-    tmp = tempfile.mktemp(suffix=".db")
-    conn = sqlite3.connect(tmp)
-    conn.row_factory = sqlite3.Row
-    return Path(tmp), conn
-
 
 def test_write_postposting_enrichment_round_trip(tmp_path):
     """write_postposting_enrichment stores and retrieves all three fields."""

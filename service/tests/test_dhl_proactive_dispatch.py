@@ -211,6 +211,24 @@ def client(dhl_env):
     """FastAPI TestClient with API key auth configured."""
     from fastapi.testclient import TestClient
     from app.main import app
+    # Route guards are [require_api_key, require_role("admin","logistics")];
+    # inject an operator session so require_role passes (X-API-Key alone 401s).
+    from app.auth.dependencies import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "test-admin", "email": "admin@test.local", "role": "admin",
+    }
+    try:
+        yield TestClient(app, raise_server_exceptions=False)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture
+def unauth_client(dhl_env):
+    """No session injected — for negative auth-enforcement tests that assert
+    endpoints reject unauthenticated requests (session-only routes 401)."""
+    from fastapi.testclient import TestClient
+    from app.main import app
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -310,39 +328,39 @@ class TestPreconditionGuards:
 
 class TestAuthentication:
 
-    def test_proactive_endpoint_requires_api_key(self, tmp_path, client):
+    def test_proactive_endpoint_requires_api_key(self, tmp_path, unauth_client):
         bid, _, _ = _make_batch(tmp_path)
-        r = client.post(
+        r = unauth_client.post(
             f"/api/v1/dhl/proactive-dispatch/{bid}",
             json={"operator_id": "alice"},
         )
         assert r.status_code == 401
 
-    def test_action_proposals_list_requires_api_key(self, tmp_path, client):
+    def test_action_proposals_list_requires_api_key(self, tmp_path, unauth_client):
         bid, _, _ = _make_batch(tmp_path)
-        r = client.get(f"/api/v1/action-proposals/{bid}")
+        r = unauth_client.get(f"/api/v1/action-proposals/{bid}")
         assert r.status_code == 401
 
-    def test_action_proposals_approve_requires_api_key(self, tmp_path, client):
-        r = client.post(
+    def test_action_proposals_approve_requires_api_key(self, tmp_path, unauth_client):
+        r = unauth_client.post(
             "/api/v1/action-proposals/some-id/approve",
             json={"approved_by": "bob"},
         )
         assert r.status_code == 401
 
-    def test_action_proposals_reject_requires_api_key(self, tmp_path, client):
-        r = client.post(
+    def test_action_proposals_reject_requires_api_key(self, tmp_path, unauth_client):
+        r = unauth_client.post(
             "/api/v1/action-proposals/some-id/reject",
             json={"rejected_by": "bob", "reason": "test"},
         )
         assert r.status_code == 401
 
-    def test_action_proposals_queue_requires_api_key(self, tmp_path, client):
-        r = client.post("/api/v1/action-proposals/some-id/queue")
+    def test_action_proposals_queue_requires_api_key(self, tmp_path, unauth_client):
+        r = unauth_client.post("/api/v1/action-proposals/some-id/queue")
         assert r.status_code == 401
 
-    def test_action_proposals_refresh_requires_api_key(self, tmp_path, client):
-        r = client.post("/api/v1/action-proposals/some-batch/refresh")
+    def test_action_proposals_refresh_requires_api_key(self, tmp_path, unauth_client):
+        r = unauth_client.post("/api/v1/action-proposals/some-batch/refresh")
         assert r.status_code == 401
 
 

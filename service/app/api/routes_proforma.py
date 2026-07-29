@@ -5164,6 +5164,326 @@ def get_draft_reconciliation(draft_id: int) -> JSONResponse:
     return JSONResponse(report)
 
 
+# ── 2B: manual wFirma document linking (resolve preview + confirm write) ───────
+# Extends A2 read-only reconciliation with an operator-driven link of an EXISTING
+# wFirma document to a proforma-derived draft. NO wFirma write anywhere: resolve is
+# read-only; confirm persists only the LOCAL remote-reference onto proforma_drafts.
+
+class _ResolveWfirmaDocumentReq(_BaseModel):
+    """Body for the READ-ONLY preview. document_type currently "invoice" only
+    (A1 compares an invoice plan vs invoice XML; proforma-document linking is a
+    separate approved slice). Exactly ONE of wfirma_id / full_number."""
+    document_type: str = "invoice"
+    wfirma_id:     Optional[str] = ""
+    full_number:   Optional[str] = ""
+
+
+class _ConfirmWfirmaLinkReq(_BaseModel):
+    """Body for the WRITE confirm. Echoes the resolve identifier + the opaque
+    expected_preview_hash returned by the preview step."""
+    document_type:         str = "invoice"
+    wfirma_id:             Optional[str] = ""
+    full_number:           Optional[str] = ""
+    expected_preview_hash: str = ""
+
+
+# document_type allowlist for 2B (W-4): invoice only in this release.
+_MANUAL_LINK_DOC_TYPES = ("invoice",)
+
+
+def _resolve_manual_link_remote_id(document_type: str, wfirma_id: str,
+                                   full_number: str):
+    """Validate + resolve the operator-supplied remote document identifier.
+
+    Returns (remote_id, resolved_fullnumber). Raises HTTPException on any
+    failure. Read-only (find_invoices_by_fullnumber issues GET only). W-6/W-7:
+    exactly-one-of, numeric-id (path-injection defense), 0/many → refused.
+    """
+    wid = (wfirma_id or "").strip()
+    num = (full_number or "").strip()
+    if wid and num:
+        raise HTTPException(status_code=422,
+            detail="send either wfirma_id or full_number — not both")
+    if not wid and not num:
+        raise HTTPException(status_code=422,
+            detail="one of wfirma_id or full_number is required")
+    if wid:
+        if not wid.isdigit():
+            raise HTTPException(status_code=422,
+                detail=f"wfirma_id {wid!r} is not a numeric wFirma id")
+        return wid, ""
+    # full_number → immutable id via a read-only lookup (must be unique)
+    try:
+        matches = wfirma_client.find_invoices_by_fullnumber(num)
+    except Exception as exc:
+        raise HTTPException(status_code=502,
+            detail=f"invoice-number lookup failed: {type(exc).__name__}: {exc}")
+    if not matches:
+        raise HTTPException(status_code=404,
+            detail=f"no wFirma document carries number {num!r}")
+    if len(matches) > 1:
+        raise HTTPException(status_code=409,
+            detail=(f"number {num!r} is ambiguous — it matches "
+                    f"{len(matches)} documents; supply the wFirma id instead"))
+    resolved = (matches[0].get("id") or "").strip()
+    if not resolved.isdigit():
+        raise HTTPException(status_code=422,
+            detail=f"number {num!r} resolved to a non-numeric id — refusing")
+    return resolved, (matches[0].get("fullnumber") or num)
+
+
+def _manual_link_expected_plan(draft):
+    """Rebuild the EXPECTED FinalInvoicePlan for the manual-link preview, from the
+    draft's SOURCE proforma. Mirrors _reconciliation_expected_plan; separated by
+    name so A2 and 2B injection sites are distinguishable. Read-only. Injected into
+    the service so document_reconciler never imports this api layer.
+    Returns (plan, source_hash)."""
+    from ..services import proforma_to_invoice as _p2i
+    source_xml = wfirma_client.fetch_invoice_xml(draft.wfirma_proforma_id)
+    snap = _p2i.parse_proforma_xml(source_xml)
+    cand = _build_convert_candidate(draft, snap)
+    return cand["plan"], cand.get("core_hash", "")
+
+
+@router.post("/draft/{draft_id}/resolve-wfirma-document", dependencies=[_auth])
+def resolve_wfirma_document(draft_id: int,
+                            body: _ResolveWfirmaDocumentReq) -> JSONResponse:
+    """2B — READ-ONLY preview of linking a remote wFirma document to a draft.
+
+    NO flag gate (performs ZERO writes). NO wFirma write. Resolves the operator
+    identifier, rebuilds the expected plan from the draft's source proforma,
+    fetches the remote document read-only, and returns the comparison view-model
+    + an opaque preview_hash (the confirm round-trip token; never rendered in UI).
+
+    HTTP mapping: bad document_type / body → 422; draft missing → 404; draft with
+    no wFirma proforma → 422; number 0/many → 404/409; upstream failure → 502.
+    """
+    doc_type = (body.document_type or "").strip().lower()
+    if doc_type not in _MANUAL_LINK_DOC_TYPES:
+        raise HTTPException(status_code=422,
+            detail="document_type must be 'invoice' in this release")
+
+    remote_id, resolved_fullnumber = _resolve_manual_link_remote_id(
+        doc_type, body.wfirma_id or "", body.full_number or "")
+
+    db = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    if not getattr(draft, "wfirma_proforma_id", None):
+        raise HTTPException(status_code=422,
+            detail=("draft has no linked wFirma proforma — it must be posted to "
+                    "wFirma before a document can be linked"))
+
+    from ..services import document_reconciler as _drec
+    try:
+        report = _drec.build_manual_link_preview(
+            draft_id,
+            remote_document_id=remote_id,
+            document_type=doc_type,
+            db_path=db,
+            build_expected_plan=_manual_link_expected_plan,
+        )
+    except Exception as exc:   # never 500 on an upstream/data failure — map to 502
+        raise HTTPException(status_code=502,
+            detail=(f"resolve-wfirma-document upstream unavailable: "
+                    f"{type(exc).__name__}: {exc}"))
+
+    response = dict(report)
+    response["ok"] = True
+    # human-readable number the operator already knows — never the raw wfirma id.
+    if resolved_fullnumber:
+        response["remote_fullnumber"] = resolved_fullnumber
+    return JSONResponse(response)
+
+
+@router.post("/draft/{draft_id}/confirm-wfirma-link", dependencies=[_auth_write])
+def confirm_wfirma_link(
+    draft_id:     int,
+    body:         _ConfirmWfirmaLinkReq,
+    x_operator:   Optional[str] = Header(None, alias="X-Operator"),
+    pz_session:   Optional[str] = Cookie(default=None),
+) -> JSONResponse:
+    """2B — WRITE; privileged (_auth_write) + flag-gated
+    (wfirma_manual_document_link_enabled default False → 503).
+
+    Re-fetches remote, rebuilds the expected plan, recomputes preview_hash, and
+    REFUSES on any drift (409). Enforces the eligibility + conflict gates, then
+    persists the remote-document identity onto proforma_drafts via the existing
+    writer and appends ONE typed audit event. NO wFirma write.
+
+    Eligibility (W-1, Lesson N): the draft must carry wfirma_proforma_id and must
+    not be in an EDITABLE state — a posted proforma already passed the post-time
+    product-code billing true-blocker and its lines are frozen, so manual linking
+    records an already-existing document without new fiscal exposure.
+
+    Conflict (W-2): same remote id already linked → noop (no write, no event);
+    different id already linked → blocked (409); the document is the issued
+    invoice on another link → blocked (409). Replacement is not implemented.
+    """
+    if not settings.wfirma_manual_document_link_enabled:
+        raise HTTPException(status_code=503,
+            detail=("Manual wFirma document linking is disabled "
+                    "(wfirma_manual_document_link_enabled=false). Set "
+                    "WFIRMA_MANUAL_DOCUMENT_LINK_ENABLED=true to enable."))
+
+    # Resolve the session user at REQUEST time (the helper is defined later in this
+    # module, so it cannot be referenced in the signature's Depends default, which
+    # is evaluated at module-load time).
+    session_user = _get_current_user_optional(pz_session)
+    operator = (
+        ((session_user or {}).get("full_name") or "").strip()
+        or ((session_user or {}).get("email") or "").strip()
+        or (x_operator or "").strip()
+    )
+    if not operator:
+        return JSONResponse({"ok": False, "status": "blocked",
+            "blocking_reasons": ["operator attribution required — authenticate "
+                                 "with a session or send X-Operator"]},
+            status_code=400)
+
+    doc_type = (body.document_type or "").strip().lower()
+    if doc_type not in _MANUAL_LINK_DOC_TYPES:
+        raise HTTPException(status_code=422,
+            detail="document_type must be 'invoice' in this release")
+    expected_ph = (body.expected_preview_hash or "").strip()
+    if not expected_ph:
+        raise HTTPException(status_code=422,
+            detail="expected_preview_hash is required")
+
+    remote_id, resolved_fullnumber = _resolve_manual_link_remote_id(
+        doc_type, body.wfirma_id or "", body.full_number or "")
+
+    db = _proforma_db_path()
+    draft = pildb.get_draft_by_id(db, draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    if not getattr(draft, "wfirma_proforma_id", None):
+        raise HTTPException(status_code=422,
+            detail="draft has no linked wFirma proforma")
+    # Positive allowlist (Council): only a posted, not-yet-converted proforma is
+    # linkable. A denylist would silently let cancelled/superseded/posting drafts
+    # through and have their state overwritten to 'converted'.
+    if (getattr(draft, "draft_state", "") or "") not in pildb.LINKABLE_STATES:
+        return JSONResponse({"ok": False, "status": "blocked",
+            "blocking_reasons": [f"draft state {draft.draft_state!r} is not "
+                "linkable — only a posted, not-yet-converted proforma can link an "
+                "existing wFirma document"]},
+            status_code=409)
+
+    # ── Drift check (W-5): re-derive and recompute the hash ──────────────────
+    from ..services import document_reconciler as _drec
+    try:
+        preview = _drec.build_manual_link_preview(
+            draft_id,
+            remote_document_id=remote_id,
+            document_type=doc_type,
+            db_path=db,
+            build_expected_plan=_manual_link_expected_plan,
+        )
+    except Exception as exc:   # never 500 on an upstream/data failure — map to 502
+        raise HTTPException(status_code=502,
+            detail=(f"upstream unavailable during re-check: "
+                    f"{type(exc).__name__}: {exc}"))
+    if preview.get("preview_hash") != expected_ph:
+        return JSONResponse({"ok": False, "status": "drift",
+            "error": ("the remote document or the local draft changed since the "
+                      "preview was loaded — reload the preview before confirming")},
+            status_code=409)
+
+    # ── Conflict policy (W-2): read-then-check BEFORE any persist ─────────────
+    existing_iid = (getattr(draft, "wfirma_invoice_id", None) or "").strip()
+    if existing_iid and existing_iid == remote_id:
+        return JSONResponse({"ok": True, "status": "noop", "draft_id": draft_id,
+            "message": "document already linked to this draft"})
+    if existing_iid and existing_iid != remote_id:
+        return JSONResponse({"ok": False, "status": "conflict",
+            "error": ("draft already carries a different linked document — "
+                      "replacement is not supported in this release")},
+            status_code=409)
+    # Cross-draft uniqueness on the CANONICAL owner (proforma_drafts): the same
+    # remote document must not be linked to two drafts. This is the primary guard.
+    other = pildb.get_draft_by_wfirma_invoice_id(db, remote_id, exclude_draft_id=draft_id)
+    if other is not None:
+        return JSONResponse({"ok": False, "status": "conflict",
+            "error": ("this wFirma document is already linked to another draft — "
+                      "the same document cannot be linked twice")},
+            status_code=409)
+    # Secondary guard: a live (pending) or completed (issued) conversion elsewhere
+    # also claims this invoice — pending is a recoverable in-flight attempt and
+    # must block too (not just issued).
+    existing_link = pildb.get_link_by_invoice(db, remote_id)
+    if existing_link is not None and (existing_link.status or "") in ("pending", "issued"):
+        return JSONResponse({"ok": False, "status": "conflict",
+            "error": ("this wFirma document is already the invoice on another "
+                      f"proforma conversion link (status {existing_link.status!r})")},
+            status_code=409)
+
+    # ── Persist LOCAL remote-reference via the single writer (no direct SQL) ──
+    try:
+        from ..services.conversion_persistence import persist_invoice_to_draft
+        persist_invoice_to_draft(
+            db_path=db,
+            draft_id=draft_id,
+            wfirma_invoice_id=remote_id,
+            wfirma_invoice_number=resolved_fullnumber or "",
+        )
+    except sqlite3.IntegrityError:
+        # The uq_pd_wfirma_invoice_id partial-unique index rejected the write:
+        # a concurrent confirm linked this same wFirma document to another draft
+        # in the TOCTOU window after our pre-flight SELECT. This is a genuine
+        # conflict, not a retryable failure — return the same 409 the pre-flight
+        # guard would have (2B F1).
+        log.warning("[confirm_wfirma_link] cross-draft uniqueness hit for "
+                    "draft %s / invoice %s (concurrent link)", draft_id, remote_id)
+        return JSONResponse({"ok": False, "status": "conflict",
+            "error": ("this wFirma document was linked to another draft "
+                      "concurrently — the same document cannot be linked twice")},
+            status_code=409)
+    except Exception as exc:
+        log.error("[confirm_wfirma_link] persist failed for draft %s: %s",
+                  draft_id, exc)
+        return JSONResponse({"ok": False, "status": "error", "retryable": True,
+            "error": f"persist failed: {type(exc).__name__}"}, status_code=503)
+
+    # ── ONE typed audit event (primary: draft-event log; append-only) ────────
+    try:
+        pildb._record_draft_event(
+            db, draft_id=draft_id,
+            event="wfirma_document_manually_linked",
+            detail_json=json.dumps({
+                "remote_document_id":     remote_id,
+                "remote_document_number": resolved_fullnumber or "",
+                "document_type":          doc_type,
+                "wfirma_proforma_id":     draft.wfirma_proforma_id or "",
+                "operator":               operator,
+                "wfirma_write":           False,
+            }),
+            operator=operator,
+        )
+    except Exception as _de:
+        log.warning("[confirm_wfirma_link] draft-event append skipped: %s", _de)
+    # audit.json timeline (secondary, best-effort)
+    try:
+        from ..services.audit_persist import record_wfirma_document_manually_linked
+        record_wfirma_document_manually_linked(
+            settings.storage_root / "outputs" / draft.batch_id / "audit.json",
+            batch_id=draft.batch_id, client_name=draft.client_name,
+            draft_id=draft_id, wfirma_proforma_id=draft.wfirma_proforma_id or "",
+            remote_document_id=remote_id,
+            remote_document_number=resolved_fullnumber or "",
+            document_type=doc_type, operator=operator,
+        )
+    except Exception as _ae:
+        log.warning("[confirm_wfirma_link] audit.json append skipped: %s", _ae)
+
+    return JSONResponse({
+        "ok": True, "status": "linked", "draft_id": draft_id,
+        "document_type": doc_type,
+        "remote_document_number": resolved_fullnumber or "",
+    })
+
+
 @router.get("/draft/{draft_id}", dependencies=[_auth])
 def get_proforma_draft(draft_id: int) -> JSONResponse:
     """Return the full editable payload for a single draft.
@@ -6887,6 +7207,33 @@ from ..services.cpa_product_service import (  # noqa: E402
 )
 
 
+def _unmapped_designs_for_draft(draft: "pildb.ProformaDraft") -> List[str]:
+    """Designs on THIS draft's client that carry a design_no but no
+    product_code — i.e. sales-packing rows dropped from the draft because
+    product_code (required to bill) is missing. Sorted, de-duplicated.
+
+    #1009 — surfacing these is what keeps a draft from being silently empty:
+    the operator sees "N designs unmapped" and a bind path, not a blank list.
+    Read-only. Client scope: contractor_id when present, else client_name.
+    """
+    cid = (draft.client_contractor_id or "").strip()
+    cn  = (draft.client_name or "").strip()
+    out: List[str] = []
+    for r in (ddb.get_sales_packing_lines(draft.batch_id or "") or []):
+        rcid = str(r.get("client_contractor_id") or "").strip()
+        rcn  = str(r.get("client_name") or "").strip()
+        if cid:
+            if rcid != cid:
+                continue
+        elif cn and rcn != cn:
+            continue
+        dn = str(r.get("design_no") or "").strip()
+        pc = str(r.get("product_code") or "").strip()
+        if dn and not pc and dn not in out:
+            out.append(dn)
+    return sorted(out)
+
+
 def _derive_draft_readiness(
     draft: "pildb.ProformaDraft", *, intent: str,
 ) -> Dict[str, Any]:
@@ -7378,6 +7725,26 @@ def _derive_draft_readiness(
         warnings.append(f"design bridge summary unavailable: "
                         f"{type(exc).__name__}: {exc}")
 
+    # #1009 — a draft must never be SILENTLY empty because packing designs
+    # carry no product_code. See _unmapped_designs_for_draft. Read-only;
+    # fail-open (a scan error is a warning, never a false pass).
+    try:
+        unmapped_designs = _unmapped_designs_for_draft(draft)
+    except Exception as exc:
+        unmapped_designs = []
+        warnings.append(f"unmapped-design scan unavailable: "
+                        f"{type(exc).__name__}: {exc}")
+    if unmapped_designs:
+        _ud_sample = (", ".join(sorted(unmapped_designs)[:10])
+                      + ("…" if len(unmapped_designs) > 10 else ""))
+        _add(
+            f"{len(unmapped_designs)} packing design(s) carry no product code, "
+            f"so their lines were dropped from this draft: {_ud_sample}",
+            "Bind each design to its product code in Product Master, then use "
+            "Re-check mapping (Product Master) — the lines will populate.",
+            "PRODUCT",
+        )
+
     return {
         "ready":             not blockers,
         "intent":            intent,
@@ -7388,6 +7755,7 @@ def _derive_draft_readiness(
         "warnings":          warnings,
         "ambiguous_designs": ambiguous_designs,
         "resolved_designs":  resolved_designs,
+        "unmapped_designs":  sorted(unmapped_designs),
         "vat_resolution":    _vat_resolution,
         "duplicate_product_codes": duplicate_product_codes,
         "product_authority_available": product_authority_available,
@@ -8541,6 +8909,9 @@ def enrich_proforma_draft_lines(
     return JSONResponse({
         "ok":             True,
         "draft_id":       draft_id,
+        # #1009 — line_count lets the UI report honestly: 0 lines means the
+        # draft is empty (designs unmapped), NOT a successful "0 enriched".
+        "line_count":     len(lines),
         "enriched_count": n_hit,
         "missing_count":  n_miss,
         "draft":          _draft_to_full(refreshed),
@@ -9370,8 +9741,23 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
         existing_charges = []
     applied_types = {(c.get("charge_type") or "").lower() for c in existing_charges}
 
+    # Saved-draft service IDs, per charge type, for a read-only contextual
+    # fallback when Customer Master lacks the service ID. IDENTITY ONLY — the
+    # amount is always resolved from Customer Master. Never written back to CM.
+    saved_svc: Dict[str, Dict[str, Any]] = {}
+    for _ch in existing_charges:
+        _ct = (_ch.get("charge_type") or "").lower()
+        _sid = _ch.get("wfirma_service_id")
+        if _ct and _sid and _ct not in saved_svc:
+            saved_svc[_ct] = {"id": str(_sid), "label": _ch.get("label")}
+
     # Freight suggestion
-    freight_result = pick_freight(cm, draft_currency)
+    _fr_saved = saved_svc.get("freight") or {}
+    freight_result = pick_freight(
+        cm, draft_currency,
+        draft_service_id=_fr_saved.get("id"),
+        draft_service_label=_fr_saved.get("label"),
+    )
     if freight_result.get("ok"):
         from decimal import Decimal as _Dec
         freight_entry = {
@@ -9381,6 +9767,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "currency":        draft_currency,
             "label":           freight_result.get("label"),
             "wfirma_service_id": freight_result["wfirma_service_id"],
+            "service_id_source": freight_result.get("service_id_source"),
             "blocked_reason":  None,
         }
     else:
@@ -9394,6 +9781,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "currency":        None,
             "label":           None,
             "wfirma_service_id": None,
+            "service_id_source": freight_result.get("service_id_source"),
             "blocked_reason":  freight_result.get("reason", "no freight data"),
             "freight_authority": _freight_authority_block(cm, freight_result),
         }
@@ -9408,7 +9796,12 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
         _Dec(str(ln.get("qty", 0) or 0)) * _Dec(str(ln.get("unit_price", 0) or 0))
         for ln in lines
     )
-    ins_result = compute_insurance_suggestion(cm, draft_currency, sales_total)
+    _ins_saved = saved_svc.get("insurance") or {}
+    ins_result = compute_insurance_suggestion(
+        cm, draft_currency, sales_total,
+        draft_service_id=_ins_saved.get("id"),
+        draft_service_label=_ins_saved.get("label"),
+    )
     if ins_result.get("ok"):
         ins_entry = {
             "available":       True,
@@ -9417,6 +9810,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "currency":        draft_currency,
             "label":           ins_result.get("label"),
             "wfirma_service_id": ins_result["wfirma_service_id"],
+            "service_id_source": ins_result.get("service_id_source"),
             "formula_basis":   ins_result.get("formula_basis"),
             "blocked_reason":  None,
         }
@@ -9428,6 +9822,7 @@ def suggest_service_charges(draft_id: int) -> JSONResponse:
             "currency":        None,
             "label":           None,
             "wfirma_service_id": None,
+            "service_id_source": ins_result.get("service_id_source"),
             "formula_basis":   None,
             "blocked_reason":  ins_result.get("reason", "no insurance data"),
         }
@@ -9498,23 +9893,65 @@ def apply_service_charges(
         _Dec(str(ln.get("qty", 0) or 0)) * _Dec(str(ln.get("unit_price", 0) or 0))
         for ln in lines
     )
+    # WRITE PATH — the persisted charge AMOUNT always comes from Customer Master
+    # (the sole amount authority). The wFirma service *identity* is resolved with
+    # the SAME fixed order the read-only advisory (suggest_service_charges) uses,
+    # so explicit Apply never rejects an identity the preview accepted — no split
+    # authority between preview and execution:
+    #   1. Customer Master service id           → "customer_master"
+    #   2. same-draft, same-charge-type saved id → "saved_draft_fallback"
+    #   3. neither                               → blocked / skipped ("unresolved")
+    # The saved-draft fallback supplies IDENTITY ONLY and is NEVER written back to
+    # Customer Master. Such an id can only exist when a charge of that type is
+    # already on the draft, so the fallback path is exactly the "re-apply from
+    # Customer Master onto an existing charge" case — handled below as an in-place
+    # amount update that PRESERVES the existing (draft-sourced) service identity.
+    saved_svc: Dict[str, Dict[str, Any]] = {}
+    existing_by_type: Dict[str, Dict[str, Any]] = {}
+    for _ch in existing_charges:
+        _ct = (_ch.get("charge_type") or "").lower()
+        if not _ct:
+            continue
+        if _ct not in existing_by_type:
+            existing_by_type[_ct] = _ch
+        _sid = _ch.get("wfirma_service_id")
+        if _sid and _ct not in saved_svc:
+            saved_svc[_ct] = {"id": str(_sid), "label": _ch.get("label")}
+
     suggestions: Dict[str, Any] = {}
     if "freight" in apply_types:
-        suggestions["freight"] = pick_freight(cm, draft_currency)
+        _fr = saved_svc.get("freight") or {}
+        suggestions["freight"] = pick_freight(
+            cm, draft_currency,
+            draft_service_id=_fr.get("id"), draft_service_label=_fr.get("label"),
+        )
     if "insurance" in apply_types:
-        suggestions["insurance"] = compute_insurance_suggestion(cm, draft_currency, sales_total)
+        _in = saved_svc.get("insurance") or {}
+        suggestions["insurance"] = compute_insurance_suggestion(
+            cm, draft_currency, sales_total,
+            draft_service_id=_in.get("id"), draft_service_label=_in.get("label"),
+        )
 
     applied: list = []
     skipped: list = []
     current_updated_at = expected
 
     for ctype in apply_types:
-        if ctype in applied_types_now:
-            skipped.append({"charge_type": ctype, "reason": f"{ctype} charge already exists on this draft"})
-            continue
         suggestion = suggestions.get(ctype, {})
         if not suggestion.get("ok"):
+            # Identity unresolved (no CM id AND no saved-draft id) OR no CM amount.
             skipped.append({"charge_type": ctype, "reason": suggestion.get("reason", f"no {ctype} data")})
+            continue
+
+        source  = suggestion.get("service_id_source")
+        already = ctype in applied_types_now
+
+        # A charge of this type already exists AND its identity resolved from
+        # Customer Master (not the draft fallback): idempotent skip — re-applying
+        # must not clobber the standing persisted charge. Preserves the one-per-
+        # type idempotency contract (test_apply_already_existing_type_skipped).
+        if already and source != "saved_draft_fallback":
+            skipped.append({"charge_type": ctype, "reason": f"{ctype} charge already exists on this draft"})
             continue
 
         charge = {
@@ -9527,24 +9964,72 @@ def apply_service_charges(
             # the resulting amount is a frozen 'calculated' resolution.
             "resolution":        commercial_charge_authority.RESOLUTION_CALCULATED,
         }
-        if ctype == "insurance" and suggestion.get("formula_basis"):
-            charge["formula_basis"] = suggestion["formula_basis"]
+        if ctype == "insurance":
+            charge["formula_basis"] = suggestion.get("formula_basis")
 
         try:
-            refreshed = pildb.add_draft_service_charge(
-                _proforma_db_path(),
-                int(draft_id),
-                charge,
-                operator,
-                current_updated_at,
-            )
-            # Chain updated_at so next add uses the refreshed timestamp
+            if already:
+                # FALLBACK RE-APPLY: Customer Master has no service id for this
+                # type, but the draft already carries one. Honour the SAME identity
+                # the preview shows — update the existing charge's amount FROM
+                # Customer Master in place, PRESERVING the existing service
+                # identity. This is the only explicit-Apply write that touches an
+                # existing charge, and it runs solely because the operator
+                # explicitly selected this charge type in the Apply request.
+                existing_charge = existing_by_type.get(ctype) or {}
+                try:
+                    charge_id = int(existing_charge.get("charge_id") or 0)
+                except (TypeError, ValueError):
+                    charge_id = 0
+                if charge_id <= 0:
+                    # DEFENSIVE: a fallback re-apply can only target a persisted
+                    # charge with a valid charge_id. update_draft_service_charge
+                    # matches by ``int(c.get("charge_id") or 0) == charge_id``, so
+                    # calling it with 0 would silently match a malformed row that
+                    # carries no charge_id. Never do that — fail safe, skip, and
+                    # do NOT treat malformed persisted draft data as a valid
+                    # fallback target.
+                    skipped.append({
+                        "charge_type": ctype,
+                        "reason": f"{ctype} charge is missing a valid charge_id; "
+                                  "cannot update in place",
+                    })
+                    continue
+                refreshed = pildb.update_draft_service_charge(
+                    _proforma_db_path(),
+                    int(draft_id),
+                    charge_id,
+                    {
+                        "amount":            charge["amount"],
+                        "currency":          draft_currency,
+                        "wfirma_service_id": charge["wfirma_service_id"],
+                        "resolution":        commercial_charge_authority.RESOLUTION_CALCULATED,
+                        "formula_basis":     charge.get("formula_basis"),
+                    },
+                    operator,
+                    current_updated_at,
+                )
+            else:
+                refreshed = pildb.add_draft_service_charge(
+                    _proforma_db_path(),
+                    int(draft_id),
+                    charge,
+                    operator,
+                    current_updated_at,
+                )
+            # Chain updated_at so the next write uses the refreshed timestamp
             current_updated_at = refreshed.updated_at or current_updated_at
             applied_types_now.add(ctype)
-            applied.append({**charge, "charge_id": next(
-                c["charge_id"] for c in (json.loads(refreshed.service_charges_json or "[]") or [])
-                if c.get("charge_type") == ctype
-            )})
+            _persisted = next(
+                (c for c in (json.loads(refreshed.service_charges_json or "[]") or [])
+                 if c.get("charge_type") == ctype),
+                {},
+            )
+            applied.append({
+                **charge,
+                "charge_id":         _persisted.get("charge_id"),
+                "service_id_source": source,
+            })
             d = refreshed  # keep in sync for final response
         except (pildb.DraftNotFound, pildb.DraftConflict, pildb.DraftNotEditable) as exc:
             raise HTTPException(status_code=409, detail=str(exc))

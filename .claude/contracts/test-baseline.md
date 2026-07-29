@@ -9,7 +9,7 @@ Referenced by: `deploy_qa_reviewer.md`, `deploy_lead_coordinator.md`, `deploy.md
 
 | Suite | File / pattern | Required pass count | Failure action |
 |-------|---------------|---------------------|----------------|
-| PZ regression | `tests/test_pz_*.py` | **257** | Unconditional deploy block |
+| PZ regression | `tests/test_pz_*.py` | **260** | Unconditional deploy block |
 | Carrier suite | `tests/test_carrier_*.py` | **604** | Unconditional deploy block |
 
 Any test ERROR (not just FAILED) is also an unconditional block.
@@ -25,15 +25,24 @@ unconditional block.
 
 | Test | Tracking | Reason |
 |------|----------|--------|
-| `test_pz_batch.py::test_save_json_csv_ui_round_trip` | Issue #613 | Windows `csv.writer` CRLF / `splitlines()` round-trip artifact (asserts 8 == 4). Proven pre-existing on clean `origin/main`; not a regression. |
-| `test_ai_gateway_contract.py::test_call_returns_model_response_text` | Issue #802 | `AttributeError: app.services.ai_redactor` — patch target mismatch. `ai_gateway.py` imports `ai_redactor` with a local binding (`from . import ai_redactor as redactor`); the patch targets module-level attribute on `app.services` which does not exist. Pre-existing on `origin/main`; not introduced by any Phase 2/3 PR. |
 | `test_carrier_config_defaults.py::test_carrier_live_allowlist_default_is_empty` | env: DHL creds set | ENVIRONMENTAL — asserts the *code default* of `carrier_live_allowlist`; fails only when `CARRIER_LIVE_ALLOWLIST` is set in the environment (as it is on any DHL-configured host incl. production `C:\PZ` and this review clone). PROVEN environmental: with DHL/carrier env vars cleared, `test_carrier_config_defaults.py` = 9/9 passed. Not a code regression. |
 | `test_carrier_config_defaults.py::test_dhl_express_api_key_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_api_key is None`; `DHL_EXPRESS_API_KEY` is set in the deploy/review env → returns the live key. Passes with env cleared (see above). |
 | `test_carrier_config_defaults.py::test_dhl_express_api_secret_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_api_secret is None`; `DHL_EXPRESS_API_SECRET` set in env. Passes with env cleared. |
 | `test_carrier_config_defaults.py::test_dhl_express_account_number_default_is_none` | env: DHL creds set | ENVIRONMENTAL — asserts `Settings().dhl_express_account_number is None`; `DHL_EXPRESS_ACCOUNT_NUMBER` set in env. Passes with env cleared. |
+| `test_proforma_authority_ui.py::TestCanonicalDescription::test_labelled_display_only_not_wfirma_line_name` | #1015 | MISSING UI — the "Display only" / "design_no / product_code" label is absent from V1 `shipment-detail.html` (frozen, Lesson F). Outside both metered suites; no floor impact. |
+| `test_proforma_authority_ui.py::TestBlockedRecordsVisible::test_cm_link_only_when_contractor_id` | #1015 | MISSING UI — the cid-gated customer-master link (`"cid &&"` + `"customer-master"`) is not wired in the blocked-records panel of `shipment-detail.html`. Outside metered suites. |
+| `test_proforma_policy_phase7.py::test_html_has_btn_draft_intelligence` | #1015 | MISSING UI — the draft-intelligence panel is not built in any `app/static/` file; it would surface `detect_operator_override_mismatches` (backend shipped in #1014). Outside metered suites. |
+| `test_proforma_policy_phase7.py::test_html_has_intelligence_panel_testid` | #1015 | MISSING UI — `draft-intelligence-panel` testid absent from all `app/static/`. Outside metered suites. |
+| `test_proforma_policy_phase7.py::test_html_anomaly_row_testid` | #1015 | MISSING UI — `draft-anomaly-row` testid absent from all `app/static/`. Outside metered suites. |
+| `test_proforma_policy_phase7.py::test_html_suggestion_row_testid` | #1015 | MISSING UI — `draft-suggestion-row` testid absent from all `app/static/`. Outside metered suites. |
 
-The PZ suite reports `1 failed, 257 passed` (258 collected). The gate accepts **only** the
-documented failure(s). When #613 is fixed: remove this row and bump the PZ required count to 258.
+The PZ metered suite (`tests/test_pz_*.py`) has **no documented failures** as of the #613 fix
+(PR #1006). Required count bumped 257→258 (the +1 attributable to #613), then **258→260
+(2026-07-25) reconciling the long-flagged +2 drift** — the 2 additional `test_pz_*` tests
+introduced by later PRs are now folded into the floor. Fresh clean-env measurement on `main`
+`48cdab25`: **260 passed / 0 failed / 0 errors**, so the floor now equals measured (no remaining
+drift). Issue #802 (`test_ai_gateway_contract`) was likewise fixed
+(PR #1000) and its stale exclusion removed; it is outside the metered PZ pattern, so no floor impact.
 
 **Carrier env-conditional exclusions (4, reconciled 2026-07-09):** the four
 `test_carrier_config_defaults.py` rows above assert the *code defaults are unset*; they fail on any
@@ -48,10 +57,13 @@ was not env-conditional but full-suite teardown contamination leaking from four 
 broken by PR #824 (`test_carrier_live_adapter_gate.py` ×3 receiver-phone gate;
 `test_carrier_awb_modal_fields.py::test_receiver_details_email_absent_*` empty-string→omit). With
 those four fixed (test-only), `box_types` and `test_shipment_request_body_forwards_product_code` no
-longer error (0 errors across 3 full-suite runs). One carrier test is now `skip`-superseded in-source
-rather than baseline-listed: `test_carrier_shipment_db.py::test_tracking_ref_not_in_schema`
-(operator decision 2026-07-06 persists `tracking_ref`; surviving AWB-exclusion invariant covered by
-`test_live_result_insert_raises`).
+longer error (0 errors across 3 full-suite runs). The carrier suite now carries **no skips**:
+`test_carrier_shipment_db.py::test_tracking_ref_not_in_schema` was `skip`-superseded in-source from
+2026-07-09 and **deleted 2026-07-19** (see history row) — `tracking_ref` has been a persisted column
+since PR #819, so the assertion was provably false rather than merely unproven. The surviving
+AWB-exclusion invariant (live results are never inserted) is covered by
+`test_carrier_shipment_db.py::test_live_result_insert_raises`, and the persisted-column rationale is
+documented at `service/app/services/carrier/persistence/shipment_db.py:48`.
 
 ---
 
@@ -70,6 +82,9 @@ When a new golden batch is committed or a new test is added:
 
 | Date | PZ required | Carrier required | Reason |
 |------|-------------|------------------|--------|
+| 2026-07-25 | 260 | 604 | **PZ floor 258→260 (+2 drift reconciliation); #1021/#1029 add tests outside both metered patterns (zero floor impact).** (1) **Reconciles the long-flagged +2 PZ drift:** `tests/test_pz_*.py` has measured 260 pass since earlier-PR test additions while the floor stayed 258 (kept conservative). Fresh clean-env measurement on `main` `48cdab25`: **260 passed / 0 failed / 0 errors** — floor raised to equal measured, no remaining drift. (2) #1029 added `test_wfirma_client_contract.py::test_http_request_rejects_non_numeric_id_suffix` (+1; guards the URL-encoded `id_suffix` path segment — issue #1028) and #1021 added `test_proforma_mapping_repair_ui.py` + `test_proforma_packing_sync.py` (manual-line preservation + honest re-check + unmapped-designs; 35 pass together in isolation). All three are OUTSIDE `tests/test_pz_*.py` and `tests/test_carrier_*.py` (wfirma/proforma suites), so they contribute **nothing** to either metered floor — recorded per the update protocol (same convention as the #1015/#927 out-of-pattern rows). Both PRs merged + deployed to prod (`48cdab25`, full parity). Carrier `tests/test_carrier_*.py` **619 passed / 4 documented env fail** (floor 604 unchanged), root golden 160/160. |
+| 2026-07-23 | 258 | 604 | PZ floor 257→258 (+1): Issue #613 (`test_pz_batch.py::test_save_json_csv_ui_round_trip`) FIXED and deployed by PR #1006 (`write_bytes` instead of `write_text` — Windows/py3.9 was doubling the csv `\r\n` into `\r\r\n`). Its known-failing exclusion row is removed per the update protocol. Also removed the stale Issue #802 exclusion (`test_ai_gateway_contract.py::test_call_returns_model_response_text`, fixed by PR #1000) — outside the metered PZ pattern, no floor impact. Both were merged without their same-commit baseline update; this row reconciles both. Fresh evidence on `main`: `tests/test_pz_*.py` **260 passed** (258 floor kept conservative below measured; +2 vs 258 is prior drift from later-PR test additions, flagged for reconciliation), root golden 160/160, Carrier 619 pass / 4 documented env fail. This file changed as a post-deploy follow-up (the fix PRs predated it). |
+| 2026-07-19 | 257 | 604 | **No floor change — dead-test cleanup of the obsolete `tracking_ref` AWB-exclusion invariant (GATE-4 SCHEDULED disposition, operator-ratified 2026-07-19).** `tracking_ref` has been a persisted column since PR #819 (squash `ae6c73b9`, operator decision 2026-07-06 duplicate-AWB incident fix — idempotency replay returns the stored result with zero adapter calls), so both tests asserting `"tracking_ref" not in row` asserted a **provably false** invariant. Deleted: (1) `test_carrier_shipment_db.py::test_tracking_ref_not_in_schema` — carried `@pytest.mark.skip` since the 2026-07-09 reconciliation; a skip that can never be un-skipped is dead code. (2) `test_e2e_carrier_shadow_create.py::test_shipment_db_row_has_no_tracking_ref_column` — was **actively FAILING on `main` and undocumented** (not listed in any exclusion row); outside both metered patterns, so it never tripped a gate. **Floor stays 604: deleting a *skipped* test removes 0 passes.** Fresh creds-set measurement on this branch: carrier `tests/test_carrier_*.py` = **619 passed / 4 documented env fail (`test_carrier_config_defaults.py`) / 0 skipped / 0 errors** — pass count identical to the 2026-07-18 row's measured 619, with the 1 skip now gone; `test_e2e_carrier_shadow_create.py` 17/17 (was 16 pass + 1 fail). Surviving AWB-exclusion invariant `test_live_result_insert_raises` passes and is untouched. No production code changed. Test files + this file changed in the same commit per update protocol. |
 | 2026-07-18 | 257 | 604 | Carrier floor 584→604 (+20): new `test_carrier_operator_attribution.py` adds X-Operator booking attribution coverage (DB `booked_by` column, coordinator fresh/replay preservation, route header→audit→response, sanitiser, do-not-use header fallback). Test file + this file changed in the same commit per update protocol. Bump is the minimal delta attributable to the new file on top of the recorded 584 floor; fresh creds-set full-suite evidence measured **619 pass / 4 documented env fail (`test_carrier_config_defaults.py`) / 1 skip / 0 errors**, so 604 stays conservative below measured. PZ 257 pass / 1 documented #613 fail; root golden 160/160. |
 | 2026-07-16 | 257 | 584 | GATE-4 SCHEDULED disposition from PR #925 deploy gate (no floor change): registered `test_proforma_to_invoice_routes.py::test_dashboard_renders_two_step_convert_flow` as a known-failing exclusion (Issue #927) — stale V1 shipment-detail.html string pins, proven pre-existing on `origin/main` `28784270`, outside both metered suites. Gate-time fresh evidence for #925: PZ 257 pass / 1 documented #613 fail; Carrier 584 pass / 4 documented env fails / 1 skip / 0 err. |
 | 2026-07-16 | 257 | 584 | **Removed** the Issue #927 exclusion row (no floor change): `test_dashboard_renders_two_step_convert_flow` DELETED — its stale V1 shipment-detail.html pins were repointed at the canonical V2 convert surface (`app/static/v2/proforma-detail.jsx` ConvertToInvoiceModal) as 8 new pins in `test_convert_modal_truth.py` §"Issue #927" (entry button, two-step preview→execute, exact confirm token YES_CREATE_FINAL_INVOICE_FROM_PROFORMA, irreversibility warning + acknowledgement checkbox, execute gating, single execute call site). Suite is outside both metered PZ/Carrier patterns; test file + this file changed in the same commit per update protocol. Closes #927. |

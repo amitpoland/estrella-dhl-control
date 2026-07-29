@@ -89,7 +89,7 @@ def test_incoterm_and_insurance_eur_settable(tmp_path):
 def test_source_grep_phase7_columns():
     """Schema additions must appear in the source file."""
     src = Path(__file__).resolve().parent.parent / "app" / "services" / "proforma_invoice_link_db.py"
-    content = src.read_text()
+    content = src.read_text(encoding="utf-8")
     assert "fx_rate_date" in content
     assert "fx_rate_source" in content
     assert "incoterm" in content
