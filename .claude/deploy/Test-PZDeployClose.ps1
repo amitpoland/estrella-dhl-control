@@ -31,6 +31,36 @@ $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $results = @()
 function Add-Result { param([string]$Name, [bool]$Ok, [string]$Detail) $script:results += [pscustomobject]@{ Check = $Name; Ok = $Ok; Detail = $Detail } }
 
+# The health endpoints are authenticated (require_api_key / X-API-Key) BY DESIGN.
+# An anonymous probe returns 401 -- correct app behaviour, NOT a deploy failure.
+# The validator must therefore authenticate as a legitimate caller: it reads the
+# SAME credential the service loads (health_auth_env_var out of health_auth_env_file,
+# the runtime .env) and presents it as the X-API-Key request header. The value is
+# used ONLY as a header; it is NEVER written to a check detail, to Write-Host, or to
+# any artifact. If the credential cannot be obtained the health check FAILS EXPLICITLY
+# rather than silently passing an endpoint it could not verify. Weakening the endpoint
+# to make this check pass is forbidden -- fix the credential source, never the route.
+function Get-HealthApiKey {
+    param($Cfg)
+    # Precedence: an explicit operator-shell override, then the runtime .env.
+    if ($env:PZ_HEALTH_API_KEY) { return $env:PZ_HEALTH_API_KEY }
+    $envFile = $Cfg.health_auth_env_file
+    $varName = $Cfg.health_auth_env_var
+    if (-not $envFile -or -not $varName) { return $null }
+    if (-not (Test-Path $envFile)) { return $null }
+    foreach ($line in Get-Content $envFile -Encoding UTF8) {
+        $t = $line.Trim()
+        if ($t.StartsWith('#')) { continue }
+        $eq = $t.IndexOf('=')
+        if ($eq -lt 1) { continue }
+        # Exact name match so e.g. ANTHROPIC_API_KEY never satisfies API_KEY.
+        if ($t.Substring(0, $eq).Trim() -ne $varName) { continue }
+        $val = $t.Substring($eq + 1).Trim().Trim('"').Trim("'")
+        if ($val) { return $val }
+    }
+    return $null
+}
+
 # 1 - deployed SHA matches expectation (via the version file)
 if (Test-Path $cfg.version_file) {
     # RAW BYTES, deliberately. Get-Content silently strips a UTF-8 BOM that Python's
@@ -81,13 +111,25 @@ Add-Result "protected runtime paths intact" ($missing.Count -eq 0) ("missing: " 
 $svc = Get-Service $cfg.service -ErrorAction SilentlyContinue
 Add-Result "$($cfg.service) Running" ($null -ne $svc -and $svc.Status -eq 'Running') "status=$($svc.Status)"
 
-# 7 - health endpoints respond
+# 7 - health endpoints respond (authenticated -- see Get-HealthApiKey)
+$healthKey = Get-HealthApiKey -Cfg $cfg
 foreach ($u in $cfg.health_urls) {
+    if (-not $healthKey) {
+        Add-Result "health $u" $false "health credential unavailable - cannot authenticate to an X-API-Key-protected endpoint (set PZ_HEALTH_API_KEY, or provision $($cfg.health_auth_env_var) in $($cfg.health_auth_env_file))"
+        continue
+    }
     try {
-        $r = Invoke-WebRequest $u -UseBasicParsing -TimeoutSec 15
+        $r = Invoke-WebRequest $u -Headers @{ "X-API-Key" = $healthKey } -UseBasicParsing -TimeoutSec 15
         Add-Result "health $u" ($r.StatusCode -eq 200) "HTTP $($r.StatusCode)"
     }
-    catch { Add-Result "health $u" $false $_.Exception.Message }
+    catch {
+        # Emit the HTTP status code when the server answered; never the request
+        # (which carries the key). A transport failure has no code -> its message
+        # is safe (it references no header) and is more useful than a bare code.
+        $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+        $detail = if ($code) { "HTTP $code" } else { $_.Exception.Message }
+        Add-Result "health $u" $false $detail
+    }
 }
 
 # 8 - a restorable rollback unit exists for this SHA

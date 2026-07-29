@@ -457,3 +457,74 @@ def test_guard_covers_deploy_config_in_merge_protection():
     assert '".claude/deploy/"' in body, (
         "a config-only PR could repoint runtime paths and redirect /MIR convergence"
     )
+
+
+# --------------------------------------------------- health-endpoint auth (2026-07-29)
+# The read-only validator probed the health endpoints ANONYMOUSLY, but they are
+# authenticated (require_api_key / X-API-Key) BY DESIGN, so both returned 401 and a
+# valid deploy could never close. The fix authenticates the probe with the SAME
+# credential the service loads -- WITHOUT weakening the route and WITHOUT logging the
+# secret. These pins hold that contract in both directions: the endpoint must stay
+# authenticated, and the validator must stay a non-leaking legitimate caller.
+ROUTES_PZ = REPO / "service" / "app" / "api" / "routes_pz.py"
+
+
+def test_health_probe_authenticates_without_weakening_route():
+    val = _read(VALIDATOR)
+    assert "X-API-Key" in val, "the health probe must send an X-API-Key header"
+    assert re.search(r"Invoke-WebRequest[^\n]*-Headers", val), (
+        "the health request must carry the auth header"
+    )
+    # The route the validator hits must remain guarded -- making /health anonymous to
+    # satisfy the validator is the forbidden fix.
+    route = _read(ROUTES_PZ)
+    assert re.search(r'@router\.get\("/health".*dependencies=\[_auth\]', route), (
+        "the /health route must remain authenticated (dependencies=[_auth])"
+    )
+    assert "_auth = Depends(require_api_key)" in route, (
+        "_auth must remain require_api_key; the endpoint may not be made anonymous"
+    )
+
+
+def test_health_credential_source_is_config_not_hardcoded():
+    cfg = json.loads(_read(CONFIG))
+    assert cfg.get("health_auth_env_file"), "config must name the health credential .env"
+    assert cfg.get("health_auth_env_var") == "API_KEY", (
+        "the health credential is the service API_KEY"
+    )
+    val = _read(VALIDATOR)
+    assert "health_auth_env_file" in val and "health_auth_env_var" in val, (
+        "the validator must read the credential source from config keys, not a literal"
+    )
+    assert "PZ_HEALTH_API_KEY" in val, (
+        "an explicit operator-shell env override must be supported"
+    )
+
+
+def test_health_key_is_never_logged():
+    """The credential variable may appear only where the request is built -- never in
+    a result detail or any host/output sink."""
+    val = _read(VALIDATOR)
+    key_var = "$healthKey"
+    assert key_var in val, "the health-auth fix must be present"
+    for line in val.splitlines():
+        if key_var not in line:
+            continue
+        assert not line.strip().startswith("Add-Result"), (
+            f"credential leaked into a result detail: {line!r}"
+        )
+        assert "Write-Host" not in line, f"credential leaked into host output: {line!r}"
+        assert "Write-Output" not in line, f"credential leaked into output: {line!r}"
+
+
+def test_health_probe_fails_explicitly_when_credential_missing():
+    val = _read(VALIDATOR)
+    assert "if (-not $healthKey)" in val, (
+        "there must be an explicit unavailable-credential branch"
+    )
+    idx = val.index("if (-not $healthKey)")
+    seg = val[idx:idx + 400]
+    assert "Add-Result" in seg and "$false" in seg, (
+        "the unavailable-credential branch must record a FAILED result, never a silent pass"
+    )
+    assert "credential unavailable" in val

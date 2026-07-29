@@ -50,6 +50,9 @@
     "http://127.0.0.1:47213/api/v1/health",
     "https://pz.estrellajewels.eu/api/v1/health"
   ],
+  "health_auth_env_file": "C:\\PZ\\.env",
+  "health_auth_env_var": "API_KEY",
+  "_health_auth_note": "The health endpoints are authenticated (require_api_key / X-API-Key) BY DESIGN; an anonymous probe returns 401, which is correct app behaviour, not a deploy failure. The read-only validator authenticates as a legitimate caller by reading the SAME credential the service loads (health_auth_env_var from health_auth_env_file, the runtime .env) and presenting it as the X-API-Key header. Only the SOURCE lives here; the secret VALUE never enters this repo, the validator output, or any artifact. An explicit PZ_HEALTH_API_KEY environment variable (operator shell) overrides this source. The endpoint must NEVER be made anonymous to satisfy the validator.",
   "smoke_endpoints": [
     "/api/v1/carrier/status",
     "/api/v1/designs/",
