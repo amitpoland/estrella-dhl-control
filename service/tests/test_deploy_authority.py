@@ -581,9 +581,11 @@ def test_backup_records_deployment_and_restored_sha_separately():
     seg = _backup_segment(_read(DEPLOY_SCRIPT))
     assert "deployment_sha = $Sha" in seg, "the deployment SHA must be recorded explicitly"
     assert "restored_sha = $restoredSha" in seg, "the pre-deployment SHA must be recorded"
-    # restored_sha is the pre-deployment marker, read BEFORE any mutation.
+    # restored_sha is the pre-deployment marker, read BEFORE any mutation. Anchor to the
+    # actual Set-Content write of unit.json (not the substring "unit.json", whose first hit
+    # is a comment) so a refactor that moved the read after the write cannot silently pass.
     i_read = seg.index("Read-VersionMarker -Path $Cfg.version_file")
-    i_write = seg.index("unit.json")
+    i_write = seg.index('Set-Content (Join-Path $bak "unit.json")')
     assert i_read < i_write, "the pre-deployment marker must be read before unit.json is written"
 
 

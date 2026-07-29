@@ -460,7 +460,7 @@ function Resolve-RestoredSha {
     }
     $restored = if ($fromMeta) { $fromMeta } elseif ($fromCopy) { $fromCopy } else { $null }
     if (-not $restored) {
-        throw "BLOCKED: unit $UnitId records no restored-content SHA. This is a legacy backup unit created before rollback-provenance tracking, or its pre-deploy version marker was unreadable when the backup was taken. Rollback is refused so production cannot advertise a SHA that does not match the restored bytes. Operator disposition required: confirm the pre-deploy SHA from an independent record and restore + set the version marker deliberately. The unit's deployment SHA is NOT used as a fallback."
+        throw "BLOCKED: unit $UnitId records no restored-content SHA. This is a legacy backup unit created before rollback-provenance tracking, or its pre-deploy version marker was unreadable when the backup was taken. Rollback is refused so production cannot advertise a SHA that does not match the restored bytes. The unit's own deployment SHA (the unit-id prefix) is the deployment being rolled back FROM, not the restored content, and is NOT used as a fallback. Operator disposition required: establish the pre-deploy content SHA from an independent record - the deployment SHA of the immediately-preceding backup unit (the deploy this one replaced), or the last 'Test-PZDeployClose.ps1 -ExpectedSHA' output recorded before this unit's deploy - then restore and set the version marker to that value deliberately."
     }
     return $restored
 }
@@ -513,7 +513,10 @@ function Invoke-Rollback {
         if (-not $didApp -and -not $didEngine) { throw "BLOCKED: unit $UnitId contains no restorable component" }
         # Stamp the marker with the RESTORED-content SHA, not the deployment SHA. This is
         # the fix: production must advertise the identity of the bytes just restored, not
-        # the SHA of the deployment being rolled back.
+        # the SHA of the deployment being rolled back. The marker is the whole-deploy
+        # identity (the forward deploy writes it unconditionally regardless of -Scope), so a
+        # rollback restores it wholesale to the captured pre-deploy value for symmetry; it is
+        # deliberately not re-derived per restored component.
         Write-VersionFile -Cfg $Cfg -Sha $restoredSha
         # Closure assertion: read the marker back and require it to equal restored_sha. A
         # mismatch means the advertised SHA and the restored bytes disagree - the exact
@@ -526,7 +529,12 @@ function Invoke-Rollback {
             }
         }
         Set-ServiceState -Cfg $Cfg -Target Running
-        Write-Host "ROLLBACK COMPLETE - unit $UnitId restored to content $restoredSha (deployment $deploymentSha; app=$didApp engine=$didEngine); service Running"
+        if (-not $script:PlanOnly) {
+            Write-Host "ROLLBACK COMPLETE - unit $UnitId restored to content $restoredSha (deployment $deploymentSha; app=$didApp engine=$didEngine); service Running"
+        }
+        else {
+            Write-Host "PLAN COMPLETE - nothing was written. Unit $UnitId would restore content $restoredSha (deployment $deploymentSha; app=$didApp engine=$didEngine); the marker and service are unchanged."
+        }
     }
     finally { Exit-DeployLock -Cfg $Cfg }
 }
