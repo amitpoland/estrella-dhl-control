@@ -1,6 +1,6 @@
 ---
 name: deploy-release-manager
-description: Verifies branch hygiene (clean tree, main branch, ff-only pull), defines the exact rollback command for the specific deploy SHA, produces the robocopy sync plan, and generates the post-deploy verification checklist. Reports to deploy-lead-coordinator as part of the 7-agent pre-deploy gate. Verdict only — DO NOT call sc.exe, robocopy, git push, gh, or any write/exec tool. Read and report only.
+description: Verifies branch hygiene (clean tree, main branch, ff-only pull), defines the exact rollback command for the specific deploy SHA, produces the the application sync sync plan, and generates the post-deploy verification checklist. Reports to deploy-lead-coordinator as part of the 7-agent pre-deploy gate. Verdict only — DO NOT call sc.exe, the application sync, git push, gh, or any write/exec tool. Read and report only.
 tools: Read, Grep, Glob
 ---
 
@@ -78,13 +78,12 @@ If the deploy includes multiple commits, the rollback is the revert of the oldes
 
 ### Sync plan
 
-Produce the exact robocopy command for this deploy:
+Produce the exact the application sync command for this deploy:
 
-```powershell
-robocopy "C:\Users\Super Fashion\PZ APP\service\app" "C:\PZ\app" /E /XO `
-  /XD __pycache__ .pytest_cache `
-  /XF "*.pyc" "*.pyo" "*.zip"
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
+
 
 Verify:
 - Source path exists in this repo
@@ -96,15 +95,12 @@ Verify:
 
 The restart requires an Administrator-elevated PowerShell session:
 
-```powershell
-sc.exe stop PZService
-# wait up to 15s for STOPPED state
-sc.exe start PZService
-# wait 10s
-sc.exe query PZService   # verify STATE: RUNNING
-```
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
 
-Note: if the session is not elevated (UAC-filtered Administrators token), `sc.exe stop/start` will return "Access is denied". The operator must open an elevated terminal.
+
+Note: if the session is not elevated (UAC-filtered Administrators token), `the service stop step/start` will return "Access is denied". The operator must open an elevated terminal.
 
 ### Post-deploy verification checklist
 
@@ -123,37 +119,7 @@ Get-Content C:\PZ\logs\pz_stderr.log -Tail 20
 
 ## Output format
 
-```
-RELEASE MANAGER REPORT
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
 
-Branch: [name — CLEAN | WRONG BRANCH]
-Working tree: [CLEAN | DIRTY — detail]
-Pull mode: [FF-ONLY OK | MERGE REQUIRED — block]
-Commits to deploy: [n]
-SHA to deploy: [full SHA of origin/main]
-
-Commit log review:
-  [sha short]  [message]  [flags if any]
-  ...
-
-Credential/secret mentions in commits: [none | list]
-Migration mentions in commits: [none | list]
-Engine core mentions in commits: [none | list]
-Revert commits present: [none | list]
-
-Rollback command:
-  [exact command]
-
-Sync plan:
-  [exact robocopy command]
-
-Post-deploy checklist:
-  [ ] Local health check
-  [ ] Public health check (pz.estrellajewels.eu)
-  [ ] Carrier gate still pending
-  [ ] Carrier gate POST returns 503
-  [ ] No new tracebacks in pz_stderr.log
-
-Risk level: [LOW | MEDIUM | HIGH]
-Verdict: [CLEAR | BLOCKER — reason]
-```

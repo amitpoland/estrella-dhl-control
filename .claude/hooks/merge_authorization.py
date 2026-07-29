@@ -41,6 +41,17 @@ PROTECTED_PATH_MARKERS = (
     ".claude/hooks/merge_authorization.py",
     ".claude/settings.json",
     ".claude/hooks/",                 # any hook change is guard-adjacent
+    "service/tests/test_deploy_authority",  # the fence must itself be fenced: this
+                                      # file defines PRODUCTION_WRITER_ALLOWLIST, so a
+                                      # PR touching only it could otherwise extend the
+                                      # allowlist and admit a new ungoverned writer.
+    ".claude/deploy/",                # sole deploy configuration + execution +
+                                      # validation authority. A config-only PR could
+                                      # repoint runtime paths and redirect /MIR
+                                      # convergence at an arbitrary destination.
+    "service/app/tools/verify_runtime_sync",   # can copy into the runtime tree
+    "service/scripts/env_config_manager",      # writes the runtime .env
+    "service/scripts/activate_pz_lifecycle",   # writes the runtime .env
     "docs/decisions/adr-council-authorized-merge",  # this ADR / policy
     "service/docs/production_deployment_rule",
     ".claude/contracts/governance-precedence",
@@ -67,6 +78,7 @@ PROTECTED_DOMAIN_MARKERS = (
 # tests that EXCLUSIVELY validate the guard must not be auto-merged either.
 GUARD_TEST_MARKERS = (
     "test_council_merge_guard", "test_merge_authorization", "test_pz_deploy_guard",
+    "test_deploy_authority",   # the deployment-authority governance pins
 )
 
 PERMITTED_MERGE_METHODS = ("squash",)   # first implementation: squash only

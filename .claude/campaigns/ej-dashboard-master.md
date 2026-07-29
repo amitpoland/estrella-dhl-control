@@ -72,7 +72,7 @@ Development is campaign-driven, not chat-driven. A session that skips this start
 
 1. Confirm all Depends-On phases are ✅ in the Dependencies Matrix.
 2. Write the phase scope and Definition of Done criteria before any code.
-3. Implement → tests → PR → merge → `verify_deploy_close.ps1` → production confirm.
+3. Implement → tests → PR → merge → `Test-PZDeployClose.ps1` → production confirm.
 4. Update Program Dashboard counts and mark phase ✅ in the track table.
 5. Update TASK_STATE.md with SHA and test counts.
 6. Log the release in Release History below.
@@ -311,7 +311,7 @@ _Review this table at the start of any session that touches a risk-adjacent area
 | 1 | All named phase deliverables implemented |
 | 2 | No cross-authority boundary violations (architecture rules 1–10) |
 | 3 | Tests pass: unit + integration + smoke |
-| 4 | Production deployed and verified — `verify_deploy_close.ps1` all 8 conditions ✅ |
+| 4 | Production deployed and verified — `Test-PZDeployClose.ps1` all conditions ✅ |
 | 5 | Live endpoint or feature manually confirmed in production (curl / browser) |
 | 6 | `TASK_STATE.md` updated with SHA, deploy date, and test counts |
 | 7 | Campaign dashboard updated — progress counts + phase marked ✅ |

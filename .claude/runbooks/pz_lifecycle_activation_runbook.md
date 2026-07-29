@@ -169,20 +169,10 @@ The service must restart to pick up `.env` changes.
 
 ### Execute
 
-```powershell
-# Option A — PowerShell
-.\scripts\env_config_manager.ps1 -Action RestartService
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
 
-# Option B — Python automation (if using the full Python script)
-# Step 2 is embedded in activate_pz_lifecycle.py --execute automatically
-
-# Option C — Manual (if scripts unavailable)
-sc.exe stop PZService
-Start-Sleep -Seconds 12
-sc.exe start PZService
-Start-Sleep -Seconds 15
-sc.exe query PZService
-```
 
 **Expected:**
 ```
@@ -527,30 +517,10 @@ Phase 2 push enablement must NOT happen in this activation window.
 
 ### Manual rollback (if scripts unavailable)
 
-```powershell
-# 1. Edit C:\PZ\.env — change PZ_CORRECTION_LIFECYCLE_ENABLED=true to false
-#    or remove the line entirely
-notepad C:\PZ\.env
+> Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
+> configuration is `.claude/deploy/windows_prod_v2.json`.
+> This document defines governance only.
 
-# 2. Restart service
-sc.exe stop PZService
-Start-Sleep -Seconds 12
-sc.exe start PZService
-Start-Sleep -Seconds 15
-
-# 3. Verify service is RUNNING
-sc.exe query PZService
-
-# 4. Verify health
-$k = (Get-Content "C:\PZ\.env" | Where-Object { $_ -match "^AUTH_SECRET_KEY=" } | ForEach-Object { $_.Split("=",2)[1] })
-Invoke-WebRequest -Uri "http://127.0.0.1:47213/api/v1/health" -Headers @{"X-API-Key"=$k} -UseBasicParsing
-
-# 5. Verify correction-state returns 503 (dormant)
-Invoke-WebRequest `
-    -Uri "http://127.0.0.1:47213/api/v1/pz/lineage/any-batch-id/correction-state" `
-    -Headers @{"X-API-Key"=$k} -UseBasicParsing
-# Expected: 503 with lifecycle_disabled
-```
 
 ### Restore from checkpoint
 
@@ -610,7 +580,7 @@ If an alert fires during activation:
 1. **Service unhealthy or crashed** → Manual rollback (procedure above) → Notify operator
 2. **correction-commit returns 2xx** → Emergency rollback immediately → Investigate whether wFirma was called → Document
 3. **State machine in unexpected state** → Do not suppress → Take a screenshot of the response → Rollback → Investigate before any retry
-4. **Cannot rollback via script** → Stop service (`sc.exe stop PZService`) → Manually restore checkpoint `.bak` file → Start service → Verify health
+4. **Cannot rollback via script** → Stop service (`the service stop step PZService`) → Manually restore checkpoint `.bak` file → Start service → Verify health
 
 ---
 
