@@ -261,6 +261,11 @@ PRODUCTION_WRITER_ALLOWLIST = {
     # Surfaced only after PROD_PATH_RX was broadened to catch unquoted/indirect paths.
     "scripts/cp3_capture.py": "OPERATIONAL - capture tooling, no production code write",
     "service/tools/backfill_service_product_registry.py": "OPERATIONAL - data backfill",
+    # Surfaced when origin/main was merged in: both are false positives of the
+    # substring regexes (the write-verb / production token sits inside a comment,
+    # not in executable code), classified honestly rather than by weakening the regex.
+    "service/app/api/routes_webhooks_wfirma_status.py": "REFERENCE_ONLY - reads version.txt; the only write-verb (Out-File) is inside the #969 BOM-explanation comment",
+    "service/scripts/dhl-lane-b-throttle-check.ps1": "OPERATIONAL - throttle self-test; redirects its stamp to $env:TEMP and only names C:\\PZ in a 'never touch' comment",
 }
 
 
