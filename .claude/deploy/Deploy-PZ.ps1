@@ -229,6 +229,22 @@ function Write-VersionFile {
     Write-Host "  version file written (BOM-free) = $Sha"
 }
 
+function Read-VersionMarker {
+    # Reads a version-marker file and returns the single 40-hex commit SHA it contains,
+    # lowercased, tolerant of a BOM and surrounding whitespace (the same shape the
+    # runtime status endpoint and Test-PZDeployClose.ps1 accept). Returns $null when the
+    # file is absent, unreadable, or does not hold exactly one full SHA. It NEVER guesses:
+    # an unrecognisable marker is $null, so callers fail closed rather than trusting a
+    # partial or corrupt identity.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path $Path)) { return $null }
+    try { $bytes = [System.IO.File]::ReadAllBytes($Path) } catch { return $null }
+    $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    $val = $text.Trim([char]0xFEFF, ' ', "`r", "`n", "`t").ToLower()
+    if ($val -match $script:SHA_RX) { return $val }
+    return $null
+}
+
 # ---------------------------------------------------------------- phases
 function Invoke-Preflight {
     param($Cfg)
@@ -323,13 +339,30 @@ function New-BackupUnit {
     if (-not $script:PlanOnly) {
         New-Item -ItemType Directory -Path (Join-Path $bak "app") -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $bak "engine") -Force | Out-Null
+        # The pre-deploy production version marker is the SHA the bytes about to be backed
+        # up ACTUALLY represent (restored_sha) - a DIFFERENT authority from $Sha, the
+        # incoming deployment SHA (deployment_sha) that will later authorize a rollback.
+        # It is read BEFORE any mutation, because the forward deploy rewrites the marker to
+        # $Sha at the very end and this is the only moment the prior identity is visible.
+        # An absent or unreadable marker is recorded as $null (never guessed): a later
+        # rollback then fails closed rather than stamping the wrong identity.
+        $restoredSha = if ($appPresent) { Read-VersionMarker -Path $Cfg.version_file } else { $null }
         # unit.json is written FIRST so a crash mid-backup still leaves the unit
-        # self-describing; 'complete' is flipped only after both manifests exist.
+        # self-describing; 'complete' is flipped only after both manifests exist. 'sha' is
+        # retained for compatibility with units/readers minted before the split;
+        # deployment_sha and restored_sha are the two explicit provenance authorities.
         [pscustomobject]@{
-            unit = $unit; sha = $Sha; scope = $UnitScope; created = (Get-Date -Format o)
+            unit = $unit; sha = $Sha; deployment_sha = $Sha; restored_sha = $restoredSha
+            scope = $UnitScope; created = (Get-Date -Format o)
             app_backed_up = $appPresent; engine_backed_up = $enginePresent
             bootstrap = [bool]$Bootstrap; complete = $false
         } | ConvertTo-Json | Set-Content (Join-Path $bak "unit.json") -Encoding UTF8
+        # A write-once, immutable snapshot of the pre-deploy marker. unit.json is rewritten
+        # when 'complete' flips true, so this copy is the tamper-evident corroborating
+        # source that Resolve-RestoredSha cross-checks at rollback time.
+        if ($appPresent -and (Test-Path $Cfg.version_file)) {
+            [System.IO.File]::WriteAllBytes((Join-Path $bak "version.pre.txt"), [System.IO.File]::ReadAllBytes($Cfg.version_file))
+        }
     }
     if ($appPresent) {
         Invoke-Robocopy -Cfg $Cfg -Source $Cfg.runtime_app -Dest (Join-Path $bak "app") -Extra (@("/E", "/COPY:DAT") + (Get-ProtectedArgs -Cfg $Cfg)) -What "app backup"
@@ -401,6 +434,37 @@ function Invoke-EngineSync {
     }
 }
 
+function Resolve-RestoredSha {
+    # The SHA the backed-up bytes actually represent - the value production must advertise
+    # in its version marker AFTER a restore. This is a DIFFERENT authority from the unit's
+    # deployment SHA (which authorizes the rollback); conflating them is exactly the defect
+    # this function prevents, because the old code stamped the newer deployment SHA over
+    # older restored bytes. Trusted sources, in order:
+    #   1. unit.json 'restored_sha' - recorded by New-BackupUnit before any mutation.
+    #   2. the write-once 'version.pre.txt' snapshot captured beside the backup.
+    # When both exist they MUST agree; a disagreement is unresolved provenance and is
+    # refused rather than guessed. When NEITHER exists (a legacy unit created before
+    # provenance tracking, or a marker unreadable at backup time) the rollback is REFUSED:
+    # the operator must establish the pre-deploy SHA from an independent record. The
+    # deployment SHA is deliberately NOT a fallback - silently stamping it was the bug.
+    param($Meta, [string]$BackupPath, [string]$UnitId)
+    $fromMeta = $null
+    if ($Meta -and $Meta.restored_sha) {
+        $cand = "$($Meta.restored_sha)".ToLower()
+        if ($cand -match $script:SHA_RX) { $fromMeta = $cand }
+    }
+    $fromCopy = Read-VersionMarker -Path (Join-Path $BackupPath "version.pre.txt")
+
+    if ($fromMeta -and $fromCopy -and $fromMeta -ne $fromCopy) {
+        throw "BLOCKED: unit $UnitId has inconsistent restored-content evidence (unit.json restored_sha=$fromMeta vs version.pre.txt=$fromCopy). Refusing to guess which SHA the restored bytes represent; operator disposition required."
+    }
+    $restored = if ($fromMeta) { $fromMeta } elseif ($fromCopy) { $fromCopy } else { $null }
+    if (-not $restored) {
+        throw "BLOCKED: unit $UnitId records no restored-content SHA. This is a legacy backup unit created before rollback-provenance tracking, or its pre-deploy version marker was unreadable when the backup was taken. Rollback is refused so production cannot advertise a SHA that does not match the restored bytes. Operator disposition required: confirm the pre-deploy SHA from an independent record and restore + set the version marker deliberately. The unit's deployment SHA is NOT used as a fallback."
+    }
+    return $restored
+}
+
 function Invoke-Rollback {
     param($Cfg, [string]$UnitId)
     if (-not $UnitId) { throw "BLOCKED: -Rollback requires -Unit" }
@@ -416,9 +480,21 @@ function Invoke-Rollback {
     if ($meta -and $meta.bootstrap -and -not (Test-Path (Join-Path $bak "app.manifest.csv"))) {
         throw "BLOCKED: unit $UnitId was a bootstrap deploy with no prior state to restore. Recovery is manual and operator-directed."
     }
-    $sha = if ($meta -and $meta.sha) { $meta.sha } else { $UnitId.Split('-')[0] }
+    # AUTHORIZATION identity: the SHA whose deployment created this unit. This binding is
+    # security-reviewed and unchanged - a rollback is authorized against the deployment SHA
+    # recorded when the backup was taken, never against the restored-content SHA.
+    # deployment_sha is the explicit field; 'sha' and the unit-id prefix are the
+    # compatibility fallbacks for units minted before that field existed.
+    $deploymentSha = if ($meta -and $meta.deployment_sha) { $meta.deployment_sha }
+                     elseif ($meta -and $meta.sha) { $meta.sha }
+                     else { $UnitId.Split('-')[0] }
 
-    if (-not $script:PlanOnly) { Assert-Authorization -Cfg $Cfg -Sha $sha -Action "rollback" -UnitScope $Scope }
+    # RESTORED-CONTENT identity: the SHA the backed-up bytes represent, which production
+    # must advertise after the restore. Established ONLY from trusted metadata; a unit that
+    # cannot establish it is refused here, before the service is touched.
+    $restoredSha = Resolve-RestoredSha -Meta $meta -BackupPath $bak -UnitId $UnitId
+
+    if (-not $script:PlanOnly) { Assert-Authorization -Cfg $Cfg -Sha $deploymentSha -Action "rollback" -UnitScope $Scope }
     Enter-DeployLock -Cfg $Cfg
     try {
         Set-ServiceState -Cfg $Cfg -Target Stopped
@@ -435,9 +511,22 @@ function Invoke-Rollback {
             [void](Test-AgainstManifest -ManifestFile (Join-Path $bak "engine.manifest.csv") -Root $Cfg.runtime_engine -What "restored engine")
         }
         if (-not $didApp -and -not $didEngine) { throw "BLOCKED: unit $UnitId contains no restorable component" }
-        Write-VersionFile -Cfg $Cfg -Sha $sha
+        # Stamp the marker with the RESTORED-content SHA, not the deployment SHA. This is
+        # the fix: production must advertise the identity of the bytes just restored, not
+        # the SHA of the deployment being rolled back.
+        Write-VersionFile -Cfg $Cfg -Sha $restoredSha
+        # Closure assertion: read the marker back and require it to equal restored_sha. A
+        # mismatch means the advertised SHA and the restored bytes disagree - the exact
+        # defect this path exists to prevent - so refuse to report success and leave the
+        # service STOPPED for operator inspection rather than start on an inconsistent state.
+        if (-not $script:PlanOnly) {
+            $onDisk = Read-VersionMarker -Path $Cfg.version_file
+            if ($onDisk -ne $restoredSha) {
+                throw "BLOCKED: post-rollback version marker '$onDisk' does not equal the restored-content SHA '$restoredSha'. Production bytes and the advertised version disagree; the service is left STOPPED for operator inspection."
+            }
+        }
         Set-ServiceState -Cfg $Cfg -Target Running
-        Write-Host "ROLLBACK COMPLETE - unit $UnitId restored (app=$didApp engine=$didEngine); service Running"
+        Write-Host "ROLLBACK COMPLETE - unit $UnitId restored to content $restoredSha (deployment $deploymentSha; app=$didApp engine=$didEngine); service Running"
     }
     finally { Exit-DeployLock -Cfg $Cfg }
 }

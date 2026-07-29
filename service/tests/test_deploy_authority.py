@@ -551,3 +551,132 @@ def test_health_env_read_is_defensive_and_dotenv_faithful():
         "an unquoted value's inline comment ( whitespace + '#' ) must be stripped to "
         "match python-dotenv, or a commented API_KEY line 401s a healthy deploy"
     )
+
+
+# --------------------------------------------------- rollback provenance (2026-07-29)
+# One metadata field (unit.json 'sha') served two authorities: (1) which deployment may
+# be rolled back (authorization), and (2) which SHA the restored bytes represent
+# (content identity). Invoke-Rollback reused the deployment SHA for BOTH, so after a
+# rollback production held the OLD application bytes but advertised the NEWER deployment
+# SHA in version.txt. These pins keep the two identities separate: deployment_sha
+# authorizes; restored_sha is stamped after restore; a unit that cannot establish
+# restored_sha fails closed instead of guessing the deployment SHA.
+def _rollback_segment(body: str) -> str:
+    start = body.index("function Invoke-Rollback")
+    rest = body[start + len("function Invoke-Rollback"):]
+    end = rest.index("\nfunction ") if "\nfunction " in rest else len(rest)
+    return rest[:end]
+
+
+def _backup_segment(body: str) -> str:
+    start = body.index("function New-BackupUnit")
+    rest = body[start + len("function New-BackupUnit"):]
+    end = rest.index("\nfunction ") if "\nfunction " in rest else len(rest)
+    return rest[:end]
+
+
+def test_backup_records_deployment_and_restored_sha_separately():
+    """The backup unit must record the deployment SHA (authorization) and the
+    pre-deployment production SHA (restored content) as two distinct fields."""
+    seg = _backup_segment(_read(DEPLOY_SCRIPT))
+    assert "deployment_sha = $Sha" in seg, "the deployment SHA must be recorded explicitly"
+    assert "restored_sha = $restoredSha" in seg, "the pre-deployment SHA must be recorded"
+    # restored_sha is the pre-deployment marker, read BEFORE any mutation.
+    i_read = seg.index("Read-VersionMarker -Path $Cfg.version_file")
+    i_write = seg.index("unit.json")
+    assert i_read < i_write, "the pre-deployment marker must be read before unit.json is written"
+
+
+def test_backup_snapshots_predeployment_marker_immutably():
+    """A write-once copy of the pre-deployment marker corroborates restored_sha, since
+    unit.json is rewritten when 'complete' flips true."""
+    seg = _backup_segment(_read(DEPLOY_SCRIPT))
+    assert "version.pre.txt" in seg, "an immutable pre-deployment marker snapshot must be captured"
+    # It is captured inside the plan-guarded pre-backup block (no writes under -WhatIf).
+    assert "$script:PlanOnly" in seg, "the snapshot must be a no-op under -WhatIf"
+
+
+def test_rollback_authorizes_with_deployment_sha():
+    """Authorization binding is unchanged: rollback is authorized against the SHA whose
+    deployment created the unit, never the restored-content SHA."""
+    seg = _rollback_segment(_read(DEPLOY_SCRIPT))
+    assert 'Assert-Authorization -Cfg $Cfg -Sha $deploymentSha -Action "rollback"' in seg, (
+        "rollback must authorize with the deployment SHA"
+    )
+    assert "$meta.deployment_sha" in seg, "the deployment SHA comes from the recorded field"
+    # scope is still carried into authorization.
+    assert "-UnitScope $Scope" in seg, "rollback authorization must remain scope-bound"
+
+
+def test_rollback_stamps_restored_sha_not_deployment_sha():
+    """The fix: production advertises the restored-content SHA after a rollback."""
+    seg = _rollback_segment(_read(DEPLOY_SCRIPT))
+    assert "Write-VersionFile -Cfg $Cfg -Sha $restoredSha" in seg, (
+        "rollback must stamp the version marker with the restored-content SHA"
+    )
+    assert "Write-VersionFile -Cfg $Cfg -Sha $sha" not in seg, (
+        "rollback must NOT stamp the deployment SHA over restored bytes (the original bug)"
+    )
+    assert "Write-VersionFile -Cfg $Cfg -Sha $deploymentSha" not in seg, (
+        "rollback must not stamp the deployment SHA under any name"
+    )
+
+
+def test_rollback_uses_two_distinct_identities():
+    """Authorization identity and restored-content identity are separate variables,
+    so they are allowed to differ (the normal case: rolling an old tree back)."""
+    seg = _rollback_segment(_read(DEPLOY_SCRIPT))
+    assert "$deploymentSha =" in seg, "authorization identity must be its own variable"
+    assert "$restoredSha = Resolve-RestoredSha" in seg, (
+        "restored identity must come from the trusted-metadata resolver"
+    )
+
+
+def test_restored_sha_resolver_fails_closed_and_never_guesses():
+    """A unit that cannot establish restored_sha from trusted metadata must BLOCK, and
+    must never fall back to the deployment SHA or a filename split."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "function Resolve-RestoredSha" in body, "the restored-SHA resolver must exist"
+    start = body.index("function Resolve-RestoredSha")
+    seg = body[start:body.index("function Invoke-Rollback")]
+    # Legacy / missing evidence blocks explicitly.
+    assert "records no restored-content SHA" in seg, "a unit with no evidence must be refused"
+    assert "NOT used as a fallback" in seg, "the deployment SHA must be a stated non-fallback"
+    # Malformed metadata is rejected, not trusted.
+    assert "-match $script:SHA_RX" in seg, "the metadata SHA must be format-validated"
+    # Two trusted sources that disagree are refused, not silently reconciled.
+    assert "inconsistent restored-content evidence" in seg, (
+        "disagreeing metadata and snapshot must block rather than guess"
+    )
+    # It must not reconstruct identity from the unit id or deployment SHA.
+    assert "$UnitId.Split" not in seg, "the resolver must not guess a SHA from the unit id"
+    assert "$Sha" not in seg, "the resolver must not see or use the incoming deployment SHA"
+
+
+def test_version_marker_reader_never_guesses():
+    """Read-VersionMarker validates against the SHA regex and returns $null on anything
+    unrecognisable -- callers fail closed rather than trusting a partial value."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "function Read-VersionMarker" in body, "a validating marker reader must exist"
+    start = body.index("function Read-VersionMarker")
+    rest = body[start:]
+    seg = rest[:rest.index("\nfunction ", 1)]
+    assert "-match $script:SHA_RX" in seg, "the reader must validate the SHA shape"
+    assert "return $null" in seg, "an unrecognisable marker must yield $null, never a guess"
+
+
+def test_rollback_closure_asserts_marker_matches_restored_content():
+    """Rollback must not report success if the written marker and the restored content
+    disagree -- it reads the marker back and refuses, leaving the service stopped."""
+    seg = _rollback_segment(_read(DEPLOY_SCRIPT))
+    i_write = seg.index("Write-VersionFile -Cfg $Cfg -Sha $restoredSha")
+    i_readback = seg.index("Read-VersionMarker -Path $Cfg.version_file")
+    i_complete = seg.index("ROLLBACK COMPLETE")
+    assert i_write < i_readback < i_complete, (
+        "the marker must be written, then read back and verified, before success is reported"
+    )
+    assert "does not equal the restored-content SHA" in seg, (
+        "a marker/content mismatch must throw, not pass"
+    )
+    # The success line reports the restored content, not the deployment SHA.
+    assert "restored to content $restoredSha" in seg

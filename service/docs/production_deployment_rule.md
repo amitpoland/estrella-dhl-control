@@ -273,6 +273,40 @@ Deploy-PZ.ps1 -Rollback -Unit <unit>   # restores a manifest-validated backup; n
 > configuration is `.claude/deploy/windows_prod_v2.json`.
 > This document defines governance only.
 
+### Rollback provenance (which SHA is which)
+
+A rollback deals with **two distinct SHAs**, and conflating them is a defect:
+
+- **Deployment SHA** (`unit.json.deployment_sha`) — the commit whose deployment
+  *created* the backup unit. This is the **authorization** identity: a rollback is
+  authorized against the deployment SHA recorded when the backup was taken, never
+  against the content being restored. This binding is security-reviewed; it does not
+  change without a separate security review.
+- **Restored-content SHA** (`unit.json.restored_sha`, corroborated by the write-once
+  `version.pre.txt` snapshot beside the backup) — the commit the backed-up bytes
+  *actually represent*. This is the value production's version marker is stamped with
+  **after** a restore, so the marker matches the bytes on disk.
+
+The two legitimately differ: rolling a newer deployment back to older bytes means
+authorizing against the newer deployment SHA while stamping the older content SHA. The
+backup records the pre-deployment marker **before** any mutation, because the forward
+deploy rewrites the marker at the end and that is the only moment the prior identity is
+observable.
+
+**Legacy units and fail-closed behavior.** A backup unit created before provenance
+tracking (or one whose pre-deployment marker was unreadable when the backup was taken)
+carries no trusted restored-content SHA. Such a rollback is **refused** with an
+operator-disposition error rather than proceeding: the deployment SHA is never used as a
+silent fallback, and a SHA is never inferred from a filename. When both the metadata
+field and the immutable snapshot are present they must agree; a disagreement is refused
+as unresolved provenance. Recovery of a legacy unit is operator-directed — establish the
+pre-deployment SHA from an independent record before restoring.
+
+**Closure check.** A rollback verifies its own result: after stamping the marker it
+reads the marker back and requires it to equal the restored-content SHA. A mismatch
+throws and leaves the service stopped for inspection rather than reporting success on an
+inconsistent state.
+
 
 ---
 
