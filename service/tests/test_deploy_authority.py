@@ -457,3 +457,97 @@ def test_guard_covers_deploy_config_in_merge_protection():
     assert '".claude/deploy/"' in body, (
         "a config-only PR could repoint runtime paths and redirect /MIR convergence"
     )
+
+
+# --------------------------------------------------- health-endpoint auth (2026-07-29)
+# The read-only validator probed the health endpoints ANONYMOUSLY, but they are
+# authenticated (require_api_key / X-API-Key) BY DESIGN, so both returned 401 and a
+# valid deploy could never close. The fix authenticates the probe with the SAME
+# credential the service loads -- WITHOUT weakening the route and WITHOUT logging the
+# secret. These pins hold that contract in both directions: the endpoint must stay
+# authenticated, and the validator must stay a non-leaking legitimate caller.
+ROUTES_PZ = REPO / "service" / "app" / "api" / "routes_pz.py"
+
+
+def test_health_probe_authenticates_without_weakening_route():
+    val = _read(VALIDATOR)
+    assert "X-API-Key" in val, "the health probe must send an X-API-Key header"
+    assert re.search(r"Invoke-WebRequest[^\n]*-Headers", val), (
+        "the health request must carry the auth header"
+    )
+    # The route the validator hits must remain guarded -- making /health anonymous to
+    # satisfy the validator is the forbidden fix. Match within the decorator window
+    # (not a single greedy line) so a routine multi-line reformat of the decorator
+    # does not produce a false CI block.
+    route = _read(ROUTES_PZ)
+    m = re.search(r'@router\.get\("/health"', route)
+    assert m, "the /health route decorator must exist"
+    decorator = route[m.start():m.start() + 300]
+    assert "dependencies=[_auth]" in decorator, (
+        "the /health route must remain authenticated (dependencies=[_auth])"
+    )
+    assert "_auth = Depends(require_api_key)" in route, (
+        "_auth must remain require_api_key; the endpoint may not be made anonymous"
+    )
+
+
+def test_health_credential_source_is_config_not_hardcoded():
+    cfg = json.loads(_read(CONFIG))
+    assert cfg.get("health_auth_env_file"), "config must name the health credential .env"
+    assert cfg.get("health_auth_env_var") == "API_KEY", (
+        "the health credential is the service API_KEY"
+    )
+    val = _read(VALIDATOR)
+    assert "health_auth_env_file" in val and "health_auth_env_var" in val, (
+        "the validator must read the credential source from config keys, not a literal"
+    )
+    assert "PZ_HEALTH_API_KEY" in val, (
+        "an explicit operator-shell env override must be supported"
+    )
+
+
+def test_health_key_is_never_logged():
+    """The credential variable may appear only where the request is built -- never in
+    a result detail or any host/output sink."""
+    val = _read(VALIDATOR)
+    key_var = "$healthKey"
+    assert key_var in val, "the health-auth fix must be present"
+    for line in val.splitlines():
+        if key_var not in line:
+            continue
+        assert not line.strip().startswith("Add-Result"), (
+            f"credential leaked into a result detail: {line!r}"
+        )
+        assert "Write-Host" not in line, f"credential leaked into host output: {line!r}"
+        assert "Write-Output" not in line, f"credential leaked into output: {line!r}"
+
+
+def test_health_probe_fails_explicitly_when_credential_missing():
+    val = _read(VALIDATOR)
+    assert "if (-not $healthKey)" in val, (
+        "there must be an explicit unavailable-credential branch"
+    )
+    idx = val.index("if (-not $healthKey)")
+    seg = val[idx:idx + 400]
+    assert "Add-Result" in seg and "$false" in seg, (
+        "the unavailable-credential branch must record a FAILED result, never a silent pass"
+    )
+    assert "credential unavailable" in val
+
+
+def test_health_env_read_is_defensive_and_dotenv_faithful():
+    """An unreadable .env must FAIL structurally (return $null -> explicit per-URL
+    FAIL), never crash the Stop-mode validator; and the value must be parsed like
+    python-dotenv (the service's own loader) so a healthy .env carrying an inline
+    comment on the API_KEY line is not sent as a wrong key and rejected 401."""
+    val = _read(VALIDATOR)
+    # Defensive read: the .env Get-Content is guarded so a permission error returns
+    # $null instead of terminating the script before the check table prints.
+    assert re.search(
+        r"try\s*\{[^}]*Get-Content[^}]*\}\s*catch\s*\{\s*return \$null\s*\}", val, re.DOTALL
+    ), "the .env read must be wrapped so an unreadable file fails structurally, not fatally"
+    # python-dotenv-faithful inline-comment stripping on unquoted values.
+    assert ".IndexOf(' #')" in val, (
+        "an unquoted value's inline comment ( whitespace + '#' ) must be stripped to "
+        "match python-dotenv, or a commented API_KEY line 401s a healthy deploy"
+    )
