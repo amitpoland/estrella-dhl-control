@@ -291,12 +291,23 @@ def normalize_batch_state(audit: Dict[str, Any], batch_dir: Path) -> NormalizedS
     dhl_reply_sent   = drp_status == "sent" or dhl_eq_status == "sent"
 
     # ── Tracking ────────────────────────────────────────────────────────────
+    # tracking_cache.json is AWB-keyed: { "<awb>": {record}, ... }. Select the
+    # record for THIS batch's AWB — reading the outer dict would always miss
+    # `status` (it lives one level down) and leave tracking_available False.
     tracking = audit.get("tracking") or {}
     tracking_cache = batch_dir / "tracking_cache.json"
     if tracking_cache.exists():
         cached = _safe_load_json(tracking_cache)
         if cached:
-            tracking = cached
+            from .tracking_service import (
+                resolve_batch_tracking_no,
+                select_cached_tracking_record,
+            )
+            record = select_cached_tracking_record(
+                cached, resolve_batch_tracking_no(audit, batch_id)
+            )
+            if record:
+                tracking = record
     t_status = tracking.get("status", "") or ""
     t_source = tracking.get("source", "") or ""
     tracking_404_nonblocking = (t_source == "dhl_api_404") or (t_status == "not_found")
