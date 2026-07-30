@@ -523,11 +523,19 @@ function Invoke-Rollback {
         # must still restore its application tree.
         $didApp = Test-AgainstManifest -ManifestFile (Join-Path $bak "app.manifest.csv") -Root (Join-Path $bak "app") -What "backup app integrity" -Optional
         if ($didApp) {
+            # /MIR deletes destination-only files before it finishes copying, so from here
+            # until the verification below the tree is genuinely mid-overwrite. The stage
+            # must say so DURING the step: a throw out of robocopy that still reported
+            # "nothing restored yet" would tell the operator the tree is intact when it is
+            # half-written - the one moment where that error is most costly.
+            $stage = "service stopped; APP RESTORE IN PROGRESS - the application tree is mid-overwrite"
             Invoke-Robocopy -Cfg $Cfg -Source (Join-Path $bak "app") -Dest $Cfg.runtime_app -Extra (@("/MIR", "/COPY:DAT") + (Get-ProtectedArgs -Cfg $Cfg)) -What "app restore" -InventoryClassified
             [void](Test-AgainstManifest -ManifestFile (Join-Path $bak "app.manifest.csv") -Root $Cfg.runtime_app -What "restored application")
+            $stage = "application tree restored and verified"
         }
         $didEngine = Test-AgainstManifest -ManifestFile (Join-Path $bak "engine.manifest.csv") -Root (Join-Path $bak "engine") -What "backup engine integrity" -Optional
         if ($didEngine) {
+            $stage = "$stage; ENGINE RESTORE IN PROGRESS - engine files are mid-overwrite"
             Invoke-Robocopy -Cfg $Cfg -Source (Join-Path $bak "engine") -Dest $Cfg.runtime_engine -Extra (@("/COPY:DAT") + $Cfg.engine_files) -What "engine restore"
             [void](Test-AgainstManifest -ManifestFile (Join-Path $bak "engine.manifest.csv") -Root $Cfg.runtime_engine -What "restored engine")
         }
@@ -551,6 +559,11 @@ function Invoke-Rollback {
                 throw "BLOCKED: post-rollback version marker '$onDisk' does not equal the restored-content SHA '$restoredSha'. Production bytes and the advertised version disagree; the service is left STOPPED for operator inspection."
             }
         }
+        # Past this point the restoration itself is DONE and proven: the bytes are back, the
+        # marker matches them, and only starting the service remains. The catch block keys
+        # its remedy off this phrase, because re-running a rollback that already succeeded
+        # is not a remedy - see there.
+        $stage = "files restored and version marker stamped; closure assertion PASSED; starting the service"
         Set-ServiceState -Cfg $Cfg -Target Running
         if (-not $script:PlanOnly) {
             Write-Host "ROLLBACK COMPLETE - unit $UnitId restored to content $restoredSha (deployment $deploymentSha; app=$didApp engine=$didEngine); service Running"
@@ -576,13 +589,28 @@ function Invoke-Rollback {
             # operator off starting it would be worse - production content is untouched.
             Write-Host "  Nothing was restored and the version marker was not touched; production content"
             Write-Host "  is unchanged. Check the service state first - stopping it is what failed."
-        } else {
+            Write-Host "  Re-running the same rollback is the supported remedy - it restores and re-stamps"
+            Write-Host "  from the same immutable unit, and requires a fresh rollback authorization artifact:"
+            Write-Host "      Deploy-PZ.ps1 -Rollback -Unit $UnitId"
+        }
+        elseif ($stage -like "*closure assertion PASSED*") {
+            # The restoration SUCCEEDED and was verified; only the service start failed.
+            # Re-running would repeat identical work, hit the same startup failure, and burn
+            # a second single-use authorization to achieve nothing. The remaining problem is
+            # the service, not the provenance.
+            Write-Host "  The restore SUCCEEDED and was verified: the tree is at content $restoredSha and the"
+            Write-Host "  version marker agrees. Only starting the service failed."
+            Write-Host "  Do NOT re-run the rollback - it would redo work that is already correct, fail the"
+            Write-Host "  same way, and consume another single-use authorization. Diagnose the startup"
+            Write-Host "  failure (service log, port $($Cfg.port), .env), then start the service directly."
+        }
+        else {
             Write-Host "  The service is STOPPED. Do NOT start it until the tree and the version marker agree."
             Write-Host "  Advertised identity should be content $restoredSha (deployment $deploymentSha)."
+            Write-Host "  Re-running the same rollback is the supported remedy - it restores and re-stamps"
+            Write-Host "  from the same immutable unit, and requires a fresh rollback authorization artifact:"
+            Write-Host "      Deploy-PZ.ps1 -Rollback -Unit $UnitId"
         }
-        Write-Host "  Re-running the same rollback is the supported remedy - it restores and re-stamps"
-        Write-Host "  from the same immutable unit, and requires a fresh rollback authorization artifact:"
-        Write-Host "      Deploy-PZ.ps1 -Rollback -Unit $UnitId"
         Write-Host "  Do not stamp the version marker by hand; it has exactly one writer by design."
         throw
     }

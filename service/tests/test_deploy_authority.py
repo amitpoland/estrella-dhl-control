@@ -736,6 +736,54 @@ def test_rollback_reports_a_named_recovery_state_on_failure():
     assert "Do not stamp the version marker by hand" in seg
 
 
+def test_rollback_stage_is_true_while_the_tree_is_being_overwritten():
+    """$stage is what the failure handler reports, so it must be true AT the moment of the
+    throw, not only between steps. The app restore runs /MIR, which deletes destination-only
+    files before it finishes copying: a throw out of robocopy while the stage still said
+    'nothing restored yet' would tell the operator the tree is intact when it is half-written
+    -- the single most costly moment to be wrong."""
+    seg = _rollback_segment(_read(DEPLOY_SCRIPT))
+    nothing = '$stage = "service stopped; nothing restored yet"'
+    # Slice from AFTER that assignment -- including it would make the search for a stage
+    # assignment below trivially true and the pin would prove nothing.
+    i_nothing = seg.index(nothing) + len(nothing)
+    i_app_copy = seg.index('-What "app restore"')
+    between = seg[i_nothing:i_app_copy]
+    assert "$stage =" in between, (
+        "the stage must be advanced before the app restore starts, not after it returns"
+    )
+    assert "IN PROGRESS" in between, "the in-flight stage must say the restore is in progress"
+    # And the same for the engine restore, which follows a stage that claims the app is done.
+    i_engine_copy = seg.index('-What "engine restore"')
+    assert "$stage =" in seg[i_app_copy:i_engine_copy], (
+        "the stage must be advanced before the engine restore starts"
+    )
+
+
+def test_rollback_does_not_tell_the_operator_to_rerun_a_rollback_that_succeeded():
+    """If restore + stamp + closure assertion all passed and only the service start failed,
+    re-running the rollback repeats work that is already correct, fails the same way, and
+    burns a second single-use authorization. The remaining fault is the service, not the
+    provenance."""
+    src = _read(DEPLOY_SCRIPT)
+    seg = _rollback_segment(src)
+    # A distinguishing stage is set once the restoration is proven, before the service start.
+    i_pass = seg.index("closure assertion PASSED")
+    i_start = seg.index("Set-ServiceState -Cfg $Cfg -Target Running")
+    assert i_pass < i_start, "the success stage must be set BEFORE the service start can throw"
+    # The handler branches on it and withholds the re-run advice for that branch.
+    handler = seg[seg.index("RECOVERY STATE: ROLLBACK_FAILED"):]
+    i_branch = handler.index('closure assertion PASSED')
+    assert "Do NOT re-run the rollback" in handler[i_branch:], (
+        "the succeeded-restore branch must tell the operator NOT to re-run"
+    )
+    # The generic re-run advice must sit in a different branch, not unconditionally after.
+    branch = handler[i_branch:handler.index("else {", i_branch)]
+    assert "Deploy-PZ.ps1 -Rollback -Unit $UnitId" not in branch, (
+        "the succeeded-restore branch must not print the re-run command"
+    )
+
+
 def test_policy_warns_about_legacy_units_before_the_rollback_commands():
     """Operators reach the Level 2 / Level 3 procedures first during an incident. The
     legacy-unit refusal must be stated THERE, not only in the explanation below them,
@@ -757,4 +805,18 @@ def test_policy_warns_about_legacy_units_before_the_rollback_commands():
     assert "version.pre.txt" in proc, "the procedure must name where the snapshot is written"
     assert "never to production's version marker" in proc, (
         "the procedure must be explicit that it does not write production's marker"
+    )
+    # The procedure tells the operator to trust evidence found inside a backup unit, so it
+    # must first tell them to establish that the unit itself is untampered.
+    assert "has not been altered since it was created" in proc, (
+        "the procedure must require an integrity check of the unit before trusting its contents"
+    )
+    # The oldest unit has no preceding unit to derive a pre-deployment SHA from.
+    assert "no** preceding unit exists" in proc, (
+        "the procedure must cover the oldest unit, which has no preceding unit"
+    )
+    # A legacy unit throws out of provenance resolution BEFORE Assert-Authorization, so the
+    # artifact minted for the refused attempt is normally still spendable.
+    assert "unconsumed" in proc, (
+        "the procedure must state the authorization state after the initial refusal"
     )

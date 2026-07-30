@@ -317,10 +317,18 @@ by hand, from evidence — never by guessing:
    "Previous production SHA"); the unit-id prefix of the *immediately preceding* backup
    unit (that unit's deployment SHA is what production was running when this unit was
    cut); the deploy transcript. The unit's **own** id prefix is the deployment SHA — it
-   is the wrong value and must not be used.
+   is the wrong value and must not be used. If **no** preceding unit exists — this is the
+   oldest unit in the store — the closure report or the deploy transcript is the only
+   acceptable evidence; there is nothing on disk to derive it from, and a unit whose
+   pre-deployment identity cannot be evidenced is correctly unrecoverable.
 2. **Corroborate it.** Confirm the chosen SHA is a real commit (`git cat-file -e <sha>`)
    and that its tree is what production plausibly ran. If the evidence is ambiguous, stop
    — an unrecoverable unit is a correct outcome, a wrongly-stamped one is not.
+   Confirm too that the **unit itself** has not been altered since it was created, before
+   trusting anything found inside it: its manifests must still validate against its own
+   `app\` and `engine\` trees, and its file timestamps should fall inside the deploy
+   window recorded in the closure report. Evidence read out of a modified unit is not
+   evidence.
 3. **Write the snapshot** into that unit only — 40 lowercase hex characters, nothing
    else, at `<backup_root>\<unit>\version.pre.txt`. Leading/trailing whitespace and a
    BOM are tolerated by the reader; any other content is refused. This writes inside the
@@ -328,6 +336,11 @@ by hand, from evidence — never by guessing:
 4. **Re-run the rollback.** The resolver now finds the snapshot and proceeds. If
    `unit.json` also carries a `restored_sha`, the two must agree — a disagreement is
    refused, and reconciling it is an evidence question, not a file-editing one.
+   The rollback authorization minted for the first (refused) attempt is normally still
+   **unconsumed**: a legacy unit throws out of provenance resolution *before* the
+   authorization is checked, so nothing was spent. Re-check its TTL rather than assuming
+   it must be re-minted — and equally, do not assume it survived, since a refusal later
+   than provenance resolution would have consumed it.
 
 Recording this in the deployment evidence for the recovery is mandatory: name the
 independent record the SHA came from. A restored production whose provenance was
