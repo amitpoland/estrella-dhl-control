@@ -2403,10 +2403,19 @@ function ProductMappingResolver({ unmappedCodes, draftLines, reloadReadiness }) 
     ss(code, { phase: 'searching', error: null, createBlocked: null });
     const r = await window.PzApi.wfirmaGoodsSearch(code);
     if (!r.ok) {
+      // Genuine transport throw (auth 401/403, or a non-enveloped 5xx). The
+      // blanket gateway text is correct only for this narrow residual case.
       ss(code, { phase: 'idle', error: _friendlySearchError(r) });
       return;
     }
     const d = r.data || {};
+    if (d.ok === false) {
+      // Structured wFirma failure (HTTP 200 envelope). The backend classified
+      // the cause, so show its cause-accurate message — e.g. missing credentials
+      // says "retrying will not help" instead of the wrong "wait and retry".
+      ss(code, { phase: 'idle', error: d.error_message || _friendlySearchError(r) });
+      return;
+    }
     if (d.found) {
       ss(code, { phase: 'found', result: d.result || {} });
     } else {
