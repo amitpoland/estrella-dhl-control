@@ -14,7 +14,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,8 +24,18 @@ if str(_SVC) not in sys.path:
 
 
 def _run(coro):
-    """Run an async coroutine synchronously (no pytest-asyncio needed)."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Run an async coroutine synchronously (no pytest-asyncio needed).
+
+    Uses a dedicated fresh event loop per call so it stays robust even after
+    another test module called asyncio.run() (which sets the current loop to
+    None). The autouse fixture resets cliq_service._token_lock so the module's
+    lazily-created asyncio.Lock re-binds to this loop rather than a closed one.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def _reset_token():
@@ -56,20 +66,46 @@ def _mock_httpx_response(status_code=200, json_data=None):
     return resp
 
 
-def _mock_async_client(resp=None, exc=None):
-    """Build a mock httpx.AsyncClient async context manager.
+def _mock_sync_client(resp=None, exc=None):
+    """Build a mock httpx.Client SYNC context manager.
 
-    post() is an AsyncMock so `await client.post(...)` works correctly.
-    The response object itself is a MagicMock (sync json()/raise_for_status()).
+    Since the stuck-OPEN circuit-breaker fix, _refresh_access_token routes its
+    POST through CircuitBreaker.call() via asyncio.to_thread using a synchronous
+    httpx.Client (the breaker itself is synchronous). post() is therefore a sync
+    MagicMock; the response object is a MagicMock with sync json()/raise_for_status().
     """
-    mock_client = AsyncMock()
+    mock_client = MagicMock()
     if exc:
-        mock_client.post = AsyncMock(side_effect=exc)
+        mock_client.post = MagicMock(side_effect=exc)
     else:
-        mock_client.post = AsyncMock(return_value=resp)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = MagicMock(return_value=resp)
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
     return mock_client
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cliq_breaker():
+    """Reset the zoho_cliq circuit before/after each test and neutralise the
+    breaker's retry sleeps.
+
+    Token refresh now flows through CircuitBreaker.call(); without this fixture
+    a failure test would leak breaker failure-count into later tests and the
+    breaker's real time.sleep() retry backoff would add seconds to the suite.
+    """
+    from app.core.circuit_breaker import get_circuit_breaker
+    from app.services import cliq_service
+    # Drop the lazily-created module-global asyncio.Lock so it re-binds to this
+    # test's fresh event loop (see _run). Reusing a Lock bound to a closed loop
+    # from a prior test raises "bound to a different event loop".
+    cliq_service._token_lock = None
+    cliq_service._access_token = ""
+    get_circuit_breaker("zoho_cliq").force_close()
+    with patch("app.core.circuit_breaker.time.sleep", lambda *_a, **_k: None):
+        yield
+    cliq_service._token_lock = None
+    cliq_service._access_token = ""
+    get_circuit_breaker("zoho_cliq").force_close()
 
 
 # ── 1. Cached token returned without refresh ────────────────────────────────
@@ -112,10 +148,10 @@ def test_refresh_updates_access_token():
         cliq_refresh_token="rt", cliq_client_id="cid", cliq_client_secret="csec",
     )
     mock_resp = _mock_httpx_response(200, {"access_token": "fresh-token-001"})
-    mock_client = _mock_async_client(resp=mock_resp)
+    mock_client = _mock_sync_client(resp=mock_resp)
 
     with patch("app.services.cliq_service.settings", s), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+         patch("httpx.Client", return_value=mock_client):
         tok = _run(cliq_service._refresh_access_token())
 
     assert tok == "fresh-token-001"
@@ -133,10 +169,10 @@ def test_refresh_failure_returns_empty():
     s = _make_settings(
         cliq_refresh_token="rt", cliq_client_id="cid", cliq_client_secret="csec",
     )
-    mock_client = _mock_async_client(exc=Exception("connection timeout"))
+    mock_client = _mock_sync_client(exc=Exception("connection timeout"))
 
     with patch("app.services.cliq_service.settings", s), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+         patch("httpx.Client", return_value=mock_client):
         tok = _run(cliq_service._refresh_access_token())
 
     assert tok == ""
@@ -174,11 +210,11 @@ def test_refresh_error_log_does_not_contain_full_body(caplog):
     }
     mock_resp = _mock_httpx_response(200, error_body)
     mock_resp.raise_for_status = MagicMock()  # 200 doesn't raise
-    mock_client = _mock_async_client(resp=mock_resp)
+    mock_client = _mock_sync_client(resp=mock_resp)
 
     with caplog.at_level(logging.DEBUG, logger="app.services.cliq_service"), \
          patch("app.services.cliq_service.settings", s), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+         patch("httpx.Client", return_value=mock_client):
         tok = _run(cliq_service._refresh_access_token())
 
     assert tok == ""
@@ -206,11 +242,11 @@ def test_tokens_never_logged_on_success(caplog):
         cliq_client_secret="SECRET_CLIENT_SECRET_MUST_NOT_LEAK",
     )
     mock_resp = _mock_httpx_response(200, {"access_token": secret_token})
-    mock_client = _mock_async_client(resp=mock_resp)
+    mock_client = _mock_sync_client(resp=mock_resp)
 
     with caplog.at_level(logging.DEBUG, logger="app.services.cliq_service"), \
          patch("app.services.cliq_service.settings", s), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+         patch("httpx.Client", return_value=mock_client):
         tok = _run(cliq_service._refresh_access_token())
 
     assert tok == secret_token
@@ -235,11 +271,11 @@ def test_refresh_missing_token_logs_error_key_only(caplog):
     )
     mock_resp = _mock_httpx_response(200, {"error": "access_denied"})
     mock_resp.raise_for_status = MagicMock()
-    mock_client = _mock_async_client(resp=mock_resp)
+    mock_client = _mock_sync_client(resp=mock_resp)
 
     with caplog.at_level(logging.DEBUG, logger="app.services.cliq_service"), \
          patch("app.services.cliq_service.settings", s), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+         patch("httpx.Client", return_value=mock_client):
         tok = _run(cliq_service._refresh_access_token())
 
     assert tok == ""
