@@ -48,27 +48,25 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 ## Current task
 
-- **Task:** wFirma Proforma→Invoice Conversion Certification & Repair (operator campaign
-  2026-07-16, EOS v1.3; plan `C:\Users\Super Fashion\.claude\plans\campaign-breezy-stream.md`).
-- **Started:** 2026-07-16
-- **Status:** IN_PROGRESS
-- **Branch:** `fix/proforma-convert-certification` off `28784270` (origin/main tip).
-- **Diagnosis (ratified, Opus-confirmed):** RC-1 disclosure reads `lines` vs real
-  `contents` (payload_disclosure.py:160, + wrong field projection) → modal "0 line(s)";
-  RC-2 three divergent series resolutions (disclose/preview/execute — only execute follows
-  ADR-027 D6; preview shows proforma series 15827088); RC-3 modal total omits
-  freight/insurance (payload correct); RC-4 no preview hash contract + modal double
-  disclosure fetch; RC-5 stale due-date fallback; RC-6 no Payment-and-Ownership-Terms
-  block. wFirma has NO native proforma→invoice conversion (probes 2026-05-03).
-- **Operator decisions:** terms wording = campaign text verbatim (EN); series gate =
-  keep ADR-027 D6 omit-valid + NEW hard block only for proforma-type series.
-- **Execution:** 2 Sonnet implementation agents in flight (backend Fixes 1/2/4/5/6;
-  frontend Fixes 3/7). `WFIRMA_CREATE_INVOICE_ALLOWED` stays false. Pre-existing red:
-  test_proforma_to_invoice_routes.py::test_dashboard_renders_two_step_convert_flow
-  (V1 strings, red on origin/main — NOT this campaign's).
-- **Completion criteria:** all 7 fixes + ~19 tests green, golden 160/160, Opus code
-  review clean, GATE-6 non-writing browser cert, GATE-1 PR open. Live Phase-14
-  certification = separate operator-gated step.
+- **Task:** Fix Engineering Lesson A `_resolve_customer` stub drift in the proforma
+  posting test suite (operator-directed, read-only re: `C:\PZ` / prod DBs).
+- **Started:** 2026-07-31
+- **Status:** UNDER_REVIEW (PR #1049 open, awaiting operator merge)
+- **Branch:** `claude/jolly-chaplygin-5f2c92` (commit `ef03797d`, base `main`; pushed).
+- **What:** `_fake_resolve` stub never updated when WF-3 Slice 3A/3B added the
+  `client_contractor_id` kwarg to `_resolve_customer` → `TypeError` on every stubbed POST
+  test (13 failed / 21 passed at tree tip `f7d27230`); whole posting path unexercised.
+  Fixed two test files (`test_proforma_drafts_lifecycle_phase5.py`,
+  `test_proforma_draft_customer_surface.py`); added two end-to-end POST tests pinning the
+  id-first contract. **Test-only — no production code touched.**
+- **Verification:** phase5 36 passed; both files together 42 passed; root PZ 160/160;
+  mutation check confirms the new tests fail when production id-first threading is stripped.
+- **GATE 4 disposition:** same-class grep-test drift in `test_customer_master_resolver.py`
+  (fixed-offset source-grep windows, `+4500` window already overrun by the 4562-char
+  function) filed as ISSUE — GitHub #1048. Out of scope for #1049.
+- **Completion criteria:** [x] stub signature parity + genuine id-first assertion;
+  [x] sibling-module sweep; [x] regression green; [x] GATE 4 disposition filed;
+  [x] committed; [x] pushed + PR opened (#1049). Remaining: operator merge (not mine).
 
 ## Held task (operator redirect 2026-07-16 — preserved verbatim)
 
@@ -169,6 +167,9 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 ---
 
 ## History (most recent first)
+
+- 2026-07-31 — Lesson A stub-drift fix: commit `ef03797d`, PR #1049 opened (base `main`,
+  test-only). GATE 4 grep-drift disposition filed as issue #1048. GATE 2 → 3/3 open.
 
 - 2026-06-21 — Task #4 COMPLETE: PR #687 updated (intake diagnostics, IntakeDiagnosticsCard, T12–T15)
 - 2026-06-21 — Task #3 COMPLETE: PR #687 updated (proforma draft blocker visibility in V2 proforma tab)
