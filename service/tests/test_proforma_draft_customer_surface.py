@@ -118,7 +118,11 @@ def test_draft_get_never_500s_when_resolver_raises(client, monkeypatch):
 
     from app.api import routes_proforma as rp
 
-    def _boom(name):
+    # Lesson A — signature parity with the real _resolve_customer. With the
+    # old ``_boom(name)`` the route's ``batch_id=`` kwarg raised a TypeError at
+    # the call site, so this test proved nothing about a resolver that fails
+    # *internally* — which is the failure mode it claims to cover.
+    def _boom(client_name, batch_id=None, client_contractor_id=""):
         raise RuntimeError("simulated resolver failure")
 
     monkeypatch.setattr(rp, "_resolve_customer", _boom)

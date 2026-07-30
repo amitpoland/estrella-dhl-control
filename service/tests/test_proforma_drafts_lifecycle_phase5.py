@@ -47,10 +47,11 @@ def client(tmp_path, monkeypatch) -> TestClient:
         yield c
 
 
-def _seed_approved(db: Path, *, currency="EUR"):
+def _seed_approved(db: Path, *, currency="EUR", client_contractor_id=""):
     """Auto-create + approve a draft. Returns the approved-row."""
     d, _ = pildb.auto_create_draft_from_sales_packing(
         db, batch_id="B1", client_name="ACME", currency=currency,
+        client_contractor_id=client_contractor_id,
         lines=[
             {"product_code": "RNG-100", "design_no": "D100",
              "qty": 2, "unit_price": 25.50, "currency": currency},
@@ -75,7 +76,10 @@ def _stub_route_lookups(monkeypatch, *, missing_product=None,
     duplicate guard, wFirma error handling), not readiness derivation —
     that has dedicated no-stub coverage in
     test_proforma_readiness_single_authority.py. The stub mirrors the
-    real _derive_draft_readiness return shape exactly (Lesson A)."""
+    real _derive_draft_readiness return shape exactly (Lesson A).
+
+    Returns the list of call-kwargs recorded by the _resolve_customer stub so
+    callers can assert what the route actually threaded into the resolver."""
     from app.api import routes_proforma as rp
 
     def _stub_readiness(draft, *, intent):
@@ -92,7 +96,39 @@ def _stub_route_lookups(monkeypatch, *, missing_product=None,
         }
     monkeypatch.setattr(rp, "_derive_draft_readiness", _stub_readiness)
 
-    def _fake_resolve(name: str, batch_id=None, client_contractor_id: str = ""):
+    # Lesson A — this stub MUST mirror the real _resolve_customer signature
+    # (client_name, batch_id=None, client_contractor_id="") AND its branch
+    # ordering. WF-3 Slice 3A/3B made the resolver id-first: when the draft
+    # carries an operator-selected contractor.id, branch 0-pre short-circuits
+    # and echoes that id VERBATIM as wfirma_customer_id, with customer=None
+    # (the canonical record is name/id only — no wfirma_customers row).
+    # A stub that ignored the kwarg would let the POST suite pass while the
+    # id-first path went unexercised.
+    resolve_calls: list = []
+
+    def _fake_resolve(client_name: str, batch_id=None,
+                      client_contractor_id: str = ""):
+        resolve_calls.append({
+            "client_name":          client_name,
+            "batch_id":             batch_id,
+            "client_contractor_id": client_contractor_id,
+        })
+        name = client_name
+        cid = (client_contractor_id or "").strip()
+        if cid:
+            # Branch 0-pre parity: id-first, echoed verbatim, customer=None.
+            return {
+                "found": True, "ambiguous": False, "candidates": [],
+                "match_strategy": "contractor_id_canonical",
+                "customer": None,
+                "wfirma_customer_id": cid,
+                "resolved_wfirma_name": f"Canonical {name}",
+                "normalized_name": name.upper(),
+                "advisory": (
+                    f"Resolved by operator-selected contractor.id {cid} "
+                    "via customer_master — name is display-only."
+                ),
+            }
         if ambiguous:
             return {"ambiguous": True, "candidates": ["A", "B"],
                     "customer": None, "wfirma_customer_id": "",
@@ -137,6 +173,8 @@ def _stub_route_lookups(monkeypatch, *, missing_product=None,
         wfirma_client, "resolve_vat_code_id_for_context",
         lambda code: f"VAT-{code}",
     )
+
+    return resolve_calls
 
 
 def _stub_wfirma_call(monkeypatch, *, ok=True, wfirma_id="WF-PROF-9001",
@@ -408,6 +446,81 @@ def test_endpoint_audit_record_called_with_operator(client, tmp_path, monkeypatc
     assert captured.get("client_name")         == "ACME"
 
 
+# ── Endpoint — WF-3 Slice 3B id-first contractor resolution ─────────────────
+#
+# test_wf3_slice3b_proforma_post_idfirst.py pins the builder in isolation.
+# These two pin the SAME contract end-to-end through the POST endpoint with a
+# real persisted draft row, so the stub above can never again drift away from
+# the id-first call shape without a test going red (Lesson A).
+
+def test_endpoint_post_threads_draft_contractor_id_into_resolver(
+        client, tmp_path, monkeypatch):
+    """The POST route must hand the draft's operator-selected contractor.id to
+    _resolve_customer, and the wFirma payload must carry that id VERBATIM."""
+    db = tmp_path / "proforma_links.db"
+    d = _seed_approved(db, client_contractor_id="CID-777")
+    assert d.client_contractor_id == "CID-777", "seed precondition"
+
+    resolve_calls = _stub_route_lookups(monkeypatch)
+    _stub_receiver_preflight(monkeypatch, ok=True)
+    # Branch 0-pre returns customer=None, so the legacy VAT path would consult
+    # live wFirma for the country — keep the test offline.
+    from app.api import routes_proforma as rp
+    monkeypatch.setattr(rp, "_cmd_search_customer", lambda name: None)
+
+    sent = {}
+    def _capture(req):
+        sent["req"] = req
+        return wfirma_client.ProformaResult(ok=True, wfirma_invoice_id="WF-ID1")
+    monkeypatch.setattr(wfirma_client, "create_proforma_draft", _capture)
+
+    r = client.post(
+        f"/api/v1/proforma/draft/{d.id}/post",
+        json={"expected_updated_at": d.updated_at,
+              "confirm_token": pildb.POST_CONFIRM_TOKEN},
+        headers=_auth_headers(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "posted"
+
+    # 1. The route threaded the draft's contractor.id into the resolver.
+    assert resolve_calls, "_resolve_customer was never called"
+    assert any(c["client_contractor_id"] == "CID-777" for c in resolve_calls), (
+        f"POST did not thread the draft contractor.id: {resolve_calls}"
+    )
+    # 2. The payload uses the operator's id — NOT the name-chain id.
+    assert sent["req"].wfirma_contractor_id == "CID-777"
+    assert sent["req"].wfirma_contractor_id != "WF-CUST-1"
+
+
+def test_endpoint_post_without_contractor_id_uses_name_chain(
+        client, tmp_path, monkeypatch):
+    """Parity guard: no contractor.id on the draft → the unchanged name chain
+    resolves the payload contractor (no name branch was removed by 3B)."""
+    db = tmp_path / "proforma_links.db"
+    d = _seed_approved(db)
+    assert (d.client_contractor_id or "") == "", "seed precondition"
+
+    resolve_calls = _stub_route_lookups(monkeypatch)
+    _stub_receiver_preflight(monkeypatch, ok=True)
+
+    sent = {}
+    def _capture(req):
+        sent["req"] = req
+        return wfirma_client.ProformaResult(ok=True, wfirma_invoice_id="WF-ID2")
+    monkeypatch.setattr(wfirma_client, "create_proforma_draft", _capture)
+
+    r = client.post(
+        f"/api/v1/proforma/draft/{d.id}/post",
+        json={"expected_updated_at": d.updated_at,
+              "confirm_token": pildb.POST_CONFIRM_TOKEN},
+        headers=_auth_headers(),
+    )
+    assert r.status_code == 200, r.text
+    assert all(c["client_contractor_id"] == "" for c in resolve_calls)
+    assert sent["req"].wfirma_contractor_id == "WF-CUST-1"
+
+
 # ── Endpoint — pre-commit blocks ────────────────────────────────────────────
 
 def test_endpoint_blocked_when_flag_off(client, tmp_path, monkeypatch):
@@ -537,7 +650,11 @@ def test_endpoint_blocked_receiver_preflight_fails(client, tmp_path, monkeypatch
     # use separate_contractor with a receiver.
     _stub_route_lookups(monkeypatch)
     from app.api import routes_proforma as rp
-    def _fake_resolve(name: str, batch_id=None, client_contractor_id: str = ""):
+    # Lesson A — signature parity with the real _resolve_customer. This draft
+    # carries no contractor.id, so the name chain (below) is the live branch.
+    def _fake_resolve(client_name: str, batch_id=None,
+                      client_contractor_id: str = ""):
+        name = client_name
         return {
             "ambiguous": False, "candidates": [],
             "customer": {
