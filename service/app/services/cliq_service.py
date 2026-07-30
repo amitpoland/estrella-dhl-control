@@ -8,7 +8,11 @@ from typing import Any, Dict, List, Literal, Optional
 
 import httpx
 
-from ..core.circuit_breaker import CircuitBreakerError, get_circuit_breaker
+from ..core.circuit_breaker import (
+    CircuitBreakerError,
+    CircuitBreakerProbeInProgress,
+    get_circuit_breaker,
+)
 from ..core.config import settings
 from ..core.logging import get_logger
 
@@ -229,9 +233,15 @@ async def _refresh_access_token() -> str:
         # Runs in a worker thread (asyncio.to_thread) so the breaker's
         # time.sleep() retries never block the event loop.
         with httpx.Client(timeout=breaker.config.call_timeout) as client:
+            # Credentials go in the form-encoded BODY (data=), not the query
+            # string (params=). raise_for_status() below builds an
+            # httpx.HTTPStatusError whose str() embeds the request URL; with
+            # params= that URL — and every secret in it — would leak into the
+            # `log.error("...%s", exc)` fallback. data= keeps them out of the
+            # URL and is the RFC 6749 form for an OAuth token request.
             r = client.post(
                 "https://accounts.zoho.in/oauth/v2/token",
-                params={
+                data={
                     "refresh_token": refresh_token,
                     "client_id":     client_id,
                     "client_secret": client_secret,
@@ -243,6 +253,11 @@ async def _refresh_access_token() -> str:
 
     try:
         data = await asyncio.to_thread(breaker.call, _do_refresh)
+    except CircuitBreakerProbeInProgress:
+        # Circuit is HALF_OPEN and another caller holds the single probe slot —
+        # recovery is in progress, not a hard-OPEN. Fall back to the cached token.
+        log.warning("zoho_cliq recovery probe in flight — returning cached token (may be stale)")
+        return _access_token
     except CircuitBreakerError:
         log.warning("zoho_cliq circuit OPEN — returning cached token (may be stale)")
         return _access_token
@@ -309,6 +324,11 @@ async def post_to_channel(text: str, channel: str = _PZ_CHANNEL) -> bool:
 
         try:
             r = await asyncio.to_thread(breaker.call, _do_post)
+        except CircuitBreakerProbeInProgress:
+            # HALF_OPEN and another caller holds the probe slot — recovery is in
+            # progress. Don't misreport this as a hard-OPEN rejection.
+            log.warning("post_to_channel: zoho_cliq recovery probe in flight — message not delivered to #%s", channel)
+            return False
         except CircuitBreakerError:
             log.warning("post_to_channel: zoho_cliq circuit OPEN — message not delivered to #%s", channel)
             return False

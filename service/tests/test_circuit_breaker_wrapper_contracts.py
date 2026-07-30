@@ -22,6 +22,7 @@ import time as _time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from app.core.circuit_breaker import CircuitState, get_circuit_breaker, reset_all
@@ -44,7 +45,10 @@ def _reset_circuits():
     cliq_service._token_lock = None
     cliq_service._access_token = ""
     reset_all()
-    yield
+    # Neutralise the breaker's real time.sleep() retry backoff so failure-path
+    # tests (which exhaust retry_attempts on a failing probe) don't add seconds.
+    with patch("app.core.circuit_breaker.time.sleep", lambda *_a, **_k: None):
+        yield
     cliq_service._token_lock = None
     cliq_service._access_token = ""
     reset_all()
@@ -446,7 +450,7 @@ def test_post_to_channel_probes_after_recovery_timeout():
          patch("app.services.cliq_service.httpx.Client", return_value=client):
         result = asyncio.run(cliq_service.post_to_channel("hi"))
 
-    assert reached, "recovery probe must actually reach the HTTP layer"
+    assert reached == [True], "recovery probe must reach the HTTP layer exactly once"
     assert result is True
     assert breaker.state == CircuitState.CLOSED, "a successful probe must CLOSE the circuit"
 
@@ -495,9 +499,183 @@ def test_refresh_access_token_probes_after_recovery_timeout():
              patch("app.services.cliq_service.httpx.Client", return_value=client):
             tok = asyncio.run(cliq_service._refresh_access_token())
 
-        assert reached, "recovery probe must actually reach the OAuth endpoint"
+        assert reached == [True], "recovery probe must reach the OAuth endpoint exactly once"
         assert tok == "fresh-tok-xyz"
         assert cliq_service._access_token == "fresh-tok-xyz"
         assert breaker.state == CircuitState.CLOSED, "a successful probe must CLOSE the circuit"
     finally:
         cliq_service._access_token = ""
+
+
+# ── probe FAILURE, transport vs server error, and the 401 retry loop ──────────
+#
+# The recovery tests above cover the happy path (probe succeeds → CLOSED). These
+# cover the failure edges that the raw-.state gate used to hide, plus the classic
+# 401→refresh→retry loop that now has to survive breaker-routed admission.
+
+def test_post_to_channel_probe_failure_reopens_circuit():
+    """A HALF_OPEN probe that FAILS at the transport layer must reopen the circuit
+    AND release the single probe slot. If the slot leaked, HALF_OPEN would wedge
+    into permanent 'probe in flight' rejection — a second stuck-OPEN class bug."""
+    from app.services import cliq_service
+
+    breaker = get_circuit_breaker("zoho_cliq")
+    breaker.force_open()
+    _expire_recovery_window(breaker)
+
+    reached: list = []
+    client = MagicMock()
+
+    def _post(*_a, **_kw):
+        reached.append(True)
+        raise httpx.ConnectError("connection refused")
+
+    client.post = MagicMock(side_effect=_post)
+    client.__enter__ = MagicMock(return_value=client)
+    client.__exit__  = MagicMock(return_value=False)
+
+    with patch.object(cliq_service, "settings", _channel_settings_stub()), \
+         patch.object(cliq_service, "_get_access_token", return_value="tok"), \
+         patch("app.services.cliq_service.httpx.Client", return_value=client):
+        result = asyncio.run(cliq_service.post_to_channel("hi"))
+
+    assert result is False
+    assert reached, "the probe must actually reach the HTTP layer"
+    assert breaker.state == CircuitState.OPEN, "a failed probe must reopen the circuit"
+    assert breaker._probe_in_flight is False, "the probe slot must be released after a failed probe"
+
+
+def test_post_to_channel_401_triggers_refresh_then_retries():
+    """First POST 401 → _refresh_access_token is awaited → second POST 204 →
+    returns True. The retry-once-on-401 loop must still work now that the POST is
+    routed through breaker.call() (CLOSED circuit — this is the happy retry path)."""
+    from app.services import cliq_service
+
+    statuses = [401, 204]
+    calls: list = []
+
+    def _post(*_a, **_kw):
+        resp = MagicMock()
+        resp.status_code = statuses[len(calls)]
+        resp.text = ""
+        resp.raise_for_status = MagicMock()
+        calls.append(True)
+        return resp
+
+    client = MagicMock()
+    client.post = MagicMock(side_effect=_post)
+    client.__enter__ = MagicMock(return_value=client)
+    client.__exit__  = MagicMock(return_value=False)
+
+    with patch.object(cliq_service, "settings", _channel_settings_stub()), \
+         patch.object(cliq_service, "_get_access_token", return_value="tok"), \
+         patch.object(cliq_service, "_refresh_access_token", return_value="refreshed") as refresh_mock, \
+         patch("app.services.cliq_service.httpx.Client", return_value=client):
+        result = asyncio.run(cliq_service.post_to_channel("hi"))
+
+    assert result is True
+    assert len(calls) == 2, "must POST twice: first 401, then the post-refresh retry (204)"
+    assert refresh_mock.await_count == 1, "a 401 must trigger exactly one token refresh"
+
+
+def test_post_to_channel_server_error_does_not_trip_breaker():
+    """A 5xx is a REACHABLE server (transport success): breaker.call() records a
+    success, the circuit stays CLOSED, and no failure is accrued. post_to_channel
+    still returns False because the delivery didn't land — mirrors wfirma's
+    transport-reachability model (only connection errors are breaker failures)."""
+    from app.services import cliq_service
+
+    breaker = get_circuit_breaker("zoho_cliq")  # CLOSED via _reset_circuits
+
+    reached: list = []
+    client = _recording_sync_client(reached, status=500, text="upstream boom")
+
+    with patch.object(cliq_service, "settings", _channel_settings_stub()), \
+         patch.object(cliq_service, "_get_access_token", return_value="tok"), \
+         patch("app.services.cliq_service.httpx.Client", return_value=client):
+        result = asyncio.run(cliq_service.post_to_channel("hi"))
+
+    assert result is False
+    assert reached == [True], "the request must reach the server (transport OK)"
+    assert breaker.state == CircuitState.CLOSED
+    assert breaker.get_stats().failure_count == 0, "a 5xx must NOT accrue a breaker failure"
+
+
+def test_refresh_access_token_http_error_counts_as_breaker_failure():
+    """The OAuth-refresh asymmetry: unlike post_to_channel, _do_refresh calls
+    raise_for_status(), so a non-2xx OAuth response DOES raise → breaker failure.
+    One failed refresh accrues exactly one failure and (below threshold) leaves
+    the circuit CLOSED; the caller gets ""."""
+    from app.services import cliq_service
+
+    cliq_service._access_token = ""
+    breaker = get_circuit_breaker("zoho_cliq")  # CLOSED
+
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.text = "unauthorized"
+    resp.json.return_value = {}
+    resp.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError("401", request=MagicMock(), response=MagicMock())
+    )
+    client = MagicMock()
+    client.post = MagicMock(return_value=resp)
+    client.__enter__ = MagicMock(return_value=client)
+    client.__exit__  = MagicMock(return_value=False)
+
+    with patch.object(cliq_service, "settings", _oauth_settings_stub()), \
+         patch("app.services.cliq_service.httpx.Client", return_value=client):
+        tok = asyncio.run(cliq_service._refresh_access_token())
+
+    assert tok == ""
+    assert breaker.state == CircuitState.CLOSED, "one OAuth failure stays below the threshold of 5"
+    assert breaker.get_stats().failure_count == 1, "the non-2xx OAuth response must accrue exactly one breaker failure"
+
+
+def test_refresh_access_token_http_error_does_not_leak_credentials(caplog):
+    """SECURITY REGRESSION: OAuth credentials must ride in the request BODY (data=),
+    never the query string (params=). If they were in the URL, a non-2xx
+    raise_for_status() builds an httpx.HTTPStatusError whose str() embeds that URL,
+    and the generic error handler logs it verbatim. Drives a REAL httpx transport so
+    the request URL is built from the real _do_refresh call, then asserts the
+    credential sentinels are absent from both the URL and every log record."""
+    import logging
+    from app.services import cliq_service
+
+    cliq_service._access_token = ""
+
+    s = MagicMock()
+    s.cliq_refresh_token = "REFRESHTOK_SENTINEL_a1"
+    s.cliq_client_id     = "CLIENTID_SENTINEL_b2"
+    s.cliq_client_secret = "CLIENTSECRET_SENTINEL_c3"
+    sentinels = (s.cliq_refresh_token, s.cliq_client_id, s.cliq_client_secret)
+
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"]  = str(request.url)
+        captured["body"] = request.content.decode("utf-8", "replace")
+        return httpx.Response(401, text="unauthorized")
+
+    real_client = httpx.Client
+
+    def _client_factory(*a, **kw):
+        kw["transport"] = httpx.MockTransport(_handler)
+        return real_client(*a, **kw)
+
+    with caplog.at_level(logging.DEBUG, logger="app.services.cliq_service"), \
+         patch.object(cliq_service, "settings", s), \
+         patch("app.services.cliq_service.httpx.Client", side_effect=_client_factory):
+        tok = asyncio.run(cliq_service._refresh_access_token())
+
+    assert tok == ""
+    assert captured, "the OAuth endpoint must actually be reached"
+    # data= keeps every secret OUT of the request URL …
+    for secret in sentinels:
+        assert secret not in captured["url"], f"credential leaked into the request URL: {secret!r}"
+    # … and puts them in the form-encoded body instead (proves data= was used).
+    assert s.cliq_refresh_token in captured["body"] and s.cliq_client_id in captured["body"]
+    # … so the logged HTTPStatusError (which carries the URL) exposes no secret.
+    full_log = "\n".join(rec.getMessage() for rec in caplog.records)
+    for secret in sentinels:
+        assert secret not in full_log, f"credential leaked into logs: {secret!r}"
