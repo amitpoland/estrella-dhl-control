@@ -256,6 +256,12 @@ the shell is depending on the external CDN — a reliability regression, not an 
 ### Level 1 — Gate-only rollback (instant, no code change)
 Revert carrier status to pending via `.env` and restart.
 
+> **Before using Level 2 or Level 3:** a unit created before rollback-provenance
+> tracking has no `restored_sha` and no `version.pre.txt`, and the command below will
+> **refuse** rather than restore. That refusal is deliberate — see *Rollback provenance*
+> and *Legacy unit recovery* below for the two-step preparation that makes such a unit
+> restorable. Check the unit first; do not discover this mid-incident.
+
 ### Level 2 — Revert last commit
 ```bash
 Deploy-PZ.ps1 -Rollback -Unit <unit>
@@ -272,6 +278,78 @@ Deploy-PZ.ps1 -Rollback -Unit <unit>   # restores a manifest-validated backup; n
 > Commands removed. Execution is `.claude/deploy/Deploy-PZ.ps1`;
 > configuration is `.claude/deploy/windows_prod_v2.json`.
 > This document defines governance only.
+
+### Rollback provenance (which SHA is which)
+
+A rollback deals with **two distinct SHAs**, and conflating them is a defect:
+
+- **Deployment SHA** (`unit.json.deployment_sha`) — the commit whose deployment
+  *created* the backup unit. This is the **authorization** identity: a rollback is
+  authorized against the deployment SHA recorded when the backup was taken, never
+  against the content being restored. This binding is security-reviewed; it does not
+  change without a separate security review.
+- **Restored-content SHA** (`unit.json.restored_sha`, corroborated by the write-once
+  `version.pre.txt` snapshot beside the backup) — the commit the backed-up bytes
+  *actually represent*. This is the value production's version marker is stamped with
+  **after** a restore, so the marker matches the bytes on disk.
+
+The two legitimately differ: rolling a newer deployment back to older bytes means
+authorizing against the newer deployment SHA while stamping the older content SHA. The
+backup records the pre-deployment marker **before** any mutation, because the forward
+deploy rewrites the marker at the end and that is the only moment the prior identity is
+observable.
+
+**Legacy units and fail-closed behavior.** A backup unit created before provenance
+tracking (or one whose pre-deployment marker was unreadable when the backup was taken)
+carries no trusted restored-content SHA. Such a rollback is **refused** with an
+operator-disposition error rather than proceeding: the deployment SHA is never used as a
+silent fallback, and a SHA is never inferred from a filename. When both the metadata
+field and the immutable snapshot are present they must agree; a disagreement is refused
+as unresolved provenance. Recovery of a legacy unit is operator-directed — establish the
+pre-deployment SHA from an independent record before restoring.
+
+**Legacy unit recovery (operator procedure).** Every backup unit created before this
+change is legacy. To make one restorable, the operator supplies the missing provenance
+by hand, from evidence — never by guessing:
+
+1. **Establish the pre-deployment SHA from an independent record.** Acceptable evidence,
+   in order of preference: the deployment closure report for that deploy (records
+   "Previous production SHA"); the unit-id prefix of the *immediately preceding* backup
+   unit (that unit's deployment SHA is what production was running when this unit was
+   cut); the deploy transcript. The unit's **own** id prefix is the deployment SHA — it
+   is the wrong value and must not be used. If **no** preceding unit exists — this is the
+   oldest unit in the store — the closure report or the deploy transcript is the only
+   acceptable evidence; there is nothing on disk to derive it from, and a unit whose
+   pre-deployment identity cannot be evidenced is correctly unrecoverable.
+2. **Corroborate it.** Confirm the chosen SHA is a real commit (`git cat-file -e <sha>`)
+   and that its tree is what production plausibly ran. If the evidence is ambiguous, stop
+   — an unrecoverable unit is a correct outcome, a wrongly-stamped one is not.
+   Confirm too that the **unit itself** has not been altered since it was created, before
+   trusting anything found inside it: its manifests must still validate against its own
+   `app\` and `engine\` trees, and its file timestamps should fall inside the deploy
+   window recorded in the closure report. Evidence read out of a modified unit is not
+   evidence.
+3. **Write the snapshot** into that unit only — 40 lowercase hex characters, nothing
+   else, at `<backup_root>\<unit>\version.pre.txt`. Leading/trailing whitespace and a
+   BOM are tolerated by the reader; any other content is refused. This writes inside the
+   backup unit, never to production's version marker.
+4. **Re-run the rollback.** The resolver now finds the snapshot and proceeds. If
+   `unit.json` also carries a `restored_sha`, the two must agree — a disagreement is
+   refused, and reconciling it is an evidence question, not a file-editing one.
+   The rollback authorization minted for the first (refused) attempt is normally still
+   **unconsumed**: a legacy unit throws out of provenance resolution *before* the
+   authorization is checked, so nothing was spent. Re-check its TTL rather than assuming
+   it must be re-minted — and equally, do not assume it survived, since a refusal later
+   than provenance resolution would have consumed it.
+
+Recording this in the deployment evidence for the recovery is mandatory: name the
+independent record the SHA came from. A restored production whose provenance was
+asserted without evidence corrupts every later rollback decision that reads it.
+
+**Closure check.** A rollback verifies its own result: after stamping the marker it
+reads the marker back and requires it to equal the restored-content SHA. A mismatch
+throws and leaves the service stopped for inspection rather than reporting success on an
+inconsistent state.
 
 
 ---

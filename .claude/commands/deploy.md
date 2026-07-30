@@ -51,6 +51,18 @@ python .claude/hooks/sign_deploy_authorization.py <sha> rollback Both --ttl 1440
 Deploy-PZ.ps1 -Rollback -Unit <unit>
 ```
 
+A rollback carries **two** SHAs. The *deployment* SHA authorizes it — that is the `<sha>`
+above, the deployment the unit was cut for. The *restored-content* SHA is what
+production's version marker is stamped with afterwards. A unit that cannot establish its
+restored-content SHA is **refused**, so a rollback can never put old bytes back while
+advertising a newer identity.
+
+Every unit created before that tracking existed is such a unit and will refuse. Check
+before you need it, not mid-incident: `unit.json` must carry `restored_sha`, or
+`version.pre.txt` must sit beside it. Supplying the missing provenance is an operator
+procedure driven by an independent record — `service/docs/production_deployment_rule.md`,
+"Legacy unit recovery".
+
 ## Provisioning (once per machine, before the first deploy)
 
 Until a signing key exists, **every deploy and rollback is denied**. That is the
@@ -89,6 +101,18 @@ a reproducible restore point.
 
 Tests are **not** run by the script. Run them before the gate; required counts come
 from `.claude/contracts/test-baseline.md`.
+
+Two suites cover the deploy scripts themselves and must be run in any PR that edits
+them — neither is part of `make verify`, so nothing else will catch their rot:
+
+```
+python -m pytest service/tests/test_deploy_authority.py -q
+powershell -File service/tests/Test-RollbackProvenance.ps1
+```
+
+The first pins the authority model by text-asserting the scripts; the second executes the
+provenance helpers and a real backup-unit round trip under a temp-dir configuration. The
+second writes nothing outside the OS temp directory and never touches production.
 
 A deploy of a SHA the gate did not review is refused.
 
