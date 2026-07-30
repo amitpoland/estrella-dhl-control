@@ -281,6 +281,97 @@ def _to_jsonable(obj: Any) -> Any:
     return obj
 
 
+def _classify_wfirma_error(exc: Exception) -> tuple[str, str, bool]:
+    """
+    Map a wFirma read-path exception to (cause, operator_message, retryable).
+
+    The live read path (wfirma_client._http_request → get_product_by_code /
+    search_customer) collapses four genuinely different failures into one raised
+    exception. Retrying only helps for two of them, so a single blanket
+    "wait and retry" message misleads the operator when the real cause is
+    missing credentials or an open circuit breaker (retry will never succeed).
+
+    `cause` is a machine-readable domain fact the frontend branches on; the
+    message is operator-facing. Classification is by exception type + message
+    text because that is all the upstream layer preserves.
+    """
+    name = type(exc).__name__
+    msg = str(exc)
+    low = msg.lower()
+
+    # Missing/!configured credentials — _headers_for_module raises ValueError.
+    if isinstance(exc, ValueError) and ("not configured" in low or "credential" in low):
+        return (
+            "credentials_not_configured",
+            "wFirma API credentials are not configured on this server. "
+            "An operator must set them — retrying will not help.",
+            False,
+        )
+    # HTTP 503 — either the circuit breaker rejected the call, or wFirma itself
+    # returned 503. The upstream layer collapses both into "… HTTP 503", so the
+    # message stays accurate for both cases (advice is identical: wait, retry).
+    if "http 503" in low:
+        return (
+            "unavailable_503",
+            "wFirma is temporarily unavailable (service returned 503, or calls "
+            "are paused after repeated failures). Wait about a minute, then retry.",
+            True,
+        )
+    # Network unreachable / timeout — requests RequestException → ConnectionError.
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return (
+            "upstream_unreachable",
+            "wFirma is temporarily unavailable (network error). "
+            "Wait a moment, then retry.",
+            True,
+        )
+    # wFirma answered but rejected the request — "wFirma status=<code>" in the
+    # message. Narrow match: a bare "status=" would catch unrelated exceptions.
+    if "wfirma status=" in low:
+        return (
+            "wfirma_rejected",
+            f"wFirma rejected the request ({msg}). This may be an auth or data "
+            "issue — retrying may not help.",
+            False,
+        )
+    # Genuine upstream 5xx — RuntimeError("… HTTP 5xx").
+    if "http 5" in low:
+        return (
+            "upstream_error",
+            "wFirma returned a server error. Wait a moment, then retry.",
+            True,
+        )
+    # Unknown — surface the raw text and allow a retry.
+    return ("unknown", f"wFirma lookup failed: {name}: {msg}", True)
+
+
+def _wfirma_error_envelope(exc: Exception) -> JSONResponse:
+    """
+    Structured 200 envelope for a classified wFirma read failure.
+
+    A 200 (not 502) is deliberate: the shared frontend transport (apiFetch,
+    dashboard-shared.js — a high-blast-radius atom, Lesson F) discards the body
+    and status of a 5xx and throws a sliced string, so a 502 cannot carry the
+    cause to the UI. The lookup endpoints are the single callers, so returning
+    a machine-readable envelope here keeps the classification without touching
+    shared transport. The success shape is unchanged; ok=False marks the failure.
+    """
+    cause, message, retryable = _classify_wfirma_error(exc)
+    # Route returns HTTP 200, so this failure is invisible to 5xx monitoring —
+    # log it so wFirma degradation is not silent.
+    log.warning("wFirma read-path failure classified as %s: %s: %s",
+                cause, type(exc).__name__, exc)
+    return JSONResponse({
+        "ok":            False,
+        "found":         False,
+        "error_cause":   cause,
+        "error_message": message,
+        "retryable":     retryable,
+        # Raw detail retained for logs/debug; not shown verbatim to the operator.
+        "error":         f"{type(exc).__name__}: {exc}",
+    })
+
+
 @router.get("/contractors/search", dependencies=[_auth])
 def search_contractor(
     name: str         = Query(..., min_length=1),
@@ -295,17 +386,9 @@ def search_contractor(
     try:
         result = wfirma_client.search_customer(name, nip)
     except Exception as exc:
-        # search_customer raises RuntimeError on wFirma error and ConnectionError
-        # on network failure. Either is upstream-fatal; surface as 502 so the
-        # operator sees it as "wFirma upstream issue", not a client mistake.
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "ok":    False,
-                "found": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            },
-        )
+        # Same classification as goods/search: distinguish missing-creds /
+        # circuit-open (retry won't help) from a transient network/5xx failure.
+        return _wfirma_error_envelope(exc)
     return JSONResponse({
         "ok":     True,
         "found":  result is not None,
@@ -328,14 +411,9 @@ def search_good(
         # wfirma_client call in a business route (§2). Read-only, behaviour identical.
         result = rdb.lookup_wfirma_product(product_code)
     except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "ok":    False,
-                "found": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            },
-        )
+        # Classify the failure so "Resolve mapping" shows the real cause instead
+        # of one blanket "wait and retry" (wrong for missing-creds / circuit-open).
+        return _wfirma_error_envelope(exc)
     return JSONResponse({
         "ok":     True,
         "found":  result is not None,

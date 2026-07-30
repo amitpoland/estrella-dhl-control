@@ -444,22 +444,26 @@ def test_contractor_search_miss(client, db):
     assert body == {"ok": True, "found": False, "result": None}
 
 
-def test_contractor_search_error_returns_502(client, db):
+# Migrated 2026-07-30 (Lesson O): contractors/search no longer returns a blanket
+# 502 — it uses the same _classify_wfirma_error envelope as goods/search.
+def test_contractor_search_error_returns_classified_envelope(client, db):
     blockers = _no_create_patches()
     for p in blockers: p.start()
     try:
         with patch.object(_wc, "search_customer",
-                          side_effect=RuntimeError("upstream 503")):
+                          side_effect=RuntimeError("customer/find HTTP 503")):
             r = client.get(
                 "/api/v1/wfirma/contractors/search?name=BoomCorp",
                 headers=_auth(),
             )
     finally:
         for p in blockers: p.stop()
-    assert r.status_code == 502
-    detail = r.json()["detail"]
-    assert detail["ok"] is False and detail["found"] is False
-    assert "RuntimeError" in detail["error"]
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False and body["found"] is False
+    assert body["error_cause"] == "unavailable_503"
+    assert body["retryable"] is True
+    assert "RuntimeError" in body["error"]
 
 
 def test_contractor_search_does_not_write_local_db(client, db):
@@ -515,22 +519,66 @@ def test_goods_search_miss(client, db):
     assert r.json() == {"ok": True, "found": False, "result": None}
 
 
-def test_goods_search_error_returns_502(client, db):
+# Migrated 2026-07-30: the endpoint no longer masquerades every upstream failure
+# as one blanket HTTP 502 (see _classify_wfirma_error in routes_wfirma_capabilities).
+# It now returns HTTP 200 with a structured, cause-accurate envelope so "Resolve
+# mapping" can tell the operator whether retrying will help. Lesson O: the auth /
+# contract change migrates its tests in the same PR — never revert the route to
+# keep a stale 502 assertion green.
+@pytest.mark.parametrize(
+    "exc, expected_cause, expected_retryable",
+    [
+        (ValueError("WFIRMA_ACCESS_KEY is not configured"),
+         "credentials_not_configured", False),
+        (RuntimeError("goods/find HTTP 503"),      "unavailable_503",     True),
+        (ConnectionError("DNS timeout"),           "upstream_unreachable", True),
+        (RuntimeError("goods/find wFirma status=ERROR: bad auth"),
+         "wfirma_rejected", False),
+        (RuntimeError("goods/find HTTP 500"),      "upstream_error",      True),
+        (KeyError("surprise"),                     "unknown",             True),
+    ],
+)
+def test_goods_search_error_returns_classified_envelope(
+    client, db, exc, expected_cause, expected_retryable
+):
     blockers = _no_create_patches()
     for p in blockers: p.start()
     try:
-        with patch.object(_wc, "get_product_by_code",
-                          side_effect=ConnectionError("DNS timeout")):
+        with patch.object(_wc, "get_product_by_code", side_effect=exc):
             r = client.get(
                 "/api/v1/wfirma/goods/search?product_code=BOOM",
                 headers=_auth(),
             )
     finally:
         for p in blockers: p.stop()
-    assert r.status_code == 502
-    detail = r.json()["detail"]
-    assert detail["ok"] is False
-    assert "ConnectionError" in detail["error"]
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["found"] is False
+    assert body["error_cause"] == expected_cause
+    assert body["retryable"] is expected_retryable
+    assert body["error_message"]                       # operator-facing, non-empty
+    assert type(exc).__name__ in body["error"]         # raw detail retained for logs
+
+
+def test_contractors_search_error_returns_classified_envelope(client, db):
+    """The sibling contractor lookup uses the same classifier/envelope."""
+    blockers = _no_create_patches()
+    for p in blockers: p.start()
+    try:
+        with patch.object(_wc, "search_customer",
+                          side_effect=ValueError("WFIRMA_SECRET_KEY is not configured")):
+            r = client.get(
+                "/api/v1/wfirma/contractors/search?name=Acme",
+                headers=_auth(),
+            )
+    finally:
+        for p in blockers: p.stop()
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["error_cause"] == "credentials_not_configured"
+    assert body["retryable"] is False
 
 
 def test_goods_search_does_not_write_local_db(client, db):
