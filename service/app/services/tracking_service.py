@@ -452,6 +452,38 @@ def _dhl_pending_fallback(tracking_no: str, cache_dir: Optional[Path] = None) ->
 
 # ── DHL API callers ───────────────────────────────────────────────────────────
 
+def _event_summary(last_event: Dict[str, Any]) -> str:
+    """Render one normalised event as a human-readable STRING.
+
+    ``last_event`` fields (from ``_normalise_dhl_events``) are
+    ``{timestamp, location, status, description}``. The API contract for the
+    response ``last_event`` field is a STRING (see routes_tracking.TrackingResponse
+    and tracking_patch.apply_tracking_update), and the V2 UI renders it directly
+    as a text node (shipment-detail-page.jsx: ``<Row value={_dash(tracking.last_event)}/>``).
+
+    Returning the raw event dict here made React render an object child and crash
+    the page (React error #31: "Objects are not valid as a React child … object
+    with keys {timestamp, location, status, description}"). The response therefore
+    exposes a text summary; the full structured list is still available separately
+    in ``events``.
+
+    Summary priority: ``description`` → ``status`` → ``location`` → ``""``. This
+    matches the frontend compatibility guard (shipment-detail-page.jsx
+    ``_eventText``) so both layers derive the same text from a given event, and
+    location is only a last-resort label when neither a description nor a status
+    is present. Fields are coerced with ``str`` so a non-string field value can
+    never leak an object/number back into the response.
+    """
+    if not isinstance(last_event, dict):
+        return str(last_event or "")
+    return (
+        str(last_event.get("description") or "").strip()
+        or str(last_event.get("status") or "").strip()
+        or str(last_event.get("location") or "").strip()
+        or ""
+    )
+
+
 def _call_dhl_legacy(tracking_no: str) -> Dict[str, Any]:
     """Legacy DHL API call using DHL-API-Key header."""
     # Hard block — must never be reached when status != active
@@ -498,7 +530,7 @@ def _call_dhl_legacy(tracking_no: str) -> Dict[str, Any]:
         "source":              "dhl_api",
         "events":              events,
         "events_count":        len(events),
-        "last_event":          last_event,
+        "last_event":          _event_summary(last_event),
     }
 
 
@@ -563,7 +595,7 @@ def _call_dhl_unified(tracking_no: str) -> Dict[str, Any]:
         "source":              "dhl_unified_api",
         "events":              events,
         "events_count":        len(events),
-        "last_event":          last_event,
+        "last_event":          _event_summary(last_event),
     }
 
 

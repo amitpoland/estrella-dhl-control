@@ -125,6 +125,13 @@ function BackendPendingBanner({ testid, children }) {
 // (returns the full audit object — same authority the V1 page reads). Any field the
 // authority does not carry renders as '—'. Nothing on this page is invented.
 function _dash(v) { return (v === null || v === undefined || v === '') ? '—' : v; }
+// Defense-in-depth: a tracking last_event may arrive from a legacy/cached payload
+// as a checkpoint object {timestamp, location, status, description}. Render its
+// text, never the raw object — React cannot render an object child (error #31).
+function _eventText(v) {
+  if (v && typeof v === 'object') return v.description || v.status || v.location || '';
+  return v;
+}
 function _fmtUsd(n) {
   // Route through the single V2 money authority (components.jsx fmtMoney2).
   if (window.fmtMoney2) return window.fmtMoney2(n, { currency: 'USD' });
@@ -1125,7 +1132,7 @@ function DhlTrackingCard({ batchId, awb, reloadNonce }) {
         <Row label="AWB" value={_dash(tracking.tracking_no || awb)} mono />
         <Row label="Carrier" value={_dash(tracking.carrier)} />
         <Row label="Status" value={_dash(tracking.status_label || tracking.status)} />
-        <Row label="Latest event" value={_dash(tracking.last_event)} />
+        <Row label="Latest event" value={_dash(_eventText(tracking.last_event))} />
         <Row label="Location" value={_dash(tracking.last_location)} />
         <Row label="Event time" value={tracking.last_update ? _fmtDate(tracking.last_update, true) : '—'} mono />
         {tracking.arrived_warehouse != null && <Row label="At warehouse" value={tracking.arrived_warehouse ? 'Yes' : 'No'} />}
