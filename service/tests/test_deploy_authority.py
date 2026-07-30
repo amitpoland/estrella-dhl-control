@@ -682,3 +682,79 @@ def test_rollback_closure_asserts_marker_matches_restored_content():
     )
     # The success line reports the restored content, not the deployment SHA.
     assert "restored to content $restoredSha" in seg
+
+
+def test_rollback_validates_authorization_identity_before_using_it():
+    """Two of the three deployment-SHA sources are untrusted (a hand-edited unit.json and
+    a directory name), so the authorization identity is shape-validated before it reaches
+    Assert-Authorization -- never passed through as an empty or unmatchable binding."""
+    seg = _rollback_segment(_read(DEPLOY_SCRIPT))
+    i_assign = seg.index("$deploymentSha = if ($meta")
+    i_validate = seg.index("$deploymentSha -notmatch $script:SHA_RX")
+    i_authorize = seg.index('Assert-Authorization -Cfg $Cfg -Sha $deploymentSha')
+    assert i_assign < i_validate < i_authorize, (
+        "the deployment SHA must be validated after assignment and before it authorizes anything"
+    )
+    assert "malformed deployment SHA" in seg, "a malformed authorization identity must block"
+
+
+def test_backup_warns_when_minting_an_unrollbackable_unit():
+    """A unit whose pre-deployment marker was unreadable is recorded with a null
+    restored_sha and CANNOT be rolled back. Without a deploy-time warning that defect is
+    discovered mid-incident, when the rollback that was meant to be the remedy refuses."""
+    seg = _backup_segment(_read(DEPLOY_SCRIPT))
+    i_read = seg.index("Read-VersionMarker -Path $Cfg.version_file")
+    i_warn = seg.index("Write-Warning")
+    i_write = seg.index('Set-Content (Join-Path $bak "unit.json")')
+    assert i_read < i_warn < i_write, (
+        "the missing-provenance warning must follow the read and precede the unit being written"
+    )
+    assert "$appPresent -and -not $restoredSha" in seg, (
+        "warn exactly when there ARE bytes to restore but no identity for them"
+    )
+    assert "will be REFUSED" in seg, "the warning must state the operational consequence"
+    # It is a warning, not a block: refusing the forward deploy would strand production on
+    # the state the operator is trying to leave.
+    assert "throw" not in seg[i_warn:i_write], "missing provenance must not block the forward deploy"
+
+
+def test_rollback_reports_a_named_recovery_state_on_failure():
+    """The rollback runs when production is ALREADY wrong and it stops the service to work.
+    A bare exception would leave a stopped service, an unknown degree of restoration and no
+    named next step -- the remedy path must not be weaker than the forward deploy, which
+    reports SERVICE_STOPPED_NO_DEPLOY / PARTIAL_DEPLOY."""
+    seg = _rollback_segment(_read(DEPLOY_SCRIPT))
+    assert "RECOVERY STATE: ROLLBACK_FAILED" in seg, "a failed rollback must name its recovery state"
+    # The failure is reported, never swallowed: the exit code must still fail.
+    i_state = seg.index("RECOVERY STATE: ROLLBACK_FAILED")
+    assert "throw" in seg[i_state:], "the recovery handler must re-throw, not swallow the failure"
+    # The operator is told how far it got, not every possibility.
+    assert "Position when it failed: $stage" in seg, "the handler must state the actual position reached"
+    # The lock is still released -- the handler sits between the try body and finally.
+    assert seg.index("catch {", i_state - 800) < seg.index("finally { Exit-DeployLock")
+    # It must not offer a hand-written marker as a remedy; there is exactly one writer.
+    assert "Do not stamp the version marker by hand" in seg
+
+
+def test_policy_warns_about_legacy_units_before_the_rollback_commands():
+    """Operators reach the Level 2 / Level 3 procedures first during an incident. The
+    legacy-unit refusal must be stated THERE, not only in the explanation below them,
+    and the recovery procedure must be concrete rather than an aspiration."""
+    body = _read(POLICY)
+    i_warn = body.index("Before using Level 2 or Level 3")
+    i_level2 = body.index("### Level 2 —")
+    i_level3 = body.index("### Level 3 —")
+    assert i_warn < i_level2 < i_level3, "the legacy-unit warning must precede both rollback procedures"
+    assert "Legacy unit recovery (operator procedure)" in body, (
+        "a concrete recovery procedure must exist, not just a statement that recovery is operator-directed"
+    )
+    proc = body[body.index("Legacy unit recovery (operator procedure)"):]
+    proc = proc[:proc.index("**Closure check.**")]
+    # The one wrong value an operator would reach for first is named as wrong.
+    assert "own** id prefix is the deployment SHA" in proc, (
+        "the procedure must name the unit's own id prefix as the wrong source"
+    )
+    assert "version.pre.txt" in proc, "the procedure must name where the snapshot is written"
+    assert "never to production's version marker" in proc, (
+        "the procedure must be explicit that it does not write production's marker"
+    )

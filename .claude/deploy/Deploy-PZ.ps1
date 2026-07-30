@@ -347,6 +347,14 @@ function New-BackupUnit {
         # An absent or unreadable marker is recorded as $null (never guessed): a later
         # rollback then fails closed rather than stamping the wrong identity.
         $restoredSha = if ($appPresent) { Read-VersionMarker -Path $Cfg.version_file } else { $null }
+        # Surface the unrollbackable unit AT DEPLOY TIME. Without this the unit is minted
+        # silently and the defect is only discovered mid-incident, when the rollback that
+        # was supposed to be the remedy refuses. This is a warning, not a block: the
+        # forward deploy is still correct, and blocking it would strand production on the
+        # very state the operator is trying to leave.
+        if ($appPresent -and -not $restoredSha) {
+            Write-Warning "PROVENANCE: no readable pre-deploy version marker at $($Cfg.version_file). Unit $unit is being recorded WITHOUT a restored-content SHA and a rollback to it will be REFUSED until provenance is supplied from an independent record (see production_deployment_rule.md, 'Legacy unit recovery')."
+        }
         # unit.json is written FIRST so a crash mid-backup still leaves the unit
         # self-describing; 'complete' is flipped only after both manifests exist. 'sha' is
         # retained for compatibility with units/readers minted before the split;
@@ -488,6 +496,14 @@ function Invoke-Rollback {
     $deploymentSha = if ($meta -and $meta.deployment_sha) { $meta.deployment_sha }
                      elseif ($meta -and $meta.sha) { $meta.sha }
                      else { $UnitId.Split('-')[0] }
+    # The authorization identity is shape-validated before it is used to authorize
+    # anything. Two of the three sources above are untrusted input - a hand-edited or
+    # corrupt unit.json, and a directory name that only conventionally starts with a SHA -
+    # so a malformed value must be refused here rather than reaching Assert-Authorization
+    # as an unmatchable string or an empty binding.
+    if ($deploymentSha -notmatch $script:SHA_RX) {
+        throw "BLOCKED: unit $UnitId yields a malformed deployment SHA '$deploymentSha'. A rollback cannot be authorized against an unverifiable identity; correct the unit metadata from an independent record."
+    }
 
     # RESTORED-CONTENT identity: the SHA the backed-up bytes represent, which production
     # must advertise after the restore. Established ONLY from trusted metadata; a unit that
@@ -496,8 +512,13 @@ function Invoke-Rollback {
 
     if (-not $script:PlanOnly) { Assert-Authorization -Cfg $Cfg -Sha $deploymentSha -Action "rollback" -UnitScope $Scope }
     Enter-DeployLock -Cfg $Cfg
+    # Tracks how far the rollback got, so the failure handler can state what production is
+    # actually in rather than describing every possibility. Set immediately before each
+    # transition, never after, so a throw inside a step is attributed to that step.
+    $stage = "not started"
     try {
         Set-ServiceState -Cfg $Cfg -Target Stopped
+        $stage = "service stopped; nothing restored yet"
         # Each component is independent: a unit that never carried an engine backup
         # must still restore its application tree.
         $didApp = Test-AgainstManifest -ManifestFile (Join-Path $bak "app.manifest.csv") -Root (Join-Path $bak "app") -What "backup app integrity" -Optional
@@ -511,6 +532,7 @@ function Invoke-Rollback {
             [void](Test-AgainstManifest -ManifestFile (Join-Path $bak "engine.manifest.csv") -Root $Cfg.runtime_engine -What "restored engine")
         }
         if (-not $didApp -and -not $didEngine) { throw "BLOCKED: unit $UnitId contains no restorable component" }
+        $stage = "files restored (app=$didApp engine=$didEngine); version marker NOT yet stamped"
         # Stamp the marker with the RESTORED-content SHA, not the deployment SHA. This is
         # the fix: production must advertise the identity of the bytes just restored, not
         # the SHA of the deployment being rolled back. The marker is the whole-deploy
@@ -518,6 +540,7 @@ function Invoke-Rollback {
         # rollback restores it wholesale to the captured pre-deploy value for symmetry; it is
         # deliberately not re-derived per restored component.
         Write-VersionFile -Cfg $Cfg -Sha $restoredSha
+        $stage = "files restored and version marker stamped; closure assertion pending"
         # Closure assertion: read the marker back and require it to equal restored_sha. A
         # mismatch means the advertised SHA and the restored bytes disagree - the exact
         # defect this path exists to prevent - so refuse to report success and leave the
@@ -535,6 +558,33 @@ function Invoke-Rollback {
         else {
             Write-Host "PLAN COMPLETE - nothing was written. Unit $UnitId would restore content $restoredSha (deployment $deploymentSha; app=$didApp engine=$didEngine); the marker and service are unchanged."
         }
+    }
+    catch {
+        # A rollback is the remedy path: it runs when production is already wrong, and it
+        # stops the service to do its work. A bare exception here leaves the operator with
+        # a stopped service, an unknown degree of restoration, and no named next step -
+        # the forward deploy states its recovery position explicitly and the remedy path
+        # must not be the weaker of the two. Reporting only; the throw is preserved so the
+        # exit code still fails and the lock still releases in the finally.
+        Write-Host ""
+        Write-Host "RECOVERY STATE: ROLLBACK_FAILED"
+        Write-Host "  Rollback of unit $UnitId failed: $($_.Exception.Message)"
+        Write-Host "  Position when it failed: $stage"
+        if ($stage -eq "not started") {
+            # The stop itself failed, so the service is in whatever state it already was and
+            # nothing was restored. Asserting it is stopped would be false, and warning the
+            # operator off starting it would be worse - production content is untouched.
+            Write-Host "  Nothing was restored and the version marker was not touched; production content"
+            Write-Host "  is unchanged. Check the service state first - stopping it is what failed."
+        } else {
+            Write-Host "  The service is STOPPED. Do NOT start it until the tree and the version marker agree."
+            Write-Host "  Advertised identity should be content $restoredSha (deployment $deploymentSha)."
+        }
+        Write-Host "  Re-running the same rollback is the supported remedy - it restores and re-stamps"
+        Write-Host "  from the same immutable unit, and requires a fresh rollback authorization artifact:"
+        Write-Host "      Deploy-PZ.ps1 -Rollback -Unit $UnitId"
+        Write-Host "  Do not stamp the version marker by hand; it has exactly one writer by design."
+        throw
     }
     finally { Exit-DeployLock -Cfg $Cfg }
 }

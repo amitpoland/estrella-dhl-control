@@ -256,6 +256,12 @@ the shell is depending on the external CDN — a reliability regression, not an 
 ### Level 1 — Gate-only rollback (instant, no code change)
 Revert carrier status to pending via `.env` and restart.
 
+> **Before using Level 2 or Level 3:** a unit created before rollback-provenance
+> tracking has no `restored_sha` and no `version.pre.txt`, and the command below will
+> **refuse** rather than restore. That refusal is deliberate — see *Rollback provenance*
+> and *Legacy unit recovery* below for the two-step preparation that makes such a unit
+> restorable. Check the unit first; do not discover this mid-incident.
+
 ### Level 2 — Revert last commit
 ```bash
 Deploy-PZ.ps1 -Rollback -Unit <unit>
@@ -301,6 +307,31 @@ silent fallback, and a SHA is never inferred from a filename. When both the meta
 field and the immutable snapshot are present they must agree; a disagreement is refused
 as unresolved provenance. Recovery of a legacy unit is operator-directed — establish the
 pre-deployment SHA from an independent record before restoring.
+
+**Legacy unit recovery (operator procedure).** Every backup unit created before this
+change is legacy. To make one restorable, the operator supplies the missing provenance
+by hand, from evidence — never by guessing:
+
+1. **Establish the pre-deployment SHA from an independent record.** Acceptable evidence,
+   in order of preference: the deployment closure report for that deploy (records
+   "Previous production SHA"); the unit-id prefix of the *immediately preceding* backup
+   unit (that unit's deployment SHA is what production was running when this unit was
+   cut); the deploy transcript. The unit's **own** id prefix is the deployment SHA — it
+   is the wrong value and must not be used.
+2. **Corroborate it.** Confirm the chosen SHA is a real commit (`git cat-file -e <sha>`)
+   and that its tree is what production plausibly ran. If the evidence is ambiguous, stop
+   — an unrecoverable unit is a correct outcome, a wrongly-stamped one is not.
+3. **Write the snapshot** into that unit only — 40 lowercase hex characters, nothing
+   else, at `<backup_root>\<unit>\version.pre.txt`. Leading/trailing whitespace and a
+   BOM are tolerated by the reader; any other content is refused. This writes inside the
+   backup unit, never to production's version marker.
+4. **Re-run the rollback.** The resolver now finds the snapshot and proceeds. If
+   `unit.json` also carries a `restored_sha`, the two must agree — a disagreement is
+   refused, and reconciling it is an evidence question, not a file-editing one.
+
+Recording this in the deployment evidence for the recovery is mandatory: name the
+independent record the SHA came from. A restored production whose provenance was
+asserted without evidence corrupts every later rollback decision that reads it.
 
 **Closure check.** A rollback verifies its own result: after stamping the marker it
 reads the marker back and requires it to equal the restored-content SHA. A mismatch
