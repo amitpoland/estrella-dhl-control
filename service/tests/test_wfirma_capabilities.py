@@ -461,7 +461,7 @@ def test_contractor_search_error_returns_classified_envelope(client, db):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False and body["found"] is False
-    assert body["error_cause"] == "circuit_open"
+    assert body["error_cause"] == "unavailable_503"
     assert body["retryable"] is True
     assert "RuntimeError" in body["error"]
 
@@ -530,7 +530,7 @@ def test_goods_search_miss(client, db):
     [
         (ValueError("WFIRMA_ACCESS_KEY is not configured"),
          "credentials_not_configured", False),
-        (RuntimeError("goods/find HTTP 503"),      "circuit_open",        True),
+        (RuntimeError("goods/find HTTP 503"),      "unavailable_503",     True),
         (ConnectionError("DNS timeout"),           "upstream_unreachable", True),
         (RuntimeError("goods/find wFirma status=ERROR: bad auth"),
          "wfirma_rejected", False),

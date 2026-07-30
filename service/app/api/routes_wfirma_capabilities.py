@@ -307,12 +307,14 @@ def _classify_wfirma_error(exc: Exception) -> tuple[str, str, bool]:
             "An operator must set them — retrying will not help.",
             False,
         )
-    # Circuit breaker OPEN — _http_request returns 503 → RuntimeError("… HTTP 503").
-    if "circuit" in low or "http 503" in low:
+    # HTTP 503 — either the circuit breaker rejected the call, or wFirma itself
+    # returned 503. The upstream layer collapses both into "… HTTP 503", so the
+    # message stays accurate for both cases (advice is identical: wait, retry).
+    if "http 503" in low:
         return (
-            "circuit_open",
-            "wFirma calls are paused after repeated failures (circuit breaker "
-            "open). Wait about a minute, then retry.",
+            "unavailable_503",
+            "wFirma is temporarily unavailable (service returned 503, or calls "
+            "are paused after repeated failures). Wait about a minute, then retry.",
             True,
         )
     # Network unreachable / timeout — requests RequestException → ConnectionError.
@@ -323,8 +325,9 @@ def _classify_wfirma_error(exc: Exception) -> tuple[str, str, bool]:
             "Wait a moment, then retry.",
             True,
         )
-    # wFirma answered but rejected the request — status=<code> in the message.
-    if "wfirma status=" in low or "status=" in low:
+    # wFirma answered but rejected the request — "wFirma status=<code>" in the
+    # message. Narrow match: a bare "status=" would catch unrelated exceptions.
+    if "wfirma status=" in low:
         return (
             "wfirma_rejected",
             f"wFirma rejected the request ({msg}). This may be an auth or data "
@@ -354,6 +357,10 @@ def _wfirma_error_envelope(exc: Exception) -> JSONResponse:
     shared transport. The success shape is unchanged; ok=False marks the failure.
     """
     cause, message, retryable = _classify_wfirma_error(exc)
+    # Route returns HTTP 200, so this failure is invisible to 5xx monitoring —
+    # log it so wFirma degradation is not silent.
+    log.warning("wFirma read-path failure classified as %s: %s: %s",
+                cause, type(exc).__name__, exc)
     return JSONResponse({
         "ok":            False,
         "found":         False,

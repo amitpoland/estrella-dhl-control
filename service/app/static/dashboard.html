@@ -12314,6 +12314,12 @@ function WfirmaExportPage({ batches, onViewShipment }) {
       const params = new URLSearchParams({ name: editingCustomer.client_name.trim() });
       if (editingCustomer.vat_id?.trim()) params.set('nip', editingCustomer.vat_id.trim());
       const d = await apiFetch(`/api/v1/wfirma/contractors/search?${params}`);
+      if (d && d.ok === false) {
+        // Classified wFirma failure (credentials / circuit / network / 5xx) —
+        // NOT a "not found". Show the cause; do not tell the operator to create.
+        setSearchInfo({ kind: 'error', text: d.error_message || 'wFirma lookup failed.' });
+        return;
+      }
       if (d.found && d.result) {
         setEditingCustomer(prev => ({
           ...prev,
@@ -12339,6 +12345,12 @@ function WfirmaExportPage({ batches, onViewShipment }) {
     try {
       const params = new URLSearchParams({ product_code: editingProduct.product_code.trim() });
       const d = await apiFetch(`/api/v1/wfirma/goods/search?${params}`);
+      if (d && d.ok === false) {
+        // Classified wFirma failure (credentials / circuit / network / 5xx) —
+        // NOT a "not found". Show the cause; do not tell the operator to create.
+        setSearchInfo({ kind: 'error', text: d.error_message || 'wFirma lookup failed.' });
+        return;
+      }
       if (d.found && d.result) {
         setEditingProduct(prev => ({
           ...prev,
