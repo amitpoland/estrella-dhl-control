@@ -6,12 +6,15 @@ without making any real network calls.
 """
 from __future__ import annotations
 
+import threading
 import time
 import pytest
 
+import app.core.circuit_breaker as cb_mod
 from app.core.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerError,
+    CircuitBreakerProbeInProgress,
     CircuitState,
     ServiceConfig,
     get_circuit_breaker,
@@ -21,6 +24,30 @@ from app.core.circuit_breaker import (
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+class _FakeClock:
+    """Controllable stand-in for the ``time`` module used inside circuit_breaker.
+
+    Monkeypatch it in with ``monkeypatch.setattr(cb_mod, "time", clock)`` — the
+    breaker's ``time.time()`` and ``time.sleep()`` then resolve to this object,
+    so recovery-timeout behaviour is exercised deterministically without any
+    real 90-second sleeps. Only the circuit_breaker module namespace is
+    affected; the real ``time`` module is untouched everywhere else.
+    """
+
+    def __init__(self, start: float = 1_000.0) -> None:
+        self.now = start
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        # Deterministic: advance virtual time instead of blocking a real thread.
+        self.now += seconds
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 def _fast_config(**overrides) -> ServiceConfig:
     """Return a ServiceConfig with no retries and a short (but non-zero) recovery timeout.
@@ -247,4 +274,183 @@ class TestRegistry:
         cb = get_circuit_breaker("totally_unknown_svc_xyz")
         assert cb.config.name == "totally_unknown_svc_xyz"
         # Should not raise
+        assert cb.state == CircuitState.CLOSED
+
+
+# ── Deterministic recovery-timeout behaviour (fake clock) ─────────────────────
+#
+# Regression suite for the stuck-OPEN defect (2026-07-30): an OPEN breaker must
+# evaluate its recovery_timeout and admit a single HALF_OPEN probe once the
+# window elapses, instead of staying OPEN until the process restarts. These
+# tests drive time deterministically via _FakeClock — no real sleeps, no
+# 90-second waits — and exercise the transitions through the PUBLIC ``call()``
+# surface only (the same surface every real caller must use).
+
+class TestRecoveryTimeoutFakeClock:
+    def test_probe_in_progress_is_circuit_breaker_error_subclass(self):
+        """Existing ``except CircuitBreakerError`` handlers must keep catching
+        the concurrent-probe rejection unchanged."""
+        assert issubclass(CircuitBreakerProbeInProgress, CircuitBreakerError)
+
+    def test_open_stays_open_before_recovery_timeout(self, monkeypatch):
+        """Before recovery_timeout elapses, an OPEN breaker rejects and does NOT
+        admit a probe (no call reaches the wrapped function)."""
+        clock = _FakeClock()
+        monkeypatch.setattr(cb_mod, "time", clock)
+        cb = _make_breaker(failure_threshold=1, recovery_timeout=90)
+
+        with pytest.raises(ValueError):
+            cb.call(_fail)                      # trip OPEN at t=1000
+        assert cb.state == CircuitState.OPEN
+
+        clock.advance(89)                       # still inside the 90s window
+        called = []
+        with pytest.raises(CircuitBreakerError):
+            cb.call(lambda: called.append(True))
+        assert called == [], "no probe may run before recovery_timeout"
+        assert cb.state == CircuitState.OPEN
+
+    def test_open_recovers_to_half_open_probe_after_recovery_timeout(self, monkeypatch):
+        """THE core regression: once recovery_timeout elapses, the next call is
+        admitted as a HALF_OPEN probe (reaches the function) and — on success —
+        closes the circuit. Before the fix this transition was unreachable."""
+        clock = _FakeClock()
+        monkeypatch.setattr(cb_mod, "time", clock)
+        cb = _make_breaker(failure_threshold=1, recovery_timeout=90)
+
+        with pytest.raises(ValueError):
+            cb.call(_fail)                      # OPEN at t=1000
+        assert cb.state == CircuitState.OPEN
+
+        clock.advance(90)                       # deadline reached
+        called = []
+
+        def _probe() -> str:
+            called.append(True)
+            return "probe-ok"
+
+        assert cb.call(_probe) == "probe-ok", "recovery probe must actually run"
+        assert called == [True]
+        assert cb.state == CircuitState.CLOSED, "successful probe must CLOSE"
+
+    def test_rejected_open_calls_do_not_move_recovery_deadline(self, monkeypatch):
+        """Fast-fail rejections while OPEN must NOT push _last_failure forward,
+        or a steady stream of rejected calls would postpone recovery forever
+        (this is what 3,704 rejections did to the live wFirma breaker)."""
+        clock = _FakeClock()
+        monkeypatch.setattr(cb_mod, "time", clock)
+        cb = _make_breaker(failure_threshold=1, recovery_timeout=90)
+
+        with pytest.raises(ValueError):
+            cb.call(_fail)                      # OPEN at t=1000
+        deadline_anchor = cb.get_stats().last_failure_time
+        assert deadline_anchor == 1000.0
+
+        # Hammer it with rejections across the window — none may move the anchor.
+        # Four rejections at t=1010, 1020, 1030, 1040 (all inside the 90s window).
+        for _ in range(4):
+            clock.advance(10)
+            with pytest.raises(CircuitBreakerError):
+                cb.call(_ok)
+            assert cb.get_stats().last_failure_time == deadline_anchor
+
+        # Advance to the anchor + 90 (t=1090): recovery is due, probe admitted.
+        clock.advance(50)                       # 1040 → 1090
+        assert cb.call(_ok) == "ok"
+        assert cb.state == CircuitState.CLOSED
+
+    def test_failed_probe_reopens_and_resets_deadline_and_releases_slot(self, monkeypatch):
+        """A failed HALF_OPEN probe returns to OPEN, resets the recovery clock
+        (so it doesn't immediately re-probe), and — critically — releases the
+        single-probe slot so the breaker can probe again next window rather than
+        wedging on ``probe in flight``."""
+        clock = _FakeClock()
+        monkeypatch.setattr(cb_mod, "time", clock)
+        cb = _make_breaker(failure_threshold=1, recovery_timeout=90)
+
+        with pytest.raises(ValueError):
+            cb.call(_fail)                      # OPEN at t=1000
+        clock.advance(90)                       # probe eligible at t=1090
+        with pytest.raises(ValueError):
+            cb.call(_fail)                      # probe fails → OPEN, anchor=1090
+        assert cb.state == CircuitState.OPEN
+        assert cb.get_stats().last_failure_time == 1090.0
+
+        # Just after the failed probe: still OPEN, no immediate re-probe.
+        clock.advance(1)                        # t=1091
+        called = []
+        with pytest.raises(CircuitBreakerError):
+            cb.call(lambda: called.append(True))
+        assert called == []
+        assert cb.state == CircuitState.OPEN
+
+        # A full window after the FAILED probe → probe admitted again (slot was
+        # released by the finally-clause even though the probe raised).
+        clock.advance(89)                       # t=1180 == 1090 + 90
+        assert cb.call(_ok) == "ok"
+        assert cb.state == CircuitState.CLOSED
+
+    def test_half_open_admits_single_probe_rejects_concurrent(self, monkeypatch):
+        """HALF_OPEN admits exactly one probe; a concurrent caller while the
+        probe is still in flight is rejected with CircuitBreakerProbeInProgress
+        — no stampede against a service that only just became eligible."""
+        clock = _FakeClock()
+        monkeypatch.setattr(cb_mod, "time", clock)
+        cb = _make_breaker(failure_threshold=1, recovery_timeout=90)
+
+        with pytest.raises(ValueError):
+            cb.call(_fail)                      # OPEN at t=1000
+        clock.advance(90)                       # probe eligible
+
+        probe_entered = threading.Event()
+        release_probe = threading.Event()
+
+        def _slow_probe() -> str:
+            probe_entered.set()                 # set AFTER probe_in_flight=True
+            assert release_probe.wait(timeout=5), "probe was not released"
+            return "probe-ok"
+
+        box: dict[str, object] = {}
+
+        def _run_probe() -> None:
+            box["probe"] = cb.call(_slow_probe)
+
+        t = threading.Thread(target=_run_probe)
+        t.start()
+        assert probe_entered.wait(timeout=5), "recovery probe never started"
+
+        # The single probe is now in flight (HALF_OPEN). A concurrent call is
+        # rejected with the typed subclass — and never reaches the function.
+        assert cb.state == CircuitState.HALF_OPEN
+        concurrent_called = []
+        with pytest.raises(CircuitBreakerProbeInProgress):
+            cb.call(lambda: concurrent_called.append(True))
+        assert concurrent_called == []
+
+        # Let the probe finish successfully → CLOSED, slot released.
+        release_probe.set()
+        t.join(timeout=5)
+        assert not t.is_alive(), "probe thread did not finish"
+        assert box["probe"] == "probe-ok"
+        assert cb.state == CircuitState.CLOSED
+        assert cb._probe_in_flight is False
+
+    def test_probe_slot_released_after_successful_probe(self, monkeypatch):
+        """Sanity: the single-probe slot is cleared after a SUCCESSFUL probe too
+        (not only on failure), so a later OPEN→HALF_OPEN cycle can probe again."""
+        clock = _FakeClock()
+        monkeypatch.setattr(cb_mod, "time", clock)
+        cb = _make_breaker(failure_threshold=1, recovery_timeout=90)
+
+        with pytest.raises(ValueError):
+            cb.call(_fail)                      # OPEN
+        clock.advance(90)
+        assert cb.call(_ok) == "ok"             # probe succeeds → CLOSED
+        assert cb._probe_in_flight is False
+
+        # Trip and recover a second time to prove the slot really is reusable.
+        with pytest.raises(ValueError):
+            cb.call(_fail)                      # OPEN again
+        clock.advance(90)
+        assert cb.call(_ok) == "ok"
         assert cb.state == CircuitState.CLOSED

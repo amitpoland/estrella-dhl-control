@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.core.circuit_breaker import get_circuit_breaker, reset_all
+from app.core.circuit_breaker import CircuitState, get_circuit_breaker, reset_all
 
 
 # ── Test isolation ────────────────────────────────────────────────────────────
@@ -113,7 +113,14 @@ def test_http_request_returns_tuple_on_circuit_open():
     breaker = get_circuit_breaker("wfirma")
     breaker.force_open()
 
-    result = wfirma_client._http_request("GET", "contractors", "find")
+    # Admission now flows through breaker.call() (the raw ``.state`` fast-path was
+    # removed so the breaker can evaluate its recovery timeout), and header
+    # construction runs before admission. Stub _headers_for_module so a
+    # no-credential test env surfaces the OPEN rejection rather than a missing-
+    # cred ValueError. The route is NOT weakened — a forced-OPEN breaker still
+    # returns the (503, "circuit_breaker_open") fallback shape asserted below.
+    with patch.object(wfirma_client, "_headers_for_module", return_value={}):
+        result = wfirma_client._http_request("GET", "contractors", "find")
 
     assert isinstance(result, tuple), (
         f"_http_request must return tuple when circuit OPEN; "
@@ -218,10 +225,18 @@ def test_wfirma_shape_identical_closed_vs_open():
     fallback shape MUST match success shape."""
     from app.services import wfirma_client
 
-    # OPEN
+    # OPEN. Admission now flows through breaker.call() (the raw ``.state``
+    # fast-path was removed so the breaker can evaluate its recovery timeout),
+    # and header construction precedes admission uniformly. Stub
+    # _headers_for_module so a no-credential test env surfaces the OPEN
+    # rejection — (503, "circuit_breaker_open") — rather than a ValueError from
+    # missing creds. The route is NOT weakened: a forced-OPEN breaker still
+    # returns the 503 fallback shape below.
     get_circuit_breaker("wfirma").force_open()
-    open_result = wfirma_client._http_request("GET", "contractors", "find")
+    with patch.object(wfirma_client, "_headers_for_module", return_value={}):
+        open_result = wfirma_client._http_request("GET", "contractors", "find")
     status_open, body_open = open_result  # must not raise
+    assert (status_open, body_open) == (503, "circuit_breaker_open")
 
     # CLOSED
     reset_all()
@@ -240,3 +255,85 @@ def test_wfirma_shape_identical_closed_vs_open():
     assert type(open_result) is type(closed_result)
     assert isinstance(status_open, int) and isinstance(status_closed, int)
     assert isinstance(body_open, str)   and isinstance(body_closed, str)
+
+
+# ── wFirma-client recovery through the breaker (stuck-OPEN regression) ─────────
+#
+# Before the fix, wfirma_client._http_request read the breaker's raw ``.state``
+# and returned (503, "circuit_breaker_open") BEFORE ever calling
+# ``breaker.call()``. Because OPEN→HALF_OPEN only happens inside ``call()``, the
+# recovery timeout was never evaluated and the wFirma breaker stayed OPEN until
+# PZService restarted (live incident 2026-07-30: 3,704 fast-fails over 15h, zero
+# recovery attempts). These two tests pin the corrected behaviour at the client
+# boundary: OPEN pre-recovery still fast-fails without touching wFirma, but once
+# the recovery window elapses the next request is admitted as a probe that
+# actually reaches wFirma and closes the circuit on success.
+
+
+def test_wfirma_client_rejects_while_open_before_recovery():
+    """OPEN + still inside recovery_timeout → fast-fail (503) WITHOUT contacting
+    wFirma. Proves the fix does not weaken the OPEN protection."""
+    from app.services import wfirma_client
+
+    breaker = get_circuit_breaker("wfirma")
+    breaker.force_open()                        # _last_failure = now → window open
+
+    contacted = {"n": 0}
+
+    def _must_not_contact(*_a, **_kw):
+        contacted["n"] += 1
+        raise AssertionError("wFirma must not be contacted while OPEN pre-recovery")
+
+    with patch.object(wfirma_client, "_headers_for_module", return_value={}):
+        with patch("app.services.wfirma_client._requests.request",
+                   side_effect=_must_not_contact):
+            status, body = wfirma_client._http_request("GET", "contractors", "find")
+
+    assert contacted["n"] == 0
+    assert (status, body) == (503, "circuit_breaker_open")
+    assert breaker.state == CircuitState.OPEN
+
+
+def test_wfirma_client_probes_after_recovery_timeout():
+    """OPEN + recovery_timeout elapsed → the next request is admitted as a
+    HALF_OPEN probe that ACTUALLY reaches wFirma (not a fast-fail), and a
+    successful probe closes the circuit. This is the end-to-end regression for
+    the stuck-OPEN defect.
+
+    The elapsed window is simulated deterministically by back-dating the
+    breaker's last-failure timestamp past recovery_timeout — the real-time
+    equivalent of waiting, with no sleep.
+    """
+    import time as _time
+    from app.services import wfirma_client
+
+    breaker = get_circuit_breaker("wfirma")
+    breaker.force_open()
+    # Back-date the failure so recovery_timeout has "elapsed" — deterministic,
+    # no real wait. force_open set _last_failure = now; move it into the past.
+    with breaker._lock:
+        breaker._last_failure = _time.time() - (breaker.config.recovery_timeout + 1)
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.text = "<api><status><code>OK</code></status></api>"
+    contacted = {"n": 0}
+
+    def _probe_request(*_a, **_kw):
+        contacted["n"] += 1
+        return fake_resp
+
+    with patch.object(wfirma_client, "_headers_for_module", return_value={}):
+        with patch("app.services.wfirma_client._requests.request",
+                   side_effect=_probe_request):
+            status, body = wfirma_client._http_request("GET", "contractors", "find")
+
+    assert contacted["n"] == 1, (
+        "recovery probe must reach wFirma through breaker.call(); "
+        "a fast-fail on raw .state would never contact wFirma"
+    )
+    assert status == 200
+    assert "OK" in body
+    assert breaker.state == CircuitState.CLOSED, (
+        "a successful recovery probe must close the wFirma circuit"
+    )

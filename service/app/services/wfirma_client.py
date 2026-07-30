@@ -494,16 +494,12 @@ def _http_request(method: str, module: str, action: str, body_xml: str = "",
         url = base
     breaker = get_circuit_breaker("wfirma")
 
-    # Check circuit BEFORE building headers — avoids raising ValueError for
-    # missing credentials when the circuit is already open and we want to
-    # return the fallback response immediately.
-    if breaker.state.value == "open":
-        log.warning(
-            "wfirma circuit OPEN — request rejected (%s %s/%s)",
-            method, module, action,
-        )
-        return 503, "circuit_breaker_open"
-
+    # Admission is the breaker's job — never gate on a raw ``breaker.state``
+    # read. ``.state`` does not run the recovery transition, so a caller that
+    # short-circuits on ``state == "open"`` bypasses ``breaker.call()`` and the
+    # 90s OPEN→HALF_OPEN recovery is never evaluated → the circuit stays OPEN
+    # until the process restarts. Route the request through ``breaker.call()``
+    # and translate its typed result into the existing (status, body) contract.
     headers = _headers_for_module(module)
 
     def _do_request() -> tuple[int, str]:
@@ -519,6 +515,9 @@ def _http_request(method: str, module: str, action: str, body_xml: str = "",
     try:
         return breaker.call(_do_request)
     except CircuitBreakerError:
+        # Covers both a hard OPEN rejection and a HALF_OPEN concurrent-probe
+        # rejection (CircuitBreakerProbeInProgress) — the operator-facing
+        # advice ("wait a moment, then retry") is identical for both.
         log.warning(
             "wfirma circuit OPEN — request rejected (%s %s/%s)",
             method, module, action,
@@ -2956,9 +2955,12 @@ def fetch_invoice_pdf(invoice_id: str) -> bytes:
     # _http_request returns resp.text which auto-decodes binary through
     # requests' charset detection; re-encoding corrupts compressed PDF
     # content streams, producing a structurally valid but blank document.
+    # Admission goes through ``breaker.call()`` — do not gate on a raw
+    # ``breaker.state`` read (it never runs the recovery transition, wedging
+    # the circuit OPEN forever). ``breaker.call()`` evaluates recovery and
+    # raises CircuitBreakerError (incl. the HALF_OPEN concurrent-probe
+    # subclass) when the circuit is not admitting.
     breaker = get_circuit_breaker("wfirma")
-    if breaker.state.value == "open":
-        raise RuntimeError("wFirma circuit open — PDF fetch unavailable")
     _dl_url = _url("invoices", f"download/{safe_id}")
     _dl_headers = _headers_for_module("invoices")
     try:

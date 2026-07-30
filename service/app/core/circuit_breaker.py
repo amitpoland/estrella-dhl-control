@@ -71,6 +71,16 @@ class CircuitBreakerError(Exception):
     """Raised when the circuit is OPEN and no fallback is registered."""
 
 
+class CircuitBreakerProbeInProgress(CircuitBreakerError):
+    """Raised when the circuit is HALF_OPEN and a recovery probe is already in
+    flight. A subclass of CircuitBreakerError so existing ``except
+    CircuitBreakerError`` handlers keep treating it as "temporarily
+    unavailable" — callers translate it to the same fallback as OPEN. The
+    distinct type lets recovery-aware code tell "one probe is testing the
+    service" apart from a hard OPEN rejection.
+    """
+
+
 # ── Core circuit breaker ──────────────────────────────────────────────────────
 
 class CircuitBreaker:
@@ -84,6 +94,11 @@ class CircuitBreaker:
         self._total_calls     = 0
         self._last_failure    = 0.0
         self._last_success    = 0.0
+        # HALF_OPEN admits exactly one recovery probe at a time. This flag is
+        # set under the lock when a probe is admitted and cleared when it
+        # resolves, so concurrent callers during recovery are rejected instead
+        # of stampeding a still-fragile upstream.
+        self._probe_in_flight = False
         self._lock            = threading.Lock()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -91,9 +106,20 @@ class CircuitBreaker:
     def call(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """Execute *func* with circuit breaker protection.
 
+        This method is the SOLE admission authority. All state evaluation —
+        whether OPEN has reached its recovery deadline (OPEN→HALF_OPEN), which
+        calls are admitted, and probe concurrency — happens here under the
+        lock. Callers must NOT read ``.state`` to gate their own requests: a
+        raw ``.state`` read never runs ``_maybe_transition()``, so a caller
+        that short-circuits on ``.state == OPEN`` never lets the breaker
+        evaluate its recovery timeout and the circuit stays OPEN forever.
+
         Raises CircuitBreakerError if the circuit is OPEN.
+        Raises CircuitBreakerProbeInProgress (a CircuitBreakerError subclass)
+        if HALF_OPEN and another recovery probe is already in flight.
         Propagates the original exception if the call fails.
         """
+        admitted_probe = False
         with self._lock:
             self._total_calls += 1
             self._maybe_transition()
@@ -109,6 +135,24 @@ class CircuitBreaker:
                 )
 
             if self._state == CircuitState.HALF_OPEN:
+                # Admit exactly one probe. A concurrent caller arriving while a
+                # probe is still resolving is rejected — do NOT let a burst
+                # stampede a service that has only just become eligible to
+                # retry. The rejection is a CircuitBreakerError subclass so
+                # existing fallback handlers are unaffected.
+                if self._probe_in_flight:
+                    log.info(
+                        "circuit[%s] HALF_OPEN — probe already in flight, "
+                        "rejecting concurrent call to %s",
+                        self.config.name,
+                        getattr(func, "__name__", repr(func)),
+                    )
+                    raise CircuitBreakerProbeInProgress(
+                        f"Circuit breaker for service '{self.config.name}' is "
+                        "probing recovery; a probe is already in flight"
+                    )
+                self._probe_in_flight = True
+                admitted_probe = True
                 log.info(
                     "circuit[%s] HALF_OPEN — probing recovery",
                     self.config.name,
@@ -124,6 +168,15 @@ class CircuitBreaker:
         except Exception:
             self._on_failure()
             raise
+        finally:
+            # Release the single-probe slot no matter how the probe resolved
+            # (success, upstream failure, or an unexpected exception type), so
+            # a failed probe can never wedge HALF_OPEN into permanent
+            # "probe in flight" rejection. Only the caller that admitted the
+            # probe clears it.
+            if admitted_probe:
+                with self._lock:
+                    self._probe_in_flight = False
 
     @property
     def state(self) -> CircuitState:
@@ -131,6 +184,14 @@ class CircuitBreaker:
             return self._state
 
     def is_closed(self) -> bool:
+        """Telemetry/display helper — TRUE if the circuit is currently CLOSED.
+
+        Like ``.state``, this is a plain read that does NOT run
+        ``_maybe_transition()``. Do NOT use it as an admission gate: gating a
+        request on ``is_closed()`` / ``.state`` and short-circuiting before
+        ``call()`` reintroduces the stuck-OPEN defect (OPEN→HALF_OPEN recovery
+        only runs inside ``call()``). All admission must go through ``call()``.
+        """
         return self.state == CircuitState.CLOSED
 
     def get_stats(self) -> CircuitStats:
@@ -147,16 +208,18 @@ class CircuitBreaker:
     def force_open(self) -> None:
         """Manually open the circuit (for testing or operator override)."""
         with self._lock:
-            self._state        = CircuitState.OPEN
-            self._last_failure = time.time()
+            self._state           = CircuitState.OPEN
+            self._last_failure    = time.time()
+            self._probe_in_flight = False
         log.warning("circuit[%s] force-opened by operator", self.config.name)
 
     def force_close(self) -> None:
         """Manually close the circuit and reset counters."""
         with self._lock:
-            self._state         = CircuitState.CLOSED
-            self._failure_count = 0
-            self._success_count = 0
+            self._state           = CircuitState.CLOSED
+            self._failure_count   = 0
+            self._success_count   = 0
+            self._probe_in_flight = False
         log.info("circuit[%s] force-closed by operator", self.config.name)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
