@@ -25,7 +25,12 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from app.core.circuit_breaker import CircuitState, get_circuit_breaker, reset_all
+from app.core.circuit_breaker import (
+    CircuitBreakerProbeInProgress,
+    CircuitState,
+    get_circuit_breaker,
+    reset_all,
+)
 
 
 # ── Test isolation ────────────────────────────────────────────────────────────
@@ -679,3 +684,88 @@ def test_refresh_access_token_http_error_does_not_leak_credentials(caplog):
     full_log = "\n".join(rec.getMessage() for rec in caplog.records)
     for secret in sentinels:
         assert secret not in full_log, f"credential leaked into logs: {secret!r}"
+
+
+# ── recovery-probe contention (HALF_OPEN, another caller holds the probe slot) ──
+#
+# When the circuit is HALF_OPEN and a single recovery probe is already in flight,
+# CircuitBreaker.call() raises CircuitBreakerProbeInProgress to any *concurrent*
+# caller (distinct from a hard-OPEN CircuitBreakerError). Both cliq wrappers have
+# a dedicated `except CircuitBreakerProbeInProgress` branch that must degrade
+# gracefully WITHOUT touching HTTP, retrying/refreshing, or poking breaker
+# internals — and must report contention, not a hard-OPEN rejection. These two
+# tests pin those branches directly by making breaker.call() raise the exception.
+
+def test_post_to_channel_probe_in_flight_returns_false(caplog):
+    """post_to_channel under CircuitBreakerProbeInProgress (a recovery probe is
+    already in flight) returns exactly False, logs recovery-probe CONTENTION —
+    not a hard-OPEN rejection — and takes no HTTP, no token refresh, and no
+    direct breaker-internal accounting call."""
+    import logging
+    from app.services import cliq_service
+
+    breaker = get_circuit_breaker("zoho_cliq")  # CLOSED via _reset_circuits
+
+    reached: list = []
+    client = _recording_sync_client(reached, status=204)
+
+    with caplog.at_level(logging.WARNING, logger="app.services.cliq_service"), \
+         patch.object(cliq_service, "settings", _channel_settings_stub()), \
+         patch.object(cliq_service, "_get_access_token", return_value="tok"), \
+         patch.object(cliq_service, "_refresh_access_token", return_value="x") as refresh_mock, \
+         patch.object(breaker, "call", side_effect=CircuitBreakerProbeInProgress()), \
+         patch.object(breaker, "_on_success") as on_success, \
+         patch.object(breaker, "_on_failure") as on_failure, \
+         patch("app.services.cliq_service.httpx.Client", return_value=client):
+        result = asyncio.run(cliq_service.post_to_channel("hi"))
+
+    assert isinstance(result, bool) and result is False, (
+        "a probe-in-flight rejection must return the same bool False contract as OPEN"
+    )
+    assert reached == [], "no HTTP post may run when the probe slot is held"
+    assert refresh_mock.await_count == 0, "probe contention must NOT trigger a token refresh"
+    assert not on_success.called and not on_failure.called, (
+        "the wrapper must not call breaker-internal accounting directly (old anti-pattern)"
+    )
+    msg = "\n".join(r.getMessage() for r in caplog.records)
+    assert "recovery probe in flight" in msg, "must report recovery-probe contention"
+    assert "circuit OPEN" not in msg, "must NOT misreport contention as a hard-OPEN rejection"
+
+
+def test_refresh_access_token_probe_in_flight_returns_cached_token(caplog):
+    """_refresh_access_token under CircuitBreakerProbeInProgress returns the
+    cached token (recovery is in progress, not a hard-OPEN), logs in-flight-probe
+    contention without leaking the token value, and makes no OAuth HTTP call and
+    no direct breaker-internal accounting call."""
+    import logging
+    from app.services import cliq_service
+
+    cliq_service._access_token = "cached-tok-xyz"
+    try:
+        breaker = get_circuit_breaker("zoho_cliq")
+
+        reached: list = []
+        client = _recording_sync_client(reached, status=200,
+                                        json_data={"access_token": "fresh"})
+
+        with caplog.at_level(logging.WARNING, logger="app.services.cliq_service"), \
+             patch.object(cliq_service, "settings", _oauth_settings_stub()), \
+             patch.object(breaker, "call", side_effect=CircuitBreakerProbeInProgress()), \
+             patch.object(breaker, "_on_success") as on_success, \
+             patch.object(breaker, "_on_failure") as on_failure, \
+             patch("app.services.cliq_service.httpx.Client", return_value=client):
+            tok = asyncio.run(cliq_service._refresh_access_token())
+
+        assert tok == "cached-tok-xyz", (
+            "probe-in-flight must fall back to the cached token, not '' or a fresh value"
+        )
+        assert reached == [], "no OAuth call may run when the probe slot is held"
+        assert not on_success.called and not on_failure.called, (
+            "the wrapper must not call breaker-internal accounting directly (old anti-pattern)"
+        )
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "recovery probe in flight" in msg, "must report the in-flight recovery probe"
+        assert "circuit OPEN" not in msg, "must NOT misreport contention as a hard-OPEN rejection"
+        assert "cached-tok-xyz" not in msg, "the cached token value must never be logged"
+    finally:
+        cliq_service._access_token = ""
