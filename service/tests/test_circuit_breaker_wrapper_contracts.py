@@ -18,6 +18,7 @@ against the real wrapper signature; mock only the network boundary.
 from __future__ import annotations
 
 import asyncio
+import time as _time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,9 +31,22 @@ from app.core.circuit_breaker import CircuitState, get_circuit_breaker, reset_al
 
 @pytest.fixture(autouse=True)
 def _reset_circuits():
-    """Each test starts with every named circuit CLOSED."""
+    """Each test starts with every named circuit CLOSED and the cliq token state
+    cleared.
+
+    These tests drive cliq_service via asyncio.run(), which creates and closes a
+    fresh event loop per call. cliq_service._token_lock is a lazily-created
+    module-global asyncio.Lock; dropping it here forces a re-bind to each test's
+    loop, avoiding "bound to a different event loop" when a later test reuses a
+    Lock created on an already-closed loop.
+    """
+    from app.services import cliq_service
+    cliq_service._token_lock = None
+    cliq_service._access_token = ""
     reset_all()
     yield
+    cliq_service._token_lock = None
+    cliq_service._access_token = ""
     reset_all()
 
 
@@ -59,44 +73,36 @@ def test_post_to_channel_returns_bool_on_circuit_open():
 
 
 def test_post_to_channel_returns_bool_on_success():
-    """post_to_channel CLOSED-success path returns bool (True)."""
+    """post_to_channel CLOSED-success path returns bool (True).
+
+    Since the stuck-OPEN fix, the POST is routed through CircuitBreaker.call()
+    via asyncio.to_thread using a SYNCHRONOUS httpx.Client — so the transport
+    boundary is patched at httpx.Client (not AsyncClient), with a sync post().
+    """
     from app.services import cliq_service
 
-    # Stub the inner OAuth + HTTP boundary; wrapper code itself runs.
-    async def _ok_post(*_a, **_kw):
-        resp = MagicMock()
-        resp.status_code = 204
-        resp.text = ""
-        return resp
+    resp = MagicMock()
+    resp.status_code = 204
+    resp.text = ""
 
-    with patch.object(cliq_service, "_get_access_token", return_value="tok"):
-        async_ctx = MagicMock()
-        async_ctx.__aenter__ = MagicMock(side_effect=lambda: _fake_client())
-        # Patch httpx.AsyncClient at the wrapper boundary.
-        client_mock = MagicMock()
-        client_mock.post = _ok_post
+    sync_client = MagicMock()
+    sync_client.post = MagicMock(return_value=resp)
+    sync_client.__enter__ = MagicMock(return_value=sync_client)
+    sync_client.__exit__  = MagicMock(return_value=False)
 
-        async def _fake_aenter(self):
-            return client_mock
+    settings_stub = MagicMock()
+    settings_stub.cliq_channel_api_url     = "https://cliq.example/api/message"
+    settings_stub.cliq_channel_webhook_url = ""
 
-        async def _fake_aexit(self, *a):
-            return False
-
-        with patch("app.services.cliq_service.httpx.AsyncClient") as ac:
-            ac.return_value.__aenter__ = _fake_aenter
-            ac.return_value.__aexit__  = _fake_aexit
-
-            result = asyncio.run(cliq_service.post_to_channel("hello"))
+    with patch.object(cliq_service, "settings", settings_stub), \
+         patch.object(cliq_service, "_get_access_token", return_value="tok"), \
+         patch("app.services.cliq_service.httpx.Client", return_value=sync_client):
+        result = asyncio.run(cliq_service.post_to_channel("hello"))
 
     assert isinstance(result, bool), (
         f"post_to_channel must return bool on success; got {type(result).__name__}"
     )
     assert result is True
-
-
-def _fake_client():
-    """Helper unused by the async-context patcher above; kept for symmetry."""
-    return MagicMock()
 
 
 # ── wfirma_client._http_request ───────────────────────────────────────────────
@@ -337,3 +343,161 @@ def test_wfirma_client_probes_after_recovery_timeout():
     assert breaker.state == CircuitState.CLOSED, (
         "a successful recovery probe must close the wFirma circuit"
     )
+
+
+# ── cliq_service stuck-OPEN recovery (the fixed defect) ───────────────────────
+#
+# Regression suite for the stuck-OPEN defect at cliq_service.py (2026-07-30):
+# admission used to be gated on the breaker's RAW .state, which returned before
+# CircuitBreaker.call() ever ran — so _maybe_transition() never fired and the
+# zoho_cliq circuit could never leave OPEN until the process restarted, silently
+# suppressing EVERY batch-completion notification for the process lifetime.
+#
+# The fix routes both post_to_channel and _refresh_access_token through
+# breaker.call() (via asyncio.to_thread + a sync httpx.Client). These tests
+# drive the recovery deadline deterministically by back-dating _last_failure
+# past recovery_timeout — no real sleeps — and assert through the REAL cliq
+# wrappers that a probe is (a) rejected inside the window and (b) admitted once
+# the window elapses. Mirrors the wfirma wrapper-contract recovery tests and
+# tests/test_circuit_breaker.py::TestRecoveryTimeoutFakeClock.
+
+def _recording_sync_client(recorder, *, status=204, text="", json_data=None):
+    """A stand-in httpx.Client whose sync post() appends to *recorder* and
+    returns a MagicMock response. Lets a test assert whether the HTTP layer was
+    actually reached (probe admitted) vs short-circuited (rejected while OPEN)."""
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = text
+    resp.json.return_value = json_data or {}
+    resp.raise_for_status = MagicMock()  # 2xx: no-op
+
+    client = MagicMock()
+
+    def _post(*_a, **_kw):
+        recorder.append(True)
+        return resp
+
+    client.post = MagicMock(side_effect=_post)
+    client.__enter__ = MagicMock(return_value=client)
+    client.__exit__  = MagicMock(return_value=False)
+    return client
+
+
+def _channel_settings_stub():
+    s = MagicMock()
+    s.cliq_channel_api_url     = "https://cliq.example/api/message"
+    s.cliq_channel_webhook_url = ""
+    return s
+
+
+def _oauth_settings_stub():
+    s = MagicMock()
+    s.cliq_refresh_token = "rt"
+    s.cliq_client_id     = "cid"
+    s.cliq_client_secret = "csec"
+    return s
+
+
+def _expire_recovery_window(breaker):
+    """Back-date the breaker's last failure past recovery_timeout so the NEXT
+    admission must transition OPEN → HALF_OPEN (mirrors the wfirma tests)."""
+    with breaker._lock:
+        breaker._last_failure = _time.time() - (breaker.config.recovery_timeout + 1)
+
+
+def test_post_to_channel_rejects_while_open_before_recovery():
+    """Inside the recovery window an OPEN circuit rejects the post and NO HTTP
+    call is made — but crucially now via breaker.call(), which keeps the
+    recovery clock alive (unlike the old raw-.state fast-path)."""
+    from app.services import cliq_service
+
+    breaker = get_circuit_breaker("zoho_cliq")
+    breaker.force_open()  # _last_failure = now → inside the 60s window
+
+    reached: list = []
+    client = _recording_sync_client(reached, status=204)
+
+    with patch.object(cliq_service, "settings", _channel_settings_stub()), \
+         patch.object(cliq_service, "_get_access_token", return_value="tok"), \
+         patch("app.services.cliq_service.httpx.Client", return_value=client):
+        result = asyncio.run(cliq_service.post_to_channel("hi"))
+
+    assert result is False
+    assert reached == [], "no HTTP post may run while the circuit is OPEN pre-recovery"
+    assert breaker.state == CircuitState.OPEN
+
+
+def test_post_to_channel_probes_after_recovery_timeout():
+    """THE core regression: once recovery_timeout elapses, post_to_channel must
+    admit a HALF_OPEN probe that actually reaches the HTTP layer and — on a 2xx —
+    CLOSES the circuit. Before the fix the raw-.state gate made this unreachable
+    and the breaker stayed OPEN until the process restarted."""
+    from app.services import cliq_service
+
+    breaker = get_circuit_breaker("zoho_cliq")
+    breaker.force_open()
+    _expire_recovery_window(breaker)
+
+    reached: list = []
+    client = _recording_sync_client(reached, status=204)
+
+    with patch.object(cliq_service, "settings", _channel_settings_stub()), \
+         patch.object(cliq_service, "_get_access_token", return_value="tok"), \
+         patch("app.services.cliq_service.httpx.Client", return_value=client):
+        result = asyncio.run(cliq_service.post_to_channel("hi"))
+
+    assert reached, "recovery probe must actually reach the HTTP layer"
+    assert result is True
+    assert breaker.state == CircuitState.CLOSED, "a successful probe must CLOSE the circuit"
+
+
+def test_refresh_access_token_rejects_while_open_before_recovery():
+    """_refresh_access_token inside the recovery window returns the cached token
+    without reaching the OAuth endpoint (rejected via breaker.call())."""
+    from app.services import cliq_service
+
+    cliq_service._access_token = "cached-tok"
+    try:
+        breaker = get_circuit_breaker("zoho_cliq")
+        breaker.force_open()  # inside window
+
+        reached: list = []
+        client = _recording_sync_client(reached, status=200,
+                                        json_data={"access_token": "fresh"})
+
+        with patch.object(cliq_service, "settings", _oauth_settings_stub()), \
+             patch("app.services.cliq_service.httpx.Client", return_value=client):
+            tok = asyncio.run(cliq_service._refresh_access_token())
+
+        assert tok == "cached-tok", "OPEN circuit must fall back to the cached token"
+        assert reached == [], "no OAuth call may run while the circuit is OPEN pre-recovery"
+        assert breaker.state == CircuitState.OPEN
+    finally:
+        cliq_service._access_token = ""
+
+
+def test_refresh_access_token_probes_after_recovery_timeout():
+    """_refresh_access_token after recovery_timeout admits a probe that reaches
+    the OAuth endpoint, stores the refreshed token, and CLOSES the circuit."""
+    from app.services import cliq_service
+
+    cliq_service._access_token = ""
+    try:
+        breaker = get_circuit_breaker("zoho_cliq")
+        breaker.force_open()
+        _expire_recovery_window(breaker)
+
+        reached: list = []
+        client = _recording_sync_client(reached, status=200,
+                                        json_data={"access_token": "fresh-tok-xyz"})
+
+        with patch.object(cliq_service, "settings", _oauth_settings_stub()), \
+             patch("app.services.cliq_service.httpx.Client", return_value=client):
+            tok = asyncio.run(cliq_service._refresh_access_token())
+
+        assert reached, "recovery probe must actually reach the OAuth endpoint"
+        assert tok == "fresh-tok-xyz"
+        assert cliq_service._access_token == "fresh-tok-xyz"
+        assert breaker.state == CircuitState.CLOSED, "a successful probe must CLOSE the circuit"
+    finally:
+        cliq_service._access_token = ""

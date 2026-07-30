@@ -221,9 +221,15 @@ async def _refresh_access_token() -> str:
 
     breaker = get_circuit_breaker("zoho_cliq")
 
-    try:
-        async with httpx.AsyncClient(timeout=breaker.config.call_timeout) as client:
-            r = await client.post(
+    def _do_refresh() -> Dict[str, Any]:
+        # Synchronous POST routed through the circuit breaker so that ALL
+        # admission — and all success/failure accounting — goes through
+        # CircuitBreaker.call(). A non-2xx response raises (raise_for_status)
+        # and is counted as a breaker failure; a 2xx returns the parsed body.
+        # Runs in a worker thread (asyncio.to_thread) so the breaker's
+        # time.sleep() retries never block the event loop.
+        with httpx.Client(timeout=breaker.config.call_timeout) as client:
+            r = client.post(
                 "https://accounts.zoho.in/oauth/v2/token",
                 params={
                     "refresh_token": refresh_token,
@@ -232,24 +238,28 @@ async def _refresh_access_token() -> str:
                     "grant_type":    "refresh_token",
                 },
             )
-            r.raise_for_status()
-            data = r.json()
-            new_token = data.get("access_token", "")
-            if new_token:
-                async with _get_token_lock():
-                    _access_token = new_token
-                breaker._on_success()  # record success against circuit
-                log.info("Cliq OAuth token refreshed successfully")
-                return new_token
-            log.error("Token refresh response missing access_token: %s", data.get("error", "unknown"))
-            return ""
+        r.raise_for_status()
+        return r.json()
+
+    try:
+        data = await asyncio.to_thread(breaker.call, _do_refresh)
     except CircuitBreakerError:
         log.warning("zoho_cliq circuit OPEN — returning cached token (may be stale)")
         return _access_token
     except Exception as exc:
-        breaker._on_failure()  # record failure against circuit
+        # Transport/connection failure or non-2xx — CircuitBreaker.call() has
+        # already recorded the failure against the circuit.
         log.error("Cliq token refresh failed: %s", exc)
         return ""
+
+    new_token = data.get("access_token", "")
+    if new_token:
+        async with _get_token_lock():
+            _access_token = new_token
+        log.info("Cliq OAuth token refreshed successfully")
+        return new_token
+    log.error("Token refresh response missing access_token: %s", data.get("error", "unknown"))
+    return ""
 
 
 async def post_to_channel(text: str, channel: str = _PZ_CHANNEL) -> bool:
@@ -275,32 +285,49 @@ async def post_to_channel(text: str, channel: str = _PZ_CHANNEL) -> bool:
 
     breaker = get_circuit_breaker("zoho_cliq")
 
-    if breaker.state.value == "open":
-        log.warning("post_to_channel: zoho_cliq circuit OPEN — message not delivered to #%s", channel)
-        return False
-
+    # The 401 → refresh-token → retry-once loop stays at this async level (it
+    # needs the async token helpers). The actual HTTP POST is routed through
+    # the circuit breaker via a SYNCHRONOUS callable so that ALL admission goes
+    # through CircuitBreaker.call() — the only place OPEN→HALF_OPEN recovery is
+    # evaluated (via _maybe_transition). Gating on the raw breaker.state (as the
+    # old code did here) skipped recovery entirely and wedged the breaker OPEN
+    # until the process restarted. call() also owns success/failure accounting,
+    # so the direct _on_success()/_on_failure() calls are gone.
     for attempt in range(2):
         token = await _get_access_token()
         headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+        def _do_post() -> httpx.Response:
+            # Mirrors wfirma_client._do_request: only a transport/connection
+            # error raises (→ breaker records a failure); any HTTP status the
+            # server actually returns is a transport success (→ breaker records
+            # success) and is classified by the caller below. Runs in a worker
+            # thread (asyncio.to_thread) so the breaker's time.sleep() retries
+            # never block the event loop.
+            with httpx.Client(timeout=breaker.config.call_timeout) as client:
+                return client.post(url, json={"text": text}, headers=headers)
+
         try:
-            async with httpx.AsyncClient(timeout=breaker.config.call_timeout) as client:
-                r = await client.post(url, json={"text": text}, headers=headers)
-            log.info("post_to_channel: #%s attempt=%d → HTTP %d body=%r",
-                     channel, attempt + 1, r.status_code, r.text[:120])
-            if r.status_code == 401 and attempt == 0:
-                log.info("post_to_channel: 401 — refreshing OAuth token and retrying")
-                await _refresh_access_token()
-                continue
-            if r.status_code in (200, 201, 204):
-                breaker._on_success()
-                return True
-            log.error("post_to_channel: #%s HTTP %d — %s", channel, r.status_code, r.text[:300])
-            breaker._on_failure()
+            r = await asyncio.to_thread(breaker.call, _do_post)
+        except CircuitBreakerError:
+            log.warning("post_to_channel: zoho_cliq circuit OPEN — message not delivered to #%s", channel)
             return False
         except Exception as exc:
-            breaker._on_failure()
+            # Transport failure (connection refused / timeout) — CircuitBreaker.call()
+            # has already recorded the failure against the circuit.
             log.error("post_to_channel: #%s failed: %s", channel, exc)
             return False
+
+        log.info("post_to_channel: #%s attempt=%d → HTTP %d body=%r",
+                 channel, attempt + 1, r.status_code, r.text[:120])
+        if r.status_code == 401 and attempt == 0:
+            log.info("post_to_channel: 401 — refreshing OAuth token and retrying")
+            await _refresh_access_token()
+            continue
+        if r.status_code in (200, 201, 204):
+            return True
+        log.error("post_to_channel: #%s HTTP %d — %s", channel, r.status_code, r.text[:300])
+        return False
 
     log.error("post_to_channel: #%s failed after token refresh", channel)
     return False
