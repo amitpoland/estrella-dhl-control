@@ -156,6 +156,111 @@ try { $x = Resolve-RestoredSha -Meta $rtMeta2 -BackupPath $rtUnit2.Path -UnitId 
 catch { $blockedRt = ($_.Exception.Message -like '*legacy*') }
 Check 'roundtrip(no marker): resulting unit is REFUSED, not rolled back' ($blockedRt -and -not $leakedRt)
 
+# --- Assert-ProductionMatchesRecordedSha (pre-backup production identity gate) ---
+# The gate proves the CURRENT runtime application tree IS the tree of the commit recorded
+# in the version marker, BEFORE the deploy stops the service or takes a backup. It compares
+# git object ids (ls-tree of the recorded commit vs hash-object of each runtime file) so it
+# is EOL-robust: a runtime file that is byte-correct but CRLF-terminated still hashes to the
+# committed LF blob id. These cases build a REAL synthetic git repo rooted entirely under
+# $tmp -- source_app is committed; runtime_app is a SEPARATE tree written with CRLF so the
+# match case doubles as the EOL-robustness proof. Production is never named or touched; git
+# runs only against the temp repo. Writes use [System.IO.File] per the file rule above.
+function New-GateRepo([string]$root, [string]$markerOverride) {
+    $srcApp = Join-Path $root 'app'
+    New-Item -ItemType Directory -Path (Join-Path $srcApp 'sub') -Force | Out-Null
+    $enc = New-Object System.Text.ASCIIEncoding
+    # committed with LF; autocrlf=true stores LF blobs.
+    [System.IO.File]::WriteAllText((Join-Path $srcApp 'main.py'), "print('a')`nprint('b')`n", $enc)
+    [System.IO.File]::WriteAllText((Join-Path $srcApp 'sub\util.py'), "x = 1`n", $enc)
+    & git -C $root init -q | Out-Null
+    & git -C $root config user.email 't@t' | Out-Null
+    & git -C $root config user.name 't' | Out-Null
+    & git -C $root config core.autocrlf true | Out-Null
+    & git -C $root add app | Out-Null
+    & git -C $root commit -q -m init | Out-Null
+    $sha = (& git -C $root rev-parse HEAD).Trim()
+    New-Item -ItemType Directory -Path (Join-Path $root 'runtime') -Force | Out-Null
+    $marker = if ($markerOverride) { $markerOverride } else { $sha }
+    if ($marker -ne '__NONE__') {
+        [System.IO.File]::WriteAllText((Join-Path $root 'runtime\version.txt'), $marker, $enc)
+    }
+    $rtApp = Join-Path $root 'runtime\app'
+    New-Item -ItemType Directory -Path (Join-Path $rtApp 'sub') -Force | Out-Null
+    # runtime copy written with CRLF on purpose -> proves the gate normalizes and matches.
+    [System.IO.File]::WriteAllText((Join-Path $rtApp 'main.py'), "print('a')`r`nprint('b')`r`n", $enc)
+    [System.IO.File]::WriteAllText((Join-Path $rtApp 'sub\util.py'), "x = 1`r`n", $enc)
+    $cfgPath = Join-Path $root 'cfg.json'
+    $cfg = [pscustomobject]@{
+        schema_version = 2; service = 'SyntheticNoService'
+        source_root = $root; source_app = $srcApp
+        runtime_app = $rtApp
+        runtime_engine = (Join-Path $root 'runtime\engine-absent')
+        artifact_root = (Join-Path $root 'releases'); backup_root = (Join-Path $root 'backups')
+        version_file = (Join-Path $root 'runtime\version.txt')
+        lock_file = (Join-Path $root 'backups\.lock')
+        engine_files = @('pz_import_processor.py'); protected_dirs = @('storage')
+        protected_files = @('.env'); protected_runtime_paths = @((Join-Path $root 'runtime\storage'))
+        forbidden_flags = @('/XO'); robocopy_fatal_exit = 8; robocopy_suspect_exit = 4
+        service_wait_seconds = 60; test_baseline_contract = 'n/a'
+        authorization_helper = 'hooks\deploy_authorization.py'
+    }
+    [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    return [pscustomobject]@{ Cfg = (Get-DeployConfig -ConfigPath $cfgPath); Sha = $sha; RuntimeApp = $rtApp }
+}
+function Assert-GatePasses([string]$name, $cfg) {
+    $ok = $false
+    try { Assert-ProductionMatchesRecordedSha -Cfg $cfg 6>$null; $ok = $true }
+    catch { Write-Host "  (unexpected block: $($_.Exception.Message))" }
+    Check $name $ok
+}
+function Assert-GateBlocks([string]$name, $cfg, [string]$needle) {
+    $blocked = $false
+    try { Assert-ProductionMatchesRecordedSha -Cfg $cfg 6>$null }
+    catch { $blocked = ($_.Exception.Message -like "*$needle*") }
+    Check $name $blocked
+}
+
+# GA: byte-correct runtime (CRLF) vs committed (LF) blob -> PASS (EOL-robust).
+$gaRoot = Join-Path $tmp 'gate-ok'; New-Item -ItemType Directory -Path $gaRoot -Force | Out-Null
+$ga = New-GateRepo $gaRoot $null
+Assert-GatePasses 'gate: CRLF runtime matches LF-committed marker -> pass (EOL-robust)' $ga.Cfg
+
+# GB: one runtime file's content changed -> BLOCK (hybrid tree).
+$gbRoot = Join-Path $tmp 'gate-hybrid'; New-Item -ItemType Directory -Path $gbRoot -Force | Out-Null
+$gb = New-GateRepo $gbRoot $null
+[System.IO.File]::WriteAllText((Join-Path $gb.RuntimeApp 'main.py'), "print('CHANGED')`r`n", (New-Object System.Text.ASCIIEncoding))
+Assert-GateBlocks 'gate: one changed runtime file -> BLOCK (hybrid)' $gb.Cfg 'IDENTITY MISMATCH'
+
+# GC: absent version marker -> BLOCK, never proceeds over an unknown tree.
+$gcRoot = Join-Path $tmp 'gate-nomarker'; New-Item -ItemType Directory -Path $gcRoot -Force | Out-Null
+$gc = New-GateRepo $gcRoot '__NONE__'
+Assert-GateBlocks 'gate: absent version marker -> BLOCK' $gc.Cfg 'version marker'
+
+# GD: marker holds a well-formed SHA that is not a commit in the repo -> BLOCK, no guess.
+$gdRoot = Join-Path $tmp 'gate-nocommit'; New-Item -ItemType Directory -Path $gdRoot -Force | Out-Null
+$gd = New-GateRepo $gdRoot ('a' * 40)
+Assert-GateBlocks 'gate: marker SHA not a commit -> BLOCK' $gd.Cfg 'not a commit'
+
+# GE: an extraneous runtime file not in the recorded tree -> BLOCK.
+$geRoot = Join-Path $tmp 'gate-extra'; New-Item -ItemType Directory -Path $geRoot -Force | Out-Null
+$ge = New-GateRepo $geRoot $null
+[System.IO.File]::WriteAllText((Join-Path $ge.RuntimeApp 'ghost.py'), "y = 2`r`n", (New-Object System.Text.ASCIIEncoding))
+Assert-GateBlocks 'gate: extraneous runtime file -> BLOCK' $ge.Cfg 'IDENTITY MISMATCH'
+
+# GF: a tracked file missing from the runtime tree -> BLOCK.
+$gfRoot = Join-Path $tmp 'gate-missing'; New-Item -ItemType Directory -Path $gfRoot -Force | Out-Null
+$gf = New-GateRepo $gfRoot $null
+Remove-Item (Join-Path $gf.RuntimeApp 'sub\util.py') -Force
+Assert-GateBlocks 'gate: missing runtime file -> BLOCK' $gf.Cfg 'IDENTITY MISMATCH'
+
+# GG: protected runtime-only paths (storage/, .env) are excluded on both sides -> PASS.
+$ggRoot = Join-Path $tmp 'gate-protected'; New-Item -ItemType Directory -Path $ggRoot -Force | Out-Null
+$gg = New-GateRepo $ggRoot $null
+New-Item -ItemType Directory -Path (Join-Path $gg.RuntimeApp 'storage') -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $gg.RuntimeApp 'storage\live.db'), "runtime-state", (New-Object System.Text.ASCIIEncoding))
+[System.IO.File]::WriteAllText((Join-Path $gg.RuntimeApp '.env'), "SECRET=1", (New-Object System.Text.ASCIIEncoding))
+Assert-GatePasses 'gate: protected runtime paths excluded both sides -> pass' $gg.Cfg
+
 Remove-Item -Recurse -Force $tmp
 Write-Host ""
 Write-Host "RESULT: $($script:pass) passed, $($script:fail) failed"

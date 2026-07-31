@@ -246,6 +246,153 @@ function Read-VersionMarker {
 }
 
 # ---------------------------------------------------------------- phases
+function Assert-ProductionMatchesRecordedSha {
+    <#
+      Read-only production identity gate. Proves that the CURRENT production application
+      tree is exactly the tree of the commit recorded in the production version marker,
+      BEFORE the deploy stops the service, stages an artifact, or takes a backup.
+
+      Why it exists: New-BackupUnit records restored_sha by READING the version marker
+      (Read-VersionMarker) - it does not re-derive that SHA from the bytes it backs up. If
+      production were a HYBRID (marker says commit X but some files are actually commit Y -
+      e.g. an out-of-band copy that bypassed this script) the backup would be labelled X
+      while holding non-X bytes, and a later rollback would stamp production with a SHA that
+      does not match its own files. This gate makes that state fail closed at the TOP of the
+      deploy instead of minting a mislabelled, effectively-unrollbackable unit. It is the
+      upstream guarantee that makes 'restored_sha = Read-VersionMarker' trustworthy.
+
+      Method (EOL-robust): the deploy artifact is robocopied from a working tree, so runtime
+      text files carry the platform CRLF while git blobs are LF - a raw byte compare would
+      false-mismatch on every text file. Instead compare git object ids. 'git ls-tree -r
+      <sha>' gives the committed blob id of every tracked application file; running the same
+      repo's 'git hash-object' over each runtime file applies the IDENTICAL autocrlf clean
+      filter, so a byte-correct file yields the same id regardless of line endings. Any
+      missing, differing, or extraneous runtime file is a mismatch.
+
+      Fails closed and never guesses: an absent/invalid marker, a marker SHA absent from the
+      source repository, or any single file discrepancy all throw BLOCKED - an identity is
+      never inferred from a partial match. Protected runtime paths (storage, logs, .env,
+      __pycache__, ... from protected_dirs/protected_files) are excluded on BOTH sides
+      exactly as convergence excludes them: they are runtime state, never part of the
+      committed tree, and would otherwise always read as extraneous. Read-only in EVERY mode
+      including plan mode - it is a pure inspection and takes no lock, writes nothing, and
+      drives no service.
+    #>
+    param($Cfg)
+    Write-Host "== Production identity gate (runtime bytes vs recorded version marker) =="
+
+    $recorded = Read-VersionMarker -Path $Cfg.version_file
+    if (-not $recorded) {
+        throw "BLOCKED: production version marker $($Cfg.version_file) is absent or does not hold a single 40-hex commit SHA. Production identity is unverifiable; refusing to deploy over an unknown tree. Establish the true production SHA (operator-authorised reconciliation) before deploying."
+    }
+
+    $SRC = $Cfg.source_root
+    if (-not (Test-Path (Join-Path $SRC ".git"))) { throw "BLOCKED: $SRC is not a git working tree; production identity cannot be verified" }
+    # No stderr redirection on native git: 2>$null / 2>&1 in PS 5.1 wraps stderr in a
+    # NativeCommandError that THROWS under ErrorActionPreference=Stop before $LASTEXITCODE is
+    # read. The exit code alone is the authority here; any git stderr is informational.
+    & git -C $SRC cat-file -e "$recorded^{commit}" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "BLOCKED: the production version marker records $recorded, which is not a commit in $SRC. The recorded identity cannot be resolved to a tree; refusing to deploy. Fetch the commit or reconcile production identity first."
+    }
+    if (-not (Test-Path $Cfg.runtime_app)) {
+        throw "BLOCKED: production application tree $($Cfg.runtime_app) does not exist; it cannot be verified against $recorded."
+    }
+
+    # The application subtree, addressed by the SAME relative path git uses - derived from
+    # config, never a literal: source_app MUST live under source_root.
+    $rootNorm = "$SRC".TrimEnd('\', '/')
+    $appNorm = "$($Cfg.source_app)".TrimEnd('\', '/')
+    if (-not $appNorm.StartsWith($rootNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "BLOCKED: source_app '$appNorm' is not under source_root '$rootNorm'; the tracked application tree is unaddressable"
+    }
+    $relPrefix = $appNorm.Substring($rootNorm.Length).TrimStart('\', '/').Replace('\', '/')
+    if (-not $relPrefix) { throw "BLOCKED: source_app equals source_root; the application subtree is unaddressable" }
+
+    $protDirs = @($Cfg.protected_dirs)
+    $protFiles = @($Cfg.protected_files)
+
+    # EXPECTED: committed blob id per app-relative path at the recorded SHA.
+    $expected = @{}
+    $lsRaw = & git -C $SRC ls-tree -r $recorded -- $relPrefix
+    if ($LASTEXITCODE -ne 0) { throw "BLOCKED: git ls-tree failed for $recorded -- '$relPrefix' (exit $LASTEXITCODE)" }
+    foreach ($line in @($lsRaw)) {
+        if (-not $line) { continue }
+        # <mode> SP <type> SP <oid> TAB <path>
+        if ($line -notmatch '^\S+\s+(\S+)\s+(\S+)\t(.+)$') { continue }
+        $type = $Matches[1]; $oid = $Matches[2]; $path = $Matches[3]
+        if ($type -ne 'blob') { continue }   # skip trees/submodules; the app tree has none
+        $appRel = $path.Substring($relPrefix.Length).TrimStart('/')
+        $first = $appRel.Split('/')[0]
+        if ($protDirs -contains $first) { continue }
+        $leaf = $appRel.Split('/')[-1]
+        $isProt = $false
+        foreach ($pat in $protFiles) { if ($leaf -like $pat) { $isProt = $true; break } }
+        if ($isProt) { continue }
+        $expected[$appRel] = $oid
+    }
+    if ($expected.Count -lt 1) {
+        throw "BLOCKED: recorded SHA $recorded has no tracked files under '$relPrefix'; it cannot be the production application tree"
+    }
+
+    # ACTUAL: hash-object every non-protected runtime file (autocrlf clean filter => blob id).
+    $runtimeRootNorm = "$($Cfg.runtime_app)".TrimEnd('\', '/')
+    $relList = New-Object System.Collections.Generic.List[string]
+    $absList = New-Object System.Collections.Generic.List[string]
+    foreach ($f in @(Get-ChildItem $Cfg.runtime_app -Recurse -File)) {
+        $appRel = $f.FullName.Substring($runtimeRootNorm.Length).TrimStart('\', '/').Replace('\', '/')
+        $first = $appRel.Split('/')[0]
+        if ($protDirs -contains $first) { continue }
+        $leaf = $appRel.Split('/')[-1]
+        $isProt = $false
+        foreach ($pat in $protFiles) { if ($leaf -like $pat) { $isProt = $true; break } }
+        if ($isProt) { continue }
+        $relList.Add($appRel)
+        $absList.Add($f.FullName)
+    }
+
+    $actual = @{}
+    if ($absList.Count -gt 0) {
+        # Hash every runtime file with git hash-object (same repo => same autocrlf clean
+        # filter as the committed blobs). Paths go as ARGUMENTS in bounded chunks, not via
+        # --stdin-paths: piping paths to a native command in PS 5.1 can prepend an encoding
+        # BOM to the first line (git then cannot open it), and a single call risks the
+        # command-line length limit. Chunked args sidestep both; PS quotes spaced paths.
+        $absArr = $absList.ToArray()
+        $relArr = $relList.ToArray()
+        $chunk = 200
+        for ($start = 0; $start -lt $absArr.Count; $start += $chunk) {
+            $end = [Math]::Min($start + $chunk, $absArr.Count) - 1
+            $batch = @($absArr[$start..$end])
+            $oids = @(& git -C $SRC hash-object @batch)
+            if ($LASTEXITCODE -ne 0) { throw "BLOCKED: git hash-object failed while hashing production files (exit $LASTEXITCODE)" }
+            if ($oids.Count -ne $batch.Count) {
+                throw "BLOCKED: production identity gate could not hash every file ($($oids.Count) ids for $($batch.Count) paths); refusing an inconclusive comparison"
+            }
+            for ($j = 0; $j -lt $batch.Count; $j++) { $actual[$relArr[$start + $j]] = "$($oids[$j])".Trim() }
+        }
+    }
+
+    $mismatch = @(); $missing = @(); $extra = @()
+    foreach ($rel in $expected.Keys) {
+        if (-not $actual.ContainsKey($rel)) { $missing += $rel }
+        elseif ($actual[$rel] -ne $expected[$rel]) { $mismatch += $rel }
+    }
+    foreach ($rel in $actual.Keys) { if (-not $expected.ContainsKey($rel)) { $extra += $rel } }
+
+    $problems = $missing.Count + $mismatch.Count + $extra.Count
+    Write-Host "  recorded=$recorded tracked=$($expected.Count) runtime=$($actual.Count) changed=$($mismatch.Count) missing=$($missing.Count) extraneous=$($extra.Count)"
+    if ($problems -gt 0) {
+        @(
+            ($mismatch | ForEach-Object { "CHANGED: $_" })
+            ($missing | ForEach-Object { "MISSING: $_" })
+            ($extra | ForEach-Object { "EXTRANEOUS: $_" })
+        ) | Select-Object -First 40 | ForEach-Object { Write-Host "    $_" }
+        throw "BLOCKED: PRODUCTION IDENTITY MISMATCH - the runtime application tree does not match its recorded version marker $recorded ($($mismatch.Count) changed, $($missing.Count) missing, $($extra.Count) extraneous). Production is a HYBRID: deploying now would back these bytes up under the WRONG SHA, and a later rollback would stamp an identity that does not match the files. Refusing. Reconcile production to a known SHA (operator-authorised reconciliation) before deploying."
+    }
+    Write-Host "  production identity verified: runtime application tree == recorded marker $recorded ($($expected.Count) files)"
+}
+
 function Invoke-Preflight {
     param($Cfg)
     $SRC = $Cfg.source_root
@@ -346,6 +493,13 @@ function New-BackupUnit {
         # $Sha at the very end and this is the only moment the prior identity is visible.
         # An absent or unreadable marker is recorded as $null (never guessed): a later
         # rollback then fails closed rather than stamping the wrong identity.
+        # HARDENING: reading restored_sha from the marker is only SOUND because
+        # Assert-ProductionMatchesRecordedSha ran at the top of Invoke-Deploy and proved the
+        # runtime bytes about to be backed up ARE the tree of this marker. That gate is the
+        # load-bearing guarantee here; without it a HYBRID tree (marker X, bytes partly Y)
+        # would be backed up and mislabelled X. Do NOT drop the gate call and keep this line -
+        # that reintroduces exactly the provenance-integrity defect this backup relies on it
+        # to prevent.
         $restoredSha = if ($appPresent) { Read-VersionMarker -Path $Cfg.version_file } else { $null }
         # Surface the unrollbackable unit AT DEPLOY TIME. Without this the unit is minted
         # silently and the defect is only discovered mid-incident, when the rollback that
@@ -636,6 +790,15 @@ function Invoke-Deploy {
     # Lock BEFORE any mutable preparation so two operators cannot both stage or back up.
     Enter-DeployLock -Cfg $cfg
     try {
+        # Prove production IS the tree its version marker claims, BEFORE the service is
+        # stopped, an artifact is staged, or a backup is taken. Read-only and taken under the
+        # deploy lock (closes the read/backup TOCTOU). A mismatch throws out through the
+        # finally below (lock released) with the service still Running and nothing on
+        # production touched, so a HYBRID tree can never be backed up and mislabelled by
+        # New-BackupUnit. Skipped only for -Bootstrap, where there is no prior tree to verify.
+        # Runs in plan mode too - it writes nothing.
+        if (-not $Bootstrap) { Assert-ProductionMatchesRecordedSha -Cfg $cfg }
+        else { Write-Host "== Production identity gate skipped (-Bootstrap: no prior tree) ==" }
         Set-ServiceState -Cfg $cfg -Target Stopped
         $unit = $null
         try {

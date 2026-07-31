@@ -880,3 +880,117 @@ def test_policy_warns_about_legacy_units_before_the_rollback_commands():
     assert "unconsumed" in proc, (
         "the procedure must state the authorization state after the initial refusal"
     )
+
+
+# ------------------------------------------------- production identity gate (pre-backup)
+# New-BackupUnit records restored_sha by READING the version marker, not by re-deriving it
+# from the bytes it backs up. A HYBRID production tree (marker says X, files partly Y) would
+# therefore be backed up mislabelled X and a later rollback would stamp the wrong identity.
+# Assert-ProductionMatchesRecordedSha closes that hole: it proves runtime bytes == recorded
+# marker BEFORE the service is stopped or any backup is taken, and fails closed otherwise.
+def _gate_segment(src: str) -> str:
+    start = src.index("function Assert-ProductionMatchesRecordedSha")
+    nxt = src.index("\nfunction ", start + 1)
+    return src[start:nxt]
+
+
+def test_production_identity_gate_exists():
+    body = _read(DEPLOY_SCRIPT)
+    assert "function Assert-ProductionMatchesRecordedSha" in body, (
+        "a pre-backup production identity gate must exist so New-BackupUnit cannot mislabel a HYBRID tree"
+    )
+
+
+def test_identity_gate_runs_after_lock_and_before_service_stop():
+    """The gate must hold the deploy lock (closing the read/backup TOCTOU) yet run before the
+    service is stopped or a backup taken, so a mismatch aborts with production untouched."""
+    body = _read(DEPLOY_SCRIPT)
+    i_lock = body.index("Enter-DeployLock -Cfg $cfg")
+    i_gate = body.index("Assert-ProductionMatchesRecordedSha -Cfg $cfg")
+    i_stop = body.index("Set-ServiceState -Cfg $cfg -Target Stopped")
+    i_bak = body.index("New-BackupUnit -Cfg $cfg")
+    assert i_lock < i_gate < i_stop, (
+        "the identity gate must run under the lock but BEFORE the service is stopped"
+    )
+    assert i_gate < i_bak, "the identity gate must run BEFORE any backup is minted"
+
+
+def test_identity_gate_is_skipped_only_for_bootstrap():
+    """A first-ever deploy has no prior tree to verify; every other deploy must run the gate."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "if (-not $Bootstrap) { Assert-ProductionMatchesRecordedSha -Cfg $cfg }" in body, (
+        "the gate must be unconditional except for -Bootstrap"
+    )
+
+
+def test_identity_gate_sources_paths_from_config_only():
+    """The gate must address production through config keys, never through a hardcoded path."""
+    seg = _gate_segment(_read(DEPLOY_SCRIPT))
+    for key in ("$Cfg.version_file", "$Cfg.source_root", "$Cfg.source_app",
+                "$Cfg.runtime_app", "$Cfg.protected_dirs", "$Cfg.protected_files"):
+        assert key in seg, f"the gate must read {key} from config, not a literal"
+
+
+def test_identity_gate_fails_closed_on_every_unverifiable_state():
+    """Absent/invalid marker, a marker SHA absent from the repo, a missing runtime tree, an
+    unresolvable app subtree, and any file discrepancy must all throw BLOCKED - never proceed."""
+    seg = _gate_segment(_read(DEPLOY_SCRIPT))
+    # marker absent or not a single 40-hex SHA
+    assert "is absent or does not hold a single 40-hex commit SHA" in seg
+    # recorded SHA is not a commit in the source repo
+    assert "which is not a commit in" in seg
+    # the runtime application tree is missing entirely
+    assert "does not exist; it cannot be verified against" in seg
+    # any changed/missing/extraneous file
+    assert "PRODUCTION IDENTITY MISMATCH" in seg
+    # every failure path is a throw, and none of them is a warning that proceeds
+    assert seg.count("throw \"BLOCKED:") >= 6, "each unverifiable state must throw, not warn"
+    assert "Write-Warning" not in seg, "an identity failure must block, never soft-warn and proceed"
+
+
+def test_identity_gate_compares_git_object_ids_not_raw_bytes():
+    """Runtime files carry CRLF while committed blobs are LF; a raw byte/hash compare would
+    false-mismatch every text file. The gate must compare git object ids so the autocrlf
+    clean filter normalises both sides."""
+    seg = _gate_segment(_read(DEPLOY_SCRIPT))
+    assert "git -C $SRC ls-tree -r $recorded" in seg, "expected ids must come from ls-tree at the recorded SHA"
+    assert "git -C $SRC hash-object" in seg, "runtime ids must come from hash-object (same clean filter)"
+    assert "Get-FileHash" not in seg, "a raw content hash would false-mismatch on CRLF vs LF"
+
+
+def test_identity_gate_excludes_protected_paths_on_both_sides():
+    """storage/logs/.env/__pycache__ are runtime state, never part of the committed tree;
+    excluding them on only one side would read as all-extraneous or all-missing."""
+    seg = _gate_segment(_read(DEPLOY_SCRIPT))
+    assert seg.count("$protDirs -contains $first") == 2, (
+        "protected dirs must be excluded from BOTH the expected (ls-tree) and actual (runtime) sides"
+    )
+    assert seg.count("if ($isProt) { continue }") == 2, (
+        "protected files must be excluded from BOTH sides"
+    )
+
+
+def test_identity_gate_is_read_only():
+    """The gate is a pure inspection: it must not stop the service, sync, write the marker,
+    mint a backup, or take a lock of its own (it runs inside the existing deploy lock)."""
+    seg = _gate_segment(_read(DEPLOY_SCRIPT))
+    # Strip the <# .. #> doc-comment: it explains the gate by NAMING the very writers the
+    # gate must not call, which would false-positive a bare substring scan.
+    body_only = re.sub(r"<#.*?#>", "", seg, count=1, flags=re.DOTALL)
+    for forbidden in ("Set-ServiceState", "Invoke-Robocopy", "Write-VersionFile",
+                      "New-BackupUnit", "New-ReleaseArtifact", "Enter-DeployLock"):
+        assert forbidden not in body_only, f"the read-only identity gate must not call {forbidden}"
+
+
+def test_backup_marker_read_is_documented_as_gate_dependent():
+    """The 'restored_sha = Read-VersionMarker' line is only sound because the gate proved the
+    bytes match the marker; that dependency must be recorded so the gate is not silently dropped."""
+    body = _read(DEPLOY_SCRIPT)
+    i_hard = body.index("HARDENING: reading restored_sha from the marker is only SOUND because")
+    i_line = body.index("$restoredSha = if ($appPresent) { Read-VersionMarker", i_hard)
+    assert i_hard < i_line, "the hardening note must sit directly above the marker read"
+    seg = body[i_hard:i_line]
+    assert "Assert-ProductionMatchesRecordedSha" in seg, "the note must name the gate it depends on"
+    assert "Do NOT drop the gate call and keep this line" in seg, (
+        "the note must forbid removing the gate while keeping the marker read"
+    )
