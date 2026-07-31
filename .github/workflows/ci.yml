@@ -1,0 +1,85 @@
+name: CI
+
+# First CI for the repository. Two independent jobs so the reliably-green
+# calculation-authority regression gives a clean signal even while the broader
+# service suite carries its documented, pre-existing aggregate reds.
+#
+# Runner: windows-latest — matches production (NSSM PZService, Windows, py3.9)
+# and the environment all test-baseline counts were measured in. The Windows-only
+# tests (test_review_bootstrap ×3, test_storage_health) therefore run for real.
+#
+# Python pinned to 3.9 — production runs 3.9.1; the root regression needs
+# PYTHONUTF8=1 so Polish-language test prints can't crash on a cp1252 console.
+#
+# NOTE: neither job is a required status check until branch protection is set
+# (an admin action in GitHub repo settings, not something this workflow grants).
+# The first run establishes the honest baseline; it is not described as "green"
+# until its own Actions run reports green.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref cancels the older in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Calculation authority: the ONLY landed-cost/duty/freight path ──────────
+  # Deterministic 160/160. Minimal deps (stdlib + pdfplumber + requests); the
+  # golden PDF pipeline (--e2e) is intentionally NOT run — the real invoice/ZC429
+  # PDFs are gitignored customs data, so e2e cannot run in CI.
+  golden-regression:
+    name: Golden regression (engine)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install engine dependencies
+        run: python -m pip install --upgrade pip pdfplumber requests
+
+      - name: Run golden regression (non-e2e)
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
+        run: python test_pz_regression.py
+
+  # ── Full service suite (748 files) ────────────────────────────────────────
+  # Runs the entire suite honestly. The test-baseline documents pre-existing,
+  # order-dependent aggregate reds (stale V1 source-grep pins; asyncio/mock
+  # leakage) — this job is expected to be red on arrival and exists to make that
+  # baseline visible and trackable, not to mask it. DHL/carrier credentials are
+  # absent on the runner, so the 4 env-conditional carrier defaults tests PASS
+  # here (they only fail on a creds-configured host).
+  service-suite:
+    name: Service pytest (full suite)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install service dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r service/requirements.txt
+          python -m pip install pytest pytest-timeout
+
+      - name: Run full service test suite
+        working-directory: service
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
+        run: python -m pytest tests/ -p no:cacheprovider -ra
