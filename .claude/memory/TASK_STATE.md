@@ -50,35 +50,106 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 - **Task:** Deploy PR #1043 (tracking `last_event` React-#31 hotfix) to production.
 - **Started:** 2026-07-31
-- **Status:** `EXECUTION_BLOCKED` — merge DONE, deploy NOT performed.
+- **Status:** `EXECUTION_BLOCKED` — **agent-side COMPLETE, operator handoff** (merge DONE +
+  gate re-confirmed READY-TO-DEPLOY; deploy NOT performed — prod still `1ce0e76d`, no signed
+  auth for candidate, no new backup unit). Awaiting operator sign+sync. See the
+  "AGENT-SIDE COMPLETE — operator handoff" note under the checkpoint block below.
 - **Merged:** squash `a14a9eae741077af42cb2b2d353e19b4af986172` (`e950475a` is NOT an
   ancestor — verify by content). `C:\PZ-main` fast-forwarded, clean.
 - **No re-verification owed:** merged tree = `baf7c87acbc9dedfefa3bd607ed532fde04d2eba`,
   byte-identical to the tree the 7-agent gate, the PZ 260 / Carrier 604 floors, the
   160/160 golden run and GATE-6 already passed against. Do NOT re-run them.
+- **7-agent gate RE-CONFIRMED 2026-07-31 (this session):** re-ran the full read-only gate
+  against the current `origin/main` tip **`423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0`**
+  (advanced past `a14a9eae` only by docs-only PR #1055 — `production_deployment_rule.md`,
+  2 lines; `a14a9eae` is a confirmed ancestor of `423fa3cb`, runtime payload identical).
+  **Verdict: READY-TO-DEPLOY, risk LOW** — all 6 reviewers CLEAR/GO, deploy-lead-coordinator
+  GO. Metered floors re-measured green this run: **PZ 260/260**, **Carrier 646 pass** (4
+  env-conditional DHL-cred fails; floor 604 satisfied), **golden 160/160**
+  (`PYTHONIOENCODING=utf-8`). The 16 tracking-subset failures were proven **pre-existing
+  baseline** by revert-and-compare (reverting the 2 payload files to prod `1ce0e76d` yields
+  identical failures) — NOT introduced by #1043. Deploy candidate is the **tip `423fa3cb`**
+  (deploy origin/main HEAD, not the older merge commit).
 - **Deploy delta vs prod `1ce0e76d`:** 2 files, +42/−3, both under `service/app/`
   (`services/tracking_service.py`, `static/v2/shipment-detail-page.jsx`). Lesson J N/A.
-- **Production state:** consistent and healthy at `1ce0e76d` — `version.txt` `1ce0e76d`,
-  `PZService` Running, prod file mtimes 2026-06-21 / 2026-07-14, no new backup unit,
-  **no partial write, nothing to roll back.** React #31 still live in prod.
+- **Production state — CURRENT-STATE FACT (2026-07-31, disk-measured; supersedes the earlier
+  "consistent at 1ce0e76d" reading):** production is a **HYBRID**. Recorded provenance and
+  filesystem content disagree. Detail in [[project-prod-outofband-copy-1043-anomaly]]. Four
+  facts, observed state kept separate from required remediation:
+
+  1. **Canonical deployment has NOT occurred.** No signed deploy authorization was consumed,
+     no `app-423fa3cb` release artifact exists in `C:\PZ-releases`, no deployment backup unit
+     was created after the 00:34 rollback, and `C:\PZ\version.txt` still records `1ce0e76d`.
+     By every canonical-provenance signal, prod is still `1ce0e76d`.
+  2. **Observed filesystem state.** The two #1043 application files
+     (`app/services/tracking_service.py`, `app/static/v2/shipment-detail-page.jsx`) are
+     byte-identical (sha256) to the reviewed `423fa3cb` content and carry mtime
+     `2026-07-31 02:00:01`. Their presence is the result of an **out-of-band manual copy**
+     (operator-console `robocopy … /MIR`, forensics resolved — NOT a canonical deploy, NOT
+     the agent). This is what makes prod a hybrid: `1ce0e76d` tree + 2 files at `423fa3cb`.
+  3. **Operational consequence.** Hash parity alone is **no longer sufficient evidence** that
+     a canonical deployment occurred — the fixed bytes are already on disk without any
+     canonical provenance behind them. Canonical-deployment evidence must now come from the
+     deployment **artifact**, **updated provenance** (`version.txt`), **backup creation**
+     (a new backup unit with a coherent `restored_sha`), and **version stamping** — not from
+     a file-content match.
+  4. **Required reconciliation (governance-level, NOT a prescribed sequence).** The hybrid
+     state must be **reconciled through the approved signed deployment process before
+     subsequent releases**, so that deployment provenance is once again consistent with
+     filesystem content. This is deliberately stated at the governance level: no specific
+     recovery sequence (e.g. "re-converge to `1ce0e76d` first") is encoded here as a rule —
+     any such sequence is a proposal only until it is formally approved and encoded in the
+     deployment governance. `PZService` is Running; nothing is lost (pre-fix `1ce0e76d`
+     content still exists in git and in backup unit `1ce0e76d…-003346`).
 
 ```yaml
 state: EXECUTION_BLOCKED
 suspended_from: VALIDATING
 blocked_reason_class: OPERATOR_ONLY_ACTION
-blocked_dependency: signed deploy authorization for a14a9eae (sign_deploy_authorization.py — operator shell only; agent is denied by pz-deploy-guard)
+blocked_dependency: signed deploy authorization for 423fa3cb (sign_deploy_authorization.py — operator shell only; agent is denied by pz-deploy-guard)
 recorded_branch: main
-recorded_head: a14a9eae741077af42cb2b2d353e19b4af986172
+recorded_head: 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0
+merge_provenance: a14a9eae741077af42cb2b2d353e19b4af986172 (PR #1043 squash; ancestor of tip 423fa3cb — later commits docs-only)
 preserved_files: []
-authority_owner: production deploy (7-agent gate, verdict READY-TO-DEPLOY, risk LOW)
-next_command: python .claude/hooks/sign_deploy_authorization.py a14a9eae741077af42cb2b2d353e19b4af986172 deploy Both --ttl 60   →then→   .claude\deploy\Deploy-PZ.ps1 -ReviewedSHA a14a9eae741077af42cb2b2d353e19b4af986172
+authority_owner: production deploy (7-agent gate re-confirmed 2026-07-31, verdict READY-TO-DEPLOY, risk LOW)
+next_command: OPERATOR HANDOFF — no valid single agent command; task is agent-side COMPLETE. Operator-first chain: (1) provision signing key C:\PZ-secrets\deploy-auth.key (not on box); (2) reconcile the HYBRID prod tree via the approved signed deployment process — the old straight `sign_deploy_authorization.py 423fa3cb … →then→ Deploy-PZ.ps1 -ReviewedSHA 423fa3cb` is INVALID as-recorded (snapshots the hybrid into the pre-deploy backup → #1039 backup-provenance stop fires; see Hybrid resume caution below); (3) THEN agent runs post-deploy verification (see "Post-deploy (owed)"). Do NOT run the old command without operator reconciliation of the hybrid first.
+next_command_superseded: python .claude/hooks/sign_deploy_authorization.py 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0 deploy Both --ttl 60   →then→   .claude\deploy\Deploy-PZ.ps1 -ReviewedSHA 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0   # INVALID against HYBRID prod — retained for provenance only
 retry_policy: NO_REPEATED_RETRIES
 checkpoint_recorded_at: 2026-07-31T02:20:00+02:00
+gate_reconfirmed_at: 2026-07-31T (this session; READY-TO-DEPLOY, LOW)
 ```
 
+- **AGENT-SIDE COMPLETE — operator handoff (recorded 2026-07-31, this session):** every
+  action that belongs to an agent session on this task is finished. Done and verified:
+  (1) merge landed (`a14a9eae`, ancestor of tip `423fa3cb`); (2) 7-agent gate RE-CONFIRMED
+  against `423fa3cb` → READY-TO-DEPLOY, risk LOW, all 6 reviewers CLEAR/GO + coordinator GO;
+  (3) metered floors green this run — PZ 260/260, Carrier 646 pass (floor 604), golden 160/160;
+  (4) the 16 tracking-subset failures proven pre-existing baseline (revert-and-compare);
+  (5) both state files (this file + PROJECT_STATE.md) reconciled to the tip SHA with
+  `a14a9eae` preserved as merge_provenance. **The task is NOT `COMPLETE`** — disk measured
+  this session shows production still at `1ce0e76d` (`C:\PZ\version.txt`), NO signed
+  authorization for `423fa3cb`/`a14a9eae` in `C:\PZ-secrets\deploy-auth`, and no new backup
+  unit for the candidate. It stays `EXECUTION_BLOCKED` on the operator-only sign+sync (HOLD
+  #2). **Nothing further for an agent to do until the operator acts;** the only remaining
+  work is (a) provisioning the signing key + running the signed reconciliation of the hybrid
+  (operator shell), then (b) the agent post-deploy verification listed under "Post-deploy
+  (owed)" below. Do NOT record this task as done until prod `version.txt` reads the deployed
+  SHA and the post-deploy checks pass.
 - **HOLD reason:** condition #2 (missing access) — minting the deploy authorization and
   running `Deploy-PZ.ps1` are operator-only; the signing key is never readable by an
   agent session and `gh pr merge` / the deploy script are denied by `pz-deploy-guard`.
+  Note: on this box the signing key (`C:\PZ-secrets\deploy-auth.key`) is **not provisioned**,
+  which is why the canonical signed deploy of #1043 kept failing (blocked 02:01:27 / 02:03:29)
+  and the operator fell back to the out-of-band manual copy. Provisioning the key is a
+  prerequisite for any signed reconciliation.
+- **⚠ Hybrid resume caution (added 2026-07-31):** the recorded `next_command` (straight signed
+  `Deploy-PZ.ps1 -ReviewedSHA 423fa3cb`) was written **before** the hybrid was discovered.
+  Running it as-is now snapshots the hybrid tree into the pre-deploy backup → the post-#1039
+  content-derived `restored_sha` resolves to no single clean SHA → the backup-provenance stop
+  condition fires by design. The hybrid must be reconciled through the approved signed
+  deployment process first (see the four-facts CURRENT-STATE FACT above; remediation is
+  governance-level, NOT a sequence encoded here). Do not treat the recorded `next_command`
+  as still-valid without operator reconciliation of the hybrid.
 - **⚠ Resume caution:** four operator status reports this session (merge ×2, deploy,
   auth-mint with `jti=3f8a2c1e`) each described state that disk measurement disproved.
   `sign_deploy_authorization.py` writes the JSON artifact **before** printing
@@ -99,7 +170,7 @@ checkpoint_recorded_at: 2026-07-31T02:20:00+02:00
 
 ## Prior task — GATE-4 disposition: chore/lean-execution-workflow (COMPLETE)
 
-- **Status:** COMPLETE — disposition recorded + committed; **PR #1057 OPEN** (operator merge owed).
+- **Status:** COMPLETE — disposition recorded + committed; **PR #1057 SQUASH-MERGED `49fc5ff4`** (2026-07-31; base `main`, docs-only, deploy N/A).
 - **Branch:** `claude/clever-dirac-578aee` (commit `5d463c4c`, base `main`; pushed, MERGEABLE, 1 file/+85).
 - **What:** GATE-4 salvage disposition of the unmerged branch `chore/lean-execution-workflow`
   (`44813371`, docs-only, 2026-06-14). **REJECTED** as a duplicate-authority / competing
@@ -119,7 +190,7 @@ checkpoint_recorded_at: 2026-07-31T02:20:00+02:00
 - **Completion criteria:** [x] branch inspected vs canonical authorities; [x] exactly one
   disposition (GATE 4 — REJECTED); [x] GATE-3 archive tag before abandon; [x] PII-free committed
   mirror; [x] PROJECT_STATE DECISIONS recorded; [x] PII + scope + linear-base checks; [x] pushed +
-  PR opened (#1057). Remaining: operator merge (not mine); PR-template follow-up chip
+  PR opened (#1057). [x] operator merged #1057 → `49fc5ff4` (2026-07-31). PR-template follow-up chip
   `task_2c18eee3` is independently scoped.
 
 ## Prior task — PR #1049 proforma stub drift (COMPLETE)
@@ -241,14 +312,30 @@ checkpoint_recorded_at: 2026-07-31T02:20:00+02:00
 
 ## History (most recent first)
 
-- 2026-07-31 — **PR #1061 opened** (base `main`, head `state/task-register-checkpoint-2026-07-31`):
+- 2026-07-31 — **PR #1061 OPEN** (base `main`, head `state/task-register-checkpoint-2026-07-31`):
   publishes THIS accurate register to main, correcting main's stale copy (which showed #1049 as
   `UNDER_REVIEW`) and preserving the load-bearing #1043 `EXECUTION_BLOCKED` resume checkpoint.
   Checkpoint commit `f8a7225f` (cherry-pick of `d56a17ae` onto `origin/main` `423fa3cb`),
-  docs/governance-only, +76/−3. GATE-2 doc allowance (does not displace the impl queue).
-  Provenance: existed only as an uncommitted edit in the `C:\PZ-verify` root tree; archived
-  cmp-identical to cold storage (`evidence-2026-07-31`) before commit. Operator merge owed
-  (merge/deploy operator-only).
+  docs/governance-only. GATE-2 doc allowance (does not displace the impl queue). Provenance:
+  existed only as an uncommitted edit in the `C:\PZ-verify` root tree; archived cmp-identical to
+  cold storage (`evidence-2026-07-31`) before commit. **Refreshed this session** to fold in the
+  #1043 agent-side-complete / operator-handoff delta + HYBRID prod current-state fact + 7-agent
+  gate re-confirmation + #1052/#1057/#1059 history. Operator merge owed (merge/deploy operator-only).
+
+- 2026-07-31 — tracking_cache inner-record fix: **PR #1052 SQUASH-MERGED `c3629786`**
+  (2026-07-31T06:06:38Z, base `main`; now origin/main HEAD). AWB-keyed `tracking_cache.json`
+  read at the wrong nesting level → tracking status silently `""`; fix adds 2 shared helpers at
+  both read sites. +18 tests; golden 160/160; 19-fail pre-existing baseline unchanged.
+  **Production surface — DEPLOY OWED**, blocked behind the open #1043 HYBRID hold (merge/deploy
+  operator-only). Detail: [[project-tracking-cache-inner-record-pr1052]].
+
+- 2026-07-31 — test-baseline stale-classes: commit `f5b99dd4`, **PR #1059 OPEN** (base `main`,
+  docs-only — 1 file `.claude/contracts/test-baseline.md`, +25). Registers 4 stale-test-contract
+  classes (ON CONFLICT ×29 / settings.environment ×7 / _c1f_mirror_good_id_with_fallback ×6 /
+  extract_packing arity ×13) from full `service/tests` reconciliation; zero new prod regressions,
+  no floor change (PZ 260/260, Carrier 646/604, golden 160/160). GATE-4 SCHEDULED. Isolated off
+  #1058's `a97ec20d` via rebase --onto (no git-stash). Docs-only → GATE-2 doc allowance; operator
+  merge owed. Detail: [[project-test-baseline-stale-classes-pr1059]].
 
 - 2026-07-31 — Lesson A stub-drift fix: commit `ef03797d`, PR #1049 opened (base `main`,
   test-only). GATE 4 grep-drift disposition filed as issue #1048. GATE 2 → 3/3 open.
