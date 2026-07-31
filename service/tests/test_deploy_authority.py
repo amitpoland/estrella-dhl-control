@@ -89,6 +89,19 @@ def test_exactly_one_configuration_authority():
                 "forbidden_flags", "authorization_helper", "test_baseline_contract"):
         assert key in cfg, f"config missing required key: {key}"
     assert "/XO" in cfg["forbidden_flags"], "/XO caused the 2026-07-07 incident and stays forbidden"
+    # /MIR is not banned — it is GATED. It is the only mechanism that removes files a
+    # newer release deleted/renamed, so exact convergence depends on it; the gate is what
+    # keeps it safe. Banning it outright would break Deploy-PZ.ps1 convergence + rollback
+    # and resurrect the /XO skew class. (Operator-affirmed 2026-07-31; #958 architecture.)
+    assert "/MIR" not in cfg["forbidden_flags"], (
+        "/MIR is the load-bearing convergence+rollback mechanism; it is gated, never banned"
+    )
+    gated = cfg.get("gated_flags", {})
+    assert "/MIR" in gated, "/MIR must be declared as a gated (not forbidden) flag"
+    mir = gated["/MIR"].lower()
+    assert "inventory" in mir and "protected" in mir, (
+        "the /MIR gate must require destination-only inventory classification and protected-path exclusion"
+    )
 
 
 # --------------------------------------------------------------- no duplication
@@ -331,6 +344,53 @@ def test_no_git_revert_rollback_in_policy():
     assert "git revert" not in body, (
         "production_deployment_rule.md must not document git revert as rollback; "
         "use Deploy-PZ.ps1 -Rollback -Unit <unit>"
+    )
+
+
+def test_policy_permits_only_gated_mirror_convergence():
+    """Semantic contract for the deploy-sync policy (no fragile line numbers).
+
+    The additive-only model was retired when Deploy-PZ.ps1 became the single
+    self-verifying deploy authority (#958). Exact convergence -- which alone removes
+    files a newer release deleted or renamed -- is performed by the gated `/MIR`
+    inside Deploy-PZ.ps1, after destination-only inventory classification and with
+    every protected path excluded. Policy prose used to carry the opposite rule in
+    three places ('Additive sync only', 'No deletion, overwrite, or mirror copy',
+    'still no /MIR', and a '/XO permitted for a top-up' carve-out), directly
+    contradicting the config (/XO forbidden, /MIR gated). This test pins the
+    contradiction closed so it cannot silently return.
+    """
+    body = _read(POLICY).lower()
+
+    # The retired additive-only / unconditional-no-mirror model must not reappear.
+    assert "additive sync only" not in body, (
+        "'Additive sync only' is the retired pre-#958 model; production converges "
+        "exactly to the reviewed artifact via the gated /MIR in Deploy-PZ.ps1"
+    )
+    assert "no deletion, overwrite, or mirror copy" not in body, (
+        "an unconditional no-mirror rule contradicts the gated /MIR convergence"
+    )
+    assert "still no `/mir`" not in body and "still no /mir" not in body, (
+        "the recovery-sync path must not forbid /MIR; exact convergence IS the gated /MIR"
+    )
+
+    # /XO stays forbidden without exception -- no 'permitted only for ...' carve-out.
+    assert "permitted only for a known-incremental" not in body, (
+        "/XO caused the 2026-07-07 skew and is in forbidden_flags; policy grants it no exception"
+    )
+
+    # The convergence executor is named, and /MIR is gated to it (never manual / ad hoc).
+    assert "deploy-pz.ps1" in body, "policy must name Deploy-PZ.ps1 as the convergence executor"
+    assert "/mir" in body, "policy must address /MIR explicitly"
+    assert "gated convergence" in body, (
+        "policy must permit /MIR only inside the canonical gated convergence"
+    )
+    assert "manually" in body or "ad hoc" in body, (
+        "policy must forbid manual / ad hoc /MIR outside Deploy-PZ.ps1"
+    )
+    # The gate's precondition must be stated in prose, matching the config's gated_flags.
+    assert "destination-only inventory" in body, (
+        "policy must state the destination-only inventory precondition for /MIR"
     )
 
 

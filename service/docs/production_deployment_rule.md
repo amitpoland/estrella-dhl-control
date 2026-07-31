@@ -32,8 +32,12 @@ The git repository is a **staging workspace only**.
 3. **No `git pull` directly followed by sync.**  Agents inspect first; sync second.
 4. **No sync before agents inspect changed files.**  The 7-agent gate is mandatory.
 5. **No restart before rollback path is defined.**  Rollback command must be written down first.
-6. **No deletion, overwrite, or mirror copy.**  Additive sync only.
-7. **Never use `robocopy /MIR` outside the gated convergence.**  Forbidden without exception.
+6. **No ad hoc deletion, overwrite, or mirror operation.**  Production application files may be
+   removed or overwritten only by the canonical gated convergence in `Deploy-PZ.ps1`, after the
+   destination-only inventory has classified every extraneous path, with every protected path in
+   Rule 8 excluded.  All other synchronization is non-destructive.
+7. **Never invoke `robocopy /MIR` manually or outside the canonical gated convergence.**  There
+   are no exceptions outside `Deploy-PZ.ps1`.
 8. **Never overwrite these production paths:**
    - `C:\PZ\.env`
    - `C:\PZ\storage\`
@@ -58,11 +62,12 @@ start. These rules are mandatory for every deploy AND every recovery sync.
    or a scratch worktree.
 2. **Deployment source must be clean `main` or an explicitly approved release SHA** — fully
    merged, `git pull --ff-only`, internally consistent (no partial/held commits).
-3. **No `/XO` for a full app sync or a recovery sync.** `/XO` copies newer-only and SKIPS
-   stale/mismatched files → version skew (the 2026-07-07 root cause). A full/recovery app sync
-   must OVERWRITE to match the source exactly (still no `/MIR`; still exclude the forbidden
-   paths in Rule 8). `/XO` is permitted ONLY for a known-incremental top-up where the dest is
-   already a consistent subset of the source.
+3. **No `/XO` — ever — for any production app sync.** `/XO` copies newer-only and SKIPS
+   stale/mismatched files → version skew (the 2026-07-07 root cause); it lives in the executor's
+   `forbidden_flags` without exception. Exact convergence to the reviewed source is achieved by
+   the canonical gated `/MIR` in `Deploy-PZ.ps1` — after the destination-only inventory has
+   classified every extraneous path, with every protected path in Rule 8 excluded — never by a
+   manual overwrite or a `/XO` top-up.
 4. **Verify the source BEFORE any sync** — all three must be clean/expected:
    ```bash
    git branch --show-current      # MUST be: main (or the approved release ref)
@@ -74,8 +79,8 @@ start. These rules are mandatory for every deploy AND every recovery sync.
    sc.exe query PZService                          # STATE : RUNNING
    Get-Content C:\PZ\logs\pz_stderr.log -Tail 30   # NO ImportError / module-load traceback
    ```
-   Any import failure → STOP, do not validate features; the tree is inconsistent — re-sync from
-   clean `main` with an overwriting (non-`/XO`) copy, then re-verify.
+   Any import failure → STOP, do not validate features; the tree is inconsistent — re-run the
+   canonical `Deploy-PZ.ps1` convergence from clean `main` (never a `/XO` copy), then re-verify.
 
 ---
 
