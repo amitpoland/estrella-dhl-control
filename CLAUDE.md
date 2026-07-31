@@ -285,6 +285,18 @@ A PR may not be opened until ALL of the following are true:
 If any of these is incomplete at PR-open time, BLOCK and report
 instead of opening.
 
+**Docs-only exception (mirrors GATE 2).** A docs-only / governance-only
+PR — one that touches only Markdown/documentation, with no code, no
+schema, no config, and no production surface — is exempt from the
+"Every named subagent has returned a verdict block" precondition above.
+Such PRs are zero blast radius (the same basis on which GATE 2 lets them
+stack one beyond the open-PR limit), so reviewer-subagent verdicts are
+not required to open them. The forbidden-files / out-of-scope-edits check
+still applies and is precisely what confirms the docs-only
+classification: if any changed file is code, schema, config, or a
+production surface, the PR is not docs-only and the full precondition set
+above applies without exception.
+
 ### GATE 2 — MAXIMUM OPEN PR COUNT
 Hard limit: 3 simultaneous open PRs from this repository.
 - If 3 PRs are already open when a new implementation task begins,
