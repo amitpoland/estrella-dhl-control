@@ -48,10 +48,83 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 ## Current task
 
-- **Task:** Fix Engineering Lesson A `_resolve_customer` stub drift in the proforma
-  posting test suite (operator-directed, read-only re: `C:\PZ` / prod DBs).
+- **Task:** Deploy PR #1043 (tracking `last_event` React-#31 hotfix) to production.
 - **Started:** 2026-07-31
-- **Status:** UNDER_REVIEW (PR #1049 open, awaiting operator merge)
+- **Status:** `EXECUTION_BLOCKED` — merge DONE, deploy NOT performed.
+- **Merged:** squash `a14a9eae741077af42cb2b2d353e19b4af986172` (`e950475a` is NOT an
+  ancestor — verify by content). `C:\PZ-main` fast-forwarded, clean.
+- **No re-verification owed:** merged tree = `baf7c87acbc9dedfefa3bd607ed532fde04d2eba`,
+  byte-identical to the tree the 7-agent gate, the PZ 260 / Carrier 604 floors, the
+  160/160 golden run and GATE-6 already passed against. Do NOT re-run them.
+- **Deploy delta vs prod `1ce0e76d`:** 2 files, +42/−3, both under `service/app/`
+  (`services/tracking_service.py`, `static/v2/shipment-detail-page.jsx`). Lesson J N/A.
+- **Production state:** consistent and healthy at `1ce0e76d` — `version.txt` `1ce0e76d`,
+  `PZService` Running, prod file mtimes 2026-06-21 / 2026-07-14, no new backup unit,
+  **no partial write, nothing to roll back.** React #31 still live in prod.
+
+```yaml
+state: EXECUTION_BLOCKED
+suspended_from: VALIDATING
+blocked_reason_class: OPERATOR_ONLY_ACTION
+blocked_dependency: signed deploy authorization for a14a9eae (sign_deploy_authorization.py — operator shell only; agent is denied by pz-deploy-guard)
+recorded_branch: main
+recorded_head: a14a9eae741077af42cb2b2d353e19b4af986172
+preserved_files: []
+authority_owner: production deploy (7-agent gate, verdict READY-TO-DEPLOY, risk LOW)
+next_command: python .claude/hooks/sign_deploy_authorization.py a14a9eae741077af42cb2b2d353e19b4af986172 deploy Both --ttl 60   →then→   .claude\deploy\Deploy-PZ.ps1 -ReviewedSHA a14a9eae741077af42cb2b2d353e19b4af986172
+retry_policy: NO_REPEATED_RETRIES
+checkpoint_recorded_at: 2026-07-31T02:20:00+02:00
+```
+
+- **HOLD reason:** condition #2 (missing access) — minting the deploy authorization and
+  running `Deploy-PZ.ps1` are operator-only; the signing key is never readable by an
+  agent session and `gh pr merge` / the deploy script are denied by `pz-deploy-guard`.
+- **⚠ Resume caution:** four operator status reports this session (merge ×2, deploy,
+  auth-mint with `jti=3f8a2c1e`) each described state that disk measurement disproved.
+  `sign_deploy_authorization.py` writes the JSON artifact **before** printing
+  `Authorization written` + `jti`, so a reported jti with no file in
+  `C:\PZ-secrets\deploy-auth` is structurally impossible. **Verify auth artifact →
+  backup unit → `version.txt` → file hashes against disk before treating any deploy
+  step as done.** Env needs no provisioning: `PZ_DEPLOY_AUTH_KEY_FILE` and
+  `PZ_DEPLOY_AUTH_DIR` are persisted at User scope and demonstrably work (they minted
+  the `1ce0e76d` artifacts); `PZ_DEPLOY_AUTH_KEY` is correctly unset.
+- **Post-deploy (owed):** Lesson-P `Get-FileHash` parity on the 2 files vs `C:\PZ-main`
+  (content diff must be 0 — robocopy's copied-file count is NOT the blast radius);
+  new backup unit must carry `restored_sha` = `1ce0e76d` and an agreeing
+  `version.pre.txt`; then a prod smoke-confirm of the "Latest event" render (a fresh
+  GATE-6 is NOT required — it is pre-satisfied). Cache constraint still holds: do NOT
+  clear or migrate the tracking cache.
+
+---
+
+## Prior task — GATE-4 disposition: chore/lean-execution-workflow (COMPLETE)
+
+- **Status:** COMPLETE — disposition recorded + committed; **PR #1057 OPEN** (operator merge owed).
+- **Branch:** `claude/clever-dirac-578aee` (commit `5d463c4c`, base `main`; pushed, MERGEABLE, 1 file/+85).
+- **What:** GATE-4 salvage disposition of the unmerged branch `chore/lean-execution-workflow`
+  (`44813371`, docs-only, 2026-06-14). **REJECTED** as a duplicate-authority / competing
+  governance surface (second execution protocol `docs/EXECUTION_PROTOCOL.md` + a second
+  repo-root `PROJECT_STATE.md`) violating "one authority per concept" — not superseded-by-content
+  by #953, no unique reconcile payload, 5-week-stale state. **GATE 3:** archive tag
+  `archive/chore--lean-execution-workflow-2026-07-19` → `44813371` (LOCAL-ONLY, no push);
+  branch ARCHIVED. **Docs-only** — zero code/schema/engine; GATE-2 doc allowance (does not
+  displace impl queue #1052/#1053).
+- **Deliverable:** PII-free committed mirror `docs/governance/gate4-disposition-lean-execution-workflow-2026-07-19.md`
+  (85 lines). Operational copy in local-only `.claude/memory/PROJECT_STATE.md` DECISIONS (2026-07-19 block).
+- **Recovery note:** an aborted first attempt committed onto a **detached HEAD in `C:\PZ-verify`**
+  (`525d4b55`, stray `@`-mangled subject from PowerShell heredoc in the Bash tool); re-committed
+  clean as `5d463c4c` (byte-identical blob `17b1d3d6`). Orphan is reflog-pinned (no branch/tag),
+  force-prune declined (would expire the concurrent session's reflog); self-cleaning deferred note
+  left in PROJECT_STATE keyed on `git cat-file -t 525d4b55` going missing.
+- **Completion criteria:** [x] branch inspected vs canonical authorities; [x] exactly one
+  disposition (GATE 4 — REJECTED); [x] GATE-3 archive tag before abandon; [x] PII-free committed
+  mirror; [x] PROJECT_STATE DECISIONS recorded; [x] PII + scope + linear-base checks; [x] pushed +
+  PR opened (#1057). Remaining: operator merge (not mine); PR-template follow-up chip
+  `task_2c18eee3` is independently scoped.
+
+## Prior task — PR #1049 proforma stub drift (COMPLETE)
+
+- **Status:** COMPLETE — merged `4f775b37`, PR closed.
 - **Branch:** `claude/jolly-chaplygin-5f2c92` (commit `ef03797d`, base `main`; pushed).
 - **What:** `_fake_resolve` stub never updated when WF-3 Slice 3A/3B added the
   `client_contractor_id` kwarg to `_resolve_customer` → `TypeError` on every stubbed POST
