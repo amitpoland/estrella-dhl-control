@@ -32,9 +32,13 @@ permissions:
 
 jobs:
   # ── Calculation authority: the ONLY landed-cost/duty/freight path ──────────
-  # Deterministic 160/160. Minimal deps (stdlib + pdfplumber + requests); the
-  # golden PDF pipeline (--e2e) is intentionally NOT run — the real invoice/ZC429
-  # PDFs are gitignored customs data, so e2e cannot run in CI.
+  # Deterministic 156-check non-e2e suite. The engine (pz_import_processor.py)
+  # imports reportlab/openpyxl lazily, but the regression harness itself loads the
+  # renderer module directly in check [23] (PDF/XLSX field sourcing), whose import
+  # chain is pz_dual_export -> openpyxl + pz_pdf_export -> reportlab at module load.
+  # Both are therefore required deps for the non-e2e run. The golden PDF pipeline
+  # (--e2e) is still intentionally NOT run — the real invoice/ZC429 PDFs are
+  # gitignored customs data, so e2e cannot run in CI.
   golden-regression:
     name: Golden regression (engine)
     runs-on: windows-latest
@@ -46,7 +50,7 @@ jobs:
           python-version: '3.9'
 
       - name: Install engine dependencies
-        run: python -m pip install --upgrade pip pdfplumber requests
+        run: python -m pip install --upgrade pip pdfplumber requests openpyxl reportlab
 
       - name: Run golden regression (non-e2e)
         env:
