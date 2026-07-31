@@ -32,6 +32,12 @@ truncated is reported INCOMPLETE, never as zero failures.** A hard-killed
 process writes no XML — counting that as clean would make a worse run look
 greener. `test_ci_shard_partition.py` pins this.
 
+**Branch protection:** the verdict lives in `Service pytest (aggregate)`, not in
+the shard jobs. Shard steps are `continue-on-error: true` so a red or hung shard
+still uploads its XML, which means a shard job can report success while its tests
+failed. Requiring a shard job as a status check would be a green light with
+nothing behind it.
+
 ## Shard membership
 
 `tools/shard_tests.py` bin-packs whole FILES greedily by size. Whole files

@@ -126,6 +126,13 @@ jobs:
   # Fails when any test failed OR any shard produced no usable XML. A shard whose
   # results are unknown is never counted as zero failures — that is the whole
   # point of splitting the run.
+  #
+  # BRANCH PROTECTION: this job — NOT `service-suite` — carries the suite verdict.
+  # The shard steps are `continue-on-error: true` so a red or hung shard still
+  # uploads its XML, which means a shard job can report success while its tests
+  # failed. If the suite is ever made a required status check, require
+  # `Service pytest (aggregate)`; requiring a shard job would be a green light
+  # with nothing behind it.
   service-suite-report:
     name: Service pytest (aggregate)
     runs-on: ubuntu-latest
