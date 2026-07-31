@@ -25,8 +25,23 @@ sys.path.insert(0, str(_SVC))
 
 
 def _settings(tmp_path: Path, **overrides):
+    """Stand-in for the real Settings object, for tests that patch it wholesale.
+
+    ``environment`` is required and must default to "prod": the Lesson-E
+    isolation guard ``_assert_production_env_for_smtp`` (email_sender.py) reads
+    ``settings.environment`` whenever SMTP credentials are configured, and every
+    test here that supplies smtp_user/smtp_password is simulating exactly that
+    production path. Omitting the attribute made those 7 tests raise
+    ``AttributeError: 'S' object has no attribute 'environment'`` — a stub-drift
+    failure, not a production defect (the real Settings has declared
+    ``environment`` since app/core/config.py:15).
+
+    Override it explicitly (``_settings(tmp, environment="dev")``) to exercise
+    the guard's refusal path.
+    """
     class S:
         storage_root  = tmp_path
+        environment   = "prod"
         smtp_host     = "smtppro.zoho.in"
         smtp_port     = 465
         smtp_user     = None
@@ -199,6 +214,46 @@ def test_smtp_auth_failure(tmp_path, monkeypatch):
     assert r["error"] == "smtp_auth_failed"
     queue = json.loads((tmp_path / "email_queue.json").read_text())
     assert queue[0]["status"] == "pending"
+
+
+# ── Lesson E property 5: environment isolation ───────────────────────────────
+
+def test_configured_smtp_in_dev_refuses_to_connect(tmp_path, monkeypatch):
+    """A dev process holding real SMTP credentials must never reach the live
+    server (Lesson E, property 5 — environment isolation).
+
+    Coverage gap this closes: the guard reads ``settings.environment``, and the
+    module's settings stub did not define it. Every test that would have
+    exercised this path died on AttributeError instead, so the guard itself was
+    never asserted — the stub drift hid a missing test, not just a broken one.
+    """
+    monkeypatch.setattr("app.services.email_sender.settings",
+                        _settings(tmp_path, smtp_user="x", smtp_password="real-secret",
+                                  environment="dev"))
+    qid, _ = _seed_queue(tmp_path, attachment_files=0)
+
+    from app.services.email_sender import send_queued_email
+    with patch("smtplib.SMTP_SSL") as smtp_ctor:
+        with pytest.raises(RuntimeError, match="expected 'prod'"):
+            send_queued_email(qid)
+    smtp_ctor.assert_not_called(), "the guard must fire BEFORE any connect attempt"
+
+    queue = json.loads((tmp_path / "email_queue.json").read_text())
+    assert queue[0]["status"] == "pending", "a refused send must not mark the entry sent"
+
+
+def test_unconfigured_smtp_in_dev_is_not_blocked_by_the_guard(tmp_path, monkeypatch):
+    """The guard keys on credentials being present, not on the environment alone —
+    a dev box with no SMTP credentials returns the honest SMTP_NOT_CONFIGURED
+    result rather than raising."""
+    monkeypatch.setattr("app.services.email_sender.settings",
+                        _settings(tmp_path, environment="dev"))
+    qid, _ = _seed_queue(tmp_path, attachment_files=0)
+
+    from app.services.email_sender import send_queued_email
+    r = send_queued_email(qid)
+    assert r["ok"] is False
+    assert r["error"] == "SMTP_NOT_CONFIGURED"
 
 
 # ── No financial fields modified ─────────────────────────────────────────────

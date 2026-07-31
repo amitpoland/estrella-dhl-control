@@ -127,7 +127,10 @@ def _make_draft(db: Path, *, currency: str = "EUR",
                  source_lines_json, wfirma_proforma_id, notes,
                  draft_state, created_at, updated_at)
             VALUES (?, ?, 'draft', ?, ?, '[]', NULL, NULL, 'draft', ?, ?)
-            ON CONFLICT(batch_id, client_name) DO NOTHING
+            -- Live uniqueness key is (batch_id, client_name, clone_generation) since
+            -- the clone/reissue migration (proforma_invoice_link_db.py:743). See the
+            -- matching note in test_pr2c3c_bulk_price_recovery.py.
+            ON CONFLICT(batch_id, client_name, clone_generation) DO NOTHING
         """, (batch_id, "Test Customer", currency, 1.0, now, now))
         row = conn.execute(
             "SELECT id FROM proforma_drafts WHERE batch_id=? AND client_name=?",

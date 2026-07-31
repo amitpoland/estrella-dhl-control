@@ -710,6 +710,16 @@ _REAL_PACKING = Path(
     "/013 EJL-26-27-013-Packing list of shipment-7pcs-04-04-26-Poland.xls"
 )
 
+# Shared predicate for the skip convention described above. TestRealEjlInvoicePackingPair
+# applies it via setup_method; tests that use these paths from OUTSIDE that class must
+# carry the marker themselves, or they fail with FileNotFoundError on every machine but
+# one — a false red, since the fixtures are un-committable customs documents.
+_HAVE_REAL_EJL_PAIR = _REAL_INVOICE.exists() and _REAL_PACKING.exists()
+_requires_real_ejl_pair = pytest.mark.skipif(
+    not _HAVE_REAL_EJL_PAIR,
+    reason="Real EJL/26-27/013 invoice + packing files not present in this environment",
+)
+
 
 class TestRealEjlInvoicePackingPair:
     """End-to-end on the real EJL/26-27/013 invoice + .xls packing list."""
@@ -759,7 +769,7 @@ class TestRealEjlInvoicePackingPair:
 
     def test_legacy_xls_packing_list_extracts_three_rows(self):
         from app.services.invoice_packing_extractor import extract_packing
-        rows, parser, version = extract_packing(_REAL_PACKING)
+        rows, parser, version, _diag = extract_packing(_REAL_PACKING)
         assert len(rows) == 3
         assert all(r.get("invoice_no") == "EJL/26-27/013" for r in rows)
         # All 3 rows should have a quantity & a value
@@ -988,9 +998,14 @@ class TestBarcodeUniqueness:
         assert _barcode_value(row) == "INV-X-1|BAG-7"
 
 
+    @_requires_real_ejl_pair
     def test_packing_doc_related_invoice_no_is_parsed_invoice_no(self, client, tmp_storage, db):
         """The packing document row's related_invoice_no must equal the parsed
-        invoice_no, not the PDF filename."""
+        invoice_no, not the PDF filename.
+
+        Lives in TestBarcodeUniqueness but consumes the real EJL pair, so it needs
+        the skip marker explicitly — TestRealEjlInvoicePackingPair's setup_method
+        does not cover it."""
         with open(_REAL_INVOICE, "rb") as inv_f, open(_REAL_PACKING, "rb") as pack_f:
             r = client.post(
                 "/api/v1/shipment/intake",

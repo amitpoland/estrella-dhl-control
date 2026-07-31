@@ -75,7 +75,7 @@ def _make_sheet(tmp_path: Path, *, fmt: str, name: str = "x.xlsx",
 
 def test_dollar_symbol_format_parses_usd(tmp_path):
     p = _make_sheet(tmp_path, fmt='[$-10409]"$"\\ 0;\\("$"\\ 0\\)')
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert len(rows) == 1
     assert rows[0]["currency"]        == "USD"
     assert rows[0]["currency_source"] == "excel_symbol"
@@ -83,14 +83,14 @@ def test_dollar_symbol_format_parses_usd(tmp_path):
 
 def test_euro_symbol_format_parses_eur(tmp_path):
     p = _make_sheet(tmp_path, fmt='[$-10409]"€"\\ 0;\\("€"\\ 0\\)')
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert rows[0]["currency"]        == "EUR"
     assert rows[0]["currency_source"] == "excel_symbol"
 
 
 def test_zloty_format_parses_pln(tmp_path):
     p = _make_sheet(tmp_path, fmt='#,##0.00 "zł"')
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert rows[0]["currency"]        == "PLN"
     assert rows[0]["currency_source"] == "excel_symbol"
 
@@ -98,7 +98,7 @@ def test_zloty_format_parses_pln(tmp_path):
 def test_no_currency_in_format_falls_back_to_token_or_blank(tmp_path):
     """No symbol in number_format AND no header/preamble token → blank."""
     p = _make_sheet(tmp_path, fmt='[$-10409]0.00;\\(0.00\\)')
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert (rows[0].get("currency") or "") == ""
 
 
@@ -117,7 +117,7 @@ def test_mixed_currency_symbols_flagged(tmp_path):
     ws["D5"].number_format = '[$-10409]"€"\\ 0'
     ws["E5"].number_format = '[$-10409]"€"\\ 0'
     p = tmp_path / "mixed.xlsx"; wb.save(str(p))
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     # Each row is stamped with the dominant detected currency, AND each
     # row carries the conflict flag so intake can refuse to silently
     # commit the dominant value.
@@ -137,7 +137,7 @@ _REAL_FILES_ROOT = Path(
 def test_real_clear_diamonds_file_returns_usd():
     candidates = list(_REAL_FILES_ROOT.glob("*Clear-Diamonds*.xlsx"))
     assert candidates, "Clear-Diamonds source file missing"
-    rows, _, _ = extract_packing(candidates[0])
+    rows, _, _, _ = extract_packing(candidates[0])
     currencies = {r.get("currency") for r in rows if r.get("currency")}
     assert currencies == {"USD"}, currencies
     assert all(r.get("currency_source") == "excel_symbol"
@@ -151,7 +151,7 @@ def test_real_eur_files_return_eur():
     for pattern in ("*Anastazia*.xlsx", "*OMARA*.xlsx", "*Impact*.xlsx"):
         cands = list(_REAL_FILES_ROOT.glob(pattern))
         assert cands, pattern
-        rows, _, _ = extract_packing(cands[0])
+        rows, _, _, _ = extract_packing(cands[0])
         currencies = {r.get("currency") for r in rows if r.get("currency")}
         assert currencies == {"EUR"}, (pattern, currencies)
 
@@ -161,7 +161,7 @@ def test_real_eur_files_return_eur():
 def test_excel_symbol_overrides_customer_default(tmp_path):
     """Even if the customer default is EUR, an Excel ``$`` symbol wins."""
     p = _make_sheet(tmp_path, fmt='[$-10409]"$"\\ 0;\\("$"\\ 0\\)')
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     # Simulate the intake ladder (Excel → operator → customer_default → blank).
     operator_currency = ""
     customer_default  = "EUR"
@@ -183,7 +183,7 @@ def test_excel_symbol_overrides_customer_default(tmp_path):
 
 def test_operator_currency_only_when_excel_missing(tmp_path):
     p = _make_sheet(tmp_path, fmt='[$-10409]0.00')   # no symbol
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     operator_currency = "EUR"
     customer_default  = "PLN"
     first = next((r["currency"] for r in rows if r.get("currency")), "")
@@ -201,7 +201,7 @@ def test_operator_currency_only_when_excel_missing(tmp_path):
 
 def test_customer_default_only_when_excel_and_operator_missing(tmp_path):
     p = _make_sheet(tmp_path, fmt='General')         # no symbol
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     operator_currency = ""
     customer_default  = "EUR"
     first = next((r["currency"] for r in rows if r.get("currency")), "")
