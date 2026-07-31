@@ -135,32 +135,48 @@ fixed.
 
 ---
 
-## 5. Repair — scoped, not done
+## 5. Repair — done on a separate branch
 
-Not attempted here, and deliberately so:
+Not on this branch: it is a different class of work, and folding it in would turn
+a test-isolation PR into an unrelated 9-file test rewrite. Operator-directed to a
+fresh branch, **`claude/stale-test-classes-repair`** (based on `main`, independent
+of this one). Summary of what landed there:
 
-- The four classes above (55 failures across ~6 files) are **already SCHEDULED**
-  under #1059's GATE-4 disposition. They are a different class of work from this
-  branch's subject, and folding them in would make a test-isolation PR into an
-  unrelated 6-file test rewrite.
-- **GATE 2 blocks a second PR.** Four PRs are open (#1062, #1061, #1059, #1053 —
-  two implementation, two docs-only), which is the cap (3 implementation + 1
-  docs-only). A slot must clear before another implementation PR opens.
+| Class | Recovered | Repair |
+|---|---:|---|
+| `extract_packing()` arity | 16 sites / 3 files | tests unpack 4, matching the function and all five production callers |
+| `ON CONFLICT` | 29 | conflict target → `(batch_id, client_name, clone_generation)`, the live key |
+| `settings.environment` stub | 7 | added to the stub; **+2 new tests** for the Lesson-E guard the drift was hiding |
+| `_c1f_mirror_good_id_with_fallback` | 6 | rewritten to the post-C-3g mirror-only contract, strengthened to assert the cache is never read |
+| `test_intake.py` false red | 1 | applied the file's own missing-fixture skip convention |
+| MagicMock filename leak | leak | `carrier_storage_root` pinned in 2 carrier suites |
 
-The repair queue, in the order it should be taken:
+Two corrections to #1059's analysis, both leaving its verdict (test-side, not a
+regression) intact:
 
-1. `extract_packing()` 3-tuple unpacks → 4-tuple (13). All five production
-   callers already unpack 4; the tests are stale.
-2. `ON CONFLICT(batch_id, client_name)` seed helpers (29). `proforma_drafts` has
-   no matching UNIQUE constraint; no route or service runs that statement.
-3. `test_email_sender::_settings()` stub missing `environment` (7). The real
-   `Settings` has it; the SMTP guard at `email_sender.py:528` is correct.
-4. `_c1f_mirror_good_id_with_fallback` → `_c1f_mirror_good_id` (6).
-5. The two leak writers above.
+- **`ON CONFLICT`** — #1059 recorded that `proforma_drafts` has "no UNIQUE/PK on
+  `(batch_id, client_name)`". It does have one; the clone/reissue migration
+  (`proforma_invoice_link_db.py:743`) simply widened it to include
+  `clone_generation`. The seeds named the pre-migration key.
+- **`_c1f_mirror_good_id_with_fallback`** — #1059 called this a stale symbol
+  reference, implying a rename. It is not: **C-3g removed the cache fallback**.
+  Three of the six tests asserted "mirror absent → return the cache id", which is
+  the behaviour the MASTER CONSUMPTION RULE deliberately deleted. Renaming alone
+  would have left those three failing; blindly rewriting them to match the old
+  helper would have re-legitimised a second product-identity authority.
 
-Each is a stale test meeting correct production code. None is repaired by
-weakening an assertion, and none should be quarantined — quarantine leaves the
-leak and moves the failure to a file whose owner has no context for it.
+Leak finding 1 (`c:\PZ\storage`) was **not** repaired: open PR **#1053** already
+fixes it, with a sharper diagnosis — the guard tests pass a hardcoded Windows
+path that POSIX resolves relative to the CWD — using a CWD sandbox. Not
+duplicated.
+
+Verification on that branch: 131 passed / 11 skipped across the seven repaired
+files; carrier 650 passed with **0** leaked artifacts (was 11); PZ 260/260;
+golden 160/160.
+
+**GATE 2 still blocks both PRs.** Four are open (#1062, #1053 implementation;
+#1061, #1059 docs-only) — the cap is 3 implementation + 1 docs-only. Both
+branches are pushed and waiting for a slot; opening either would make five.
 
 ---
 
