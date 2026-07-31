@@ -53,6 +53,16 @@ def app_with_authority_flag_off():
     with patch('app.core.config.settings') as mock_settings:
         mock_settings.awb_address_authority_enabled = False
         mock_settings.storage_root = Path("/tmp/test")
+        # Required: the carrier storage resolver is
+        # `settings.carrier_storage_root or (settings.storage_root / "carrier")`.
+        # On a bare MagicMock the first operand is a truthy auto-child, so the
+        # `or` short-circuits to it and the resolved path becomes the mock's repr
+        # — the route then creates a file literally named
+        # "<MagicMock name='settings.carrier_storage_root.__truediv__()' id=…>"
+        # in the process CWD (service/), a fresh one per run. Pinning it to None
+        # makes the fallback above take effect. Same convention as the other
+        # carrier suites (e.g. test_carrier_label_download.py:40).
+        mock_settings.carrier_storage_root = None
 
         from app.api.routes_carrier_actions import _get_coordinator
         app.dependency_overrides[_get_coordinator] = _mock_coordinator
@@ -88,6 +98,16 @@ def app_with_authority_flag_on():
     with patch('app.core.config.settings') as mock_settings:
         mock_settings.awb_address_authority_enabled = True
         mock_settings.storage_root = Path("/tmp/test")
+        # Required: the carrier storage resolver is
+        # `settings.carrier_storage_root or (settings.storage_root / "carrier")`.
+        # On a bare MagicMock the first operand is a truthy auto-child, so the
+        # `or` short-circuits to it and the resolved path becomes the mock's repr
+        # — the route then creates a file literally named
+        # "<MagicMock name='settings.carrier_storage_root.__truediv__()' id=…>"
+        # in the process CWD (service/), a fresh one per run. Pinning it to None
+        # makes the fallback above take effect. Same convention as the other
+        # carrier suites (e.g. test_carrier_label_download.py:40).
+        mock_settings.carrier_storage_root = None
 
         from app.api.routes_carrier_actions import _get_coordinator
         app.dependency_overrides[_get_coordinator] = _mock_coordinator

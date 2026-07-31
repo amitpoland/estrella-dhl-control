@@ -12,6 +12,7 @@ to maintain backward compatibility testing.
 """
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -92,6 +93,13 @@ def test_post_shipment_pending_returns_503(test_app):
     # Mock settings with AWB authority flag OFF for gate test isolation
     with patch('app.core.config.settings') as mock_settings:
         mock_settings.awb_address_authority_enabled = False
+        # See test_carrier_routes_awb_authority.py for the full note: on a bare
+        # MagicMock, `settings.carrier_storage_root or (settings.storage_root /
+        # "carrier")` short-circuits to a truthy auto-child, and the resolved
+        # path becomes the mock's repr — leaving a file named after it in the
+        # process CWD on every run. Pin both storage attributes to real values.
+        mock_settings.carrier_storage_root = None
+        mock_settings.storage_root = Path(tempfile.mkdtemp())
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
             json={
@@ -112,6 +120,13 @@ def test_post_shipment_pending_body_mentions_pending(test_app):
     # Mock settings with AWB authority flag OFF for gate test isolation
     with patch('app.core.config.settings') as mock_settings:
         mock_settings.awb_address_authority_enabled = False
+        # See test_carrier_routes_awb_authority.py for the full note: on a bare
+        # MagicMock, `settings.carrier_storage_root or (settings.storage_root /
+        # "carrier")` short-circuits to a truthy auto-child, and the resolved
+        # path becomes the mock's repr — leaving a file named after it in the
+        # process CWD on every run. Pin both storage attributes to real values.
+        mock_settings.carrier_storage_root = None
+        mock_settings.storage_root = Path(tempfile.mkdtemp())
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
             json={
@@ -152,6 +167,13 @@ def _post_shipment(client: TestClient, batch_id: str = "BATCH-001"):
     # Mock settings with AWB authority flag OFF for shadow mode testing
     with patch('app.core.config.settings') as mock_settings:
         mock_settings.awb_address_authority_enabled = False
+        # See test_carrier_routes_awb_authority.py for the full note: on a bare
+        # MagicMock, `settings.carrier_storage_root or (settings.storage_root /
+        # "carrier")` short-circuits to a truthy auto-child, and the resolved
+        # path becomes the mock's repr — leaving a file named after it in the
+        # process CWD on every run. Pin both storage attributes to real values.
+        mock_settings.carrier_storage_root = None
+        mock_settings.storage_root = Path(tempfile.mkdtemp())
         return client.post(
             f"/api/v1/carrier/{batch_id}/shipment",
             json={
