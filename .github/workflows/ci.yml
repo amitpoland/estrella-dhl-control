@@ -58,16 +58,34 @@ jobs:
           PYTHONIOENCODING: 'utf-8'
         run: python test_pz_regression.py
 
-  # ── Full service suite (748 files) ────────────────────────────────────────
+  # ── Full service suite (973 files, sharded) ───────────────────────────────
   # Runs the entire suite honestly. The test-baseline documents pre-existing,
   # order-dependent aggregate reds (stale V1 source-grep pins; asyncio/mock
   # leakage) — this job is expected to be red on arrival and exists to make that
   # baseline visible and trackable, not to mask it. DHL/carrier credentials are
   # absent on the runner, so the 4 env-conditional carrier defaults tests PASS
   # here (they only fail on a creds-configured host).
+  #
+  # WHY SHARDED: the suite previously ran as one pytest process. pytest-timeout's
+  # `thread` method (pytest.ini) cannot interrupt a blocked C call, so it kills
+  # the whole process — one hung test discarded every result after it (a run died
+  # at 77%, reporting a single timeout and hiding the standing failures in the
+  # remaining 23%). Six independent shards bound that loss to one sixth, and the
+  # aggregation step reports a lost shard as INCOMPLETE rather than as zero
+  # failures. Shard membership is a pure function of the file listing
+  # (service/tools/shard_tests.py), so every runner computes the same partition.
+  #
+  # Shards run in separate processes, so order-dependent failures will differ
+  # from a monolithic run. That difference is diagnostic — it is how order
+  # contamination gets separated from genuine regressions — not noise to tune out.
   service-suite:
-    name: Service pytest (full suite)
+    name: Service pytest (shard ${{ matrix.shard }}/6)
     runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false          # every shard must report, even if one dies
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
 
@@ -81,9 +99,53 @@ jobs:
           python -m pip install -r service/requirements.txt
           python -m pip install pytest pytest-timeout
 
-      - name: Run full service test suite
+      - name: Run service test suite (shard ${{ matrix.shard }}/6)
         working-directory: service
+        continue-on-error: true   # a red or hung shard must still upload its XML
         env:
           PYTHONUTF8: '1'
           PYTHONIOENCODING: 'utf-8'
-        run: python -m pytest tests/ -p no:cacheprovider -ra
+        shell: pwsh
+        run: |
+          $files = python tools/shard_tests.py --shard ${{ matrix.shard }} --of 6
+          if ($LASTEXITCODE -ne 0) { throw "shard planning failed" }
+          Write-Host "shard ${{ matrix.shard }}/6 -> $($files.Count) files"
+          python -m pytest $files -p no:cacheprovider -ra `
+            --junitxml=junit-shard-${{ matrix.shard }}.xml
+
+      - name: Upload shard JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-shard-${{ matrix.shard }}
+          path: service/junit-shard-${{ matrix.shard }}.xml
+          if-no-files-found: warn   # a hard-killed shard writes nothing; the
+                                    # aggregation step reports it as MISSING
+
+  # ── Aggregate the shards into one reconciliation ──────────────────────────
+  # Fails when any test failed OR any shard produced no usable XML. A shard whose
+  # results are unknown is never counted as zero failures — that is the whole
+  # point of splitting the run.
+  service-suite-report:
+    name: Service pytest (aggregate)
+    runs-on: ubuntu-latest
+    needs: service-suite
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download every shard report
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-shard-*
+          path: junit
+          merge-multiple: true
+
+      - name: Reconcile shard results
+        run: |
+          python service/tools/junit_summary.py junit --of 6 \
+            --markdown "$GITHUB_STEP_SUMMARY"
