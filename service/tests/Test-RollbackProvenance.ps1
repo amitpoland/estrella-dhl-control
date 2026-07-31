@@ -198,8 +198,8 @@ function New-GateRepo([string]$root, [string]$markerOverride) {
         artifact_root = (Join-Path $root 'releases'); backup_root = (Join-Path $root 'backups')
         version_file = (Join-Path $root 'runtime\version.txt')
         lock_file = (Join-Path $root 'backups\.lock')
-        engine_files = @('pz_import_processor.py'); protected_dirs = @('storage')
-        protected_files = @('.env'); protected_runtime_paths = @((Join-Path $root 'runtime\storage'))
+        engine_files = @('pz_import_processor.py'); protected_dirs = @('storage', '__pycache__')
+        protected_files = @('.env', '*.pyc'); protected_runtime_paths = @((Join-Path $root 'runtime\storage'))
         forbidden_flags = @('/XO'); robocopy_fatal_exit = 8; robocopy_suspect_exit = 4
         service_wait_seconds = 60; test_baseline_contract = 'n/a'
         authorization_helper = 'hooks\deploy_authorization.py'
@@ -260,6 +260,26 @@ New-Item -ItemType Directory -Path (Join-Path $gg.RuntimeApp 'storage') -Force |
 [System.IO.File]::WriteAllText((Join-Path $gg.RuntimeApp 'storage\live.db'), "runtime-state", (New-Object System.Text.ASCIIEncoding))
 [System.IO.File]::WriteAllText((Join-Path $gg.RuntimeApp '.env'), "SECRET=1", (New-Object System.Text.ASCIIEncoding))
 Assert-GatePasses 'gate: protected runtime paths excluded both sides -> pass' $gg.Cfg
+
+# GH: compiled-Python runtime artifacts (__pycache__/ dir and a *.pyc file) are runtime
+# state, never committed -> excluded on both sides -> PASS. Exercises the protected_dirs
+# ('__pycache__') and protected_files ('*.pyc') patterns specifically, which storage/.env
+# above do not.
+$ghRoot = Join-Path $tmp 'gate-pyc'; New-Item -ItemType Directory -Path $ghRoot -Force | Out-Null
+$gh = New-GateRepo $ghRoot $null
+New-Item -ItemType Directory -Path (Join-Path $gh.RuntimeApp '__pycache__') -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $gh.RuntimeApp '__pycache__\main.cpython-39.pyc'), "bytecode", (New-Object System.Text.ASCIIEncoding))
+[System.IO.File]::WriteAllText((Join-Path $gh.RuntimeApp 'sub\util.pyc'), "bytecode", (New-Object System.Text.ASCIIEncoding))
+Assert-GatePasses 'gate: __pycache__ dir and *.pyc excluded both sides -> pass' $gh.Cfg
+
+# GI: the object-id compare is only sound while core.autocrlf normalises CRLF->LF. With
+# autocrlf=false the runtime CRLF files would hash to different ids than the LF blobs, so
+# the gate must fail closed on the pre-check rather than false-mismatch. Byte-correct
+# runtime, only the setting flipped -> BLOCK on 'autocrlf', not on 'IDENTITY MISMATCH'.
+$giRoot = Join-Path $tmp 'gate-autocrlf'; New-Item -ItemType Directory -Path $giRoot -Force | Out-Null
+$gi = New-GateRepo $giRoot $null
+& git -C $giRoot config core.autocrlf false | Out-Null
+Assert-GateBlocks 'gate: core.autocrlf=false -> BLOCK (inconclusive compare)' $gi.Cfg 'autocrlf'
 
 Remove-Item -Recurse -Force $tmp
 Write-Host ""

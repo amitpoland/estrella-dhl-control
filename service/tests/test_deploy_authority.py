@@ -916,10 +916,15 @@ def test_identity_gate_runs_after_lock_and_before_service_stop():
 
 
 def test_identity_gate_is_skipped_only_for_bootstrap():
-    """A first-ever deploy has no prior tree to verify; every other deploy must run the gate."""
+    """A first-ever deploy has no prior tree to verify; every other deploy must run the gate.
+    The call is guarded by exactly `if (-not $Bootstrap)` (the gate itself is wrapped in a
+    try/catch that surfaces a RECOVERY STATE envelope, so it is no longer a one-liner)."""
     body = _read(DEPLOY_SCRIPT)
-    assert "if (-not $Bootstrap) { Assert-ProductionMatchesRecordedSha -Cfg $cfg }" in body, (
-        "the gate must be unconditional except for -Bootstrap"
+    i_guard = body.index("if (-not $Bootstrap) {")
+    i_call = body.index("Assert-ProductionMatchesRecordedSha -Cfg $cfg", i_guard)
+    i_else = body.index("Production identity gate skipped (-Bootstrap", i_guard)
+    assert i_guard < i_call < i_else, (
+        "the gate call must sit inside the `if (-not $Bootstrap)` branch, with the skip in the else"
     )
 
 
@@ -941,10 +946,12 @@ def test_identity_gate_fails_closed_on_every_unverifiable_state():
     assert "which is not a commit in" in seg
     # the runtime application tree is missing entirely
     assert "does not exist; it cannot be verified against" in seg
+    # core.autocrlf is neither 'true' nor 'input' -> the object-id compare is inconclusive
+    assert "need 'true' or 'input'" in seg
     # any changed/missing/extraneous file
     assert "PRODUCTION IDENTITY MISMATCH" in seg
     # every failure path is a throw, and none of them is a warning that proceeds
-    assert seg.count("throw \"BLOCKED:") >= 6, "each unverifiable state must throw, not warn"
+    assert seg.count("throw \"BLOCKED:") >= 7, "each unverifiable state must throw, not warn"
     assert "Write-Warning" not in seg, "an identity failure must block, never soft-warn and proceed"
 
 
@@ -993,4 +1000,59 @@ def test_backup_marker_read_is_documented_as_gate_dependent():
     assert "Assert-ProductionMatchesRecordedSha" in seg, "the note must name the gate it depends on"
     assert "Do NOT drop the gate call and keep this line" in seg, (
         "the note must forbid removing the gate while keeping the marker read"
+    )
+
+
+def test_identity_gate_requires_autocrlf_normalisation():
+    """The object-id compare is only sound when git's clean filter normalises the runtime
+    CRLF back to the committed LF, which happens only under core.autocrlf true/input. The
+    gate must READ that setting and fail closed on anything else - otherwise every text file
+    would false-mismatch and the gate would either block every deploy or (worse) be 'fixed'
+    by weakening it to a raw compare."""
+    seg = _gate_segment(_read(DEPLOY_SCRIPT))
+    assert "git -C $SRC config core.autocrlf" in seg, "the gate must read core.autocrlf from the source repo"
+    i_check = seg.index("config core.autocrlf")
+    i_lstree = seg.index("git -C $SRC ls-tree -r $recorded")
+    assert i_check < i_lstree, "the autocrlf pre-check must run BEFORE any object-id hashing"
+    # the check must be a hard block, naming both acceptable values
+    assert '$autocrlf -ne "true" -and $autocrlf -ne "input"' in seg
+    assert "need 'true' or 'input'" in seg
+
+
+def test_identity_gate_folds_protected_runtime_paths_into_exclusions():
+    """protected_runtime_paths is a SEPARATE config key from protected_dirs/protected_files;
+    a runtime path named only there must still be excluded, or it would read as extraneous and
+    block a legitimate deploy. The gate must fold those leaves into the exclusion set."""
+    seg = _gate_segment(_read(DEPLOY_SCRIPT))
+    assert "$Cfg.protected_runtime_paths" in seg, "the gate must consult protected_runtime_paths"
+    assert "$protDirs += $leaf" in seg, "each protected_runtime_paths leaf must join the exclusion set"
+
+
+def test_identity_gate_block_surfaces_recovery_state():
+    """A gate block is an operator-facing stop like the other deploy failure phases; it must
+    print a RECOVERY STATE envelope stating production is untouched and no unit was minted,
+    then re-throw so the lock's finally releases and the deploy aborts."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "RECOVERY STATE: IDENTITY_GATE_BLOCKED" in body, (
+        "a blocked identity gate must surface a RECOVERY STATE envelope, not a bare throw"
+    )
+    i_env = body.index("RECOVERY STATE: IDENTITY_GATE_BLOCKED")
+    # the envelope must sit BEFORE the service is stopped, proving nothing was mutated
+    i_stop = body.index("Set-ServiceState -Cfg $cfg -Target Stopped")
+    assert i_env < i_stop, "the identity-gate recovery envelope must precede the service stop"
+    seg = body[i_env:i_stop]
+    assert "no rollback unit was minted" in seg, "the envelope must state no misleading unit was created"
+
+
+def test_bootstrap_over_existing_tree_is_audited():
+    """-Bootstrap legitimately skips the gate on a first-ever deploy, but using it against an
+    EXISTING production tree skips the identity proof; that must at least emit an audit warning
+    so a misused -Bootstrap cannot silently bypass the gate."""
+    body = _read(DEPLOY_SCRIPT)
+    i_skip = body.index("Production identity gate skipped (-Bootstrap")
+    i_stop = body.index("Set-ServiceState -Cfg $cfg -Target Stopped")
+    seg = body[i_skip:i_stop]
+    assert "Test-Path $cfg.runtime_app" in seg, "the skip branch must detect an existing production tree"
+    assert "Write-Warning" in seg and "AUDIT:" in seg, (
+        "-Bootstrap over an existing tree must emit an AUDIT warning, not skip silently"
     )

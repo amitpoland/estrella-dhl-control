@@ -122,9 +122,12 @@ files carry the platform CRLF while committed blobs are LF; a raw byte compare w
 false-mismatch on every text file. The gate instead compares **git object ids** — the committed
 blob id of each tracked application file versus the id produced by hashing each runtime file
 through the same repository's clean filter — so a byte-correct file matches regardless of line
-endings. Runtime-only state (storage, logs, `.env`, `__pycache__`, everything named in
-`protected_dirs` / `protected_files`) is excluded on both sides. The check is read-only and runs
-in plan mode too — it writes nothing and drives no service.
+endings. That normalisation depends on the source repo's `core.autocrlf` being `true` or
+`input`; the gate reads the setting first and **fails closed** if it is anything else, rather
+than risk an inconclusive compare. Runtime-only state (storage, logs, `.env`, `__pycache__`,
+everything named in `protected_dirs` / `protected_files`, plus the leaves of
+`protected_runtime_paths`) is excluded on both sides. The check is read-only and runs in plan
+mode too — it writes nothing and drives no service.
 
 It **fails closed** (BLOCKED, deploy aborts with production untouched and the service still
 running) when: the version marker is absent or is not a single 40-hex SHA; the recorded SHA is
@@ -135,14 +138,18 @@ deploy, where there is no prior tree to verify.
 
 **Recovery from a BLOCKED identity gate.** A block means production is not the single tree its
 marker claims — do **not** retry the straight deploy, which would only re-hit the gate (or, if
-the gate were bypassed, bake the hybrid into a mislabelled backup). Instead reconcile production
-back to one provable identity first: establish which known commit production *should* be, run an
-operator-authorised convergence of the runtime tree to that commit through the deployment
-authority (gated mirror convergence — see the mirror-convergence rules above), and confirm the
-gate then passes. Only once the gate reports the runtime tree matches its recorded marker may an
-ordinary forward deploy be reconsidered. Reconciliation is a separate operator-approved action;
-it never activates carrier APIs and never alters financial, customs, inventory, accounting, or
-shipment data.
+the gate were bypassed, bake the hybrid into a mislabelled backup). The gate's invariant is
+runtime bytes **==** the *recorded marker*, so reconciliation has to restore BOTH sides to one
+provable commit, not just the files — converging the tree while leaving the marker stale would
+still block (now correctly, runtime ≠ marker). Concretely: establish which known commit
+production *should* be (call it `Z`); run an operator-authorised convergence of the runtime tree
+to `Z` through the deployment authority (gated mirror convergence — see the mirror-convergence
+rules above) **and** have the authority write the version marker to `Z` in the same
+operator-authorised action, so the tree and its marker are made consistent together. Re-run the
+gate: it passes only when the freshly converged tree matches the freshly written marker `Z`.
+Only then may an ordinary forward deploy be reconsidered. Reconciliation is a separate
+operator-approved action; it never activates carrier APIs and never alters financial, customs,
+inventory, accounting, or shipment data.
 
 ---
 

@@ -272,9 +272,12 @@ function Assert-ProductionMatchesRecordedSha {
       Fails closed and never guesses: an absent/invalid marker, a marker SHA absent from the
       source repository, or any single file discrepancy all throw BLOCKED - an identity is
       never inferred from a partial match. Protected runtime paths (storage, logs, .env,
-      __pycache__, ... from protected_dirs/protected_files) are excluded on BOTH sides
-      exactly as convergence excludes them: they are runtime state, never part of the
-      committed tree, and would otherwise always read as extraneous. Read-only in EVERY mode
+      __pycache__, ... from protected_dirs/protected_files, plus the leaves of
+      protected_runtime_paths) are excluded on BOTH sides - consistent with, though
+      mechanically distinct from, the robocopy /XD convergence exclusions: they are runtime
+      state, never part of the committed tree, and would otherwise always read as extraneous.
+      Also requires core.autocrlf 'true'/'input' so the clean filter normalises CRLF->LF;
+      otherwise the object-id compare is inconclusive and the gate fails closed. Read-only in EVERY mode
       including plan mode - it is a pure inspection and takes no lock, writes nothing, and
       drives no service.
     #>
@@ -288,6 +291,18 @@ function Assert-ProductionMatchesRecordedSha {
 
     $SRC = $Cfg.source_root
     if (-not (Test-Path (Join-Path $SRC ".git"))) { throw "BLOCKED: $SRC is not a git working tree; production identity cannot be verified" }
+    # The EOL-robust object-id compare is only sound if git's clean filter normalises the
+    # runtime CRLF back to the committed LF. That normalisation happens ONLY when core.autocrlf
+    # is 'true' or 'input'. With 'false' (or unset resolving to false) hash-object would hash
+    # the raw CRLF bytes and every text file would false-mismatch - an inconclusive comparison
+    # that must fail closed, never silently pass or silently over-block. git config exits 1 with
+    # no stderr when the key is unset, so no redirection is needed (see the note below).
+    $autocrlf = & git -C $SRC config core.autocrlf
+    if ($LASTEXITCODE -ne 0) { $autocrlf = "" }
+    $autocrlf = "$autocrlf".Trim().ToLowerInvariant()
+    if ($autocrlf -ne "true" -and $autocrlf -ne "input") {
+        throw "BLOCKED: git core.autocrlf in $SRC is '$autocrlf' (need 'true' or 'input'). The identity gate compares git object ids and relies on the clean filter normalising the runtime CRLF to the committed LF; without it every text file would false-mismatch. Refusing an inconclusive comparison. Set core.autocrlf before deploying."
+    }
     # No stderr redirection on native git: 2>$null / 2>&1 in PS 5.1 wraps stderr in a
     # NativeCommandError that THROWS under ErrorActionPreference=Stop before $LASTEXITCODE is
     # read. The exit code alone is the authority here; any git stderr is informational.
@@ -311,6 +326,16 @@ function Assert-ProductionMatchesRecordedSha {
 
     $protDirs = @($Cfg.protected_dirs)
     $protFiles = @($Cfg.protected_files)
+    # Belt-and-suspenders against config divergence: protected_runtime_paths is a SEPARATE key
+    # (absolute runtime paths the deploy must never converge). Its leaves are normally also
+    # named in protected_dirs/protected_files, but if an operator adds one there and omits it
+    # here, an otherwise-protected top-level runtime path could read as EXTRANEOUS and block a
+    # legitimate deploy. Fold each leaf into the exclusion set so the two keys cannot diverge.
+    foreach ($p in @($Cfg.protected_runtime_paths)) {
+        if (-not $p) { continue }
+        $leaf = ("$p" -split '[\\/]')[-1]
+        if ($leaf -and ($protDirs -notcontains $leaf)) { $protDirs += $leaf }
+    }
 
     # EXPECTED: committed blob id per app-relative path at the recorded SHA.
     $expected = @{}
@@ -322,6 +347,10 @@ function Assert-ProductionMatchesRecordedSha {
         if ($line -notmatch '^\S+\s+(\S+)\s+(\S+)\t(.+)$') { continue }
         $type = $Matches[1]; $oid = $Matches[2]; $path = $Matches[3]
         if ($type -ne 'blob') { continue }   # skip trees/submodules; the app tree has none
+        # Defensive: the '-- $relPrefix' pathspec is component-safe (it never returns a sibling
+        # such as 'service/app_v2/...'), but never Substring a path that is not actually under
+        # the prefix - a future git surprise would otherwise mint a corrupt app-relative key.
+        if (-not ("$path/").StartsWith("$relPrefix/", [System.StringComparison]::Ordinal)) { continue }
         $appRel = $path.Substring($relPrefix.Length).TrimStart('/')
         $first = $appRel.Split('/')[0]
         if ($protDirs -contains $first) { continue }
@@ -797,8 +826,23 @@ function Invoke-Deploy {
         # production touched, so a HYBRID tree can never be backed up and mislabelled by
         # New-BackupUnit. Skipped only for -Bootstrap, where there is no prior tree to verify.
         # Runs in plan mode too - it writes nothing.
-        if (-not $Bootstrap) { Assert-ProductionMatchesRecordedSha -Cfg $cfg }
-        else { Write-Host "== Production identity gate skipped (-Bootstrap: no prior tree) ==" }
+        if (-not $Bootstrap) {
+            try { Assert-ProductionMatchesRecordedSha -Cfg $cfg }
+            catch {
+                Write-Host ""
+                Write-Host "RECOVERY STATE: IDENTITY_GATE_BLOCKED"
+                Write-Host "  Production was NOT modified and the service is still Running: $($_.Exception.Message)"
+                Write-Host "  Nothing was stopped, staged, or backed up, and no rollback unit was minted (correctly)."
+                Write-Host "  Reconcile production to a known SHA (operator-authorised) before retrying the deploy."
+                throw
+            }
+        }
+        else {
+            Write-Host "== Production identity gate skipped (-Bootstrap: no prior tree) =="
+            if (Test-Path $cfg.runtime_app) {
+                Write-Warning "AUDIT: -Bootstrap used with an EXISTING production tree at $($cfg.runtime_app); the identity gate was skipped. -Bootstrap is for a first-ever deploy only - if this is not one, the deploy is proceeding WITHOUT proving production matches its recorded marker."
+            }
+        }
         Set-ServiceState -Cfg $cfg -Target Stopped
         $unit = $null
         try {
