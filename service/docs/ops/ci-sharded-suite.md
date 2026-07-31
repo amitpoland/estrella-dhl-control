@@ -38,6 +38,31 @@ still uploads its XML, which means a shard job can report success while its test
 failed. Requiring a shard job as a status check would be a green light with
 nothing behind it.
 
+## The watchdog must outlast the longest blocking wait
+
+`timeout_method = thread` is mandatory on Windows (`signal` is POSIX-only) and
+**cannot interrupt a blocked C call** — it terminates the whole pytest process,
+which writes no JUnit XML. So the per-test timeout must stay strictly above the
+longest wait a test can enter, or a locked database becomes a coin flip between
+"one test fails" and "this shard's entire result set is lost".
+
+The suite had `pytest.ini timeout = 30` against six
+`sqlite3.connect(..., timeout=30.0)` call sites — a guaranteed tie. CI run
+`30640385564` lost all of shard 2 to it: the watchdog fired inside
+`sqlite3.connect()` during
+`test_inbox_proforma_draft_source.py::test_posting_is_high`, killed the process,
+and the shard uploaded nothing. The aggregate correctly reported it MISSING.
+
+`timeout = 120` makes the SQLite wait always lose the race: `connect` raises
+`OperationalError: database is locked` at 30s, that one test fails normally, and
+the shard still produces a complete report. Pinned by
+`test_ci_shard_partition.py::test_pytest_timeout_exceeds_sqlite_busy_timeouts` —
+if a longer `sqlite3.connect(timeout=…)` is ever added, raise the pytest timeout
+above it rather than relaxing the test.
+
+This changes *legibility*, not correctness: a lock contention that used to
+destroy a shard now shows up as an ordinary failing test that can be diagnosed.
+
 ## Shard membership
 
 `tools/shard_tests.py` bin-packs whole FILES greedily by size. Whole files

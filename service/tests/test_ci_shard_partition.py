@@ -15,6 +15,7 @@ Run: python -m pytest tests/test_ci_shard_partition.py -q
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -82,6 +83,83 @@ def test_conftest_is_not_shardable():
     """conftest.py is loaded implicitly per shard; listing it as a target would
     make the shard plan wrong AND double-load the fixtures."""
     assert not any(p.name == "conftest.py" for p in shard_tests.discover())
+
+
+# ── The watchdog must not outrace a blocking wait ────────────────────────────
+
+def _connect_arglists(text: str) -> list[str]:
+    """Yield the raw argument text of every ``sqlite3.connect(...)`` call.
+
+    Depth-counted rather than regex-matched: the first positional argument is
+    routinely ``str(db_path)``, and a naive ``[^)]*`` stops at that inner
+    close-paren before ever reaching the ``timeout=`` keyword — silently finding
+    zero call sites and turning this pin into a no-op.
+    """
+    out: list[str] = []
+    for m in re.finditer(r"sqlite3\.connect\(", text):
+        i = m.end()
+        depth = 1
+        while i < len(text) and depth:
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+            i += 1
+        out.append(text[m.end():i - 1])
+    return out
+
+
+def test_connect_arglist_scanner_sees_past_nested_parens():
+    """Guard for the guard: the scanner must not stop at ``str(db_path)``."""
+    calls = _connect_arglists(
+        "conn = sqlite3.connect(str(db_path), timeout=30.0, check_same_thread=False)"
+    )
+    assert calls == ["str(db_path), timeout=30.0, check_same_thread=False"]
+    assert _connect_arglists("no calls here") == []
+
+
+def test_pytest_timeout_exceeds_sqlite_busy_timeouts():
+    """The per-test watchdog must be strictly greater than the longest SQLite
+    busy-wait any test can enter.
+
+    `timeout_method = thread` is mandatory on Windows (the `signal` method is
+    POSIX-only) and cannot interrupt a blocked C call — it kills the whole pytest
+    process, which writes NO JUnit XML. So if the watchdog and a
+    `sqlite3.connect(..., timeout=N)` are both N seconds, a locked database is a
+    race between "one test fails with OperationalError" and "the entire shard's
+    results are lost".
+
+    CI run 30640385564 lost all of shard 2 to exactly that tie (watchdog 30s vs
+    connect timeout 30.0s), so this is a pin on a defect that has already
+    happened once, not a hypothetical.
+
+    If a new `sqlite3.connect(timeout=...)` is added with a longer wait, raise
+    the pytest timeout above it rather than relaxing this test.
+    """
+    ini = (_SERVICE / "pytest.ini").read_text(encoding="utf-8")
+    m = re.search(r"^timeout\s*=\s*([0-9]+)\s*$", ini, re.MULTILINE)
+    assert m, "pytest.ini must declare an explicit per-test timeout"
+    pytest_timeout = int(m.group(1))
+
+    waits: dict[str, float] = {}
+    for src in (_SERVICE / "app").rglob("*.py"):
+        text = src.read_text(encoding="utf-8", errors="ignore")
+        for call in _connect_arglists(text):
+            m2 = re.search(r"\btimeout\s*=\s*([0-9.]+)", call)
+            if not m2:
+                continue
+            rel = str(src.relative_to(_SERVICE))
+            waits[rel] = max(float(m2.group(1)), waits.get(rel, 0.0))
+
+    assert waits, "expected to find sqlite3.connect(timeout=...) call sites"
+    worst_file = max(waits, key=lambda k: waits[k])
+    worst = waits[worst_file]
+    assert pytest_timeout > worst, (
+        f"pytest.ini timeout={pytest_timeout}s does not exceed the longest SQLite "
+        f"busy-wait ({worst}s, in {worst_file}). The thread-method watchdog would "
+        f"kill the process mid-connect and the shard would upload no JUnit XML — "
+        f"losing every result in that shard, not just this test's."
+    )
 
 
 # ── The aggregation honesty contract ─────────────────────────────────────────
