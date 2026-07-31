@@ -241,6 +241,15 @@ checkpoint_recorded_at: 2026-07-31T02:20:00+02:00
 
 ## History (most recent first)
 
+- 2026-07-31 — **PR #1061 opened** (base `main`, head `state/task-register-checkpoint-2026-07-31`):
+  publishes THIS accurate register to main, correcting main's stale copy (which showed #1049 as
+  `UNDER_REVIEW`) and preserving the load-bearing #1043 `EXECUTION_BLOCKED` resume checkpoint.
+  Checkpoint commit `f8a7225f` (cherry-pick of `d56a17ae` onto `origin/main` `423fa3cb`),
+  docs/governance-only, +76/−3. GATE-2 doc allowance (does not displace the impl queue).
+  Provenance: existed only as an uncommitted edit in the `C:\PZ-verify` root tree; archived
+  cmp-identical to cold storage (`evidence-2026-07-31`) before commit. Operator merge owed
+  (merge/deploy operator-only).
+
 - 2026-07-31 — Lesson A stub-drift fix: commit `ef03797d`, PR #1049 opened (base `main`,
   test-only). GATE 4 grep-drift disposition filed as issue #1048. GATE 2 → 3/3 open.
 
