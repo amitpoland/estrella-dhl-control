@@ -28,13 +28,16 @@ if str(_cli_root) not in sys.path:
 #      action_email_builder._OUTPUTS bind `settings.storage_root / "…"` at import,
 #      so a later per-test monkeypatch of settings.storage_root cannot redirect
 #      them.
-#   4. importlib.reload(app.core.config) — test_compliance_resolver_injection
-#      reloads the config module (and never restores it), replacing the shared
-#      `settings` object with a fresh one whose storage_root reverts to the real
-#      default.  Every later test that resolves `from app.core.config import
-#      settings` at call time (e.g. proforma_draft_sync._cm_name_for_cid) then
-#      reads/writes the real root — an object-attribute redirect on the ORIGINAL
-#      singleton cannot reach this reload-created replacement.
+#   4. importlib.reload(app.core.config) — a test that reloads the config module
+#      without restoring it replaces the shared `settings` object with a fresh
+#      one whose storage_root reverts to the real default.  Every later test that
+#      resolves `from app.core.config import settings` at call time (e.g.
+#      proforma_draft_sync._cm_name_for_cid) then reads/writes the real root — an
+#      object-attribute redirect on the ORIGINAL singleton cannot reach this
+#      reload-created replacement.  (The historical offender,
+#      test_compliance_resolver_injection, no longer reloads; the hazard is
+#      generic, so both the env export below and the _pin_settings_singleton
+#      fixture guard it rather than any one test.)
 #
 # When settings.storage_root still points at the real live root, all four write
 # into a root the current test did not touch, and the guard implicates the test
@@ -51,7 +54,8 @@ if str(_cli_root) not in sys.path:
 #       constants which must capture the sandbox path), and
 #   (b) export STORAGE_ROOT into the environment so any *newly constructed*
 #       Settings() — reload-created or otherwise — also resolves to the sandbox
-#       (covers class 4).
+#       (covers class 4's storage-leak half; _pin_settings_singleton below covers
+#       its object-identity half, which leaks locks rather than files).
 # With both in place the real live roots stay quiescent for the whole session and
 # the guard is 0-error regardless of whether the host's storage was pre-seeded.
 # The guard keeps watching the real roots, so a test that writes to them via a
@@ -93,6 +97,48 @@ _pz_settings.storage_root = _SESSION_STORAGE_SANDBOX
 os.environ["STORAGE_ROOT"] = str(_SESSION_STORAGE_SANDBOX)
 
 atexit.register(shutil.rmtree, _SESSION_STORAGE_SANDBOX, ignore_errors=True)
+
+
+# ── Settings-singleton pin (backstop for class 4 above) ───────────────────────
+
+@pytest.fixture(autouse=True)
+def _pin_settings_singleton():
+    """Restore ``app.core.config.settings`` object identity after every test.
+
+    ``importlib.reload(app.core.config)`` re-executes the module in place and
+    rebinds its ``settings`` name to a *newly constructed* Settings object.
+    Every module that captured the singleton via ``from ..core.config import
+    settings`` — app.main and ~70 route modules among them — keeps pointing at
+    the ORIGINAL object.  From that point on the process holds two live
+    Settings objects, and which one a given code path reads depends on whether
+    it captured at import time or resolves lazily.
+
+    The damage is not a wrong value but a silently ineffective patch: a test
+    that does ``patch.object(settings, "storage_root", tmp_path)`` against the
+    reload-created object redirects nothing app.main can see, so the lifespan
+    initialises its ~20 databases under the *previous* root.  Sharing those
+    files with a still-running earlier lifespan's background threads is how
+    this surfaces on Windows — a lock contention that hangs inside
+    ``con.executescript(_DDL)`` (reservation_queue.db) until pytest-timeout's
+    thread method hard-exits the process, discarding every remaining result.
+
+    The env export above (STORAGE_ROOT) already keeps a reload-created object
+    pointed at the session sandbox, so no test can reach the real live roots.
+    This fixture closes the remaining gap: it bounds the divergence to the
+    single test that caused it, so no LATER test can patch a stale object.
+    Restoring the attribute is sufficient because reload reuses the module
+    object itself — only the ``settings`` binding moves.
+
+    Tests that legitimately need a freshly-constructed Settings (e.g. to
+    observe an env override at construction time) are unaffected: they see
+    their reloaded object for the whole test, and only the shared binding is
+    put back afterwards.
+    """
+    import app.core.config as _cfg
+    _original = _cfg.settings
+    yield
+    if _cfg.settings is not _original:
+        _cfg.settings = _original
 
 
 # ── ai_gateway isolation fixture ──────────────────────────────────────────────

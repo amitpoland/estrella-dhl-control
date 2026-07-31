@@ -23,11 +23,21 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import settings
 from app.services import document_db as ddb
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
+#
+# Deliberately NO module-level ``from app.core.config import settings``.
+# That import binds one specific Settings object at collection time, and
+# ``importlib.reload(app.core.config)`` in any earlier test rebinds the
+# module's ``settings`` name to a *different* object.  A fixture that then
+# patches the captured object redirects nothing app.main can see: the lifespan
+# resolves ``app.main.settings``, so startup keeps using the previous
+# storage_root and its already-open shared session databases
+# (reservation_queue.db et al) — a cross-test SQLite lock that surfaces as a
+# hang inside ``con.executescript(_DDL)`` rather than as an assertion failure.
+# Pinned by tests/test_settings_singleton_isolation.py.
 
 @pytest.fixture()
 def storage(tmp_path):
@@ -37,14 +47,20 @@ def storage(tmp_path):
 
 @pytest.fixture()
 def client(storage):
-    from app.main import app
-    with patch.object(settings, "storage_root", storage):
-        with TestClient(app) as c:
+    import app.main as main_module
+    with patch.object(main_module.settings, "storage_root", storage):
+        with TestClient(main_module.app) as c:
             yield c
 
 
 def _auth() -> dict:
-    return {"X-API-KEY": settings.api_key or "test-key"}
+    """Resolve the API key from the object the route guards actually read.
+
+    The route modules captured their ``settings`` at the same import as
+    app.main, so app.main is the correct source — resolved per call, never
+    cached at import."""
+    import app.main as main_module
+    return {"X-API-KEY": main_module.settings.api_key or "test-key"}
 
 
 def _spl(pc, dn, qty=1.0, price=10.0, src="excel_symbol"):
