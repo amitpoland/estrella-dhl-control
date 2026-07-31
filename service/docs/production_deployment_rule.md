@@ -13,8 +13,8 @@
 | Live app root | `C:\PZ` |
 | Service | `PZService` (NSSM, port 47213) |
 | Public URL | `https://pz.estrellajewels.eu` |
-| Git repo (verify) | `C:\PZ-verify` (canonical — `C:\Users\Super Fashion\PZ APP` RETIRED 2026-06-04) |
-| Deploy source | `C:\PZ-main` - clean `main`, ff-only; the ONLY source of deploy bytes |
+| Git / verify tree | `C:\PZ-verify` (owns the repo `.git`; verification-read only — **never** a deploy source) |
+| Deploy source | `C:\PZ-main` — clean `main`, ff-only; the ONLY source of deploy bytes |
 | Production secrets | `C:\PZ\.env` |
 | Production data | `C:\PZ\storage` |
 | Production logs | `C:\PZ\logs` |
