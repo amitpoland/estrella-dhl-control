@@ -9,21 +9,24 @@ codes were routed through the canonical item-type normaliser.  Those writes lock
 source='auto', and get_description_block never overwrites an existing row.
 
 This script CLASSIFIES those rows and reports which drafts still reference them.
-It writes NOTHING:
+It writes NOTHING — the contract is literal:
 
+  * no INSERT, no UPDATE, no DELETE, no DDL
   * every connection is opened with ?mode=ro
-  * no UPDATE / INSERT / DELETE, no set_manual_block, no draft rewrite
+  * no set_manual_block, no draft rewrite
+  * no file creation and no file overwrite: the report goes to STDOUT ONLY
+    (redirect it yourself if you want a copy — this tool never opens a path
+    for writing, so it can never be mistaken for a remediation step)
 
 Remediation of the historical rows is a separate operator-reviewed campaign.
 
 Usage:
-    python service/tools/report_contaminated_product_descriptions.py [--csv out.csv]
+    python service/tools/report_contaminated_product_descriptions.py
     python service/tools/report_contaminated_product_descriptions.py --storage C:/PZ/storage
 """
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sqlite3
 import sys
@@ -80,7 +83,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--storage", default="C:/PZ/storage",
                     help="storage root holding documents.db and proforma_links.db")
-    ap.add_argument("--csv", help="also write the report to this CSV path")
     args = ap.parse_args()
 
     storage = Path(args.storage)
@@ -160,19 +162,11 @@ def main() -> int:
     print(f"  referenced by finalized drafts : "
           f"{sum(1 for r in report if r['finalized_drafts'])}  (never rewrite these)")
 
-    if args.csv:
-        with open(args.csv, "w", newline="", encoding="utf-8-sig") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(report[0].keys()) if report else
-                               ["product_code"])
-            w.writeheader()
-            w.writerows(report)
-        print(f"\nCSV written: {args.csv}")
-    else:
-        print()
-        for rec in report:
-            print(" | ".join(f"{k}={rec[k]!r}" for k in
-                             ("product_code", "item_type", "description_en",
-                              "source", "updated_at", "classification")))
+    print()
+    for rec in report:
+        print(" | ".join(f"{k}={rec[k]!r}" for k in
+                         ("product_code", "item_type", "description_en",
+                          "source", "updated_at", "classification")))
 
     print("\nREAD-ONLY. No row was modified. Remediation of these rows is a separate "
           "operator-reviewed campaign (no bulk UPDATE, no automatic set_manual_block, "
