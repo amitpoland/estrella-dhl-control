@@ -70,7 +70,35 @@ _service_root = Path(__file__).parent.parent  # service/
 if str(_service_root) not in sys.path:
     sys.path.insert(0, str(_service_root))
 
+# ── Session/JWT signing key — MUST be set before app.core.config is imported ──
+#
+# `Settings.auth_secret_key` defaults to "" (app/core/config.py), and
+# app/auth/service.py passes it straight to jwt.encode/jwt.decode, which raise
+# `InvalidKeyError: HMAC key must not be empty`. Any test that mints or verifies
+# a session token fails before reaching its assertion — deterministically, in a
+# pristine process, with no test ordering involved. It is missing configuration,
+# not an isolation leak.
+#
+# PLACEMENT IS THE WHOLE FIX. pydantic BaseSettings reads the environment exactly
+# once, when the module below is imported and the singleton is constructed. An
+# export placed after that line — or in any fixture — sets the variable for a
+# Settings object that already exists and will never re-read it. Measured: the
+# same export 43 lines lower changed nothing at all (11 failed / 1656 passed
+# before AND after, identical failure sets, 6 HMAC errors either way).
+#
+# This does NOT weaken any security test. The key only lets tokens be signed and
+# verified; a test asserting auth DENIAL fails on the absence of a valid session,
+# not on the absence of a key. Production startup independently rejects an empty
+# or placeholder key, so a test-only value cannot reach a deployment.
+os.environ.setdefault("AUTH_SECRET_KEY", "test-only-not-a-real-secret")
+
 from app.core.config import settings as _pz_settings  # noqa: E402
+
+# Belt-and-braces, mirroring the storage_root treatment below: if any earlier
+# import path already constructed the singleton, the export above arrived too
+# late for it, so assign the attribute directly too.
+if not _pz_settings.auth_secret_key:
+    _pz_settings.auth_secret_key = os.environ["AUTH_SECRET_KEY"]
 
 # The ORIGINAL host STORAGE_ROOT (if any) is what the leak-guard must keep
 # watching — capture it BEFORE we overwrite the env var with the sandbox below.
@@ -96,24 +124,6 @@ _pz_settings.storage_root = _SESSION_STORAGE_SANDBOX
 #     this sandbox value on teardown, so global export is fully compatible.
 os.environ["STORAGE_ROOT"] = str(_SESSION_STORAGE_SANDBOX)
 
-# ── Session/JWT signing key for the test process ──────────────────────────────
-#
-# `Settings.auth_secret_key` defaults to "" (app/core/config.py), and
-# app/auth/service.py passes it straight to jwt.encode/jwt.decode, which raise
-# `InvalidKeyError: HMAC key must not be empty` on an empty key. Any test that
-# mints or verifies a session token therefore fails before reaching its
-# assertion — deterministically, in a pristine process, with no test ordering
-# involved. It is a missing-configuration failure, not an isolation leak.
-#
-# Set here rather than in a fixture because pydantic BaseSettings reads the
-# environment once, when app.core.config is first imported — which the
-# `import app.main` below triggers. A fixture would run too late.
-#
-# This value is a TEST key and must stay obviously fake. It is not a way to
-# bypass auth: production startup independently rejects an empty or placeholder
-# key, and no test asserting an auth DENIAL is weakened by the signing key being
-# present — those paths fail on the absence of a valid session, not on the key.
-os.environ.setdefault("AUTH_SECRET_KEY", "test-only-not-a-real-secret")
 
 atexit.register(shutil.rmtree, _SESSION_STORAGE_SANDBOX, ignore_errors=True)
 
