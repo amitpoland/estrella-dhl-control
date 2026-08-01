@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -4704,14 +4705,35 @@ def reset_draft_from_sales_packing(
 
 # ── PR 2C — product-description enrichment ──────────────────────────────────
 
+#: Existing missing-description contract (test_proforma_description_authority).
+NAME_PL_SOURCE_MISSING_PD = "missing_product_descriptions"
+
+
+def _description_policy():
+    """The shared row-validity policy, imported lazily.
+
+    ``description_engine`` pulls in ``document_db``; this module's
+    no-document_db-import guarantee is load-bearing, so the import happens at
+    call time.  This module owns NO description policy of its own — it asks
+    :func:`description_engine.validate_product_description_row`, the same
+    function the customs resolver asks about the same stored row.
+    """
+    from .description_engine import (
+        validate_product_description_row as _validate,
+        _contains_forbidden_desc_token as _forbidden,
+    )
+    return _validate, _forbidden
+
+
 def enrich_lines_from_product_descriptions(
     lines:     List[Dict[str, Any]],
     lookup_fn: Callable[[str], Optional[Dict[str, Any]]],
 ) -> Tuple[List[Dict[str, Any]], int, int]:
     """Annotate each editable line with canonical product-description fields.
 
-    Pure function — no DB I/O.  The caller supplies *lookup_fn* so this
-    module stays free from document_db imports.
+    Pure function — no DB I/O, no mutation of the input lines or of the
+    product_descriptions rows returned by *lookup_fn*.  The caller supplies
+    *lookup_fn* so this module stays free from document_db imports.
 
     For each line the following annotation keys are added (or overwritten):
         item_type, name_pl, description_pl, description_en,
@@ -4720,11 +4742,25 @@ def enrich_lines_from_product_descriptions(
     If no product_descriptions row exists for the line's product_code all
     six keys are set to ``None``.
 
+    Values that fail the shared row-validity policy
+    (:func:`description_engine.validate_product_description_row` — the same
+    decision the customs resolver applies) are treated like a miss: blank, never
+    substituted.  There is no fallback to the purchase packing list, to a
+    category abbreviation, or to generated wording — the authority row is left
+    untouched on disk and the line carries an explicit warning instead.
+
     ``description_bilingual`` resolution priority:
         1. row["description_bilingual"]
         2. row["description_block"]
         3. "<description_pl> / <description_en>" when both are non-empty
         4. None
+    (1 and 2 are only used when they survive the same policy.)
+
+    A line that ends up without a Polish description gets the existing
+    missing-description contract: ``name_pl_source =
+    "missing_product_descriptions"`` plus an entry in ``_warnings``.  This is a
+    warning, not a blocker — final-action gating stays with the existing
+    governed readiness rules.
 
     All existing fields (qty, unit_price, currency, price_source, client_ref,
     product_code, design_no, line_id …) are preserved unchanged.
@@ -4732,6 +4768,7 @@ def enrich_lines_from_product_descriptions(
     Returns:
         (enriched_lines, enriched_count, missing_count)
     """
+    validate, forbidden = _description_policy()
     enriched: List[Dict[str, Any]] = []
     n_hit = 0
     n_miss = 0
@@ -4739,23 +4776,31 @@ def enrich_lines_from_product_descriptions(
         pc  = str(ln.get("product_code") or "").strip()
         row = lookup_fn(pc) if pc else None
         if row:
-            # Resolve description_bilingual with fallback chain.
-            bil = (str(row.get("description_bilingual") or "").strip()
-                   or str(row.get("description_block") or "").strip()
-                   or None)
-            if bil is None:
-                dp = str(row.get("description_pl") or "").strip()
-                de = str(row.get("description_en") or "").strip()
-                if dp and de:
-                    bil = f"{dp} / {de}"
+            v = validate(row)
+
+            # description_bilingual: a PRE-BUILT composite, so it is checked for
+            # generic filler only — the per-field EN rules (category label,
+            # supplier shorthand) do not apply to a PL/EN sentence pair. It is
+            # never accepted when its own components were rejected, otherwise a
+            # stale block would smuggle back the text the policy just refused.
+            bil = None
+            if v.is_usable:
+                prebuilt = (str(row.get("description_bilingual") or "").strip()
+                            or str(row.get("description_block") or "").strip())
+                if prebuilt and not forbidden(prebuilt):
+                    bil = prebuilt
+                elif v.description_en:
+                    bil = f"{v.description_pl} / {v.description_en}"
+
             enriched.append({
                 **ln,
                 "item_type":             str(row.get("item_type") or "").strip() or None,
-                "name_pl":               str(row.get("name_pl") or "").strip() or None,
-                "description_pl":        str(row.get("description_pl") or "").strip() or None,
-                "description_en":        str(row.get("description_en") or "").strip() or None,
+                "name_pl":               v.name_pl or None,
+                "description_pl":        v.description_pl or None,
+                "description_en":        v.description_en or None,
                 "description_bilingual": bil,
-                "pd_confidence":         str(row.get("confidence") or "").strip() or None,
+                "pd_confidence":         (str(row.get("confidence") or "").strip() or None)
+                                         if v.is_usable else None,
             })
             n_hit += 1
         else:
@@ -4769,6 +4814,19 @@ def enrich_lines_from_product_descriptions(
                 "pd_confidence":         None,
             })
             n_miss += 1
+
+        out = enriched[-1]
+        if not out["description_pl"]:
+            # New list — never append into the caller's line dict.
+            out["_warnings"] = list(out.get("_warnings") or []) + [
+                f"Product description missing for product_code={pc!r}. "
+                "The canonical product_descriptions row is absent or contains "
+                "generic/forbidden text. Generate or approve the customs "
+                "description package first — no description may be fabricated."
+            ]
+        if not out["name_pl"] and out.get("name_pl_source") != NAME_PL_SOURCE_OPERATOR:
+            out["name_pl_source"] = NAME_PL_SOURCE_MISSING_PD
+
     return enriched, n_hit, n_miss
 
 

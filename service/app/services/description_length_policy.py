@@ -95,6 +95,19 @@ _SHORTHAND_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(t) for t in _SHORTHAND_TOKENS) + r")\b"
 )
 
+
+def contains_supplier_shorthand(text: str) -> bool:
+    """True when *text* carries an EJL/Ethos supplier shorthand token.
+
+    The per-field primitive behind Rule 3 of :func:`validate_description_line`.
+    Exposed so callers that validate ONE field (e.g. the persisted
+    product_descriptions row) reuse this exact token set instead of invoking
+    the whole authoring gate — which also enforces the mandatory-PL and
+    required-legal-word rules that only apply when AUTHORING a description.
+    """
+    return bool(_SHORTHAND_RE.search(text or ""))
+
+
 #: Required legal words that must survive compacting.  If any of these cannot
 #: be preserved after compacting, the description is BLOCKED.
 #: "Jewellery" with capital J is the EN-side legal word; "karatowego", "próba",
