@@ -98,6 +98,20 @@ os.environ["STORAGE_ROOT"] = str(_SESSION_STORAGE_SANDBOX)
 
 atexit.register(shutil.rmtree, _SESSION_STORAGE_SANDBOX, ignore_errors=True)
 
+# Bind app.main to the PRISTINE Settings singleton, here, before any test can
+# run — and therefore before any test can reload app.core.config.
+#
+# _pin_settings_singleton below restores the binding after each test, which is
+# only meaningful if the object it restores TO is the original. That was true by
+# convention (dozens of test modules do a module-level `import app.main`, and
+# pytest imports every file in a shard before running anything), never by
+# construction. A shard that by hash chance received none of those files, plus
+# one test that reloads config before importing app.main, would silently make an
+# already-diverged object the "original" for that whole process. Importing here
+# costs one import that every shard performs anyway and removes the ordering
+# assumption entirely.
+import app.main  # noqa: E402,F401  (import for its binding side effect only)
+
 
 # ── Settings-singleton pin (backstop for class 4 above) ───────────────────────
 

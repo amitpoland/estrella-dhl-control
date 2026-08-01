@@ -9,8 +9,18 @@ prints a single reconciliation:
     must never be read as "0 failures";
   * the full failure list grouped by test file, so failures can be triaged by
     file rather than one at a time;
-  * a coverage reconciliation: tests reported vs tests expected from the shard
-    plan, so a silently-dropped file is visible.
+  * a self-consistency check per shard: the ``tests=`` count pytest declares on
+    its own ``<testsuite>`` versus the ``<testcase>`` elements actually present,
+    and a shard that ran nothing at all.  Both are reported INCOMPLETE.
+
+That last check exists because "unparseable" is NOT the only way a shard's
+results go missing.  A shard that collected nothing (pytest exit 5, a bad file
+list, a filter that matched no tests) writes a perfectly well-formed
+``<testsuite tests="0"/>``, and a shard killed after pytest began writing can
+leave a document that still parses but holds fewer cases than it declares.  Both
+used to aggregate as "complete, 0 failures" — a GREEN verdict from a shard whose
+tests never ran, which is the exact silent downgrade this tool exists to
+prevent.  A zero-case or short-count shard is unknowable, not clean.
 
 Exit status is 0 only when every shard is complete AND no test failed or
 errored.  Nothing here suppresses a red result — the point is to make the whole
@@ -116,6 +126,33 @@ def parse_report(path: Path) -> ShardReport:
                         if (node.get("message") or "").strip() else ""
                     break
             cases.append(Case(tc.get("classname", ""), tc.get("name", ""), status, message))
+
+    # A well-formed document is not yet a trustworthy one. Both checks below
+    # would otherwise pass as "complete, 0 failures" — a green verdict from a
+    # shard that reported nothing.
+    if not cases:
+        return ShardReport(
+            label, path, False,
+            "parsed but contains no testcases (shard collected or ran nothing)",
+        )
+
+    # pytest declares its own total on <testsuite tests="N">. Fewer <testcase>
+    # elements than N means the document was cut short after the header — it
+    # parses, but part of the run is missing.
+    declared = 0
+    for suite in suites:
+        try:
+            declared += int(suite.get("tests", "0"))
+        except ValueError:  # a non-numeric attribute is itself untrustworthy
+            return ShardReport(label, path, False,
+                               "non-numeric tests= attribute on <testsuite>")
+    if declared > len(cases):
+        return ShardReport(
+            label, path, False,
+            f"short count: <testsuite tests=\"{declared}\"> but {len(cases)} "
+            f"testcase elements present",
+        )
+
     return ShardReport(label, path, True, cases=cases)
 
 

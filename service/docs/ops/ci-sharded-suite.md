@@ -97,10 +97,33 @@ the slowest shard's wall clock will vary more. That is bounded by the job's
 conclusions with no warning at all.
 
 `test_shards_are_roughly_balanced` is a lopsidedness alarm on that trade, not a
-packing contract. If it fires, read `--describe` and reconsider the shard count —
-do **not** hand-move files, which would forfeit the stability the hash buys.
+packing contract. If it fires, read `--describe` first — do **not** hand-move
+files, which would forfeit the stability the hash buys.
+
 Renaming a test file does change its shard; that is inherent to keying on the
 path, and it moves only that file.
+
+### Changing the shard count resets all comparability
+
+`assign()` is plain `% of`, not consistent hashing, so **changing `of` reshuffles
+almost the whole suite** — measured 6 → 7, only **152 of 974 files (15.6%)** keep
+their shard. That is the same wholesale reshuffle that made bin packing
+unusable; it is merely rarer, because `of` changes on purpose and file contents
+change constantly.
+
+So a shard-count change is a **comparison-reset event**. Treat it accordingly:
+
+- it invalidates every historical "shard N failed the same files" observation;
+- it is not the first answer to a balance alarm, even though the alarm is about
+  balance. Prefer investigating the slow shard's actual wall clock — bytes are
+  what `--describe` measures, and bytes are only a proxy for runtime;
+- when `of` does change, say so in the commit message and re-baseline rather
+  than comparing across the boundary.
+
+If a future run needs balance *and* stability together, the fix is consistent
+hashing (a hash ring, or rendezvous hashing), where changing `of` moves only
+~1/N of the files. That is a real option, not a hypothetical — it is simply not
+needed while `of` stays at 6.
 
 ## Cross-shard ordering caveat
 

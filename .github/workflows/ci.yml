@@ -1,8 +1,12 @@
 name: CI
 
-# First CI for the repository. Two independent jobs so the reliably-green
-# calculation-authority regression gives a clean signal even while the broader
-# service suite carries its documented, pre-existing aggregate reds.
+# First CI for the repository. The reliably-green calculation-authority
+# regression runs as its own job so it gives a clean signal even while the
+# broader service suite carries its documented, pre-existing aggregate reds.
+#
+# Three jobs: `golden-regression`, the `service-suite` shard matrix, and
+# `service-suite-report`, which aggregates the shards and carries the suite's
+# verdict (see the branch-protection note above that job).
 #
 # Runner: windows-latest — matches production (NSSM PZService, Windows, py3.9)
 # and the environment all test-baseline counts were measured in. The Windows-only
@@ -11,8 +15,10 @@ name: CI
 # Python pinned to 3.9 — production runs 3.9.1; the root regression needs
 # PYTHONUTF8=1 so Polish-language test prints can't crash on a cp1252 console.
 #
-# NOTE: neither job is a required status check until branch protection is set
+# NOTE: no job here is a required status check until branch protection is set
 # (an admin action in GitHub repo settings, not something this workflow grants).
+# When it is set, the suite's check is `Service pytest (aggregate)` — NOT a
+# shard job; see the branch-protection note on `service-suite-report`.
 # The first run establishes the honest baseline; it is not described as "green"
 # until its own Actions run reports green.
 
@@ -58,7 +64,10 @@ jobs:
           PYTHONIOENCODING: 'utf-8'
         run: python test_pz_regression.py
 
-  # ── Full service suite (973 files, sharded) ───────────────────────────────
+  # ── Full service suite (sharded) ──────────────────────────────────────────
+  # Deliberately no file count here: it drifts with every added test, and a
+  # stale number in a comment reads as a contract. `tools/shard_tests.py --of 6
+  # --describe` prints the current one.
   # Runs the entire suite honestly. The test-baseline documents pre-existing,
   # order-dependent aggregate reds (stale V1 source-grep pins; asyncio/mock
   # leakage) — this job is expected to be red on arrival and exists to make that

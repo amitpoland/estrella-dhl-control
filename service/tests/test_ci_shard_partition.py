@@ -140,8 +140,51 @@ def test_shard_paths_are_posix_relative():
 
 def test_conftest_is_not_shardable():
     """conftest.py is loaded implicitly per shard; listing it as a target would
-    make the shard plan wrong AND double-load the fixtures."""
+    make the shard plan wrong AND double-load the fixtures.
+
+    Note this is a forward-guard, not a pin on active behaviour: `conftest.py`
+    matches neither `test_*.py` nor `*_test.py`, so the filter in `discover()`
+    never fires today. It earns its place only if the glob is later widened.
+    """
     assert not any(p.name == "conftest.py" for p in shard_tests.discover())
+
+
+def test_discover_matches_both_pytest_default_patterns(tmp_path):
+    """`discover()` must agree with what pytest itself would collect.
+
+    pytest's default `python_files` is `test_*.py` AND `*_test.py`, and
+    `service/pytest.ini` does not override it. A `*_test.py` file that pytest
+    collects but no shard runs would execute locally and in the deploy-gate
+    subsets while being absent from the job that reports the verdict — the run
+    looks greener than the tree, which is the whole failure class this tooling
+    exists to remove.
+    """
+    tests_dir = tmp_path / "tests"
+    (tests_dir / "sub").mkdir(parents=True)
+    for name in ("test_alpha.py", "beta_test.py", "sub/test_gamma.py",
+                 "sub/delta_test.py"):
+        (tests_dir / name).write_text("def test_x(): pass\n", encoding="utf-8")
+    # Neither collected by pytest, so neither may appear in a shard.
+    (tests_dir / "conftest.py").write_text("", encoding="utf-8")
+    (tests_dir / "helpers.py").write_text("", encoding="utf-8")
+
+    found = {p.name for p in shard_tests.discover(tests_dir, tmp_path)}
+    assert found == {"test_alpha.py", "beta_test.py", "test_gamma.py",
+                     "delta_test.py"}, found
+
+
+def test_discover_does_not_double_count_a_file_matching_both_patterns(tmp_path):
+    """`test_thing_test.py` matches both globs — it must still be ONE entry.
+
+    A duplicate would run the file twice in the same shard and break the
+    exactly-once partition contract above.
+    """
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_thing_test.py").write_text("def test_x(): pass\n",
+                                                  encoding="utf-8")
+    files = shard_tests.discover(tests_dir, tmp_path)
+    assert len(files) == 1, files
 
 
 # ── The watchdog must not outrace a blocking wait ────────────────────────────
@@ -194,6 +237,24 @@ def test_pytest_timeout_exceeds_sqlite_busy_timeouts():
 
     If a new `sqlite3.connect(timeout=...)` is added with a longer wait, raise
     the pytest timeout above it rather than relaxing this test.
+
+    SCOPE — read this before trusting the name. This pin covers exactly one
+    class of blocking wait: `sqlite3.connect(timeout=<literal>)` under
+    `service/app/`. It does NOT cover, and must not be cited as covering:
+
+      * unbounded waits — `threading.Lock.acquire()` with no timeout and
+        `fcntl.flock(..., LOCK_EX)` without `LOCK_NB` (four such sites live in
+        `email_evidence_store.py` / `email_evidence_processor.py`). No watchdog
+        value can exceed an unbounded wait;
+      * `PRAGMA busy_timeout=<ms>`, a second SQLite mechanism that overrides the
+        connect-time value entirely;
+      * non-SQLite waits — `asyncio.wait_for`, smtplib/httpx timeouts,
+        `Thread.join(timeout=)`, `socket.create_connection`. `routes_bot.py`
+        already carries a 300s `asyncio.wait_for`, above this watchdog.
+
+    Those are tracked as GATE 4 findings, not silently assumed safe. What this
+    test does guarantee is that the one wait class that has ALREADY destroyed a
+    shard (CI run 30640385564) cannot tie with the watchdog again.
     """
     ini = (_SERVICE / "pytest.ini").read_text(encoding="utf-8")
     m = re.search(r"^timeout\s*=\s*([0-9]+)\s*$", ini, re.MULTILINE)
@@ -201,15 +262,29 @@ def test_pytest_timeout_exceeds_sqlite_busy_timeouts():
     pytest_timeout = int(m.group(1))
 
     waits: dict[str, float] = {}
+    unparseable: list[str] = []
     for src in (_SERVICE / "app").rglob("*.py"):
         text = src.read_text(encoding="utf-8", errors="ignore")
         for call in _connect_arglists(text):
-            m2 = re.search(r"\btimeout\s*=\s*([0-9.]+)", call)
-            if not m2:
-                continue
             rel = str(src.relative_to(_SERVICE))
-            waits[rel] = max(float(m2.group(1)), waits.get(rel, 0.0))
+            m2 = re.search(r"\btimeout\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*[,)]?\s*$"
+                           r"|\btimeout\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*,", call)
+            if not m2:
+                # A timeout that is a name, an expression, scientific notation,
+                # or passed positionally reads as "no wait to check" to the
+                # regex. Skipping it would let an unbounded value be added right
+                # next to a literal one and keep this test green — the exact
+                # shape of a pin that passes while what it names is broken.
+                if "timeout" in call:
+                    unparseable.append(f"{rel}: timeout=... not a literal ({call.strip()[:80]})")
+                continue
+            waits[rel] = max(float(m2.group(1) or m2.group(2)), waits.get(rel, 0.0))
 
+    assert not unparseable, (
+        "sqlite3.connect() call site(s) whose timeout this pin cannot read — "
+        "make the value a literal or extend this test; do not leave it unchecked:\n"
+        + "\n".join(unparseable)
+    )
     assert waits, "expected to find sqlite3.connect(timeout=...) call sites"
     worst_file = max(waits, key=lambda k: waits[k])
     worst = waits[worst_file]
@@ -260,6 +335,62 @@ def test_empty_shard_xml_is_incomplete(tmp_path):
     assert not junit_summary.parse_report(p).complete
 
 
+def test_valid_but_empty_shard_xml_is_incomplete_not_green(tmp_path):
+    """The false-GREEN case, which the truncated/missing tests do NOT cover.
+
+    A shard that collected nothing — pytest exit 5, a bad file list, a filter
+    matching no tests — writes a perfectly well-formed ``<testsuite tests="0"/>``.
+    Unparseable input fails loudly; THIS input used to aggregate as "complete,
+    0 failures" and turn the whole run green off a shard whose tests never ran.
+    That is the silent downgrade the aggregate exists to prevent, so it must be
+    INCOMPLETE.
+    """
+    p = tmp_path / "junit-shard-4.xml"
+    p.write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites>'
+        '<testsuite name="pytest" tests="0" failures="0" errors="0" skipped="0"/>'
+        "</testsuites>",
+        encoding="utf-8",
+    )
+    rep = junit_summary.parse_report(p)
+    assert not rep.complete, "a shard that ran nothing is unknowable, not clean"
+    assert "no testcases" in rep.reason
+    text, ok = junit_summary.render([rep], expected_shards=1)
+    assert not ok, "an empty shard can never produce a green aggregate"
+    assert "INCOMPLETE" in text
+
+
+def test_short_count_shard_xml_is_incomplete(tmp_path):
+    """Declared-vs-present mismatch: the document parses but is missing cases.
+
+    pytest writes its own total on ``<testsuite tests="N">``. A process killed
+    after the header was flushed can leave valid XML holding fewer ``<testcase>``
+    elements than N. Counting that as a full shard under-reports the run.
+    """
+    p = tmp_path / "junit-shard-5.xml"
+    p.write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites>'
+        '<testsuite name="pytest" tests="400" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tests.test_alpha" name="test_ok"/>'
+        "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    rep = junit_summary.parse_report(p)
+    assert not rep.complete
+    assert "short count" in rep.reason
+    _, ok = junit_summary.render([rep], expected_shards=1)
+    assert not ok
+
+
+def test_declared_count_matching_case_count_stays_complete(tmp_path):
+    """Guard for the guard: the new checks must not reject a healthy shard."""
+    p = tmp_path / "junit-shard-6.xml"
+    p.write_text(_GOOD_XML, encoding="utf-8")
+    rep = junit_summary.parse_report(p)
+    assert rep.complete, rep.reason
+    assert len(rep.cases) == 3
+
+
 def test_missing_shard_is_reported_against_the_expected_count(tmp_path):
     """Shard 2 of 2 never wrote an XML — the report must name it, not skip it."""
     (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
@@ -270,9 +401,13 @@ def test_missing_shard_is_reported_against_the_expected_count(tmp_path):
 
 
 def test_all_green_shards_produce_a_green_aggregate(tmp_path):
+    # Drop the failing case AND correct the declared total — pytest always emits
+    # a tests= that matches the cases it wrote, and the short-count check now
+    # holds the aggregate to that.
     green = _GOOD_XML.replace(
         '<testcase classname="tests.test_alpha" name="test_bad">'
-        '<failure message="assert 1 == 2">x</failure></testcase>', "")
+        '<failure message="assert 1 == 2">x</failure></testcase>', "").replace(
+        'tests="3"', 'tests="2"')
     (tmp_path / "junit-shard-1.xml").write_text(green, encoding="utf-8")
     reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
     text, ok = junit_summary.render(reports, expected_shards=1)

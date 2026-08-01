@@ -69,9 +69,22 @@ class FileVerdict:
 
 
 def _run_isolated(rel_path: str, timeout: int) -> tuple[int, str]:
-    """Run one test file in a fresh interpreter. Returns (returncode, tail)."""
+    """Run one test file in a fresh interpreter. Returns (returncode, tail).
+
+    ``-p no:timeout`` disables pytest-timeout in the CHILD deliberately.  The
+    child inherits ``service/pytest.ini``, whose per-test watchdog (120s) is far
+    below this subprocess timeout (600s default) — so the child's own watchdog
+    would always win the race, ``os._exit()`` the run, and return an ordinary
+    non-zero code.  UNRUNNABLE would then be unreachable and every hanging file
+    would be misfiled as ISOLATED_FAIL, which is the opposite diagnosis: it
+    sends the reader to "the test and the code disagree" when the actual finding
+    is "this file hangs, and it is the class that kills shards."
+
+    With the child watchdog off, a genuine hang runs until OUR timeout and
+    surfaces as rc 124 → UNRUNNABLE.
+    """
     cmd = [sys.executable, "-m", "pytest", rel_path,
-           "-p", "no:cacheprovider", "-q", "--no-header", "-rf"]
+           "-p", "no:cacheprovider", "-p", "no:timeout", "-q", "--no-header", "-rf"]
     try:
         proc = subprocess.run(
             cmd, cwd=SERVICE_ROOT, capture_output=True, text=True, timeout=timeout,
@@ -177,6 +190,19 @@ def main(argv: list[str] | None = None) -> int:
     if incomplete:
         print(f"WARNING: {len(incomplete)} shard(s) incomplete — their files cannot "
               f"be triaged from this data", file=sys.stderr)
+
+    # A shard that produced NO xml contributes no failing files at all, so
+    # without this it is silently absent from the work queue and the triage
+    # report looks clean for a sixth of the suite. junit_summary reports MISSING
+    # against the expected count; this must too, or the two disagree about how
+    # much of the run was actually seen.
+    if args.of:
+        found = {r.label for r in reports}
+        gone = [str(i) for i in range(1, args.of + 1) if str(i) not in found]
+        if gone:
+            print(f"WARNING: shard(s) {', '.join(gone)} of {args.of} produced no "
+                  f"report — their failures are NOT in this triage at all",
+                  file=sys.stderr)
 
     failing: dict[str, list[str]] = {}
     for r in reports:

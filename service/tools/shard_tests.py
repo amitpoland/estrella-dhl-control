@@ -80,14 +80,27 @@ def _rel(p: Path, root: Path = SERVICE_ROOT) -> str:
 def discover(tests_dir: Path = TESTS_DIR, root: Path = SERVICE_ROOT) -> list[Path]:
     """Every collectable test file, in a stable OS-independent order.
 
-    Sorted by the POSIX-style relative path so Windows and Linux agree; conftest
-    is excluded because pytest loads it implicitly for whichever files run.
+    Both of pytest's default ``python_files`` patterns are globbed — ``test_*.py``
+    AND ``*_test.py``. Matching only the first would mean a ``*_test.py`` file is
+    collected by a local ``pytest tests/`` and by the deploy-gate subsets, but
+    belongs to no shard: it runs everywhere except the job that reports the
+    verdict, and nothing says so. ``service/pytest.ini`` sets no ``python_files``
+    override, so these two patterns are the contract to match.
+
+    Sorted by the POSIX-style relative path so Windows and Linux agree.
+
+    The ``conftest.py`` exclusion is defensive, not active: that name matches
+    neither pattern today, so the filter never fires. It is kept because pytest
+    loads conftest implicitly for whichever files run, so listing it as a shard
+    target would both break the plan and double-load the fixtures — and this
+    glob is exactly the kind of thing a later change widens.
     """
-    files = [
-        p for p in tests_dir.rglob("test_*.py")
-        if p.is_file() and p.name != "conftest.py"
-    ]
-    return sorted(files, key=lambda p: _rel(p, root))
+    seen: set[Path] = set()
+    for pattern in ("test_*.py", "*_test.py"):
+        for p in tests_dir.rglob(pattern):
+            if p.is_file() and p.name != "conftest.py":
+                seen.add(p)
+    return sorted(seen, key=lambda p: _rel(p, root))
 
 
 def assign(path: Path, of: int, root: Path = SERVICE_ROOT) -> int:

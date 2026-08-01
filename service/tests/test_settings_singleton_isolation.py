@@ -35,7 +35,6 @@ from __future__ import annotations
 import importlib
 from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 # Deliberately NOT `from app.core.config import settings` — see module docstring.
