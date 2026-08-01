@@ -235,6 +235,63 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ── Cache-record selection (shared with dashboard read paths) ─────────────────
+# tracking_cache.json is keyed by tracking number at the OUTER level:
+#     { "<awb>": { "status", "last_event", "source", ... }, ... }
+# A reader that calls .get("status") on the outer dict always gets nothing —
+# the status lives one level down, inside the per-AWB record. These two helpers
+# give every reader the same correct AWB → record lookup.
+
+def resolve_batch_tracking_no(audit: Dict[str, Any], batch_id: str = "") -> str:
+    """Best-effort AWB / tracking number for a batch.
+
+    Resolution order, matching how the rest of the codebase derives an AWB:
+      1. ``audit.tracking_no``
+      2. ``audit.awb``
+      3. the AWB embedded in a ``SHIPMENT_<awb>_<date>_<hash>`` batch id.
+
+    Returns "" when none can be resolved.
+    """
+    a = audit or {}
+    awb = str(a.get("tracking_no") or a.get("awb") or "").strip()
+    if not awb and batch_id and batch_id.startswith("SHIPMENT_"):
+        parts = batch_id.split("_")
+        if len(parts) >= 2 and parts[1]:
+            awb = parts[1].strip()
+    return awb
+
+
+def select_cached_tracking_record(
+    cache: Any,
+    tracking_no: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return the single per-AWB tracking record from a loaded tracking_cache.json.
+
+    ``cache`` is the parsed contents of tracking_cache.json — normally the
+    AWB-keyed outer dict ``{ "<awb>": {record}, ... }``.
+
+    Resolution order:
+      1. ``tracking_no`` present as a key → that record.
+      2. Legacy flat cache (the top level is itself a record, i.e. it carries a
+         ``status`` or ``tracking_no`` key) → the dict as-is. (A real AWB-keyed
+         dict never has these at the top — its keys are tracking numbers.)
+      3. Exactly one AWB entry → that sole record (a batch folder holds one AWB).
+      4. Otherwise → ``{}`` (cannot disambiguate; caller keeps its fallback).
+    """
+    if not isinstance(cache, dict) or not cache:
+        return {}
+    tn = (tracking_no or "").strip()
+    if tn and isinstance(cache.get(tn), dict):
+        return cache[tn]
+    # Legacy flat record written directly at the top level.
+    if "status" in cache or "tracking_no" in cache:
+        return cache
+    record_values = [v for v in cache.values() if isinstance(v, dict)]
+    if len(record_values) == 1:
+        return record_values[0]
+    return {}
+
+
 # ── DHL tracking URL ──────────────────────────────────────────────────────────
 
 def _dhl_tracking_url(tracking_no: str) -> str:

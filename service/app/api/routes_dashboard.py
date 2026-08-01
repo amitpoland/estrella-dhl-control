@@ -1826,11 +1826,23 @@ def action_diagnostics(batch_id: str) -> Dict[str, Any]:
     ) if batch_dir.exists() else False
 
     # ── Tracking ─────────────────────────────────────────────────────────────
+    # tracking_cache.json is AWB-keyed: { "<awb>": {record}, ... }. Select the
+    # record for THIS batch's AWB — reading the outer dict would always miss
+    # `status` (it lives one level down) and leave tracking state stuck False.
     tracking = audit.get("tracking") or {}
     tracking_cache_path = batch_dir / "tracking_cache.json"
     if tracking_cache_path.exists():
         try:
-            tracking = json.loads(tracking_cache_path.read_text()) or tracking
+            from ..services.tracking_service import (
+                resolve_batch_tracking_no,
+                select_cached_tracking_record,
+            )
+            _cache = json.loads(tracking_cache_path.read_text())
+            _record = select_cached_tracking_record(
+                _cache, resolve_batch_tracking_no(audit, batch_id)
+            )
+            if _record:
+                tracking = _record
         except Exception:
             pass
     t_status = tracking.get("status", "")
