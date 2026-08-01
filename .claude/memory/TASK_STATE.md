@@ -81,12 +81,16 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
      no `app-423fa3cb` release artifact exists in `C:\PZ-releases`, no deployment backup unit
      was created after the 00:34 rollback, and `C:\PZ\version.txt` still records `1ce0e76d`.
      By every canonical-provenance signal, prod is still `1ce0e76d`.
-  2. **Observed filesystem state.** The two #1043 application files
-     (`app/services/tracking_service.py`, `app/static/v2/shipment-detail-page.jsx`) are
-     byte-identical (sha256) to the reviewed `423fa3cb` content and carry mtime
-     `2026-07-31 02:00:01`. Their presence is the result of an **out-of-band manual copy**
-     (operator-console `robocopy … /MIR`, forensics resolved — NOT a canonical deploy, NOT
-     the agent). This is what makes prod a hybrid: `1ce0e76d` tree + 2 files at `423fa3cb`.
+  2. **Observed filesystem state — CORRECTED 2026-08-01 (operator ruling).** The two #1043
+     application files (`app/services/tracking_service.py`,
+     `app/static/v2/shipment-detail-page.jsx`) are byte-identical (sha256) to the reviewed
+     `423fa3cb` content and carry mtime `2026-07-31 02:00:01`. Their presence is the result of
+     an **out-of-band manual copy** (operator-console `robocopy … /MIR`, forensics resolved —
+     NOT a canonical deploy, NOT the agent). **The earlier "`1ce0e76d` tree + 2 files at
+     `423fa3cb`" / "non-commit mosaic" reading is WITHDRAWN.** The operator confirmed
+     2026-08-01 that `C:\PZ\app` matches the `service/app` subtree of `423fa3cb` across **all
+     529 files**; **only `version.txt` is false**. The hybrid is therefore a **deployment-
+     provenance defect** (marker disagrees with bytes), not an unexplained runtime overlay.
   3. **Operational consequence.** Hash parity alone is **no longer sufficient evidence** that
      a canonical deployment occurred — the fixed bytes are already on disk without any
      canonical provenance behind them. Canonical-deployment evidence must now come from the
@@ -142,14 +146,39 @@ gate_reconfirmed_at: 2026-07-31T (this session; READY-TO-DEPLOY, LOW)
   which is why the canonical signed deploy of #1043 kept failing (blocked 02:01:27 / 02:03:29)
   and the operator fell back to the out-of-band manual copy. Provisioning the key is a
   prerequisite for any signed reconciliation.
-- **⚠ Hybrid resume caution (added 2026-07-31):** the recorded `next_command` (straight signed
-  `Deploy-PZ.ps1 -ReviewedSHA 423fa3cb`) was written **before** the hybrid was discovered.
-  Running it as-is now snapshots the hybrid tree into the pre-deploy backup → the post-#1039
-  content-derived `restored_sha` resolves to no single clean SHA → the backup-provenance stop
-  condition fires by design. The hybrid must be reconciled through the approved signed
-  deployment process first (see the four-facts CURRENT-STATE FACT above; remediation is
-  governance-level, NOT a sequence encoded here). Do not treat the recorded `next_command`
-  as still-valid without operator reconciliation of the hybrid.
+- **⚠ Hybrid resume caution (added 2026-07-31; REWRITTEN 2026-08-01 after the operator
+  correction — the prior version's mechanism was wrong in the operator's favour):** the
+  recorded `next_command` (straight signed `Deploy-PZ.ps1 -ReviewedSHA 423fa3cb`) was written
+  **before** the provenance defect was understood, and is still **not valid as-recorded** — but
+  for a different and more dangerous reason than first written.
+  - **WITHDRAWN claim.** The earlier text said running it would make "the post-#1039
+    content-derived `restored_sha` resolve to no single clean SHA → the backup-provenance stop
+    condition fires by design." **Both halves are wrong.** `restored_sha` is **marker-derived,
+    not content-derived**: `New-BackupUnit` sets it from `Read-VersionMarker -Path
+    $Cfg.version_file`. And under the corrected facts the marker is perfectly readable and
+    well-formed (`1ce0e76d…`), so nothing resolves to "no single clean SHA" and **no stop
+    condition fires**.
+  - **What would actually happen.** A straight signed deploy against the current runtime mints
+    a backup unit labelled `restored_sha = 1ce0e76d…` whose bytes are `423fa3cb…` — an
+    **untruthfully-labelled unit, minted silently**. `Resolve-RestoredSha` refuses only on
+    (a) `unit.json` vs `version.pre.txt` disagreement or (b) both absent; neither applies here,
+    so the defect does not surface at deploy time at all. It surfaces later, as a rollback that
+    restores `423fa3cb` bytes and then stamps production `1ce0e76d`. **Do not rely on the
+    tooling to stop this on current `main`.**
+  - **What does catch it.** `Assert-ProductionMatchesRecordedSha` — it runs before the backup,
+    compares runtime bytes to the marker by git object id, and fails closed on exactly this
+    state. It is in **PR #1062, still OPEN and NOT on `main`**. Until #1062 merges, the
+    protection described here does not exist in the deploy authority.
+  - **Correct repair, once #1062 is merged and a signer is provisioned:**
+    `-Reconcile -FromSha 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0 -ToSha
+    c3629786e9ccf66cabddd41ccdfa2a5f3b8badb9` — proves runtime == FromSha (twice, the second
+    time immediately pre-backup), records `restored_sha = FromSha` from the **proof** rather
+    than the false marker, converges only to ToSha, verifies against ToSha, and writes the
+    version marker last. `-ToSha` above is the current `origin/main` tip carrying #1043 + #1052;
+    confirm it is still the tip before use.
+  - Remediation remains **governance-level and operator-authorized**: the above is the shape the
+    tooling now supports, not a standing instruction to execute. Do not treat the recorded
+    `next_command` as still-valid.
 - **⚠ Resume caution:** four operator status reports this session (merge ×2, deploy,
   auth-mint with `jti=3f8a2c1e`) each described state that disk measurement disproved.
   `sign_deploy_authorization.py` writes the JSON artifact **before** printing
@@ -311,6 +340,36 @@ gate_reconfirmed_at: 2026-07-31T (this session; READY-TO-DEPLOY, LOW)
 ---
 
 ## History (most recent first)
+
+- 2026-08-01 — **PR #1062 AMENDED** (base `main`, head `fix/deploy-production-identity-gate`,
+  tip **`70e1e883`**) after the operator ruling *"#1062 must not merge in its present form —
+  the missing reconciliation authority is a genuine blocker."* Closure-2 is now **in** this PR
+  rather than held. Adds `-Reconcile -FromSha X -ToSha Y` implementing all 9 contract
+  guarantees (authorization binds action + **both** SHAs via a signed `from_sha` field;
+  runs under the deploy lock; PROOF 1 runtime==FromSha; PROOF 2 repeated after service stop
+  immediately pre-backup, closing the mutation window; backup records `restored_sha = FromSha`
+  from the proof, never the marker; converge only to ToSha; PROOF 3 vs ToSha; version marker
+  written only after PROOF 3; any failure before PROOF 3 leaves the old marker intact and mints
+  no target-labelled unit). **`-Bootstrap` over an existing non-empty runtime now FAILS CLOSED**
+  — it was the one path that skipped the identity gate. Hardening covers the four required
+  review checks: git filters applied via repository-relative path (not `core.autocrlf` alone);
+  ordinal dict + separate ordinal-ignore-case set for collision detection, blocking **before**
+  compare with `CASE-DIFFERS` its own class; reparse points detected **before** recursive
+  descent via an explicit queue. Reviewed mainline `c3629786` merged in first (file sets
+  disjoint, no conflicts), then all three suites rerun against a clean `git archive HEAD`
+  export of `70e1e883`: **47/0** behavioural, **71/71** static pins, **160/160** golden.
+  **Real defect found by the new tests:** a local `$restoredSha` case-folded onto the
+  `$RestoredSha` parameter (PowerShell variable names are case-INSENSITIVE) — ordinary deploys
+  were labelled `mode=reconcile` and the no-marker case recorded `restored_sha: ""`; rollback
+  safety never breached (the resolver shape-checks and still refused) but the metadata was
+  untruthful. **The static pins were all green while this shipped** — only the behavioural
+  control case caught it. Amendment summary posted as a PR comment for operator review
+  (`#issuecomment-5150438353`), genericized for the public repo. **Deploy tooling + tests only
+  — no production file, service, or runtime byte touched.** Status: **OPEN, operator-merge-only**;
+  the forward prod re-converge stays HELD — no signer is provisioned, so every authorization
+  evaluation returns DENY by design, which is why an agent cannot run `-Reconcile`. The existing
+  runtime is preserved as evidence, not a trusted rollback unit.
+  Detail: [[project-deploy-identity-gate-campaign]].
 
 - 2026-07-31 — **PR #1061 OPEN** (base `main`, head `state/task-register-checkpoint-2026-07-31`):
   publishes THIS accurate register to main, correcting main's stale copy (which showed #1049 as
