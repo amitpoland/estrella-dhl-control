@@ -4663,8 +4663,22 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     lineId:   ln.line_id || '',
     sku:      ln.product_code || '—',
     desc:     ln.name_pl || ln.description_pl || ln.design_no || ln.product_code || '—',
-    desc_pl:  ln.description_pl || ln.name_pl || '',
-    desc_en:  ln.description_en || ln.name_en || '',
+    // ── THE frontend description resolution ────────────────────────────────
+    // Product Description Authority = documents.db :: product_descriptions,
+    // already resolved onto the draft line by the backend
+    // (enrich_lines_from_product_descriptions, which refuses generic/forbidden
+    // rows and blanks them). Resolved ONCE here; every surface — Proforma
+    // display, Proforma document, Sales Packing List — reads desc_pl/desc_en
+    // from this view-model. No surface may re-select descriptions off the raw
+    // line, or the two paths can drift.
+    //
+    // No name_pl / name_en fallback: those are short canonical NAMES, not
+    // customs descriptions, and name_en does not exist in the live
+    // product_descriptions schema (see routes_proforma.py:11413 residue) so
+    // that fallback was already dead. Surfaces that want a name when the
+    // authority has no description use `desc` below, which carries name_pl.
+    desc_pl:  ln.description_pl || '',
+    desc_en:  ln.description_en || '',
     qty:      parseFloat(ln.qty || 0),
     unitEur:  parseFloat(ln.unit_price || 0),
     netEur:   parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
@@ -5287,13 +5301,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // Currency: from draft (can vary per client — not hardcoded to EUR)
   const packingListData = (() => {
     const currency      = liveDraft.currency || 'EUR';
-    const _editableLines = liveDraft.editable_lines || [];
     // ONE row per BILLED draft line (never the full-shipment batch packing).
     // qty + sales price come from the draft editable line (the billing authority);
     // physical fields (kt/colour/quality/weights/size/HSN/origin) are ENRICHED
     // from the matched batch packing row by design_no/product_code. Packing List
     // total === draft total.
-    const rows = _editableLines.map((ln, i) => {
+    //
+    // Iterates `lines` — the SAME line view-model the Proforma display and the
+    // Proforma document consume — so descriptions are selected in exactly one
+    // place (line.desc_en / line.desc_pl above). `line._raw` is that row's own
+    // editable line, preserving the existing per-line identity: several billed
+    // lines may share a product_code across designs, so nothing here may key
+    // off product_code alone.
+    const rows = lines.map((line, i) => {
+      const ln        = line._raw;
       const pk        = _enrichPacking(ln);
       const qty       = Number(ln.qty) || 0;
       const unitPrice = Number(ln.unit_price) > 0
@@ -5305,7 +5326,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // same design (mixed lots), so pack_sr collides (e.g. JR04929 → 9 ×3) and
         // leaves gaps/out-of-order rows. The draft's editable_lines are the row
         // authority; number them sequentially.
-        sr:           i + 1,
+        sr:           line.seq,
         ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
         // client_po is the CLIENT's purchase-order reference (persisted since
         // 494c4665). It must NEVER fall back to pk.invoice_no — that is the
@@ -5328,6 +5349,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         purchase_invoice_no: pk.invoice_no || '',
         product_code: ln.product_code || pk.product_code || '—',
         design:       ln.design_no    || pk.design_no    || '—',
+        // PASS-THROUGH of the ONE resolved view-model description (see `lines`
+        // above) — no lookup, no packing fallback, no reconstruction from
+        // item_type: a category abbreviation is not a description. Blank means
+        // the authority has no usable description; the draft carries
+        // ln._warnings for that and the document renders the neutral '—'.
+        description_en: line.desc_en,
+        description_pl: line.desc_pl,
         kt:           (pk.metal || '').split('/')[0] || '', // "14KT"
         col:          (pk.metal || '').split('/')[1] || '', // "W", "P", "Y"
         quality:      pk.quality_string || '',
