@@ -189,3 +189,30 @@ jobs:
           python service/tools/junit_summary.py junit --of 6 \
             --fail-on never \
             --markdown "$GITHUB_STEP_SUMMARY"
+
+  # ── JavaScript reducer test ───────────────────────────────────────────────
+  # One standalone node:test file (currency-aware Sales Receivable reducer). It
+  # esbuild-transforms the real accounting-hub.jsx rather than duplicating the
+  # logic, so it needs esbuild. That dependency used to be borrowed from the
+  # service/frontend Vite app; when that duplicate frontend was retired the
+  # dependency moved into service/tests/js, which owns it explicitly. Deliberately
+  # scoped to this one test — no frontend build, no bundling, no lint pipeline.
+  js-tests:
+    name: JS reducer test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: service/tests/js/package-lock.json
+
+      - name: Install JS test dependencies
+        working-directory: service/tests/js
+        run: npm ci
+
+      - name: Run JS tests
+        working-directory: service/tests/js
+        run: npm test

@@ -1,0 +1,13 @@
+{
+  "name": "estrella-service-tests-js",
+  "version": "1.0.0",
+  "private": true,
+  "description": "JavaScript test tooling for Estrella service tests. Owns the esbuild dependency used to transform first-party JSX for unit tests, so no test depends on a frontend application's installed packages.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test_acc_receivable_reducer.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}
