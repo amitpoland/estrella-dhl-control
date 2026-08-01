@@ -74,6 +74,12 @@ blocked C call, so it terminates the process — which is why a run that died at
 - `service-suite-report` aggregates all six into the run summary.
 - `tools/shard_tests.py` — deterministic file-level bin-packing (measured:
   162–163 files, 2188.8–2188.9 KiB per shard).
+  - **Superseded 2026-08-01:** assignment is now `sha256(relative posix path) %
+    6`, so a file keeps its shard while the tree changes around it — packing
+    re-derived membership from the whole listing, and one added file could move
+    unrelated files between shards, invalidating run-over-run comparison.
+    Balance is looser as a result (143–174 files, 1759.7–2347.9 KiB per shard).
+    See `service/docs/ops/ci-sharded-suite.md` § Shard membership.
 - `tools/junit_summary.py` — **a shard whose XML is missing or truncated is
   reported INCOMPLETE, never as zero failures.** Pinned by
   `tests/test_ci_shard_partition.py`.

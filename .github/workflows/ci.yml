@@ -72,8 +72,16 @@ jobs:
   # at 77%, reporting a single timeout and hiding the standing failures in the
   # remaining 23%). Six independent shards bound that loss to one sixth, and the
   # aggregation step reports a lost shard as INCOMPLETE rather than as zero
-  # failures. Shard membership is a pure function of the file listing
-  # (service/tools/shard_tests.py), so every runner computes the same partition.
+  # failures.
+  #
+  # SHARD MEMBERSHIP is sha256(relative posix path) % 6
+  # (service/tools/shard_tests.py), so every runner computes the same partition
+  # AND a file keeps its shard as the tree changes around it. The earlier
+  # size-based bin packing balanced better but re-derived membership from the
+  # whole listing, so adding one test file could move unrelated files between
+  # shards — which invalidates run-over-run shard comparison, the thing this
+  # suite is triaged by. Balance is now statistical; the job timeout below is
+  # what bounds a slow shard.
   #
   # Shards run in separate processes, so order-dependent failures will differ
   # from a monolithic run. That difference is diagnostic — it is how order

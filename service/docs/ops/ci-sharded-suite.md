@@ -65,18 +65,42 @@ destroy a shard now shows up as an ordinary failing test that can be diagnosed.
 
 ## Shard membership
 
-`tools/shard_tests.py` bin-packs whole FILES greedily by size. Whole files
-because many files here share module-level fixtures and per-file database state —
-splitting inside a file would invent failures that do not exist. The partition is
-a pure function of the file listing, so every runner computes the same one.
+`tools/shard_tests.py` assigns whole FILES by **`sha256(relative posix path) %
+6`**. Whole files because many files here share module-level fixtures and
+per-file database state — splitting inside a file would invent failures that do
+not exist. The key is relative and POSIX-style because an absolute or
+backslashed path differs per checkout and per OS, which would give each runner a
+different partition for the same tree.
 
 ```
-python tools/shard_tests.py --of 6 --describe        # per-shard sizes
+python tools/shard_tests.py --of 6 --describe        # per-shard counts + sizes
 python tools/shard_tests.py --shard 3 --of 6         # the files in shard 3
 ```
 
-Adding or deleting a test file re-balances the shards. That is expected; nothing
-records shard membership anywhere else.
+### Why hashing and not size-based packing
+
+The original plan bin-packed greedily by size, which balanced the shards more
+tightly. It was replaced because membership was a function of the **whole
+listing**: adding a file, deleting one, or merely growing one re-sorted the size
+ordering and could move an arbitrary number of *unrelated* files into different
+shards.
+
+That silently breaks the comparison this suite is triaged by. "Shard 4 failed
+the same three files it failed last run" only means something while shard 4
+denotes the same set of files; under packing it often did not, and nothing in
+the output said so. Under hash assignment a file's shard depends on its own path
+alone, so churn moves the changed file and leaves every other file where it was.
+
+The trade is real and accepted: shards are now balanced only statistically, so
+the slowest shard's wall clock will vary more. That is bounded by the job's
+`timeout-minutes`. A reshuffled partition, by contrast, produced wrong
+conclusions with no warning at all.
+
+`test_shards_are_roughly_balanced` is a lopsidedness alarm on that trade, not a
+packing contract. If it fires, read `--describe` and reconsider the shard count —
+do **not** hand-move files, which would forfeit the stability the hash buys.
+Renaming a test file does change its shard; that is inherent to keying on the
+path, and it moves only that file.
 
 ## Cross-shard ordering caveat
 

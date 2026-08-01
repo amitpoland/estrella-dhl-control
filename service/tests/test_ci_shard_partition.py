@@ -53,13 +53,72 @@ def test_partition_is_deterministic():
     assert first == second, "partitioning must not depend on input order"
 
 
-def test_shards_are_size_balanced():
-    """Greedy largest-first packing keeps shards within a wide but real bound;
-    a wildly lopsided plan means one shard dominates the wall clock."""
+def test_assignment_is_stable_across_processes():
+    """The assignment must not depend on a per-process hash salt.
+
+    ``hash()`` is salted by PYTHONHASHSEED, so a partition built on it differs
+    between runners: some files would run twice and others not at all, with
+    nothing in the output to reveal it. Recomputing the documented sha256 rule
+    here pins that the tool uses a stable digest, not the built-in.
+    """
+    import hashlib
+
+    for p in shard_tests.discover()[:50]:
+        rel = p.relative_to(shard_tests.SERVICE_ROOT).as_posix()
+        expected = int(hashlib.sha256(rel.encode("utf-8")).hexdigest(), 16) % 6
+        assert shard_tests.assign(p, 6) == expected, rel
+
+
+def test_membership_is_stable_when_other_files_change(tmp_path):
+    """The reason this is hash-based and not bin-packed.
+
+    Greedy largest-first packing made a file's shard a function of the WHOLE
+    listing: adding one file — or merely growing one — re-sorted the size
+    ordering and could move an arbitrary number of unrelated files. That breaks
+    the comparison this suite is triaged by, since "shard 4 failed the same
+    files it failed last run" only means something while shard 4 denotes the
+    same set. Under hash assignment, churn moves the changed file and nothing
+    else.
+    """
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    for i in range(40):
+        (tests_dir / f"test_m{i}.py").write_text("x" * (100 * (i + 1)), encoding="utf-8")
+
+    def plan():
+        shards = shard_tests.partition(
+            shard_tests.discover(tests_dir, tmp_path), 6, tmp_path)
+        return {p: i for i, s in enumerate(shards) for p in s}
+
+    before = plan()
+
+    # Churn: one new large file, one deletion, and one existing file grown 50x.
+    (tests_dir / "test_new_big.py").write_text("y" * 90_000, encoding="utf-8")
+    (tests_dir / "test_m7.py").unlink()
+    (tests_dir / "test_m3.py").write_text("z" * 50_000, encoding="utf-8")
+
+    after = plan()
+
+    survivors = before.keys() & after.keys()
+    assert len(survivors) == 39
+    moved = [p.name for p in survivors if before[p] != after[p]]
+    assert not moved, f"unrelated files changed shard: {moved}"
+
+
+def test_shards_are_roughly_balanced():
+    """Hash assignment balances only statistically — the tight bound that greedy
+    packing guaranteed is the thing traded away for stable membership.
+
+    So this is a lopsidedness alarm, not a packing contract. A breach means the
+    real distribution drifted far enough that one shard dominates the wall
+    clock; the answer is to look at ``--describe`` and consider the shard count,
+    NOT to hand-move files (which would forfeit the stability above).
+    """
     shards = shard_tests.partition(shard_tests.discover(), 6)
     sizes = [sum(f.stat().st_size for f in s) for s in shards]
-    assert min(sizes) > 0
-    assert max(sizes) <= min(sizes) * 1.5, f"shard sizes too uneven: {sizes}"
+    counts = [len(s) for s in shards]
+    assert min(counts) > 0, f"an empty shard collects nothing: {counts}"
+    assert max(sizes) <= min(sizes) * 2.0, f"shard sizes too uneven: {sizes}"
 
 
 def test_shard_files_is_one_based_and_range_checked():

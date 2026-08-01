@@ -20,10 +20,22 @@ Whole FILES, never individual tests — many files in this suite share module-le
 fixtures and per-file database state, so splitting inside a file would invent
 failures that do not exist.
 
-Files are bin-packed greedily by size (largest first) into ``--of`` shards, which
-tracks runtime better than round-robin without needing a recorded-durations file.
-The result is a pure function of the file listing: same tree in, same partition
-out, on every runner and every OS.
+Each file is assigned to ``sha256(relative posix path) % of``.  A file's shard
+therefore depends on its OWN path and nothing else: same path in, same shard out,
+on every runner, every OS, and every run.
+
+This replaced greedy largest-first bin packing.  Packing balanced shard sizes
+better, but membership was a function of the WHOLE listing — adding, deleting, or
+merely growing one file re-sorted the size ordering and could move an arbitrary
+number of unrelated files into different shards.  That silently destroys the
+comparison this suite is triaged by: "shard 4 failed the same 3 files it failed
+last run" is only meaningful while shard 4 still means the same set of files.
+Hash assignment keeps every other file exactly where it was.
+
+The cost is honest and accepted: shards are balanced only in the statistical
+sense, so the wall clock of the slowest shard will vary more than under packing.
+Runtime is bounded by the job's own ``timeout-minutes``, whereas a reshuffled
+partition produces wrong conclusions with no warning at all.
 
 Cross-shard ordering caveat
 ---------------------------
@@ -46,6 +58,7 @@ can be passed straight to pytest on Windows and POSIX alike.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
@@ -53,7 +66,18 @@ SERVICE_ROOT = Path(__file__).resolve().parent.parent
 TESTS_DIR = SERVICE_ROOT / "tests"
 
 
-def discover(tests_dir: Path = TESTS_DIR) -> list[Path]:
+def _rel(p: Path, root: Path = SERVICE_ROOT) -> str:
+    """The hash key and the sort key: a path relative to *root*, POSIX-style.
+
+    Relative and POSIX are both load-bearing. An absolute path differs per
+    checkout (``C:\\PZ-verify`` vs ``/home/runner/work/...``) and a backslash
+    path differs per OS — either one would give each runner a different
+    partition for the same tree.
+    """
+    return p.relative_to(root).as_posix()
+
+
+def discover(tests_dir: Path = TESTS_DIR, root: Path = SERVICE_ROOT) -> list[Path]:
     """Every collectable test file, in a stable OS-independent order.
 
     Sorted by the POSIX-style relative path so Windows and Linux agree; conftest
@@ -63,44 +87,45 @@ def discover(tests_dir: Path = TESTS_DIR) -> list[Path]:
         p for p in tests_dir.rglob("test_*.py")
         if p.is_file() and p.name != "conftest.py"
     ]
-    return sorted(files, key=lambda p: p.relative_to(SERVICE_ROOT).as_posix())
+    return sorted(files, key=lambda p: _rel(p, root))
 
 
-def partition(files: list[Path], of: int) -> list[list[Path]]:
-    """Greedy largest-first bin packing into *of* shards.
+def assign(path: Path, of: int, root: Path = SERVICE_ROOT) -> int:
+    """The 0-based shard index owning *path*.
 
-    Deterministic: the sort key is (-size, posix path), so equal-sized files
-    always land in the same order, and each file goes to the shard with the
-    smallest accumulated size (ties broken by lowest shard index).
+    sha256 of the POSIX-relative path, taken modulo *of*.  Deliberately NOT the
+    built-in ``hash()``: that is salted per process (PYTHONHASHSEED), so two
+    runners would compute different partitions — some files running twice while
+    others never run at all, with nothing in the output to reveal it.
     """
     if of < 1:
         raise ValueError("--of must be >= 1")
-    ordered = sorted(
-        files,
-        key=lambda p: (-p.stat().st_size, p.relative_to(SERVICE_ROOT).as_posix()),
-    )
+    digest = hashlib.sha256(_rel(path, root).encode("utf-8")).hexdigest()
+    return int(digest, 16) % of
+
+
+def partition(files: list[Path], of: int,
+              root: Path = SERVICE_ROOT) -> list[list[Path]]:
+    """Group *files* into *of* shards by ``assign()``.
+
+    Each file's shard depends only on its own path, so the plan is stable under
+    churn elsewhere in the tree: adding or deleting a file moves that file alone.
+    Shards are emitted in collection order.
+    """
+    if of < 1:
+        raise ValueError("--of must be >= 1")
     shards: list[list[Path]] = [[] for _ in range(of)]
-    weights = [0] * of
-    for f in ordered:
-        target = min(range(of), key=lambda i: (weights[i], i))
-        shards[target].append(f)
-        weights[target] += f.stat().st_size
-    # Emit each shard in collection order, not packing order.
-    return [
-        sorted(s, key=lambda p: p.relative_to(SERVICE_ROOT).as_posix())
-        for s in shards
-    ]
+    for f in files:
+        shards[assign(f, of, root)].append(f)
+    return [sorted(s, key=lambda p: _rel(p, root)) for s in shards]
 
 
-def shard_files(shard: int, of: int, tests_dir: Path = TESTS_DIR) -> list[Path]:
+def shard_files(shard: int, of: int, tests_dir: Path = TESTS_DIR,
+                root: Path = SERVICE_ROOT) -> list[Path]:
     """The files belonging to *shard* (1-based) of *of*."""
     if not 1 <= shard <= of:
         raise ValueError(f"--shard must be in 1..{of}, got {shard}")
-    return partition(discover(tests_dir), of)[shard - 1]
-
-
-def _rel(p: Path) -> str:
-    return p.relative_to(SERVICE_ROOT).as_posix()
+    return partition(discover(tests_dir, root), of, root)[shard - 1]
 
 
 def main(argv: list[str] | None = None) -> int:
