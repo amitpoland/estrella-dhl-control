@@ -19,11 +19,24 @@ PROPERTIES
 fail-closed      no flag / no key / no store / no artifact  -> DENY
 auditable        every decision returns a reason string; artifacts are retained
 SHA-bound        signature covers reviewed_sha; an artifact for SHA A cannot deploy B
-action-bound     signature covers action (deploy|rollback) and scope (App|Engine|Both)
+action-bound     signature covers action (deploy|rollback|reconcile) and scope (App|Engine|Both)
+pair-bound       for `reconcile` the signature ALSO covers from_sha, so an authorization
+                 to converge FROM one runtime identity cannot be replayed against another
 single-use       jti is consumed on first successful use
 short-lived      expires_at is signed and enforced
 never logged     the key is never read into a message; only decisions are surfaced
 WhatIf-exempt    a true zero-write plan run does not call this at all
+
+RECONCILE
+---------
+`reconcile` repairs a production tree whose version marker disagrees with its bytes.
+It is strictly more dangerous than `deploy`, because it is the one mode that runs
+against a runtime the identity gate has already refused. Its authorization is
+therefore bound to the ORDERED PAIR (from_sha -> to_sha): a generic permission to
+"reconcile" would let an operator-signed artifact be reused after the runtime had
+drifted again, which is exactly the class of failure that produced the mislabelled
+backup this mode exists to prevent. `from_sha` is a signed field, is required for
+reconcile, must differ from reviewed_sha, and must be ABSENT for deploy/rollback.
 
 CURRENT STATE: there is no deploy signer provisioned in this environment, so every
 call returns DENY. That is the intended default. Arming it is an operator action -
@@ -38,20 +51,42 @@ import os
 import sys
 from datetime import datetime, timezone
 
-VALID_ACTIONS = ("deploy", "rollback")
+VALID_ACTIONS = ("deploy", "rollback", "reconcile")
 VALID_SCOPES = ("App", "Engine", "Both")
 
 # Fields covered by the signature. Anything outside this tuple is untrusted decoration.
+#
+# `from_sha` was added when `reconcile` was introduced. Adding a signed field changes the
+# canonical body, so artifacts minted before this change no longer verify. That is a
+# deliberate, disclosed break and it is safe here for one specific reason: no signer is
+# provisioned and the authorization store is empty, so there is no artifact to invalidate.
+# It must NOT be repeated silently once a signer exists - rotate the key instead.
 _SIGNED_FIELDS = (
     "reviewed_sha",
     "action",
     "scope",
+    "from_sha",
     "repository",
     "gate_evidence_ref",
     "issued_at",
     "expires_at",
     "jti",
 )
+
+
+def _is_sha(value):
+    return (isinstance(value, str) and len(value) == 40
+            and all(c in "0123456789abcdef" for c in value.lower()))
+
+
+def artifact_name(reviewed_sha, action, from_sha=None):
+    """Filename of the authorization artifact for this exact operation.
+
+    Reconcile artifacts carry BOTH SHAs in the name so a store listing shows the
+    authorised direction without opening and verifying every file."""
+    if action == "reconcile":
+        return f"{reviewed_sha}.reconcile.{from_sha}.json"
+    return f"{reviewed_sha}.{action}.json"
 
 
 def _load_key(env=None):
@@ -111,18 +146,29 @@ def _consume(store, jti):
         return False
 
 
-def evaluate(reviewed_sha, action, scope, env=None):
+def evaluate(reviewed_sha, action, scope, from_sha=None, env=None):
     """Return (decision, reason). 'allow' only for a fully valid, unexpired,
-    unconsumed authorization bound to exactly this SHA + action + scope."""
+    unconsumed authorization bound to exactly this SHA + action + scope, and - for
+    reconcile - to exactly this (from_sha -> reviewed_sha) direction."""
     env = env or os.environ
 
     if action not in VALID_ACTIONS:
         return ("deny", f"unknown action '{action}'")
     if scope not in VALID_SCOPES:
         return ("deny", f"unknown scope '{scope}'")
-    if not (isinstance(reviewed_sha, str) and len(reviewed_sha) == 40
-            and all(c in "0123456789abcdef" for c in reviewed_sha.lower())):
+    if not _is_sha(reviewed_sha):
         return ("deny", "reviewed_sha is not a full 40-character commit SHA")
+
+    # Argument shape is validated before the key is even loaded: a reconcile call with
+    # no from_sha is a caller bug, and must never be able to fall through to a
+    # deploy-shaped artifact lookup.
+    if action == "reconcile":
+        if not _is_sha(from_sha):
+            return ("deny", "reconcile requires from_sha as a full 40-character commit SHA")
+        if from_sha.lower() == reviewed_sha.lower():
+            return ("deny", "reconcile from_sha and to_sha are identical; nothing to reconcile")
+    elif from_sha is not None:
+        return ("deny", f"from_sha is only meaningful for reconcile, not '{action}'")
 
     key = _load_key(env)
     if not key:
@@ -133,7 +179,7 @@ def evaluate(reviewed_sha, action, scope, env=None):
     if not store or not os.path.isdir(store):
         return ("deny", "no authorization store configured (PZ_DEPLOY_AUTH_DIR)")
 
-    path = os.path.join(store, f"{reviewed_sha}.{action}.json")
+    path = os.path.join(store, artifact_name(reviewed_sha, action, from_sha))
     if not os.path.isfile(path):
         return ("deny", f"no authorization artifact for {reviewed_sha[:12]} {action}")
 
@@ -162,6 +208,16 @@ def evaluate(reviewed_sha, action, scope, env=None):
     if auth.get("scope") != scope:
         return ("deny", "authorization scope mismatch")
 
+    # Direction binding. For reconcile the artifact authorises ONE ordered pair; for every
+    # other action a present from_sha means the artifact was minted for a different
+    # operation shape and must not be honoured.
+    if action == "reconcile":
+        if auth.get("from_sha") != from_sha:
+            return ("deny", "authorization from_sha mismatch "
+                            "(this artifact authorises a different starting identity)")
+    elif auth.get("from_sha") is not None:
+        return ("deny", f"authorization carries from_sha but action is '{action}'")
+
     # `repository` is signed but was not previously cross-checked: an artifact minted
     # for one repository would validate against another if the key were reused.
     expected_repo = env.get("PZ_DEPLOY_AUTH_REPO", "")
@@ -184,16 +240,20 @@ def evaluate(reviewed_sha, action, scope, env=None):
     if not _consume(store, jti):
         return ("deny", "authorization already consumed (replay refused)")
 
+    if action == "reconcile":
+        return ("allow", f"authorized for reconcile {from_sha[:12]} -> "
+                         f"{reviewed_sha[:12]} /{scope}")
     return ("allow", f"authorized for {reviewed_sha[:12]} {action}/{scope}")
 
 
 def main(argv):
     """CLI used by Deploy-PZ.ps1. Prints ALLOW/DENY + reason; exit 0 only on allow.
     The key is never printed."""
-    if len(argv) != 4:
-        print("DENY usage: deploy_authorization.py <reviewed_sha> <action> <scope>")
+    if len(argv) not in (4, 5):
+        print("DENY usage: deploy_authorization.py <reviewed_sha> <action> <scope> [from_sha]")
         return 2
-    decision, reason = evaluate(argv[1], argv[2], argv[3])
+    from_sha = argv[4] if len(argv) == 5 else None
+    decision, reason = evaluate(argv[1], argv[2], argv[3], from_sha)
     print(f"{decision.upper()} {reason}")
     return 0 if decision == "allow" else 1
 

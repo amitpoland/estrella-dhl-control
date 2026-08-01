@@ -281,6 +281,151 @@ $gi = New-GateRepo $giRoot $null
 & git -C $giRoot config core.autocrlf false | Out-Null
 Assert-GateBlocks 'gate: core.autocrlf=false -> BLOCK (inconclusive compare)' $gi.Cfg 'autocrlf'
 
+# GJ: ATTRIBUTE CONTEXT. A blob id is not a property of bytes alone - .gitattributes rules
+# are keyed on the REPOSITORY-RELATIVE path, and the runtime files live outside the work
+# tree. This case commits an 'ident' attribute, whose clean filter collapses an expanded
+# '$Id: <sha> $' back to '$Id$'. The runtime file holds the SMUDGED form, exactly as a
+# checkout would leave it. Hashed under its repository path the filter applies and the ids
+# agree; hashed as a bare runtime path no attribute matches, the expansion survives, and the
+# gate would falsely report a mismatch on a byte-correct file. So this PASS is only reachable
+# through the --path= branch: delete it and this check goes red.
+$gjRoot = Join-Path $tmp 'gate-attrs'; New-Item -ItemType Directory -Path $gjRoot -Force | Out-Null
+$gj = New-GateRepo $gjRoot $null
+$gjEnc = New-Object System.Text.ASCIIEncoding
+$gjSrc = Join-Path $gjRoot 'app'
+[System.IO.File]::WriteAllText((Join-Path $gjSrc '.gitattributes'), "ident.py ident`n", $gjEnc)
+[System.IO.File]::WriteAllText((Join-Path $gjSrc 'ident.py'), '# $Id$' + "`n", $gjEnc)
+& git -C $gjRoot add app | Out-Null
+& git -C $gjRoot commit -q -m ident | Out-Null
+$gjSha = (& git -C $gjRoot rev-parse HEAD).Trim()
+[System.IO.File]::WriteAllText((Join-Path $gjRoot 'runtime\version.txt'), $gjSha, $gjEnc)
+[System.IO.File]::WriteAllText((Join-Path $gj.RuntimeApp '.gitattributes'), "ident.py ident`r`n", $gjEnc)
+[System.IO.File]::WriteAllText((Join-Path $gj.RuntimeApp 'ident.py'), '# $Id: ' + $gjSha + ' $' + "`r`n", $gjEnc)
+Assert-GatePasses 'gate: committed .gitattributes applied via repository path -> pass' $gj.Cfg
+
+# GK: CASE COLLISION. Git is case-sensitive; Windows is not. A commit tracking both
+# 'main.py' and 'MAIN.py' can never be fully materialised in the runtime tree, so at most one
+# is verifiable and the other is indistinguishable from a deleted file. The gate must refuse
+# BEFORE comparing rather than silently compare a tree it cannot prove. Built via the index
+# (update-index --cacheinfo) because the working tree cannot hold both names.
+$gkRoot = Join-Path $tmp 'gate-case'; New-Item -ItemType Directory -Path $gkRoot -Force | Out-Null
+$gk = New-GateRepo $gkRoot $null
+$gkBlob = (& git -C $gkRoot hash-object -w (Join-Path $gkRoot 'app\main.py')).Trim()
+& git -C $gkRoot update-index --add --cacheinfo "100644,$gkBlob,app/MAIN.py" | Out-Null
+& git -C $gkRoot commit -q -m casetwin | Out-Null
+$gkSha = (& git -C $gkRoot rev-parse HEAD).Trim()
+[System.IO.File]::WriteAllText((Join-Path $gkRoot 'runtime\version.txt'), $gkSha, (New-Object System.Text.ASCIIEncoding))
+Assert-GateBlocks 'gate: two tracked paths folding to one Windows name -> BLOCK' $gk.Cfg 'collide'
+
+# GL: REPARSE POINTS. A junction inside the runtime tree means production was assembled by
+# something other than this deployment authority; the tree that would be verified is not the
+# tree that is stored, and a link can also make recursion loop. Detection must happen BEFORE
+# descent, which is why enumeration is an explicit queue rather than -Recurse.
+$glRoot = Join-Path $tmp 'gate-reparse'; New-Item -ItemType Directory -Path $glRoot -Force | Out-Null
+$gl = New-GateRepo $glRoot $null
+$glTarget = Join-Path $glRoot 'elsewhere'
+New-Item -ItemType Directory -Path $glTarget -Force | Out-Null
+New-Item -ItemType Junction -Path (Join-Path $gl.RuntimeApp 'linked') -Target $glTarget | Out-Null
+Assert-GateBlocks 'gate: junction inside the runtime tree -> BLOCK' $gl.Cfg 'reparse point'
+
+# ...and the ROOT itself. Checked separately because a root link is tested before the queue
+# is ever seeded, so the inner case above cannot cover it.
+$glRootLink = Join-Path $glRoot 'root-link'
+New-Item -ItemType Junction -Path $glRootLink -Target $gl.RuntimeApp | Out-Null
+$glBlocked = $false
+try { Get-ReparseSafeFiles -Root $glRootLink -SkipTopLevel @() | Out-Null }
+catch { $glBlocked = ($_.Exception.Message -like '*reparse point*') }
+Check 'gate: runtime application ROOT is a junction -> BLOCK' $glBlocked
+
+# --- Reconciliation: -ExpectSha identity proof -----------------------------------
+# Reconcile runs against a runtime the ordinary gate has ALREADY refused, so it asserts
+# against an operator-supplied identity instead of the marker - the marker being the artefact
+# under repair. The comparison itself must be unchanged: same object-id compare, same
+# fail-closed behaviour, no path that accepts an unproved claim.
+$rcRoot = Join-Path $tmp 'gate-reconcile'; New-Item -ItemType Directory -Path $rcRoot -Force | Out-Null
+$rc = New-GateRepo $rcRoot $null
+$rcTrue = $rc.Sha                     # what the runtime bytes ACTUALLY are
+[System.IO.File]::WriteAllText((Join-Path $rcRoot 'app\main.py'), "print('a')`nprint('c')`n", (New-Object System.Text.ASCIIEncoding))
+& git -C $rcRoot add app | Out-Null
+& git -C $rcRoot commit -q -m moved | Out-Null
+$rcMarked = (& git -C $rcRoot rev-parse HEAD).Trim()   # what the marker CLAIMS
+[System.IO.File]::WriteAllText((Join-Path $rcRoot 'runtime\version.txt'), $rcMarked, (New-Object System.Text.ASCIIEncoding))
+
+# Precondition: this is exactly the defect in production - marker says one commit, bytes are
+# another. The ordinary gate must refuse it, or the reconcile mode would have no reason to exist.
+Assert-GateBlocks 'reconcile: marker disagrees with bytes -> ordinary gate BLOCKS' $rc.Cfg 'IDENTITY MISMATCH'
+
+$rcOk = $false
+try { Assert-ProductionMatchesRecordedSha -Cfg $rc.Cfg -ExpectSha $rcTrue 6>$null; $rcOk = $true }
+catch { Write-Host "  (unexpected block: $($_.Exception.Message))" }
+Check 'reconcile: -ExpectSha naming the TRUE identity -> proof passes' $rcOk
+
+# The proof is a proof, not a courtesy: supplying the marker's own (false) value must fail
+# just as hard. Otherwise an operator could "reconcile" from an identity nothing verified.
+$rcWrong = $false
+try { Assert-ProductionMatchesRecordedSha -Cfg $rc.Cfg -ExpectSha $rcMarked 6>$null }
+catch { $rcWrong = ($_.Exception.Message -like '*IDENTITY MISMATCH*') }
+Check 'reconcile: -ExpectSha naming the WRONG identity -> BLOCK' $rcWrong
+
+$rcShape = $false
+try { Assert-ProductionMatchesRecordedSha -Cfg $rc.Cfg -ExpectSha 'deadbeef' 6>$null }
+catch { $rcShape = ($_.Exception.Message -like '*40-character*') }
+Check 'reconcile: malformed -ExpectSha -> BLOCK (never asserts against a partial SHA)' $rcShape
+
+# The marker is NOT consulted on this path - proved by leaving it absent entirely. An absent
+# marker blocks an ordinary deploy (case GC) but must not block a proof that does not use it.
+$rcNoMarkerRoot = Join-Path $tmp 'gate-reconcile-nomarker'; New-Item -ItemType Directory -Path $rcNoMarkerRoot -Force | Out-Null
+$rcNM = New-GateRepo $rcNoMarkerRoot '__NONE__'
+$rcNMOk = $false
+try { Assert-ProductionMatchesRecordedSha -Cfg $rcNM.Cfg -ExpectSha $rcNM.Sha 6>$null; $rcNMOk = $true }
+catch { Write-Host "  (unexpected block: $($_.Exception.Message))" }
+Check 'reconcile: absent marker does not block a proof that never reads it' $rcNMOk
+
+# --- Reconciliation: truthful backup metadata ------------------------------------
+# The single defect this whole mode exists to prevent is a backup labelled with an identity
+# its bytes do not have. On the reconcile path the marker on disk is the FALSE value being
+# repaired, so New-BackupUnit must record the PROVED identity instead - and both provenance
+# sources (unit.json and the write-once snapshot) must carry that same value, or
+# Resolve-RestoredSha will later refuse the unit as inconsistent.
+$PROVED = '3333333333333333333333333333333333333333'   # what the bytes really are
+$MARKED = '4444444444444444444444444444444444444444'   # the false marker being repaired
+
+$rbRoot = Join-Path $tmp 'rt-reconcile'; New-Item -ItemType Directory -Path $rbRoot -Force | Out-Null
+$rbCfg = New-SyntheticConfig $rbRoot $MARKED
+$rbUnit = New-BackupUnit -Cfg $rbCfg -Sha $NEW -UnitScope 'App' -RestoredSha $PROVED 6>$null
+$rbMeta = Get-Content (Join-Path $rbUnit.Path 'unit.json') -Raw | ConvertFrom-Json
+Check 'reconcile-backup: restored_sha is the PROVED identity, not the false marker' `
+    (($rbMeta.restored_sha -eq $PROVED) -and ($rbMeta.restored_sha -ne $MARKED))
+Check 'reconcile-backup: snapshot corroborates the same proved identity' `
+    ((Read-VersionMarker -Path (Join-Path $rbUnit.Path 'version.pre.txt')) -eq $PROVED)
+Check 'reconcile-backup: deployment_sha remains the incoming target' ($rbMeta.deployment_sha -eq $NEW)
+# An auditor must be able to tell a routine pre-deploy snapshot from one taken while
+# repairing a false marker; the two have different trust stories.
+Check 'reconcile-backup: unit is labelled mode=reconcile' ($rbMeta.mode -eq 'reconcile')
+$rbResolved = Resolve-RestoredSha -Meta $rbMeta -BackupPath $rbUnit.Path -UnitId $rbUnit.Unit
+Check 'reconcile-backup: resolver round-trips to the proved identity' ($rbResolved -eq $PROVED)
+Check 'reconcile-backup: resolver never returns the false marker or the deployment SHA' `
+    (($rbResolved -ne $MARKED) -and ($rbResolved -ne $NEW))
+
+# The override is reconcile-only in practice, and shape-validated regardless: a
+# confident-looking lie in unit.json is strictly worse than the missing-provenance case the
+# resolver already fails closed on, because nothing downstream would ever question it.
+$rbBadRoot = Join-Path $tmp 'rt-reconcile-bad'; New-Item -ItemType Directory -Path $rbBadRoot -Force | Out-Null
+$rbBadCfg = New-SyntheticConfig $rbBadRoot $MARKED
+$rbBadBlocked = $false
+try { New-BackupUnit -Cfg $rbBadCfg -Sha $NEW -UnitScope 'App' -RestoredSha 'deadbeef' 6>$null | Out-Null }
+catch { $rbBadBlocked = ($_.Exception.Message -like '*40-character*') }
+Check 'reconcile-backup: malformed -RestoredSha -> BLOCK before any unit is minted' $rbBadBlocked
+
+# And the ordinary path is unchanged: without the override the marker is still the source,
+# and the unit is still labelled a deploy.
+$rbPlainRoot = Join-Path $tmp 'rt-plain-mode'; New-Item -ItemType Directory -Path $rbPlainRoot -Force | Out-Null
+$rbPlainCfg = New-SyntheticConfig $rbPlainRoot $OLD
+$rbPlainUnit = New-BackupUnit -Cfg $rbPlainCfg -Sha $NEW -UnitScope 'App' 6>$null
+$rbPlainMeta = Get-Content (Join-Path $rbPlainUnit.Path 'unit.json') -Raw | ConvertFrom-Json
+Check 'deploy-backup: without the override the marker is still the source, mode=deploy' `
+    (($rbPlainMeta.restored_sha -eq $OLD) -and ($rbPlainMeta.mode -eq 'deploy'))
+
 Remove-Item -Recurse -Force $tmp
 Write-Host ""
 Write-Host "RESULT: $($script:pass) passed, $($script:fail) failed"

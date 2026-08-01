@@ -640,7 +640,7 @@ def test_backup_records_deployment_and_restored_sha_separately():
     pre-deployment production SHA (restored content) as two distinct fields."""
     seg = _backup_segment(_read(DEPLOY_SCRIPT))
     assert "deployment_sha = $Sha" in seg, "the deployment SHA must be recorded explicitly"
-    assert "restored_sha = $restoredSha" in seg, "the pre-deployment SHA must be recorded"
+    assert "restored_sha = $restoredIdentity" in seg, "the pre-deployment SHA must be recorded"
     # restored_sha is the pre-deployment marker, read BEFORE any mutation. Anchor to the
     # actual Set-Content write of unit.json (not the substring "unit.json", whose first hit
     # is a comment) so a refactor that moved the read after the write cannot silently pass.
@@ -769,7 +769,7 @@ def test_backup_warns_when_minting_an_unrollbackable_unit():
     assert i_read < i_warn < i_write, (
         "the missing-provenance warning must follow the read and precede the unit being written"
     )
-    assert "$appPresent -and -not $restoredSha" in seg, (
+    assert "$appPresent -and -not $restoredIdentity" in seg, (
         "warn exactly when there ARE bytes to restore but no identity for them"
     )
     assert "will be REFUSED" in seg, "the warning must state the operational consequence"
@@ -994,12 +994,71 @@ def test_backup_marker_read_is_documented_as_gate_dependent():
     bytes match the marker; that dependency must be recorded so the gate is not silently dropped."""
     body = _read(DEPLOY_SCRIPT)
     i_hard = body.index("HARDENING: reading restored_sha from the marker is only SOUND because")
-    i_line = body.index("$restoredSha = if ($appPresent) { Read-VersionMarker", i_hard)
+    i_line = body.index("elseif ($appPresent) { Read-VersionMarker", i_hard)
     assert i_hard < i_line, "the hardening note must sit directly above the marker read"
     seg = body[i_hard:i_line]
     assert "Assert-ProductionMatchesRecordedSha" in seg, "the note must name the gate it depends on"
     assert "Do NOT drop the gate call and keep this line" in seg, (
         "the note must forbid removing the gate while keeping the marker read"
+    )
+    # The reconcile override is the ONE case where the marker is deliberately not consulted.
+    # It is safe only because the gate proved the runtime against the SUPPLIED identity, which
+    # is derived from the bytes rather than claimed about them - and it is dangerous the moment
+    # a caller can assert it without that proof. Both halves must be written down, next to the
+    # line, or a later reader will take the override for a plain caller-supplied hint.
+    assert "RECONCILE EXCEPTION" in seg, (
+        "the marker-read line must document why -RestoredSha is allowed to bypass the marker"
+    )
+    assert "proved against the runtime bytes" in seg, (
+        "the reconcile note must state that the supplied identity was PROVED, not asserted"
+    )
+
+
+def test_backup_restored_sha_override_is_shape_validated_and_reconcile_only():
+    """-RestoredSha is the only supported override of marker-derived provenance. If it could be
+    set to an unresolvable value, or supplied by an ordinary deploy, the unit would carry a
+    confident-looking lie - strictly worse than the missing-provenance case the resolver already
+    fails closed on."""
+    seg = _backup_segment(_read(DEPLOY_SCRIPT))
+    assert "[string]$RestoredSha" in seg, "New-BackupUnit must accept the override as a typed parameter"
+    assert "$RestoredSha -notmatch $script:SHA_RX" in seg, (
+        "the override must be shape-validated against the SHA pattern before it is recorded"
+    )
+    i_guard = seg.index("$RestoredSha -notmatch $script:SHA_RX")
+    i_use = seg.index("$restoredIdentity = if ($RestoredSha)")
+    assert i_guard < i_use, "the shape check must run before the value reaches the unit metadata"
+    assert "Invoke-Reconcile" in seg, (
+        "the parameter doc must name the single caller permitted to use it"
+    )
+
+
+def test_backup_resolved_local_never_shadows_the_restored_sha_parameter():
+    """PowerShell variable names are case-INSENSITIVE, so a local named $restoredSha
+    silently OVERWRITES the $RestoredSha parameter. That is not hypothetical: it shipped, and
+    it made every ordinary deploy record mode='reconcile' (because $unitMode then read the
+    resolved value) and made the no-marker case record restored_sha as '' rather than null
+    (because the parameter's [string] constraint coerces an assigned $null). Both defects are
+    untruthful backup metadata - the exact failure this gate exists to prevent. The local must
+    keep a name that cannot fold onto the parameter's."""
+    seg = _backup_segment(_read(DEPLOY_SCRIPT))
+    # Comments are stripped first: the function documents this very collision by NAMING it, and
+    # that prose must not be what trips the check. Everything after an unquoted '#' is comment in
+    # PowerShell, so dropping it leaves exactly the text the parser would execute.
+    code = "\n".join(line.split("#", 1)[0] for line in seg.splitlines())
+    # Matched case-insensitively, exactly as PowerShell itself resolves the name.
+    shadow = re.search(r"\$restoredsha\s*=", code, re.IGNORECASE)
+    assert shadow is None, (
+        f"'{shadow.group(0).strip() if shadow else ''}' assigns to the $RestoredSha parameter "
+        "itself: the caller's value is lost, and every later read of the parameter returns the "
+        "resolved value instead"
+    )
+    # ...and the collision must stay documented, so a later tidy-up cannot reintroduce it.
+    assert "case-INSENSITIVE" in seg, (
+        "the local's name is load-bearing; the reason must be stated where the local is assigned"
+    )
+    assert "$unitMode = if ($RestoredSha)" in seg, (
+        "the unit label must be decided from the PARAMETER (was this an override?), never from "
+        "the resolved identity (which is non-null on any ordinary deploy that has a marker)"
     )
 
 
@@ -1044,15 +1103,213 @@ def test_identity_gate_block_surfaces_recovery_state():
     assert "no rollback unit was minted" in seg, "the envelope must state no misleading unit was created"
 
 
-def test_bootstrap_over_existing_tree_is_audited():
-    """-Bootstrap legitimately skips the gate on a first-ever deploy, but using it against an
-    EXISTING production tree skips the identity proof; that must at least emit an audit warning
-    so a misused -Bootstrap cannot silently bypass the gate."""
+def test_bootstrap_over_existing_tree_fails_closed():
+    """-Bootstrap legitimately skips the gate on a first-ever deploy. Against an EXISTING,
+    NON-EMPTY production tree it is the one remaining way to reach New-BackupUnit without
+    proving identity - which mints a unit labelled with the old marker over current bytes.
+    An audit warning was insufficient because a warning still proceeds; the branch must
+    THROW, and must point the operator at the reconciliation mode instead."""
     body = _read(DEPLOY_SCRIPT)
-    i_skip = body.index("Production identity gate skipped (-Bootstrap")
+    i_else = body.index("Production identity gate skipped (-Bootstrap")
     i_stop = body.index("Set-ServiceState -Cfg $cfg -Target Stopped")
-    seg = body[i_skip:i_stop]
-    assert "Test-Path $cfg.runtime_app" in seg, "the skip branch must detect an existing production tree"
-    assert "Write-Warning" in seg and "AUDIT:" in seg, (
-        "-Bootstrap over an existing tree must emit an AUDIT warning, not skip silently"
+    # the guard runs BEFORE the skip announcement, so search the whole bootstrap branch
+    i_branch = body.rindex("else {", 0, i_else)
+    seg = body[i_branch:i_stop]
+    assert "Test-Path $cfg.runtime_app" in seg, "the bootstrap branch must detect an existing production tree"
+    assert "-Recurse -File" in seg, (
+        "existence alone is not the test - an existing but genuinely EMPTY tree may bootstrap, "
+        "so the branch must count files"
+    )
+    assert "throw \"BLOCKED:" in seg, (
+        "-Bootstrap over an existing non-empty tree must FAIL CLOSED, not warn and continue"
+    )
+    assert "Write-Warning" not in seg, (
+        "a warning here is a bypass with extra steps; the branch must throw"
+    )
+    assert "-Reconcile" in seg, (
+        "the block must name the authorised repair path (-Reconcile), or operators will "
+        "reach for -Bootstrap again"
+    )
+
+
+# ------------------------------------------------------- operator-authorised reconciliation
+#
+# Reconcile is the only mode that runs against a runtime the identity gate has already
+# refused. Every guarantee below exists because the alternative - an operator repairing the
+# drift by hand - is precisely how the drift was created. These tests pin the ORDER of the
+# proof, the backup and the marker write, because the order is the whole security property:
+# any rearrangement produces a confidently-labelled backup of bytes nobody proved.
+
+def _reconcile_segment(body: str) -> str:
+    start = body.index("function Invoke-Reconcile")
+    rest = body[start + len("function Invoke-Reconcile"):]
+    end = rest.index("\nfunction ") if "\nfunction " in rest else len(rest)
+    return rest[:end]
+
+
+def test_reconcile_mode_exists_and_is_dispatched():
+    body = _read(DEPLOY_SCRIPT)
+    assert "function Invoke-Reconcile" in body, (
+        "a runtime whose marker is false has no authorised repair path without this mode"
+    )
+    for p in ("[switch]$Reconcile", "[string]$FromSha", "[string]$ToSha"):
+        assert p in body, f"the reconcile interface requires {p}"
+    assert "if ($Reconcile) { Invoke-Reconcile -Cfg $cfg -From $FromSha -To $ToSha; return }" in body, (
+        "Invoke-Deploy must dispatch -Reconcile explicitly and return, never fall through to "
+        "the ordinary deploy path"
+    )
+
+
+def test_reconcile_authorization_binds_action_and_both_shas():
+    """A generic permission to 'reconcile' is insufficient: an artifact minted for one drift
+    must not repair a different one. The helper signs the ordered pair, and the script must
+    actually pass both halves of it."""
+    seg = _reconcile_segment(_read(DEPLOY_SCRIPT))
+    assert 'Assert-Authorization -Cfg $Cfg -Sha $To -Action "reconcile" -UnitScope $Scope -SourceSha $From' in seg, (
+        "reconcile must authorise the ORDERED PAIR (from -> to), not just the target"
+    )
+    helper = _read(REPO / ".claude" / "hooks" / "deploy_authorization.py")
+    assert '"from_sha"' in helper.split("_SIGNED_FIELDS")[1].split(")")[0], (
+        "from_sha must be a SIGNED field; an unsigned direction is decoration an attacker can edit"
+    )
+    assert "reconcile requires from_sha" in helper, "reconcile without from_sha must DENY"
+    assert "nothing to reconcile" in helper, "from_sha == to_sha must DENY"
+    assert "from_sha is only meaningful for reconcile" in helper, (
+        "a from_sha supplied for deploy/rollback must DENY rather than being ignored"
+    )
+
+
+def test_reconcile_proves_identity_before_and_again_at_backup_time():
+    """Guarantees 3 and 4. One proof is not enough: between the first proof and the backup the
+    service is stopped and an artifact staged, and a unit is a provenance record that must be
+    minted from a runtime proven AT THAT MOMENT."""
+    seg = _reconcile_segment(_read(DEPLOY_SCRIPT))
+    proofs = [m.start() for m in re.finditer(
+        re.escape("Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $From"), seg)]
+    assert len(proofs) == 2, (
+        f"expected exactly two FromSha proofs (before any mutation, and immediately before the "
+        f"backup); found {len(proofs)}"
+    )
+    i_lock = seg.index("Enter-DeployLock -Cfg $Cfg")
+    i_stop = seg.index("Set-ServiceState -Cfg $Cfg -Target Stopped")
+    i_backup = seg.index("New-BackupUnit -Cfg $Cfg")
+    # guarantee 2: the whole operation is serialised
+    assert i_lock < proofs[0], "the first proof must run under the deployment lock"
+    # guarantee 3: proven before anything is stopped or written
+    assert proofs[0] < i_stop, "the runtime must be proved before the service is stopped"
+    # guarantee 4: re-proven with nothing in between that could have changed it
+    assert i_stop < proofs[1] < i_backup, (
+        "the second proof must sit between the stop and the backup, closing the window in which "
+        "the runtime could change after being proved"
+    )
+
+
+def test_reconcile_backup_records_the_proved_identity_not_the_false_marker():
+    """Guarantee 5. The marker is the artefact being repaired; copying it into the unit would
+    record the very lie the operation exists to correct, and would then disagree with
+    version.pre.txt - which Resolve-RestoredSha treats as unresolved provenance, permanently
+    refusing every rollback to this unit."""
+    body = _read(DEPLOY_SCRIPT)
+    seg = _reconcile_segment(body)
+    assert "New-BackupUnit -Cfg $Cfg -Sha $To -UnitScope $Scope -RestoredSha $From" in seg, (
+        "the reconcile backup must be labelled: deployment_sha = target, restored content = FromSha"
+    )
+    bak = _backup_segment(body)
+    i_meta = bak.index("restored_sha = $restoredIdentity")
+    i_pre = bak.index("version.pre.txt")
+    assert i_meta < i_pre, "unit.json is written first, then its corroborating marker snapshot"
+    # both corroborating sources must carry the SAME proved value, in the same byte shape
+    assert "$appPresent -and $RestoredSha" in bak, (
+        "the reconcile branch must snapshot the PROVED identity into version.pre.txt"
+    )
+    assert "WriteAllText((Join-Path $bak \"version.pre.txt\"), $RestoredSha" in bak, (
+        "version.pre.txt must hold the proved SHA, written in the same byte shape Write-VersionFile "
+        "emits, so both provenance sources parse identically"
+    )
+    assert 'mode = $unitMode' in bak and '"reconcile" } else { "deploy"' in bak, (
+        "a backup directory must let an auditor tell a routine pre-deploy snapshot from one taken "
+        "while repairing a false marker"
+    )
+
+
+def test_reconcile_verifies_the_target_before_stamping_the_marker():
+    """Guarantees 6, 7 and 8. The manifest proves the tree equals the ARTIFACT; only the gate
+    proves it equals the COMMIT. Stamping first would re-create the defect under a new SHA."""
+    seg = _reconcile_segment(_read(DEPLOY_SCRIPT))
+    i_converge = seg.index("Invoke-Converge -Cfg $Cfg -ArtifactPath $art")
+    i_manifest = seg.index('-What "reconciled application"')
+    i_verify = seg.index("Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $To")
+    i_stamp = seg.index("Write-VersionFile -Cfg $Cfg -Sha $To")
+    i_start = seg.index("Set-ServiceState -Cfg $Cfg -Target Running")
+    assert i_converge < i_manifest < i_verify < i_stamp < i_start, (
+        "order must be converge -> manifest -> prove against ToSha -> stamp marker -> start service"
+    )
+    assert "$art = New-ReleaseArtifact -Cfg $Cfg -Sha $To" in seg, (
+        "convergence must use an artifact staged from the approved target only"
+    )
+    assert seg.count("Write-VersionFile") == 1, (
+        "the marker must be written exactly once, at the end, after verification"
+    )
+
+
+def test_reconcile_failure_leaves_the_old_marker_and_no_trusted_target_label():
+    """Guarantee 9. A failure before final verification must not advertise the target, and must
+    not leave behind a unit whose label the operator would trust."""
+    seg = _reconcile_segment(_read(DEPLOY_SCRIPT))
+    assert "RECOVERY STATE: RECONCILE_BLOCKED_NO_WRITE" in seg, (
+        "a pre-write failure must be reported as such - the operator's next action differs "
+        "entirely from a mid-write failure"
+    )
+    assert "RECOVERY STATE: RECONCILE_FAILED" in seg, "a mid-write failure needs its own envelope"
+    i_nowrite = seg.index("RECOVERY STATE: RECONCILE_BLOCKED_NO_WRITE")
+    i_failed = seg.index("RECOVERY STATE: RECONCILE_FAILED")
+    assert "unchanged" in seg[i_nowrite:i_nowrite + 900], (
+        "the pre-write envelope must state that production and the marker are unchanged"
+    )
+    assert "-Bootstrap" in seg[i_nowrite:i_nowrite + 900], (
+        "the pre-write envelope must warn against reaching for -Bootstrap, which is exactly what "
+        "an operator blocked by a failed identity proof will otherwise try next"
+    )
+    assert "was NOT advanced" in seg[i_failed:], (
+        "the mid-write envelope must state the marker still does not advertise the target"
+    )
+    assert "-Rollback -Unit" in seg[i_failed:], (
+        "the mid-write envelope must give the exact recovery command for the unit just minted"
+    )
+    assert "Exit-DeployLock -Cfg $Cfg" in seg, "the lock must be released on every path"
+    assert "finally { Exit-DeployLock -Cfg $Cfg }" in seg, (
+        "release must be in a finally block, or a throw strands the lock and blocks the recovery "
+        "rollback the envelope just told the operator to run"
+    )
+
+
+def test_reconcile_refuses_ambiguous_or_unproven_invocations():
+    """The mode's whole value is that it proves what production is. Every argument shape that
+    would let it skip, guess, or double up on that claim must fail closed."""
+    body = _read(DEPLOY_SCRIPT)
+    seg = _reconcile_segment(body)
+    for needle, why in (
+        ("$From -notmatch $script:SHA_RX", "FromSha must be a full 40-hex SHA"),
+        ("$To -notmatch $script:SHA_RX", "ToSha must be a full 40-hex SHA"),
+        ("$From -eq $To", "identical SHAs mean there is nothing to reconcile"),
+        ("if ($Bootstrap)", "-Bootstrap would discard the proof this mode exists to make"),
+        ("if ($ReviewedSHA)", "two candidate targets in one invocation is unresolvable ambiguity"),
+    ):
+        assert needle in seg, f"reconcile must refuse: {why}"
+    assert seg.count('throw "BLOCKED:') >= 8, (
+        "every precondition must throw, not warn"
+    )
+    # the source tree must be certified at the target, and reconcile must NEVER move HEAD -
+    # fast-forwarding the reviewed tree mid-repair makes it impossible to say afterwards which
+    # tree the operator actually reviewed
+    assert "$head -ne $To" in seg, "reconcile must require the source already checked out at ToSha"
+    assert "merge --ff-only" not in seg, "reconcile must not move HEAD"
+    assert "merge-base --is-ancestor $To origin/main" in seg, (
+        "reconcile is a repair path, not a way to ship an unreviewed commit past the deploy "
+        "preconditions"
+    )
+    # and the flags must not be silently accepted anywhere else
+    assert "-FromSha / -ToSha are only valid with -Reconcile" in body, (
+        "supplying a direction to an ordinary deploy must throw; ignoring it would let an "
+        "operator believe a proof ran when it did not"
     )
