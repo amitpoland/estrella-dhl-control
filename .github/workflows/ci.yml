@@ -150,11 +150,24 @@ jobs:
   # failed. If the suite is ever made a required status check, require
   # `Service pytest (aggregate)`; requiring a shard job would be a green light
   # with nothing behind it.
+  #
+  # `!cancelled()` rather than `always()`. A newer push cancels the in-flight run
+  # (see `concurrency` above), which kills the shards mid-test; under `always()`
+  # the aggregate still ran, found their partial or absent XML, and correctly
+  # reported red — leaving a FAILED check on a run nobody abandoned for a reason
+  # worth reading. That red is pure noise: it fires webhooks, costs a reviewer an
+  # investigation, and would sit as a red required check with nothing wrong.
+  #
+  # This does NOT weaken the lost-shard guarantee, which is the whole point of
+  # the job. A shard lost to a crash, a hang, or the 90-minute job timeout is
+  # NOT `cancelled()` — those still reach the aggregate, still report INCOMPLETE,
+  # and still fail. Only a genuinely cancelled run skips, and a cancelled run has
+  # no verdict to give.
   service-suite-report:
     name: Service pytest (aggregate)
     runs-on: ubuntu-latest
     needs: service-suite
-    if: always()
+    if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@v4
 
