@@ -63,6 +63,7 @@ if _grammar_engine_dir not in sys.path:
 from description_grammar import (  # noqa: E402
     ITEM_TYPE_PL,
     METAL_PREPOSITIONAL,
+    canonical_item_type,
 )
 
 log      = get_logger(__name__)
@@ -783,38 +784,15 @@ del _SHARED_METAL_PL_VALUES, _RENDERER_METAL_PL_VALUES, _METAL_PL_DRIFT
 def _normalise_type_key(item_type: str) -> str:
     """Normalise packing-list item-type codes to _GLOBAL_TYPE_TABLE keys.
 
-    Uses the SAME alias map as the packing parser (_EJL_TOKEN_MAP) so the two
-    vocabularies can't drift. Resolves every code the parser can emit, including
-    2-letter aliases (ER→EARRING) and plurals (EARS→EARRING).
+    Delegates to description_grammar.canonical_item_type — the single item-type
+    normalisation authority, shared with the packing parser and the description
+    engine, so the vocabularies cannot drift. Resolves every code the parser can
+    emit, including 2-letter aliases (ER→EARRING) and plurals (EARS→EARRING).
 
     Returns the full English word in UPPER CASE (e.g. "PENDANT", "RING") or
     the original uppercased code if unrecognised (caller treats as a miss).
     """
-    # Shared with invoice_packing_extractor._EJL_TOKEN_MAP — keep in sync.
-    # Map to UPPER CASE values matching _GLOBAL_TYPE_TABLE keys.
-    _ALIAS: Dict[str, str] = {
-        # Pendant
-        "PND": "PENDANT",  "PEND": "PENDANT",  "PENDANT": "PENDANT",
-        # Ring
-        "RNG": "RING",     "RING":  "RING",
-        # Earring — all EJL aliases including 2-letter ER and plural EARS
-        "ERG": "EARRING",  "EAR":   "EARRING",  "ER":       "EARRING",
-        "EARS": "EARRING", "ERS":   "EARRING",  "EARRING":  "EARRING",
-        "EARRINGS": "EARRING",
-        "PRS": "EARRING",   # EJL packing: "PRS" (pairs) = earrings
-        # Bracelet
-        "BRC": "BRACELET", "BR":    "BRACELET", "BRACELET": "BRACELET",
-        # Necklace
-        "NCK": "NECKLACE", "NK":    "NECKLACE", "NECKLACE": "NECKLACE",
-        # Bangle
-        "BNG": "BANGLE",   "BANGLE": "BANGLE",
-        # Cufflinks
-        "CFL": "CUFFLINK", "CUFFLINK": "CUFFLINK", "CUFFLINKS": "CUFFLINK",
-        # Chain
-        "CHN": "CHAIN",    "CHAIN": "CHAIN",
-    }
-    return _ALIAS.get((item_type or "").strip().upper(),
-                      (item_type or "").strip().upper())
+    return canonical_item_type(item_type) or (item_type or "").strip().upper()
 
 
 def _normalise_metal_key(metal: str) -> str:

@@ -15,36 +15,55 @@ underscores before matching.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from description_grammar import canonical_item_type  # noqa: E402
 
 
 # ── Description vocabulary ────────────────────────────────────────────────────
-
+# THIS MODULE OWNS NO ITEM-TYPE ALIASES. The EJL Ctg column ("RNG", "PND", …)
+# is recognised by description_grammar.canonical_item_type — the one
+# normalisation authority — and the tables below are keyed by the CANONICAL
+# type it returns. A new short code is therefore added in description_grammar
+# and nowhere else; it cannot become authoritative here.
+#
+# These are mid-sentence forms: lowercase, and declined for the sentence
+# patterns in generate_description ("pierścionek z 14-karatowego złota …").
+# They are deliberately NOT description_grammar.ITEM_TYPE_PL, which holds the
+# standalone Title-Case customs noun ("Pierścionek", "Bransoletka sztywna").
+# Different grammatical role, same canonical key.
+#
+# Output scope (containment): these strings become a draft line's name_pl
+# fallback at birth and SalesPackingRow.desc_en → ln["remarks"]. They are
+# NEVER written to product_descriptions and never decide Product Description
+# Authority wording — see test_sales_packing_description_authority.py ::
+# TestParserContainment.
 _CATEGORY_PL: Dict[str, str] = {
-    "PND": "wisiorek",
-    "RNG": "pierścionek",
-    "EAR": "kolczyki",
-    "BRC": "bransoletka",
-    "BAN": "bransoletka",
-    "NEC": "naszyjnik",
-    "BRO": "broszka",
-    "SET": "zestaw biżuterii",
-    "CHR": "zawieszka",
-    "CUF": "spinki do mankietów",
+    "PENDANT":  "wisiorek",
+    "RING":     "pierścionek",
+    "EARRING":  "kolczyki",
+    "BRACELET": "bransoletka",
+    "BANGLE":   "bransoletka",
+    "NECKLACE": "naszyjnik",
+    "BROOCH":   "broszka",
+    "SET":      "zestaw biżuterii",
+    "CUFFLINK": "spinki do mankietów",
 }
 _CATEGORY_EN: Dict[str, str] = {
-    "PND": "pendant",
-    "RNG": "ring",
-    "EAR": "earrings",
-    "BRC": "bracelet",
-    "BAN": "bracelet",
-    "NEC": "necklace",
-    "BRO": "brooch",
-    "SET": "jewellery set",
-    "CHR": "charm",
-    "CUF": "cufflinks",
+    "PENDANT":  "pendant",
+    "RING":     "ring",
+    "EARRING":  "earrings",
+    "BRACELET": "bracelet",
+    "BANGLE":   "bracelet",
+    "NECKLACE": "necklace",
+    "BROOCH":   "brooch",
+    "SET":      "jewellery set",
+    "CUFFLINK": "cufflinks",
 }
 
 _KARAT_PL: Dict[str, str] = {
@@ -126,8 +145,10 @@ def _stones_from_quality(quality: str) -> Tuple[str, str]:
 
 def generate_description(ctg: str, kt: str, col: str, quality: str) -> Tuple[str, str]:
     """Return (pl_desc, en_desc) commercial description strings."""
-    cat_pl = _CATEGORY_PL.get((ctg or "").upper().strip(), "wyrób")
-    cat_en = _CATEGORY_EN.get((ctg or "").upper().strip(), "item")
+    # Canonicalise FIRST — this module never matches a raw Ctg code itself.
+    canon  = canonical_item_type(ctg)
+    cat_pl = _CATEGORY_PL.get(canon, "wyrób")
+    cat_en = _CATEGORY_EN.get(canon, "item")
     kar_pl = _KARAT_PL.get((kt or "").upper().strip(), "")
     kar_en = _KARAT_EN.get((kt or "").upper().strip(), "")
     col_pl = _COLOR_PL.get((col or "").upper().strip(), "")
@@ -164,11 +185,12 @@ def generate_name_pl_if_sufficient(
 
     Used by the proforma-draft birth/reset pipeline as the second-choice
     name_pl source, AFTER the product_descriptions authority and only on a
-    miss there. The category vocabulary lives here, next to
+    miss there. The category WORDING lives here, next to
     :func:`generate_description`, so the service layer stays free of this
-    module's import and the callers stay thin (they pass this reference).
+    module's import and the callers stay thin (they pass this reference); the
+    code→type RECOGNITION is delegated to description_grammar.
     """
-    if (ctg or "").upper().strip() not in _CATEGORY_PL:
+    if canonical_item_type(ctg) not in _CATEGORY_PL:
         return None
     pl, _en = generate_description(ctg, kt, col, quality)
     return (pl or "").strip() or None

@@ -26,6 +26,15 @@ from ..core.config import settings
 from ..core.logging import get_logger
 from . import document_db as ddb
 
+# Single item-type normalisation authority. description_grammar is a stdlib-only
+# leaf module (it owns ITEM_TYPE_PL / ITEM_TYPE_EN), so importing it here cannot
+# create a cycle.
+sys.path.insert(0, str(settings.engine_dir))
+from description_grammar import (  # noqa: E402
+    canonical_item_type as _canonical_item_type,
+    is_item_type_token as _is_item_type_token,
+)
+
 log = get_logger(__name__)
 
 
@@ -250,7 +259,18 @@ def _load_translations() -> tuple:
 
 
 def _normalise_item_type(item_type: str) -> str:
-    return (item_type or "").strip().upper()
+    """Canonical grammar key for *item_type* — the ONE normalisation authority.
+
+    EJL packing lists supply 3-letter "Ctg" codes ("RNG"); the grammar tables are
+    keyed by long names ("RING").  Without this bridge the English renderer fell
+    through to "RNG".title() == "Rng" and the Polish half degraded to the generic
+    "Wyrób jubilerski — ...", both of which were then locked into
+    product_descriptions with source='auto'.
+
+    Widening only: recognised aliases are canonicalised, everything else keeps the
+    previous uppercase-strip behaviour, so no caller loses a value it had before.
+    """
+    return _canonical_item_type(item_type) or (item_type or "").strip().upper()
 
 
 def _resolve_translation(item_type: str) -> Dict[str, str]:
@@ -763,7 +783,10 @@ def _english_description_from_item_type(item_type: str) -> str:
         return ""
     try:
         # Noun only: empty purity + empty stones → no metal/stone tokens.
-        return (cde.render_product_description_en(item_type, "", "") or "").strip()
+        # Normalised first: the renderer's ITEM_TYPE_EN is keyed by long names,
+        # so an un-normalised "RNG" would title-case itself into "Rng".
+        return (cde.render_product_description_en(
+            _normalise_item_type(item_type), "", "") or "").strip()
     except Exception as exc:  # pragma: no cover — defensive only
         log.warning("description_engine: render_product_description_en failed "
                     "for item_type=%r: %s", item_type, exc)

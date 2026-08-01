@@ -453,3 +453,124 @@ PURITY_GENITIVE_PRODUCT: dict[str, str] = {
     "PT900":  "platyny próby 900",
     "PT850":  "platyny próby 850",
 }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Item-type normalisation — THE single authority
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# EJL/Ethos packing lists carry 3-letter category codes in the "Ctg" column
+# ("RNG", "BRC", "PND"); the grammar tables above are keyed by long names
+# ("RING", "BRACELET", "PENDANT").  Nothing bridged the two, so
+# render_product_description_en("RNG") fell through to "RNG".title() == "Rng"
+# and the Polish half degraded to the generic "Wyrób jubilerski — ...", which was
+# then upserted with source='auto' and locked forever (Campaign 4, 23 rows).
+#
+# The alias map lives HERE — next to the tables it keys into — and nowhere else.
+# Consumers are thin wrappers that adapt the casing to their own contract:
+#   description_engine._normalise_item_type       (UPPER, falls back to raw)
+#   invoice_packing_extractor._canonical_item_type (lower, falls back to a-z squash)
+#   routes_dhl_clearance._normalise_type_key       (UPPER, falls back to raw)
+# Do NOT re-declare a local copy — a "keep in sync" comment is not a mechanism.
+
+import re as _re
+
+# Normalised token (a-z only, lowercase) -> canonical ITEM_TYPE_PL/ITEM_TYPE_EN key.
+ITEM_TYPE_ALIASES: dict[str, str] = {
+    # Pendant
+    "pnd": "PENDANT",  "pend": "PENDANT", "pendant": "PENDANT",
+    # Ring
+    "rng": "RING",     "ring": "RING",
+    # Earring — every EJL alias including 2-letter and plural forms
+    "erg": "EARRING",  "er": "EARRING",   "ers": "EARRING",
+    "ear": "EARRING",  "ears": "EARRING",
+    "earring": "EARRING", "earrings": "EARRING",
+    "prs": "EARRING",   # EJL packing "PRS" (pairs) = earrings
+    # Bracelet
+    "brc": "BRACELET", "br": "BRACELET",  "bracelet": "BRACELET",
+    # Necklace
+    "nck": "NECKLACE", "nec": "NECKLACE", "nk": "NECKLACE",
+    "necklace": "NECKLACE",
+    # Bangle
+    "bng": "BANGLE",   "ban": "BANGLE",   "bangle": "BANGLE",
+    # Brooch
+    "bro": "BROOCH",   "brooch": "BROOCH",
+    # Cufflinks
+    "cfl": "CUFFLINK", "cuf": "CUFFLINK", "cufflink": "CUFFLINK",
+    "cufflinks": "CUFFLINK",
+    # Chain
+    "chn": "CHAIN",    "chain": "CHAIN",
+}
+
+# Longest-first so "cufflinks" wins over "cufflink" when scanning free text.
+_ALIAS_BY_LENGTH = sorted(ITEM_TYPE_ALIASES.items(), key=lambda kv: -len(kv[0]))
+
+# Rendered English labels ("Ring", "Jewellery Set") — used to recognise a
+# description that is nothing but a category label.
+_EN_LABELS = {_re.sub(r"[^a-z]", "", v.lower()) for v in ITEM_TYPE_EN.values()}
+
+
+def _squash(value: str) -> str:
+    """Lowercase and drop everything that is not a-z."""
+    return _re.sub(r"[^a-z]", "", (value or "").lower())
+
+
+def canonical_item_type(value: str) -> str:
+    """Direct-hit normalisation: item-type token -> canonical grammar key.
+
+    Returns the UPPERCASE key shared by :data:`ITEM_TYPE_PL` and
+    :data:`ITEM_TYPE_EN`, or ``""`` when *value* is not a recognised item type.
+    Callers decide their own fallback — this function never guesses.
+
+    Examples::
+
+        canonical_item_type("RNG")      -> "RING"
+        canonical_item_type("ring")     -> "RING"
+        canonical_item_type("STUD")     -> "STUD"   (table key, no alias needed)
+        canonical_item_type("14KT")     -> ""
+    """
+    norm = _squash(value)
+    if not norm:
+        return ""
+    canon = ITEM_TYPE_ALIASES.get(norm)
+    if canon:
+        return canon
+    upper = norm.upper()
+    return upper if upper in ITEM_TYPE_PL else ""
+
+
+def canonical_item_type_fuzzy(value: str) -> str:
+    """:func:`canonical_item_type` plus a substring scan over free text.
+
+    Used by the invoice/packing extractor, which matches item types out of
+    supplier description strings ("14KT Gold Bracelet 7 inch" -> ``BRACELET``).
+    Only tokens of 4+ characters are scanned, so "er"/"br" cannot false-match.
+    Returns ``""`` when nothing is recognised.
+    """
+    direct = canonical_item_type(value)
+    if direct:
+        return direct
+    norm = _squash(value)
+    if not norm:
+        return ""
+    for token, canon in _ALIAS_BY_LENGTH:
+        if len(token) >= 4 and token in norm:
+            return canon
+    return ""
+
+
+def is_item_type_token(value: str) -> bool:
+    """True when *value* is nothing but a category label.
+
+    Direct hit only — "Gold Jewellery Ring" is a description, "Rng" is not.
+    Used to reject manufactured abbreviations that were written into
+    ``product_descriptions.description_en``.
+    """
+    norm = _squash(value)
+    if not norm:
+        return False
+    return (
+        norm in ITEM_TYPE_ALIASES
+        or norm.upper() in ITEM_TYPE_PL
+        or norm in _EN_LABELS
+    )
