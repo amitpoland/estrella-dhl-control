@@ -588,6 +588,28 @@ operator-readiness changes — customer-authority-summary-above-lines, canonical
 blocked-record panel). V2 surfaces (`v2/proforma-detail.jsx` near-complete; `proforma-v2.html` partial)
 exist but are NOT the production surface — cutover is operator-approved Atlas-V2 work (BACKLOG B-014).
 
+**Proforma V2 frontend authority (2026-08-01)**: single implementation, no duplicates.
+
+| Status | Path | Note |
+|---|---|---|
+| **Canonical** | `service/app/static/v2/` — `proforma-detail.jsx`, loaded by `index.html:326` | Babel-in-browser JSX, no build step. The one implementation. |
+| **Retired — duplicate source** | `service/frontend/proforma-v2/` | Independent Vite/React app, frozen 2026-06-30. Deleted. |
+| **Retired — duplicate build** | `service/app/static/v2/proforma-react/` | Build output of the above (its `vite.config.js` `outDir`). Deleted. |
+
+The retired build was **authenticated but directly reachable**. `main.py:673-704` mounts
+`GET /v2/{path:path}` over `static/v2/`, so committing the build directory published it:
+`/v2/proforma-react/index.html` served the duplicate app to any authenticated operator. It was
+never linked from navigation, but "not wired" never meant "not reachable" — no route registration
+was required for it to serve. It carried pre-repair line logic (supplier `invoice_no` into
+`client_po`, hardcoded `'India'` origin, no `purchase_invoice_no` typed separation) that the
+canonical file had already had corrected.
+
+Enforced by `service/tests/test_atlas_v2_sprint1.py` — filesystem absence of both trees, repo-wide
+absence of first-party references, `/v2/proforma-react/*` returning 404 while `/v2/` still serves,
+and the canonical shell still loading `proforma-detail.jsx`. Production residue (accumulated
+deploy-time bundles under `C:\PZ\app\static\v2\proforma-react\`) is a separate gated-convergence
+matter: `docs/deploy-prep/2026-08-01-proforma-react-production-reconciliation.md`.
+
 ---
 
 _This map is append-only for new domains. To add a domain: follow the section template above.
