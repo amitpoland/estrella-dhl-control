@@ -102,6 +102,55 @@ Proceed ONLY if: Branch = `main` (or approved SHA) · HEAD == origin/main (or ap
 clean. **Any mismatch → ABORT (do not sync).** This is the gate that would have stopped the
 2026-07-07 feature-branch-source skew.
 
+### Pre-backup production identity gate (PERMANENT — added 2026-07-31)
+
+The identity check above governs the **source** side. The deployment authority also enforces
+the **production** side automatically, at deploy time, before it stops the service or takes a
+backup: it proves the current production application tree is exactly the tree of the commit
+recorded in production's version marker.
+
+Why it is required: the backup unit records `restored_sha` by *reading* the version marker, not
+by re-deriving it from the bytes it backs up. If production were a HYBRID — marker says commit
+X but some runtime files are actually commit Y, e.g. an out-of-band copy that bypassed the
+authority — a normal deploy would back those bytes up mislabelled X, and a later rollback would
+stamp production with an identity that does not match its own files. The gate makes that state
+fail closed at the top of the deploy instead of minting a mislabelled, effectively
+unrollbackable unit.
+
+How it decides (EOL-robust): the deploy artifact is synced from a working tree, so runtime text
+files carry the platform CRLF while committed blobs are LF; a raw byte compare would
+false-mismatch on every text file. The gate instead compares **git object ids** — the committed
+blob id of each tracked application file versus the id produced by hashing each runtime file
+through the same repository's clean filter — so a byte-correct file matches regardless of line
+endings. That normalisation depends on the source repo's `core.autocrlf` being `true` or
+`input`; the gate reads the setting first and **fails closed** if it is anything else, rather
+than risk an inconclusive compare. Runtime-only state (storage, logs, `.env`, `__pycache__`,
+everything named in `protected_dirs` / `protected_files`, plus the leaves of
+`protected_runtime_paths`) is excluded on both sides. The check is read-only and runs in plan
+mode too — it writes nothing and drives no service.
+
+It **fails closed** (BLOCKED, deploy aborts with production untouched and the service still
+running) when: the version marker is absent or is not a single 40-hex SHA; the recorded SHA is
+not a commit in the source repository; the production application tree is missing; or any single
+runtime file is changed, missing, or extraneous relative to the recorded commit. An identity is
+never inferred from a partial match. The gate is skipped only for a first-ever `-Bootstrap`
+deploy, where there is no prior tree to verify.
+
+**Recovery from a BLOCKED identity gate.** A block means production is not the single tree its
+marker claims — do **not** retry the straight deploy, which would only re-hit the gate (or, if
+the gate were bypassed, bake the hybrid into a mislabelled backup). The gate's invariant is
+runtime bytes **==** the *recorded marker*, so reconciliation has to restore BOTH sides to one
+provable commit, not just the files — converging the tree while leaving the marker stale would
+still block (now correctly, runtime ≠ marker). Concretely: establish which known commit
+production *should* be (call it `Z`); run an operator-authorised convergence of the runtime tree
+to `Z` through the deployment authority (gated mirror convergence — see the mirror-convergence
+rules above) **and** have the authority write the version marker to `Z` in the same
+operator-authorised action, so the tree and its marker are made consistent together. Re-run the
+gate: it passes only when the freshly converged tree matches the freshly written marker `Z`.
+Only then may an ordinary forward deploy be reconsidered. Reconciliation is a separate
+operator-approved action; it never activates carrier APIs and never alters financial, customs,
+inventory, accounting, or shipment data.
+
 ---
 
 ## 7-Agent pre-deploy gate

@@ -284,8 +284,7 @@ def test_pz_preview_response_already_created_includes_lock_status(tmp_path):
         patch("app.api.routes_wfirma._read_audit", return_value=audit),
         patch("app.api.routes_wfirma._guard_wfirma_export"),
     ):
-        result = asyncio.get_event_loop().run_until_complete(
-            wfirma_pz_preview("TEST_LOCK_STATUS_001"))
+        result = asyncio.run(wfirma_pz_preview("TEST_LOCK_STATUS_001"))
     body = json.loads(result.body)
 
     assert body["already_created"] is True

@@ -156,6 +156,276 @@ try { $x = Resolve-RestoredSha -Meta $rtMeta2 -BackupPath $rtUnit2.Path -UnitId 
 catch { $blockedRt = ($_.Exception.Message -like '*legacy*') }
 Check 'roundtrip(no marker): resulting unit is REFUSED, not rolled back' ($blockedRt -and -not $leakedRt)
 
+# --- Assert-ProductionMatchesRecordedSha (pre-backup production identity gate) ---
+# The gate proves the CURRENT runtime application tree IS the tree of the commit recorded
+# in the version marker, BEFORE the deploy stops the service or takes a backup. It compares
+# git object ids (ls-tree of the recorded commit vs hash-object of each runtime file) so it
+# is EOL-robust: a runtime file that is byte-correct but CRLF-terminated still hashes to the
+# committed LF blob id. These cases build a REAL synthetic git repo rooted entirely under
+# $tmp -- source_app is committed; runtime_app is a SEPARATE tree written with CRLF so the
+# match case doubles as the EOL-robustness proof. Production is never named or touched; git
+# runs only against the temp repo. Writes use [System.IO.File] per the file rule above.
+function New-GateRepo([string]$root, [string]$markerOverride) {
+    $srcApp = Join-Path $root 'app'
+    New-Item -ItemType Directory -Path (Join-Path $srcApp 'sub') -Force | Out-Null
+    $enc = New-Object System.Text.ASCIIEncoding
+    # committed with LF; autocrlf=true stores LF blobs.
+    [System.IO.File]::WriteAllText((Join-Path $srcApp 'main.py'), "print('a')`nprint('b')`n", $enc)
+    [System.IO.File]::WriteAllText((Join-Path $srcApp 'sub\util.py'), "x = 1`n", $enc)
+    & git -C $root init -q | Out-Null
+    & git -C $root config user.email 't@t' | Out-Null
+    & git -C $root config user.name 't' | Out-Null
+    & git -C $root config core.autocrlf true | Out-Null
+    & git -C $root add app | Out-Null
+    & git -C $root commit -q -m init | Out-Null
+    $sha = (& git -C $root rev-parse HEAD).Trim()
+    New-Item -ItemType Directory -Path (Join-Path $root 'runtime') -Force | Out-Null
+    $marker = if ($markerOverride) { $markerOverride } else { $sha }
+    if ($marker -ne '__NONE__') {
+        [System.IO.File]::WriteAllText((Join-Path $root 'runtime\version.txt'), $marker, $enc)
+    }
+    $rtApp = Join-Path $root 'runtime\app'
+    New-Item -ItemType Directory -Path (Join-Path $rtApp 'sub') -Force | Out-Null
+    # runtime copy written with CRLF on purpose -> proves the gate normalizes and matches.
+    [System.IO.File]::WriteAllText((Join-Path $rtApp 'main.py'), "print('a')`r`nprint('b')`r`n", $enc)
+    [System.IO.File]::WriteAllText((Join-Path $rtApp 'sub\util.py'), "x = 1`r`n", $enc)
+    $cfgPath = Join-Path $root 'cfg.json'
+    $cfg = [pscustomobject]@{
+        schema_version = 2; service = 'SyntheticNoService'
+        source_root = $root; source_app = $srcApp
+        runtime_app = $rtApp
+        runtime_engine = (Join-Path $root 'runtime\engine-absent')
+        artifact_root = (Join-Path $root 'releases'); backup_root = (Join-Path $root 'backups')
+        version_file = (Join-Path $root 'runtime\version.txt')
+        lock_file = (Join-Path $root 'backups\.lock')
+        engine_files = @('pz_import_processor.py'); protected_dirs = @('storage', '__pycache__')
+        protected_files = @('.env', '*.pyc'); protected_runtime_paths = @((Join-Path $root 'runtime\storage'))
+        forbidden_flags = @('/XO'); robocopy_fatal_exit = 8; robocopy_suspect_exit = 4
+        service_wait_seconds = 60; test_baseline_contract = 'n/a'
+        authorization_helper = 'hooks\deploy_authorization.py'
+    }
+    [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    return [pscustomobject]@{ Cfg = (Get-DeployConfig -ConfigPath $cfgPath); Sha = $sha; RuntimeApp = $rtApp }
+}
+function Assert-GatePasses([string]$name, $cfg) {
+    $ok = $false
+    try { Assert-ProductionMatchesRecordedSha -Cfg $cfg 6>$null; $ok = $true }
+    catch { Write-Host "  (unexpected block: $($_.Exception.Message))" }
+    Check $name $ok
+}
+function Assert-GateBlocks([string]$name, $cfg, [string]$needle) {
+    $blocked = $false
+    try { Assert-ProductionMatchesRecordedSha -Cfg $cfg 6>$null }
+    catch { $blocked = ($_.Exception.Message -like "*$needle*") }
+    Check $name $blocked
+}
+
+# GA: byte-correct runtime (CRLF) vs committed (LF) blob -> PASS (EOL-robust).
+$gaRoot = Join-Path $tmp 'gate-ok'; New-Item -ItemType Directory -Path $gaRoot -Force | Out-Null
+$ga = New-GateRepo $gaRoot $null
+Assert-GatePasses 'gate: CRLF runtime matches LF-committed marker -> pass (EOL-robust)' $ga.Cfg
+
+# GB: one runtime file's content changed -> BLOCK (hybrid tree).
+$gbRoot = Join-Path $tmp 'gate-hybrid'; New-Item -ItemType Directory -Path $gbRoot -Force | Out-Null
+$gb = New-GateRepo $gbRoot $null
+[System.IO.File]::WriteAllText((Join-Path $gb.RuntimeApp 'main.py'), "print('CHANGED')`r`n", (New-Object System.Text.ASCIIEncoding))
+Assert-GateBlocks 'gate: one changed runtime file -> BLOCK (hybrid)' $gb.Cfg 'IDENTITY MISMATCH'
+
+# GC: absent version marker -> BLOCK, never proceeds over an unknown tree.
+$gcRoot = Join-Path $tmp 'gate-nomarker'; New-Item -ItemType Directory -Path $gcRoot -Force | Out-Null
+$gc = New-GateRepo $gcRoot '__NONE__'
+Assert-GateBlocks 'gate: absent version marker -> BLOCK' $gc.Cfg 'version marker'
+
+# GD: marker holds a well-formed SHA that is not a commit in the repo -> BLOCK, no guess.
+$gdRoot = Join-Path $tmp 'gate-nocommit'; New-Item -ItemType Directory -Path $gdRoot -Force | Out-Null
+$gd = New-GateRepo $gdRoot ('a' * 40)
+Assert-GateBlocks 'gate: marker SHA not a commit -> BLOCK' $gd.Cfg 'not a commit'
+
+# GE: an extraneous runtime file not in the recorded tree -> BLOCK.
+$geRoot = Join-Path $tmp 'gate-extra'; New-Item -ItemType Directory -Path $geRoot -Force | Out-Null
+$ge = New-GateRepo $geRoot $null
+[System.IO.File]::WriteAllText((Join-Path $ge.RuntimeApp 'ghost.py'), "y = 2`r`n", (New-Object System.Text.ASCIIEncoding))
+Assert-GateBlocks 'gate: extraneous runtime file -> BLOCK' $ge.Cfg 'IDENTITY MISMATCH'
+
+# GF: a tracked file missing from the runtime tree -> BLOCK.
+$gfRoot = Join-Path $tmp 'gate-missing'; New-Item -ItemType Directory -Path $gfRoot -Force | Out-Null
+$gf = New-GateRepo $gfRoot $null
+Remove-Item (Join-Path $gf.RuntimeApp 'sub\util.py') -Force
+Assert-GateBlocks 'gate: missing runtime file -> BLOCK' $gf.Cfg 'IDENTITY MISMATCH'
+
+# GG: protected runtime-only paths (storage/, .env) are excluded on both sides -> PASS.
+$ggRoot = Join-Path $tmp 'gate-protected'; New-Item -ItemType Directory -Path $ggRoot -Force | Out-Null
+$gg = New-GateRepo $ggRoot $null
+New-Item -ItemType Directory -Path (Join-Path $gg.RuntimeApp 'storage') -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $gg.RuntimeApp 'storage\live.db'), "runtime-state", (New-Object System.Text.ASCIIEncoding))
+[System.IO.File]::WriteAllText((Join-Path $gg.RuntimeApp '.env'), "SECRET=1", (New-Object System.Text.ASCIIEncoding))
+Assert-GatePasses 'gate: protected runtime paths excluded both sides -> pass' $gg.Cfg
+
+# GH: compiled-Python runtime artifacts (__pycache__/ dir and a *.pyc file) are runtime
+# state, never committed -> excluded on both sides -> PASS. Exercises the protected_dirs
+# ('__pycache__') and protected_files ('*.pyc') patterns specifically, which storage/.env
+# above do not.
+$ghRoot = Join-Path $tmp 'gate-pyc'; New-Item -ItemType Directory -Path $ghRoot -Force | Out-Null
+$gh = New-GateRepo $ghRoot $null
+New-Item -ItemType Directory -Path (Join-Path $gh.RuntimeApp '__pycache__') -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $gh.RuntimeApp '__pycache__\main.cpython-39.pyc'), "bytecode", (New-Object System.Text.ASCIIEncoding))
+[System.IO.File]::WriteAllText((Join-Path $gh.RuntimeApp 'sub\util.pyc'), "bytecode", (New-Object System.Text.ASCIIEncoding))
+Assert-GatePasses 'gate: __pycache__ dir and *.pyc excluded both sides -> pass' $gh.Cfg
+
+# GI: the object-id compare is only sound while core.autocrlf normalises CRLF->LF. With
+# autocrlf=false the runtime CRLF files would hash to different ids than the LF blobs, so
+# the gate must fail closed on the pre-check rather than false-mismatch. Byte-correct
+# runtime, only the setting flipped -> BLOCK on 'autocrlf', not on 'IDENTITY MISMATCH'.
+$giRoot = Join-Path $tmp 'gate-autocrlf'; New-Item -ItemType Directory -Path $giRoot -Force | Out-Null
+$gi = New-GateRepo $giRoot $null
+& git -C $giRoot config core.autocrlf false | Out-Null
+Assert-GateBlocks 'gate: core.autocrlf=false -> BLOCK (inconclusive compare)' $gi.Cfg 'autocrlf'
+
+# GJ: ATTRIBUTE CONTEXT. A blob id is not a property of bytes alone - .gitattributes rules
+# are keyed on the REPOSITORY-RELATIVE path, and the runtime files live outside the work
+# tree. This case commits an 'ident' attribute, whose clean filter collapses an expanded
+# '$Id: <sha> $' back to '$Id$'. The runtime file holds the SMUDGED form, exactly as a
+# checkout would leave it. Hashed under its repository path the filter applies and the ids
+# agree; hashed as a bare runtime path no attribute matches, the expansion survives, and the
+# gate would falsely report a mismatch on a byte-correct file. So this PASS is only reachable
+# through the --path= branch: delete it and this check goes red.
+$gjRoot = Join-Path $tmp 'gate-attrs'; New-Item -ItemType Directory -Path $gjRoot -Force | Out-Null
+$gj = New-GateRepo $gjRoot $null
+$gjEnc = New-Object System.Text.ASCIIEncoding
+$gjSrc = Join-Path $gjRoot 'app'
+[System.IO.File]::WriteAllText((Join-Path $gjSrc '.gitattributes'), "ident.py ident`n", $gjEnc)
+[System.IO.File]::WriteAllText((Join-Path $gjSrc 'ident.py'), '# $Id$' + "`n", $gjEnc)
+& git -C $gjRoot add app | Out-Null
+& git -C $gjRoot commit -q -m ident | Out-Null
+$gjSha = (& git -C $gjRoot rev-parse HEAD).Trim()
+[System.IO.File]::WriteAllText((Join-Path $gjRoot 'runtime\version.txt'), $gjSha, $gjEnc)
+[System.IO.File]::WriteAllText((Join-Path $gj.RuntimeApp '.gitattributes'), "ident.py ident`r`n", $gjEnc)
+[System.IO.File]::WriteAllText((Join-Path $gj.RuntimeApp 'ident.py'), '# $Id: ' + $gjSha + ' $' + "`r`n", $gjEnc)
+Assert-GatePasses 'gate: committed .gitattributes applied via repository path -> pass' $gj.Cfg
+
+# GK: CASE COLLISION. Git is case-sensitive; Windows is not. A commit tracking both
+# 'main.py' and 'MAIN.py' can never be fully materialised in the runtime tree, so at most one
+# is verifiable and the other is indistinguishable from a deleted file. The gate must refuse
+# BEFORE comparing rather than silently compare a tree it cannot prove. Built via the index
+# (update-index --cacheinfo) because the working tree cannot hold both names.
+$gkRoot = Join-Path $tmp 'gate-case'; New-Item -ItemType Directory -Path $gkRoot -Force | Out-Null
+$gk = New-GateRepo $gkRoot $null
+$gkBlob = (& git -C $gkRoot hash-object -w (Join-Path $gkRoot 'app\main.py')).Trim()
+& git -C $gkRoot update-index --add --cacheinfo "100644,$gkBlob,app/MAIN.py" | Out-Null
+& git -C $gkRoot commit -q -m casetwin | Out-Null
+$gkSha = (& git -C $gkRoot rev-parse HEAD).Trim()
+[System.IO.File]::WriteAllText((Join-Path $gkRoot 'runtime\version.txt'), $gkSha, (New-Object System.Text.ASCIIEncoding))
+Assert-GateBlocks 'gate: two tracked paths folding to one Windows name -> BLOCK' $gk.Cfg 'collide'
+
+# GL: REPARSE POINTS. A junction inside the runtime tree means production was assembled by
+# something other than this deployment authority; the tree that would be verified is not the
+# tree that is stored, and a link can also make recursion loop. Detection must happen BEFORE
+# descent, which is why enumeration is an explicit queue rather than -Recurse.
+$glRoot = Join-Path $tmp 'gate-reparse'; New-Item -ItemType Directory -Path $glRoot -Force | Out-Null
+$gl = New-GateRepo $glRoot $null
+$glTarget = Join-Path $glRoot 'elsewhere'
+New-Item -ItemType Directory -Path $glTarget -Force | Out-Null
+New-Item -ItemType Junction -Path (Join-Path $gl.RuntimeApp 'linked') -Target $glTarget | Out-Null
+Assert-GateBlocks 'gate: junction inside the runtime tree -> BLOCK' $gl.Cfg 'reparse point'
+
+# ...and the ROOT itself. Checked separately because a root link is tested before the queue
+# is ever seeded, so the inner case above cannot cover it.
+$glRootLink = Join-Path $glRoot 'root-link'
+New-Item -ItemType Junction -Path $glRootLink -Target $gl.RuntimeApp | Out-Null
+$glBlocked = $false
+try { Get-ReparseSafeFiles -Root $glRootLink -SkipTopLevel @() | Out-Null }
+catch { $glBlocked = ($_.Exception.Message -like '*reparse point*') }
+Check 'gate: runtime application ROOT is a junction -> BLOCK' $glBlocked
+
+# --- Reconciliation: -ExpectSha identity proof -----------------------------------
+# Reconcile runs against a runtime the ordinary gate has ALREADY refused, so it asserts
+# against an operator-supplied identity instead of the marker - the marker being the artefact
+# under repair. The comparison itself must be unchanged: same object-id compare, same
+# fail-closed behaviour, no path that accepts an unproved claim.
+$rcRoot = Join-Path $tmp 'gate-reconcile'; New-Item -ItemType Directory -Path $rcRoot -Force | Out-Null
+$rc = New-GateRepo $rcRoot $null
+$rcTrue = $rc.Sha                     # what the runtime bytes ACTUALLY are
+[System.IO.File]::WriteAllText((Join-Path $rcRoot 'app\main.py'), "print('a')`nprint('c')`n", (New-Object System.Text.ASCIIEncoding))
+& git -C $rcRoot add app | Out-Null
+& git -C $rcRoot commit -q -m moved | Out-Null
+$rcMarked = (& git -C $rcRoot rev-parse HEAD).Trim()   # what the marker CLAIMS
+[System.IO.File]::WriteAllText((Join-Path $rcRoot 'runtime\version.txt'), $rcMarked, (New-Object System.Text.ASCIIEncoding))
+
+# Precondition: this is exactly the defect in production - marker says one commit, bytes are
+# another. The ordinary gate must refuse it, or the reconcile mode would have no reason to exist.
+Assert-GateBlocks 'reconcile: marker disagrees with bytes -> ordinary gate BLOCKS' $rc.Cfg 'IDENTITY MISMATCH'
+
+$rcOk = $false
+try { Assert-ProductionMatchesRecordedSha -Cfg $rc.Cfg -ExpectSha $rcTrue 6>$null; $rcOk = $true }
+catch { Write-Host "  (unexpected block: $($_.Exception.Message))" }
+Check 'reconcile: -ExpectSha naming the TRUE identity -> proof passes' $rcOk
+
+# The proof is a proof, not a courtesy: supplying the marker's own (false) value must fail
+# just as hard. Otherwise an operator could "reconcile" from an identity nothing verified.
+$rcWrong = $false
+try { Assert-ProductionMatchesRecordedSha -Cfg $rc.Cfg -ExpectSha $rcMarked 6>$null }
+catch { $rcWrong = ($_.Exception.Message -like '*IDENTITY MISMATCH*') }
+Check 'reconcile: -ExpectSha naming the WRONG identity -> BLOCK' $rcWrong
+
+$rcShape = $false
+try { Assert-ProductionMatchesRecordedSha -Cfg $rc.Cfg -ExpectSha 'deadbeef' 6>$null }
+catch { $rcShape = ($_.Exception.Message -like '*40-character*') }
+Check 'reconcile: malformed -ExpectSha -> BLOCK (never asserts against a partial SHA)' $rcShape
+
+# The marker is NOT consulted on this path - proved by leaving it absent entirely. An absent
+# marker blocks an ordinary deploy (case GC) but must not block a proof that does not use it.
+$rcNoMarkerRoot = Join-Path $tmp 'gate-reconcile-nomarker'; New-Item -ItemType Directory -Path $rcNoMarkerRoot -Force | Out-Null
+$rcNM = New-GateRepo $rcNoMarkerRoot '__NONE__'
+$rcNMOk = $false
+try { Assert-ProductionMatchesRecordedSha -Cfg $rcNM.Cfg -ExpectSha $rcNM.Sha 6>$null; $rcNMOk = $true }
+catch { Write-Host "  (unexpected block: $($_.Exception.Message))" }
+Check 'reconcile: absent marker does not block a proof that never reads it' $rcNMOk
+
+# --- Reconciliation: truthful backup metadata ------------------------------------
+# The single defect this whole mode exists to prevent is a backup labelled with an identity
+# its bytes do not have. On the reconcile path the marker on disk is the FALSE value being
+# repaired, so New-BackupUnit must record the PROVED identity instead - and both provenance
+# sources (unit.json and the write-once snapshot) must carry that same value, or
+# Resolve-RestoredSha will later refuse the unit as inconsistent.
+$PROVED = '3333333333333333333333333333333333333333'   # what the bytes really are
+$MARKED = '4444444444444444444444444444444444444444'   # the false marker being repaired
+
+$rbRoot = Join-Path $tmp 'rt-reconcile'; New-Item -ItemType Directory -Path $rbRoot -Force | Out-Null
+$rbCfg = New-SyntheticConfig $rbRoot $MARKED
+$rbUnit = New-BackupUnit -Cfg $rbCfg -Sha $NEW -UnitScope 'App' -RestoredSha $PROVED 6>$null
+$rbMeta = Get-Content (Join-Path $rbUnit.Path 'unit.json') -Raw | ConvertFrom-Json
+Check 'reconcile-backup: restored_sha is the PROVED identity, not the false marker' `
+    (($rbMeta.restored_sha -eq $PROVED) -and ($rbMeta.restored_sha -ne $MARKED))
+Check 'reconcile-backup: snapshot corroborates the same proved identity' `
+    ((Read-VersionMarker -Path (Join-Path $rbUnit.Path 'version.pre.txt')) -eq $PROVED)
+Check 'reconcile-backup: deployment_sha remains the incoming target' ($rbMeta.deployment_sha -eq $NEW)
+# An auditor must be able to tell a routine pre-deploy snapshot from one taken while
+# repairing a false marker; the two have different trust stories.
+Check 'reconcile-backup: unit is labelled mode=reconcile' ($rbMeta.mode -eq 'reconcile')
+$rbResolved = Resolve-RestoredSha -Meta $rbMeta -BackupPath $rbUnit.Path -UnitId $rbUnit.Unit
+Check 'reconcile-backup: resolver round-trips to the proved identity' ($rbResolved -eq $PROVED)
+Check 'reconcile-backup: resolver never returns the false marker or the deployment SHA' `
+    (($rbResolved -ne $MARKED) -and ($rbResolved -ne $NEW))
+
+# The override is reconcile-only in practice, and shape-validated regardless: a
+# confident-looking lie in unit.json is strictly worse than the missing-provenance case the
+# resolver already fails closed on, because nothing downstream would ever question it.
+$rbBadRoot = Join-Path $tmp 'rt-reconcile-bad'; New-Item -ItemType Directory -Path $rbBadRoot -Force | Out-Null
+$rbBadCfg = New-SyntheticConfig $rbBadRoot $MARKED
+$rbBadBlocked = $false
+try { New-BackupUnit -Cfg $rbBadCfg -Sha $NEW -UnitScope 'App' -RestoredSha 'deadbeef' 6>$null | Out-Null }
+catch { $rbBadBlocked = ($_.Exception.Message -like '*40-character*') }
+Check 'reconcile-backup: malformed -RestoredSha -> BLOCK before any unit is minted' $rbBadBlocked
+
+# And the ordinary path is unchanged: without the override the marker is still the source,
+# and the unit is still labelled a deploy.
+$rbPlainRoot = Join-Path $tmp 'rt-plain-mode'; New-Item -ItemType Directory -Path $rbPlainRoot -Force | Out-Null
+$rbPlainCfg = New-SyntheticConfig $rbPlainRoot $OLD
+$rbPlainUnit = New-BackupUnit -Cfg $rbPlainCfg -Sha $NEW -UnitScope 'App' 6>$null
+$rbPlainMeta = Get-Content (Join-Path $rbPlainUnit.Path 'unit.json') -Raw | ConvertFrom-Json
+Check 'deploy-backup: without the override the marker is still the source, mode=deploy' `
+    (($rbPlainMeta.restored_sha -eq $OLD) -and ($rbPlainMeta.mode -eq 'deploy'))
+
 Remove-Item -Recurse -Force $tmp
 Write-Host ""
 Write-Host "RESULT: $($script:pass) passed, $($script:fail) failed"

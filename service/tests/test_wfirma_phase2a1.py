@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 from unittest.mock import patch
 
 import pytest
@@ -480,14 +482,48 @@ def _setup_tick(tmp_path: Path, invoice_id: str = "INV-001") -> tuple:
     return events_db, proc_db
 
 
+@contextmanager
+def _phase2a1_scheduler(events_db: Path, proc_db: Path) -> Iterator:
+    """
+    Point the scheduler at tmp DBs and disable Phase 2B+ ticks.
+
+    Full-suite runs may import app.main (TestClient lifespan), which sets
+    _links_db_path on the module.  Enrichment then advances SNAPSHOTTED →
+    UNMATCHED and breaks Phase 2A.1-only assertions.
+    """
+    import app.services.wfirma_webhook_scheduler as sched
+
+    saved = {
+        "_events_db_path": sched._events_db_path,
+        "_proc_db_path": sched._proc_db_path,
+        "_links_db_path": sched._links_db_path,
+        "_cm_db_path": sched._cm_db_path,
+        "_payment_db_path": sched._payment_db_path,
+        "_contractor_poll_db_path": sched._contractor_poll_db_path,
+    }
+    sched._events_db_path = events_db
+    sched._proc_db_path = proc_db
+    sched._links_db_path = None
+    sched._cm_db_path = None
+    sched._payment_db_path = None
+    sched._contractor_poll_db_path = None
+    try:
+        yield sched
+    finally:
+        sched._events_db_path = saved["_events_db_path"]
+        sched._proc_db_path = saved["_proc_db_path"]
+        sched._links_db_path = saved["_links_db_path"]
+        sched._cm_db_path = saved["_cm_db_path"]
+        sched._payment_db_path = saved["_payment_db_path"]
+        sched._contractor_poll_db_path = saved["_contractor_poll_db_path"]
+
+
 def test_scheduler_tick_creates_processing_row(tmp_path: Path) -> None:
     events_db, proc_db = _setup_tick(tmp_path)
 
-    import app.services.wfirma_webhook_scheduler as sched
-    sched._events_db_path = events_db
-    sched._proc_db_path = proc_db
-
-    with patch("app.services.wfirma_client.fetch_invoice_xml", return_value=_SAMPLE_XML):
+    with _phase2a1_scheduler(events_db, proc_db) as sched, patch(
+        "app.services.wfirma_client.fetch_invoice_xml", return_value=_SAMPLE_XML
+    ):
         sched._run_processing_tick()
 
     rows = get_processable_events(proc_db)
@@ -505,11 +541,9 @@ def test_scheduler_tick_creates_processing_row(tmp_path: Path) -> None:
 def test_scheduler_tick_marks_snapshotted_on_success(tmp_path: Path) -> None:
     events_db, proc_db = _setup_tick(tmp_path)
 
-    import app.services.wfirma_webhook_scheduler as sched
-    sched._events_db_path = events_db
-    sched._proc_db_path = proc_db
-
-    with patch("app.services.wfirma_client.fetch_invoice_xml", return_value=_SAMPLE_XML):
+    with _phase2a1_scheduler(events_db, proc_db) as sched, patch(
+        "app.services.wfirma_client.fetch_invoice_xml", return_value=_SAMPLE_XML
+    ):
         sched._run_processing_tick()
 
     snap = get_snapshot_by_event(proc_db, "evt-001")
@@ -520,11 +554,7 @@ def test_scheduler_tick_marks_snapshotted_on_success(tmp_path: Path) -> None:
 def test_scheduler_tick_increments_retry_on_fetch_failure(tmp_path: Path) -> None:
     events_db, proc_db = _setup_tick(tmp_path)
 
-    import app.services.wfirma_webhook_scheduler as sched
-    sched._events_db_path = events_db
-    sched._proc_db_path = proc_db
-
-    with patch(
+    with _phase2a1_scheduler(events_db, proc_db) as sched, patch(
         "app.services.wfirma_client.fetch_invoice_xml",
         side_effect=RuntimeError("network error"),
     ):
@@ -541,11 +571,7 @@ def test_scheduler_tick_increments_retry_on_fetch_failure(tmp_path: Path) -> Non
 def test_scheduler_tick_dead_letters_after_max_retries(tmp_path: Path) -> None:
     events_db, proc_db = _setup_tick(tmp_path)
 
-    import app.services.wfirma_webhook_scheduler as sched
-    sched._events_db_path = events_db
-    sched._proc_db_path = proc_db
-
-    with patch(
+    with _phase2a1_scheduler(events_db, proc_db) as sched, patch(
         "app.services.wfirma_client.fetch_invoice_xml",
         side_effect=RuntimeError("persistent error"),
     ):
@@ -574,12 +600,9 @@ def test_scheduler_tick_dead_letters_event_with_no_object_id(tmp_path: Path) -> 
         )
     init_db(proc_db)
 
-    import app.services.wfirma_webhook_scheduler as sched
-    sched._events_db_path = events_db
-    sched._proc_db_path = proc_db
-
-    for _ in range(MAX_RETRIES):
-        sched._run_processing_tick()
+    with _phase2a1_scheduler(events_db, proc_db) as sched:
+        for _ in range(MAX_RETRIES):
+            sched._run_processing_tick()
 
     with sqlite3.connect(str(proc_db)) as conn:
         row = conn.execute(
