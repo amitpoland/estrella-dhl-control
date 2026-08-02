@@ -33,6 +33,12 @@ def _settings(tmp_path: Path, **overrides):
         smtp_password = None
         smtp_use_ssl  = True
         mcp_send_max_attachment_bytes = 200_000
+        # Lesson E Property 5: _assert_production_env_for_smtp() refuses to
+        # connect when credentials are set outside prod. These tests drive the
+        # real send path with smtplib mocked, so the stub must declare the
+        # environment the guard requires. The guard itself is covered by
+        # test_security_hardening_223_224.py.
+        environment   = "prod"
     for k, v in overrides.items():
         setattr(S, k, v)
     return S()
