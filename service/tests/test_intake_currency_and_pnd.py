@@ -159,7 +159,7 @@ def test_parser_extracts_currency_when_present(tmp_path):
     ws.append(["PkSr", "DesignNo", "Qty", "Value (USD)", "Total Value"])
     ws.append([1, "JE-001", 1, 200.0, 200.0])
     p = tmp_path / "x.xlsx"; wb.save(str(p))
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     assert rows[0]["currency"] == "USD"
 
 
@@ -242,7 +242,7 @@ def test_currency_source_excel_wins_over_operator_and_default(tmp_path, storage)
     from app.services.invoice_packing_extractor import extract_packing
     p = _make_packing(tmp_path, name="ex.xlsx",
                        currency_in_header=True, value=200.0)
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     # Simulate the intake currency-resolution ladder.
     operator_currency  = "USD"
     customer_default   = "PLN"
@@ -265,7 +265,7 @@ def test_currency_source_operator_when_excel_missing(tmp_path):
     from app.services.invoice_packing_extractor import extract_packing
     p = _make_packing(tmp_path, name="noex.xlsx",
                        currency_in_header=False, value=200.0)
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     first_excel_ccy = next((r["currency"] for r in rows
                               if (r.get("currency") or "")), "")
     operator_currency = "EUR"
@@ -296,7 +296,7 @@ def test_currency_source_customer_default_only_when_no_excel_and_no_operator(
 
     p = _make_packing(tmp_path, name="nocurrency.xlsx",
                        currency_in_header=False, value=200.0)
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     first_excel_ccy = next((r["currency"] for r in rows
                               if (r.get("currency") or "")), "")
     operator_currency = ""
@@ -319,7 +319,7 @@ def test_currency_source_missing_blocks(tmp_path, storage):
     from app.services.invoice_packing_extractor import extract_packing
     p = _make_packing(tmp_path, name="blank.xlsx",
                        currency_in_header=False, value=200.0)
-    rows, _, _ = extract_packing(p)
+    rows, _, _, _ = extract_packing(p)
     # No customer registered with default; no operator override.
     first_excel_ccy = next((r["currency"] for r in rows
                               if (r.get("currency") or "")), "")
