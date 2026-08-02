@@ -18,6 +18,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,18 @@ _SEED = _SCRIPTS / "review_seed.py"
 # App tree to seed against: an override (the served #940 tree) or this repo's own.
 _APP_DIR = Path(os.environ.get("REVIEW_APP_DIR", str(_SERVICE)))
 
+# Every subprocess below runs with its CWD inside a throwaway sandbox, never in the
+# repo.  Containment, not convenience: these tests hand the launcher deliberately
+# hostile storage roots, and a root that fails to resolve to what the test intended
+# is resolved RELATIVE TO THE CWD instead.  A Windows absolute path such as
+# ``c:\pz\storage`` is a legal *relative filename* on POSIX, so on a non-Windows
+# host review_launch's ``storage_root.mkdir(parents=True)`` would otherwise create a
+# literal ``c:\pz\storage`` directory in the repo root.  Pinning the CWD guarantees
+# any such artifact lands in the sandbox regardless of how a path is interpreted.
+# Safe for every caller: _LAUNCH, _SEED and _APP_DIR are all absolute paths, and a
+# script invoked by absolute path puts its OWN directory on sys.path, not the CWD.
+_CWD_SANDBOX = Path(tempfile.mkdtemp(prefix="pz_review_bootstrap_cwd_"))
+
 
 def _run(args, env=None):
     e = dict(os.environ)
@@ -36,10 +49,24 @@ def _run(args, env=None):
         e.update(env)
     e["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run([sys.executable, *args], capture_output=True, text=True,
-                          env=e, timeout=180)
+                          env=e, timeout=180, cwd=str(_CWD_SANDBOX))
 
 
 # ── Launcher fail-closed (safety core) ────────────────────────────────────────
+
+# Three tests below assert that review_launch refuses a HARDCODED Windows production
+# root (C:\PZ\storage and its lowercase variant).  That guard is built on
+# os.path.normcase, which folds case on Windows and is a NO-OP on POSIX — so off
+# Windows the two spellings compare unequal, the guard does not fire, and the
+# case-variant test fails while the two uppercase ones pass only by coincidence
+# (argument and production-root constant happen to resolve to the same relative
+# path).  None of the three asserts anything meaningful off Windows.  Production
+# runs only on Windows (C:\PZ, NSSM PZService), so the guard itself is correct as
+# written; the platform gate removes both the false failure and the false green.
+_WINDOWS_PATH_SEMANTICS = (
+    "asserts Windows path-normalisation semantics (ntpath.normcase case folding); "
+    "posixpath.normcase is a no-op, so the comparison is meaningless off Windows"
+)
 
 def test_launcher_refuses_live_storage_root(tmp_path):
     """A storage root that overlaps a live/production root is refused."""
@@ -50,6 +77,7 @@ def test_launcher_refuses_live_storage_root(tmp_path):
     assert "REFUSED" in r.stderr and "overlaps a live" in r.stderr
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_PATH_SEMANTICS)
 def test_launcher_refuses_production_root_unconditionally(tmp_path):
     """The hardcoded production tree C:\\PZ is refused even when STORAGE_ROOT is
     NOT set in the shell (NSSM sets it on the service process, not a hand shell)."""
@@ -59,6 +87,7 @@ def test_launcher_refuses_production_root_unconditionally(tmp_path):
     assert r.returncode == 2 and "overlaps a live" in r.stderr
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_PATH_SEMANTICS)
 def test_launcher_refuses_case_variant_production_root(tmp_path):
     """Windows is case-insensitive: a lowercase production path must still refuse."""
     env = {"STORAGE_ROOT": ""}
@@ -201,6 +230,7 @@ def test_seed_resolution_isolates_clients(tmp_path):
     assert out["null"] is None  # multi-client batch ⇒ legacy row NOT attributed
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason=_WINDOWS_PATH_SEMANTICS)
 def test_seed_refuses_production_root(tmp_path):
     """The seeder shares the launcher's isolation guard — it must refuse a
     production/non-prod-tree storage root before any write or delete."""
