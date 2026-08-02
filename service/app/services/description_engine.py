@@ -20,11 +20,26 @@ from __future__ import annotations
 
 import sys
 import threading as _threading
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.config import settings
 from ..core.logging import get_logger
 from . import document_db as ddb
+# Stdlib-only leaf policy module — supplies the per-field supplier-shorthand
+# primitive behind Rule 3 of its authoring gate. No cycle.
+from .description_length_policy import (
+    contains_supplier_shorthand as _contains_supplier_shorthand,
+)
+
+# Single item-type normalisation authority. description_grammar is a stdlib-only
+# leaf module (it owns ITEM_TYPE_PL / ITEM_TYPE_EN), so importing it here cannot
+# create a cycle.
+sys.path.insert(0, str(settings.engine_dir))
+from description_grammar import (  # noqa: E402
+    canonical_item_type as _canonical_item_type,
+    is_item_type_token as _is_item_type_token,
+)
 
 log = get_logger(__name__)
 
@@ -250,7 +265,18 @@ def _load_translations() -> tuple:
 
 
 def _normalise_item_type(item_type: str) -> str:
-    return (item_type or "").strip().upper()
+    """Canonical grammar key for *item_type* — the ONE normalisation authority.
+
+    EJL packing lists supply 3-letter "Ctg" codes ("RNG"); the grammar tables are
+    keyed by long names ("RING").  Without this bridge the English renderer fell
+    through to "RNG".title() == "Rng" and the Polish half degraded to the generic
+    "Wyrób jubilerski — ...", both of which were then locked into
+    product_descriptions with source='auto'.
+
+    Widening only: recognised aliases are canonicalised, everything else keeps the
+    previous uppercase-strip behaviour, so no caller loses a value it had before.
+    """
+    return _canonical_item_type(item_type) or (item_type or "").strip().upper()
 
 
 def _resolve_translation(item_type: str) -> Dict[str, str]:
@@ -763,7 +789,10 @@ def _english_description_from_item_type(item_type: str) -> str:
         return ""
     try:
         # Noun only: empty purity + empty stones → no metal/stone tokens.
-        return (cde.render_product_description_en(item_type, "", "") or "").strip()
+        # Normalised first: the renderer's ITEM_TYPE_EN is keyed by long names,
+        # so an un-normalised "RNG" would title-case itself into "Rng".
+        return (cde.render_product_description_en(
+            _normalise_item_type(item_type), "", "") or "").strip()
     except Exception as exc:  # pragma: no cover — defensive only
         log.warning("description_engine: render_product_description_en failed "
                     "for item_type=%r: %s", item_type, exc)
@@ -904,6 +933,91 @@ def _contains_forbidden_desc_token(*texts: str) -> Optional[str]:
     return None
 
 
+@dataclass(frozen=True)
+class ProductDescriptionValidity:
+    """Per-field usability of ONE persisted ``product_descriptions`` row.
+
+    THE shared row-level validity decision. Every consumer of the Product
+    Description Authority asks this question the same way, so the same stored
+    row can never be usable on one document path and unusable on another.
+
+    Fields carry the value that survived (``""`` when rejected), never the
+    rejected text — a caller cannot accidentally render something this policy
+    refused. ``is_usable`` is the headline: the row yields a Polish
+    description, the field every document needs.
+
+    What this does NOT decide (deliberately — these are document-specific and
+    stay with their own consumer):
+      * which SOURCES are acceptable (customs takes source='manual' only)
+      * fallbacks when the row is unusable (customs correction → classifier)
+      * final wording, compaction and legal-word rules (authoring-time
+        ``description_length_policy.validate_description_line``)
+      * readiness / warning surfacing (draft enrichment)
+    """
+    name_pl:        str
+    description_pl: str
+    description_en: str
+    is_usable:      bool
+    reasons:        Tuple[str, ...]
+
+
+def validate_product_description_row(
+    row: Optional[Dict[str, Any]],
+) -> ProductDescriptionValidity:
+    """Decide, once, which fields of a persisted authority row may be used.
+
+    Rejection rules (row-level, document-agnostic):
+      * any field carrying a FORBIDDEN_DESC_TOKENS generic placeholder
+      * ``description_pl`` whose ``material_pl`` is generic — material is part
+        of the Polish sentence, so a generic material poisons the description
+      * ``description_en`` that is nothing but a category label ("Rng",
+        "Ring") — an abbreviation is not a description
+      * ``description_en`` carrying EJL/Ethos supplier shorthand (PCS, PRS,
+        DIA&CLS …)
+
+    Each field is judged on its own: a poisoned EN never suppresses a good PL
+    (that would change which rows customs accepts).
+    """
+    row = row or {}
+    name_pl = str(row.get("name_pl") or "").strip()
+    desc_pl = str(row.get("description_pl") or "").strip()
+    desc_en = str(row.get("description_en") or "").strip()
+    mat_pl  = str(row.get("material_pl") or "").strip()
+    reasons: List[str] = []
+
+    if name_pl and _contains_forbidden_desc_token(name_pl):
+        name_pl = ""
+        reasons.append("name_pl: generic placeholder text")
+
+    bad_pl = _contains_forbidden_desc_token(desc_pl, mat_pl)
+    if desc_pl and bad_pl:
+        desc_pl = ""
+        reasons.append(f"description_pl: generic placeholder text ({bad_pl!r})")
+
+    if desc_en:
+        bad_en = _contains_forbidden_desc_token(desc_en)
+        if bad_en:
+            desc_en = ""
+            reasons.append(f"description_en: generic placeholder text ({bad_en!r})")
+        elif _is_item_type_token(desc_en):
+            desc_en = ""
+            reasons.append("description_en: category abbreviation, not a description")
+        elif _contains_supplier_shorthand(desc_en):
+            desc_en = ""
+            reasons.append("description_en: supplier shorthand, not a description")
+
+    if not desc_pl and not reasons:
+        reasons.append("description_pl: empty")
+
+    return ProductDescriptionValidity(
+        name_pl=name_pl,
+        description_pl=desc_pl,
+        description_en=desc_en,
+        is_usable=bool(desc_pl),
+        reasons=tuple(reasons),
+    )
+
+
 def resolve_product_description_for_customs(
     product_code: str,
     invoice_row:  Optional[Dict[str, Any]] = None,
@@ -983,13 +1097,16 @@ def resolve_product_description_for_customs(
         log.warning("resolver: get_product_description(%r) failed: %s", pc, exc)
         pd = None
     if pd and str(pd.get("source") or "").strip() == "manual":
-        pd_pl = str(pd.get("description_pl") or "").strip()
-        bad = _contains_forbidden_desc_token(pd_pl, str(pd.get("material_pl") or ""))
-        if pd_pl and not bad:
-            return _ok(pd_pl, "product_master_manual",
+        # source='manual' is the CUSTOMS-specific gate (only operator-approved
+        # rows may reach a customs document). Whether the row's TEXT is usable
+        # is the shared row-level decision — the same one draft enrichment
+        # asks, so a row can never be good here and poison there.
+        validity = validate_product_description_row(pd)
+        if validity.is_usable:
+            return _ok(validity.description_pl, "product_master_manual",
                        material_pl=str(pd.get("material_pl") or ""),
-                       name_pl=str(pd.get("name_pl") or ""),
-                       description_en=str(pd.get("description_en") or ""))
+                       name_pl=validity.name_pl,
+                       description_en=validity.description_en)
         # else: an approved row that is empty/generic is not usable — fall through
 
     # (c) safe invoice classifier — accepted ONLY if non-generic

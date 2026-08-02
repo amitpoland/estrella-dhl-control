@@ -18,11 +18,18 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .excel_reader import read_excel_rows as _read_excel_rows
+
+# Single item-type normalisation authority (lives next to ITEM_TYPE_PL/EN).
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from description_grammar import (  # noqa: E402
+    canonical_item_type_fuzzy as _canonical_grammar_item_type,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1142,42 +1149,17 @@ def _normalise_item_type(s: str) -> str:
     return re.sub(r"[^a-z]", "", s.lower())
 
 
-# EJL packing-list category tokens ↔ invoice description keywords.
-# The packing list uses 3-4 letter codes ("PND", "RNG"); the invoice description
-# spells them out ("PENDANT", "RING"). Map both onto a canonical key.
-_EJL_TOKEN_MAP = {
-    "pnd":      "pendant",  "pend":     "pendant", "pendant":  "pendant",
-    "rng":      "ring",     "ring":     "ring",
-    "erg":      "earring",  "er":       "earring", "earring":  "earring",
-    "ear":      "earring",  "ears":     "earring", "earrings": "earring",
-    "prs":      "earring",  # EJL packing list "PRS" (pairs) for earrings
-    "brc":      "bracelet", "br":       "bracelet","bracelet": "bracelet",
-    "nck":      "necklace", "nk":       "necklace","necklace": "necklace",
-    "bng":      "bangle",   "bangle":   "bangle",
-    "cfl":      "cufflink", "cufflink": "cufflink",
-    "chn":      "chain",    "chain":    "chain",
-}
-
-
 def _canonical_item_type(s: str) -> str:
     """
     Normalise either an EJL packing 'Ctg' code (PND/RNG/ERG…) or an invoice
     description (containing PENDANT/RING/EARRING…) to a single canonical key.
 
-    Iterates tokens LONGEST FIRST to prevent shorter substrings from winning
-    (e.g. "ring" inside "earring", or "ring" inside "earrings").
+    The alias map lives in description_grammar (the single item-type
+    normalisation authority, next to ITEM_TYPE_PL / ITEM_TYPE_EN).  This wrapper
+    only restores the lowercase contract this module's matching code relies on,
+    and the "unrecognised → squashed input" fallback used as a grouping key.
     """
-    norm = _normalise_item_type(s)
-    if not norm:
-        return ""
-    # 1. Direct hit on the abbreviation
-    if norm in _EJL_TOKEN_MAP:
-        return _EJL_TOKEN_MAP[norm]
-    # 2. Word inside a longer string — check longest tokens first
-    for tok, canon in sorted(_EJL_TOKEN_MAP.items(), key=lambda x: -len(x[0])):
-        if len(tok) >= 4 and tok in norm:
-            return canon
-    return norm
+    return (_canonical_grammar_item_type(s) or _normalise_item_type(s)).lower()
 
 
 # ── Metal / material code normalisation ──────────────────────────────────────

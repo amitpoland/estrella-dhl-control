@@ -10,9 +10,19 @@
 //   .buyer       { vat }
 //   .currency    string         — "EUR", "USD", etc. (per-client authority)
 //   .rows[]      { sr, ctg, client_po, design, kt, col, quality,
-//                  dia_wt, col_wt, net_wt, qty, unit_price, total_value, size }
+//                  dia_wt, col_wt, net_wt, qty, unit_price, total_value, size,
+//                  description_en, description_pl }
 //                where:
 //                  ctg        = "Pendant" | "Ring" | "Earrings"  (human-readable)
+//                  description_en / description_pl
+//                             = canonical bilingual product description, already
+//                               resolved onto the draft line upstream. This
+//                               component only DISPLAYS them: no lookup, no
+//                               mapping, no formatting authority, no fallback.
+//                               Blank means the authority has no usable
+//                               description (the draft carries the warning) and
+//                               the cell shows the neutral '—' — never the
+//                               category abbreviation, never purchase-side text.
 //                  kt         = "14KT" | "18KT"
 //                  col        = "W" | "P" | "Y"
 //                  quality    = stone quality string (VS1, SI1…) or ""
@@ -140,34 +150,37 @@ function EJPackingList({ packingData }) {
           ))}
         </div>
 
-        {/* ── 18-column packing table (full commercial detail) ── */}
-        <table className="ej-table" style={{ fontSize: 7.5, marginBottom: 14 }}>
+        {/* ── 19-column packing table (full commercial detail) ── */}
+        <table className="ej-table" style={{ fontSize: 7.5, marginBottom: 14, tableLayout: 'fixed', width: '100%' }}>
           <thead>
             <tr style={{ borderTop: '2px solid #0B3D2E' }}>
-              <th style={{ width: 24, textAlign: 'center',  padding: '5px 3px' }}>Sr</th>
-              <th style={{ width: 60, padding: '5px 3px' }}>Category</th>
-              <th style={{ width: 80, padding: '5px 3px' }}>Client PO</th>
-              <th style={{ width: 96, padding: '5px 3px' }}>Product Code</th>
-              <th style={{ width: 120, padding: '5px 3px' }}>Design</th>
-              <th style={{ width: 32, textAlign: 'center',  padding: '5px 3px' }}>Kt</th>
-              <th style={{ width: 26, textAlign: 'center',  padding: '5px 3px' }}>Col</th>
-              <th style={{ width: 52, textAlign: 'center',  padding: '5px 3px' }}>Quality</th>
-              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Dia Wt (ct)</th>
-              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Col Wt (ct)</th>
-              <th style={{ width: 50, textAlign: 'right',   padding: '5px 3px' }}>Gross Wt (g)</th>
-              <th style={{ width: 46, textAlign: 'right',   padding: '5px 3px' }}>Net Wt (g)</th>
-              <th style={{ width: 30, textAlign: 'right',   padding: '5px 3px' }}>Qty</th>
-              <th style={{ width: 64, textAlign: 'right',   padding: '5px 3px' }}>Value&nbsp;({cur})</th>
-              <th style={{ width: 76, textAlign: 'right',   padding: '5px 3px' }}>Total Value</th>
-              <th style={{ width: 44, textAlign: 'center',  padding: '5px 3px' }}>Size</th>
-              <th style={{ width: 54, textAlign: 'center',  padding: '5px 3px' }}>HSN</th>
-              <th style={{ width: 44, textAlign: 'center',  padding: '5px 3px' }}>Origin</th>
+              <th style={{ width: 22, textAlign: 'center',  padding: '5px 3px' }}>Sr</th>
+              <th style={{ width: 52, padding: '5px 3px' }}>Category</th>
+              <th style={{ width: 68, padding: '5px 3px' }}>Client PO</th>
+              <th style={{ width: 86, padding: '5px 3px' }}>Product Code</th>
+              <th style={{ width: 96, padding: '5px 3px' }}>Design</th>
+              {/* Bilingual product description — EN over PL in one cell, wrapped
+                  so the document stays A4-landscape wide. */}
+              <th style={{ width: 168, padding: '5px 3px' }}>Product Description (EN / PL)</th>
+              <th style={{ width: 30, textAlign: 'center',  padding: '5px 3px' }}>Kt</th>
+              <th style={{ width: 24, textAlign: 'center',  padding: '5px 3px' }}>Col</th>
+              <th style={{ width: 46, textAlign: 'center',  padding: '5px 3px' }}>Quality</th>
+              <th style={{ width: 44, textAlign: 'right',   padding: '5px 3px' }}>Dia Wt (ct)</th>
+              <th style={{ width: 44, textAlign: 'right',   padding: '5px 3px' }}>Col Wt (ct)</th>
+              <th style={{ width: 48, textAlign: 'right',   padding: '5px 3px' }}>Gross Wt (g)</th>
+              <th style={{ width: 44, textAlign: 'right',   padding: '5px 3px' }}>Net Wt (g)</th>
+              <th style={{ width: 28, textAlign: 'right',   padding: '5px 3px' }}>Qty</th>
+              <th style={{ width: 58, textAlign: 'right',   padding: '5px 3px' }}>Value&nbsp;({cur})</th>
+              <th style={{ width: 68, textAlign: 'right',   padding: '5px 3px' }}>Total Value</th>
+              <th style={{ width: 40, textAlign: 'center',  padding: '5px 3px' }}>Size</th>
+              <th style={{ width: 48, textAlign: 'center',  padding: '5px 3px' }}>HSN</th>
+              <th style={{ width: 40, textAlign: 'center',  padding: '5px 3px' }}>Origin</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={18} style={{ textAlign: 'center', color: '#94A3B8', padding: '20px', fontSize: 11 }}>
+                <td colSpan={19} style={{ textAlign: 'center', color: '#94A3B8', padding: '20px', fontSize: 11 }}>
                   No packing lines loaded — open this batch from the proforma detail page.
                 </td>
               </tr>
@@ -178,6 +191,18 @@ function EJPackingList({ packingData }) {
                 <td className="ej-mono"      style={{ padding: '3px 3px', fontSize: 7 }}>{r.client_po    || '—'}</td>
                 <td className="ej-mono"      style={{ padding: '3px 3px', fontSize: 7 }}>{r.product_code || '—'}</td>
                 <td style={{ fontWeight: 600, padding: '3px 3px' }}>{r.design || '—'}</td>
+                <td style={{ padding: '3px 4px', whiteSpace: 'normal', lineHeight: 1.25 }}>
+                  {(r.description_en || r.description_pl) ? (
+                    <React.Fragment>
+                      {r.description_en && <div>{r.description_en}</div>}
+                      {r.description_pl && (
+                        <div style={{ color: '#475569', fontStyle: 'italic', marginTop: 1 }}>
+                          {r.description_pl}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  ) : '—'}
+                </td>
                 <td className="ej-c ej-mono" style={{ padding: '3px 3px' }}>{r.kt           || '—'}</td>
                 <td className="ej-c ej-mono" style={{ padding: '3px 3px' }}>{r.col          || '—'}</td>
                 <td className="ej-c"         style={{ padding: '3px 3px' }}>{r.quality      || '—'}</td>
@@ -199,7 +224,7 @@ function EJPackingList({ packingData }) {
               <td colSpan={2} style={{ padding: '5px 6px', color: '#0B3D2E', fontSize: 8.5 }}>
                 {rows.length} design(s)
               </td>
-              <td colSpan={10} style={{ padding: '5px 4px' }}/>
+              <td colSpan={11} style={{ padding: '5px 4px' }}/>
               <td className="ej-r ej-num" style={{ padding: '5px 6px', fontSize: 8.5 }}>{totalQty}</td>
               <td style={{ padding: '5px 4px' }}/>
               <td className="ej-r ej-num" style={{ padding: '5px 6px', fontSize: 8.5 }}>

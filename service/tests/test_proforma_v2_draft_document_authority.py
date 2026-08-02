@@ -35,8 +35,13 @@ def packing():
 # ── A. documents iterate the DRAFT's lines, enriched by packing (never batch) ──
 
 def test_packing_list_iterates_editable_lines_not_batch(detail):
-    # the row loop drives off editable_lines, not the full batch packing
-    assert "const rows = _editableLines.map((ln, i) =>" in detail
+    # The row loop drives off the shared `lines` view-model — the SAME array the
+    # Proforma display and the Proforma document consume — so a description is
+    # selected in exactly one place.  That view-model is itself built from this
+    # draft's editable_lines, so the packing list is still draft-scoped and never
+    # batch-scoped; both halves are pinned below.
+    assert "const lines = (liveDraft.editable_lines || []).map((ln, i) => ({" in detail
+    assert "const rows = lines.map((line, i) => {" in detail
     # the old batch-driven loop is gone
     assert "const rows = sortedLines.map" not in detail
     assert "[...batchPackingLines].sort" not in detail

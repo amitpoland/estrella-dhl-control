@@ -32,15 +32,21 @@ def detail():
 
 
 def test_packing_list_sr_is_sequential_not_pack_sr(detail):
-    # SR is the row index (i+1), NOT the colliding packing serial.
-    assert "sr:           i + 1," in detail
+    # SR is the sequential draft-row number, NOT the colliding packing serial.
+    # Two parts, both required:
+    #   1. the shared `lines` view-model numbers the draft's rows 1..N (seq: i + 1),
+    #   2. the packing list takes its SR from that number (line.seq).
+    # Pinning only one half would let the other silently regress.
+    assert "const lines = (liveDraft.editable_lines || []).map((ln, i) => ({" in detail
+    assert "seq:      i + 1," in detail
+    assert "sr:           line.seq," in detail
     assert "sr:           pk.pack_sr" not in detail
     assert "sr: pk.pack_sr" not in detail
 
 
 def test_sr_collision_rationale_documented(detail):
     # the comment explains why pack_sr is not used (prevents regression)
-    i = detail.index("sr:           i + 1,")
+    i = detail.index("sr:           line.seq,")
     blk = detail[i - 400:i]
     assert "pack_sr collides" in blk or "collides" in blk
     assert "sequential" in blk.lower()
