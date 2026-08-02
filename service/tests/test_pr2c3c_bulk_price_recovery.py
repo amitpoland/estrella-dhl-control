@@ -121,7 +121,6 @@ def _make_draft(
                  wfirma_proforma_id, notes,
                  draft_state, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
-            ON CONFLICT(batch_id, client_name) DO NOTHING
         """, (
             f"BATCH-2C3C-{_counter}", "TestClient",
             status, currency, 1.0,
