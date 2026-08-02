@@ -376,9 +376,14 @@ function Assert-ProductionMatchesRecordedSha {
         # Reconciliation asserts against an OPERATOR-SUPPLIED identity instead of the marker,
         # because the whole premise of that mode is that the marker is the thing that is wrong.
         # This is not a weakening: the comparison below is byte-for-byte identical, and the
-        # supplied SHA is bound by a signed authorization covering exactly this direction. A
-        # deploy never passes -ExpectSha, so the marker remains the only identity a normal
-        # deploy will accept.
+        # supplied SHA is bound by a signed authorization covering exactly this direction.
+        #
+        # Two callers pass -ExpectSha, and neither substitutes a claim for the marker:
+        #   -Reconcile, above; and the runtime no-op path, which has ALREADY passed the
+        #   marker-anchored gate and re-runs this proof against the reviewed target before
+        #   advancing the marker to it. That second call ADDS a proof rather than replacing
+        #   one - it is what stops a wrong no-op verdict from laundering drift into a
+        #   "verified" identity. A normal deploy that converges bytes still never passes it.
         if ($ExpectSha -notmatch $script:SHA_RX) {
             throw "BLOCKED: -ExpectSha '$ExpectSha' is not a full 40-character lowercase commit SHA; refusing to assert production identity against an unresolvable value."
         }
@@ -594,6 +599,95 @@ function Assert-ProductionMatchesRecordedSha {
         throw "BLOCKED: PRODUCTION IDENTITY MISMATCH - the runtime application tree does not match its recorded version marker $recorded ($($mismatch.Count) changed, $($missing.Count) missing, $($extra.Count) extraneous, $($caseDiff.Count) case-differs). Production is a HYBRID: deploying now would back these bytes up under the WRONG SHA, and a later rollback would stamp an identity that does not match the files. Refusing. Reconcile production to a known SHA (operator-authorised reconciliation) before deploying."
     }
     Write-Host "  production identity verified: runtime application tree == recorded marker $recorded ($($expected.Count) files)"
+}
+
+function Get-SourceRelativePath {
+    # Repo-relative, forward-slashed pathspec for git, derived from the configured absolute
+    # path. Never written literally: source_app is the configuration authority, and a
+    # hardcoded second copy here could drift out of agreement with the bytes robocopy
+    # actually stages -- a runtime-difference check consulting a stale path would report
+    # "nothing changed" about a directory the deploy does not even copy.
+    param($Cfg, [string]$Absolute)
+    $root = $Cfg.source_root.TrimEnd('\', '/')
+    $abs = $Absolute.TrimEnd('\', '/')
+    if (-not $abs.ToLowerInvariant().StartsWith("$root\".ToLowerInvariant())) {
+        throw "BLOCKED: configured deploy source '$Absolute' is not inside source_root '$($Cfg.source_root)'. No repo-relative pathspec can be derived, and a comparison over an unresolvable path would silently compare NOTHING and report a false no-op."
+    }
+    return $abs.Substring($root.Length + 1).Replace('\', '/')
+}
+
+function Test-RuntimeUnchanged {
+    <#
+      Does the reviewed target differ, in the bytes this deploy would actually copy, from
+      the commit production is already running? Asked AFTER the identity gate, so the
+      "from" side is a proven identity and not merely a marker's claim.
+
+      Why a git question and not a path classifier: a deploy/no-deploy rules table is a
+      second source of truth that can drift away from source_app, and it drifts toward
+      "we skipped a deploy that mattered". This asks the only question the deploy cares
+      about -- do the staged bytes differ -- so it cannot disagree with what the deploy does.
+
+      Fail-safe direction. Every uncertainty resolves to $false (deploy normally), never to
+      a no-op: a tracked file under a protected dir is excluded from the artifact yet still
+      counted as a difference here, and a missing or drifted runtime engine file is a
+      difference too. The one thing NOT tolerated is an inconclusive git result -- the
+      artifact is staged from this same working tree, so a git failure here is not a reason
+      to proceed with a full deploy, it is a reason to stop.
+
+      Engine files are hashed, not trusted. The identity gate proves the runtime APPLICATION
+      tree; runtime_engine has no marker-backed proof at all, so "git says these two commits
+      carry identical engine files" would say nothing about what production actually holds.
+      Out-of-band drift there is invisible to a pure commit-to-commit diff, so the bytes are
+      compared directly. Drift means "not a no-op", and the normal path repairs it.
+    #>
+    param($Cfg, [string]$FromSha, [string]$ToSha, [string]$UnitScope)
+    Write-Host "== Runtime difference check ($FromSha -> $ToSha, scope $UnitScope) =="
+    $SRC = $Cfg.source_root
+    if ($FromSha -notmatch $script:SHA_RX -or $ToSha -notmatch $script:SHA_RX) {
+        throw "BLOCKED: the runtime difference check needs two full 40-character commit SHAs (got '$FromSha' -> '$ToSha'). Refusing to infer a no-op from an unresolvable identity."
+    }
+
+    $paths = @()
+    if ($UnitScope -ne "Engine") { $paths += Get-SourceRelativePath -Cfg $Cfg -Absolute $Cfg.source_app }
+    if ($UnitScope -ne "App") { $paths += @($Cfg.engine_files) }
+    if ($paths.Count -lt 1) {
+        throw "BLOCKED: scope '$UnitScope' produced no comparison paths. An empty pathspec makes 'git diff' compare the WHOLE tree, which is not the question being asked."
+    }
+    Write-Host "  comparing: $($paths -join ', ')"
+
+    # No stderr redirection on native git (see the identity gate's note): 2>$null in PS 5.1
+    # throws a NativeCommandError before $LASTEXITCODE can be read. --quiet exits 0 for no
+    # differences and 1 for differences; anything else is an error, never a verdict.
+    & git -C $SRC diff --quiet $FromSha $ToSha -- $paths
+    $code = $LASTEXITCODE
+    if ($code -eq 1) {
+        Write-Host "  runtime differences present - proceeding with the full deploy"
+        & git -C $SRC diff --name-status $FromSha $ToSha -- $paths
+        return $false
+    }
+    if ($code -ne 0) {
+        throw "BLOCKED: 'git diff --quiet' exited $code in $SRC - the comparison is inconclusive. That is not a reason to fall back to a full deploy: the release artifact is staged from this same working tree, so a git failure here casts doubt on the bytes that would ship. Resolve the source repository state first."
+    }
+
+    if ($UnitScope -ne "App") {
+        foreach ($ef in $Cfg.engine_files) {
+            $s = Join-Path $SRC $ef
+            $d = Join-Path $Cfg.runtime_engine $ef
+            if (-not (Test-Path $s)) { throw "BLOCKED: engine source missing: $s" }
+            if (-not (Test-Path $d)) {
+                Write-Host "  engine file absent from the runtime engine directory - NOT a no-op"
+                return $false
+            }
+            if ((Get-FileHash $s -Algorithm SHA256).Hash -ne (Get-FileHash $d -Algorithm SHA256).Hash) {
+                Write-Host "  engine bytes in production differ from source (out-of-band drift) - NOT a no-op"
+                return $false
+            }
+            Write-Host "  engine unchanged and byte-identical in production: $ef"
+        }
+    }
+
+    Write-Host "  no runtime differences: this deploy would copy the bytes production already has"
+    return $true
 }
 
 function Invoke-Preflight {
@@ -1251,6 +1345,46 @@ function Invoke-Deploy {
             }
             Write-Host "== Production identity gate skipped (-Bootstrap: no prior tree) =="
         }
+
+        # Runtime no-op short-circuit. A merge that changed only tests, docs or CI cannot
+        # alter the staged bytes -- the artifact is built from source_app plus engine_files
+        # and nothing else -- so stopping the service, staging, mirroring and restarting
+        # would be an outage-shaped way of copying identical files over themselves.
+        #
+        # Deliberately placed AFTER the identity gate: the comparison is only meaningful
+        # because the "from" side has just been PROVEN to be what production runs. Asking
+        # this question against an unverified marker would decide "nothing to do" from a
+        # claim rather than a fact. -Bootstrap has no prior tree and no marker, so it never
+        # takes this path.
+        if (-not $Bootstrap) {
+            $recordedSha = Read-VersionMarker -Path $cfg.version_file
+            if (Test-RuntimeUnchanged -Cfg $cfg -FromSha $recordedSha -ToSha $ReviewedSHA -UnitScope $Scope) {
+                Write-Host ""
+                Write-Host "== RUNTIME NO-OP: the reviewed target changes nothing this deploy would copy =="
+                # The marker advances only if production bytes ARE the target tree. The diff
+                # above is a claim about two commits; this is a proof about the actual runtime.
+                # Were that comparison ever wrong, advancing the marker would launder real
+                # drift into a "verified" identity and the next deploy would gate against a
+                # lie -- the one failure this optimisation could plausibly cause. So the
+                # existing gate is re-run against the target instead of trusting the shortcut.
+                Assert-ProductionMatchesRecordedSha -Cfg $cfg -ExpectSha $ReviewedSHA
+                Write-VersionFile -Cfg $cfg -Sha $ReviewedSHA
+                Write-Host ""
+                if ($script:PlanOnly) {
+                    Write-Host "PLAN COMPLETE - runtime no-op. Nothing was written; no unit exists."
+                }
+                else {
+                    Write-Host "RUNTIME NO-OP COMPLETE  from=$recordedSha  to=$ReviewedSHA  scope=$Scope"
+                    Write-Host "  Service NOT stopped. No artifact staged. No files copied. Service NOT restarted."
+                    Write-Host "  No backup unit was created: no application byte changed, so there is nothing to restore"
+                    Write-Host "  and no rollback identifier is implied. The version marker moved and nothing else did."
+                    Write-Host "  Previous marker was $recordedSha; reverting it is an operator-authorised reconciliation."
+                    Write-Host "  Validate:  Test-PZDeployClose.ps1 -ExpectedSHA $ReviewedSHA"
+                }
+                return
+            }
+        }
+
         Set-ServiceState -Cfg $cfg -Target Stopped
         $unit = $null
         try {
