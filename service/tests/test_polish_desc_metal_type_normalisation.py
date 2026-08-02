@@ -368,7 +368,10 @@ class TestUnrecognisedMetalReturns422NotHttp500:
         )
 
         from app.main import app
-        with TestClient(app, raise_server_exceptions=False) as client:
+        from admin_auth import admin_session
+        # 82327b52 (RBAC Phase C) put this route behind a session guard, which has
+        # no dev bypass. app.main:app is shared — scope the identity.
+        with admin_session(app), TestClient(app, raise_server_exceptions=False) as client:
             r = client.post(
                 "/api/v1/dhl/generate-description/TEST_BATCH_UNKNOWN_METAL",
                 headers={"X-API-Key": "test-key"},

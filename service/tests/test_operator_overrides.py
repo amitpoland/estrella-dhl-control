@@ -42,6 +42,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from admin_auth import grant_admin
 from app.core.security import require_api_key
 from app.services.batch_state_normalizer import (
     _compute_effective_blocked,
@@ -94,6 +95,9 @@ def _make_client(tmp_path: Path, monkeypatch) -> TestClient:
     app = FastAPI()
     app.include_router(rd.router)
     app.dependency_overrides[require_api_key] = lambda: None
+    # The override route moved onto require_admin in 82327b52 (RBAC Phase C).
+    # require_admin has no dev bypass, so bypassing require_api_key alone → 401.
+    grant_admin(app)
     return TestClient(app, raise_server_exceptions=True)
 
 

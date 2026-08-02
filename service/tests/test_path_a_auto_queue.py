@@ -16,6 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
+from admin_auth import admin_session
+
 _SVC = Path(__file__).parent.parent
 if str(_SVC) not in sys.path:
     sys.path.insert(0, str(_SVC))
@@ -547,11 +549,14 @@ def test_proactive_endpoint_rejects_auto_actor_operator_id(tmp_path):
     # operator_id matches the sentinel (placement after missing-id check
     # but before batch lookup).
     headers = {"X-API-Key": settings.api_key} if settings.api_key else {}
-    r = client.post(
-        "/api/v1/dhl/proactive-dispatch/SOME_BATCH",
-        json={"operator_id": "system:path_a_auto_queue"},
-        headers=headers,
-    )
+    # 82327b52 (RBAC Phase C) put this route behind a session guard, which has no
+    # dev bypass. app.main:app is shared, so the identity must be scoped.
+    with admin_session(app):
+        r = client.post(
+            "/api/v1/dhl/proactive-dispatch/SOME_BATCH",
+            json={"operator_id": "system:path_a_auto_queue"},
+            headers=headers,
+        )
     assert r.status_code == 422
     detail = r.json().get("detail", {})
     assert detail.get("code") == "auto_actor_sentinel_reserved"
@@ -566,11 +571,12 @@ def test_proactive_endpoint_rejects_padded_auto_actor_operator_id(tmp_path):
 
     client = TestClient(app)
     headers = {"X-API-Key": settings.api_key} if settings.api_key else {}
-    r = client.post(
-        "/api/v1/dhl/proactive-dispatch/SOME_BATCH",
-        json={"operator_id": " system:path_a_auto_queue "},
-        headers=headers,
-    )
+    with admin_session(app):
+        r = client.post(
+            "/api/v1/dhl/proactive-dispatch/SOME_BATCH",
+            json={"operator_id": " system:path_a_auto_queue "},
+            headers=headers,
+        )
     assert r.status_code == 422
     assert r.json().get("detail", {}).get("code") == "auto_actor_sentinel_reserved"
 
@@ -589,11 +595,12 @@ def test_approve_ignores_auto_actor_supplied_in_body(tmp_path):
 
     client = TestClient(app)
     headers = {"X-API-Key": settings.api_key} if settings.api_key else {}
-    r = client.post(
-        "/api/v1/action-proposals/some-id/approve",
-        json={"approved_by": "system:path_a_auto_queue"},
-        headers=headers,
-    )
+    with admin_session(app):
+        r = client.post(
+            "/api/v1/action-proposals/some-id/approve",
+            json={"approved_by": "system:path_a_auto_queue"},
+            headers=headers,
+        )
     # Body sentinel is ignored (no reserved-sentinel 422); with no such
     # proposal the request resolves to 404 *after* the body is discarded.
     assert r.status_code != 422
