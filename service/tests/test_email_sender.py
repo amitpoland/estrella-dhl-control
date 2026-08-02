@@ -23,25 +23,22 @@ import pytest
 _SVC = Path(__file__).parent.parent
 sys.path.insert(0, str(_SVC))
 
+from settings_factory import make_test_settings   # noqa: E402
+
 
 def _settings(tmp_path: Path, **overrides):
-    class S:
-        storage_root  = tmp_path
-        smtp_host     = "smtppro.zoho.in"
-        smtp_port     = 465
-        smtp_user     = None
-        smtp_password = None
-        smtp_use_ssl  = True
-        mcp_send_max_attachment_bytes = 200_000
-        # Lesson E Property 5: _assert_production_env_for_smtp() refuses to
-        # connect when credentials are set outside prod. These tests drive the
-        # real send path with smtplib mocked, so the stub must declare the
-        # environment the guard requires. The guard itself is covered by
-        # test_security_hardening_223_224.py.
-        environment   = "prod"
-    for k, v in overrides.items():
-        setattr(S, k, v)
-    return S()
+    """Real ``Settings`` for the email-sender boundary.
+
+    Delegates to the shared factory so this file cannot drift from
+    ``app.core.config.Settings`` again — the previous hand-built stub silently
+    lacked ``environment`` once the Lesson E guard began reading it.
+
+    The default posture is non-production. Every test below that configures SMTP
+    credentials passes ``environment="prod"`` explicitly, because that is the
+    only combination ``_assert_production_env_for_smtp()`` permits; the guard
+    itself is covered by ``test_security_hardening_223_224.py``.
+    """
+    return make_test_settings(tmp_path, **overrides)
 
 
 def _seed_queue(tmp_path: Path, queue_id: str = "Q1", batch_id: str = "B1",
@@ -108,7 +105,7 @@ def test_no_smtp_returns_smtp_not_configured(tmp_path, monkeypatch):
 
 def test_already_sent_returns_existing_state(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.email_sender.settings",
-                       _settings(tmp_path, smtp_user="x", smtp_password="y"))
+                       _settings(tmp_path, environment="prod", smtp_user="x", smtp_password="y"))
     qid, _ = _seed_queue(tmp_path, status="sent")
     queue = json.loads((tmp_path / "email_queue.json").read_text())
     queue[0]["sent_at"] = "2026-04-29T01:00:00Z"
@@ -128,7 +125,7 @@ def test_already_sent_returns_existing_state(tmp_path, monkeypatch):
 
 def test_successful_send_marks_sent_and_updates_audit(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.email_sender.settings",
-                       _settings(tmp_path, smtp_user="info@estrellajewels.eu",
+                       _settings(tmp_path, environment="prod", smtp_user="info@estrellajewels.eu",
                                  smtp_password="app-pass"))
     qid, batch_id = _seed_queue(tmp_path, attachment_files=2)
 
@@ -170,7 +167,7 @@ def test_successful_send_marks_sent_and_updates_audit(tmp_path, monkeypatch):
 
 def test_missing_attachment_returns_error(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.email_sender.settings",
-                       _settings(tmp_path, smtp_user="x", smtp_password="y"))
+                       _settings(tmp_path, environment="prod", smtp_user="x", smtp_password="y"))
     qid, batch_id = _seed_queue(tmp_path, attachment_files=1)
     # Delete the file
     audit = json.loads((tmp_path / "outputs" / batch_id / "audit.json").read_text())
@@ -190,7 +187,7 @@ def test_missing_attachment_returns_error(tmp_path, monkeypatch):
 
 def test_smtp_auth_failure(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.email_sender.settings",
-                       _settings(tmp_path, smtp_user="x", smtp_password="bad"))
+                       _settings(tmp_path, environment="prod", smtp_user="x", smtp_password="bad"))
     qid, _ = _seed_queue(tmp_path, attachment_files=0)
 
     fake_smtp = MagicMock()
@@ -211,7 +208,7 @@ def test_smtp_auth_failure(tmp_path, monkeypatch):
 
 def test_send_does_not_touch_financial_fields(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.email_sender.settings",
-                       _settings(tmp_path, smtp_user="x", smtp_password="y"))
+                       _settings(tmp_path, environment="prod", smtp_user="x", smtp_password="y"))
     qid, batch_id = _seed_queue(tmp_path, attachment_files=1)
     audit = json.loads((tmp_path / "outputs" / batch_id / "audit.json").read_text())
     audit["invoice_totals"]    = {"total_cif_usd": 10000.00}
@@ -412,7 +409,7 @@ def test_proactive_proposal_attachments_resolved_and_sent(tmp_path, monkeypatch)
     """Proactive-dispatch attachments must be picked up from the
     proposal.draft.attachments path and attached to the MIME."""
     monkeypatch.setattr("app.services.email_sender.settings",
-                        _settings(tmp_path, smtp_user="x", smtp_password="y"))
+                        _settings(tmp_path, environment="prod", smtp_user="x", smtp_password="y"))
     qid, _, atts = _seed_queue_with_proposal_attachments(
         tmp_path, attachment_files=2,
     )
@@ -433,7 +430,7 @@ def test_proactive_with_attachment_list_cannot_send_body_only(tmp_path, monkeypa
     resolver returns zero (e.g. attachments key in an unscanned location),
     the send must be refused with attachments_unresolved, NOT marked sent."""
     monkeypatch.setattr("app.services.email_sender.settings",
-                        _settings(tmp_path, smtp_user="x", smtp_password="y"))
+                        _settings(tmp_path, environment="prod", smtp_user="x", smtp_password="y"))
     qid, _, _ = _seed_queue_with_proposal_attachments(
         tmp_path, attachment_files=2,
     )
@@ -462,7 +459,7 @@ def test_missing_attachment_marks_queue_error_and_does_not_send(tmp_path, monkey
     refused AND the queue entry's error field is updated so a retry sees
     the prior failure."""
     monkeypatch.setattr("app.services.email_sender.settings",
-                        _settings(tmp_path, smtp_user="x", smtp_password="y"))
+                        _settings(tmp_path, environment="prod", smtp_user="x", smtp_password="y"))
     qid, _, atts = _seed_queue_with_proposal_attachments(
         tmp_path, attachment_files=1,
     )
@@ -484,8 +481,9 @@ def test_missing_attachment_marks_queue_error_and_does_not_send(tmp_path, monkey
 def test_expected_attachment_count_reads_proposal_draft(tmp_path, monkeypatch):
     """_expected_attachment_count must count attachments from
     action_proposals[*].draft.attachments when proposal.email_id matches."""
-    monkeypatch.setattr("app.services.email_sender.settings",
-                        _settings(tmp_path, smtp_user="x", smtp_password="y"))
+    # No credentials and no "prod": this counts attachments on a queue entry and
+    # never reaches the SMTP send path, so it must not carry a production posture.
+    monkeypatch.setattr("app.services.email_sender.settings", _settings(tmp_path))
     qid, _, _ = _seed_queue_with_proposal_attachments(
         tmp_path, attachment_files=6,
     )
