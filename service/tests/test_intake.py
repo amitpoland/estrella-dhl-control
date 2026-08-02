@@ -759,7 +759,7 @@ class TestRealEjlInvoicePackingPair:
 
     def test_legacy_xls_packing_list_extracts_three_rows(self):
         from app.services.invoice_packing_extractor import extract_packing
-        rows, parser, version = extract_packing(_REAL_PACKING)
+        rows, parser, version, _ = extract_packing(_REAL_PACKING)
         assert len(rows) == 3
         assert all(r.get("invoice_no") == "EJL/26-27/013" for r in rows)
         # All 3 rows should have a quantity & a value
