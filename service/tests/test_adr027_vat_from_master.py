@@ -307,10 +307,10 @@ def _setup_db_for_draft(tmp_path: Path, cm: CustomerMaster) -> pildb.ProformaDra
             )
             doc_conn.execute(
                 "INSERT OR IGNORE INTO sales_packing_lines "
-                "(id, batch_id, sales_document_id, client_name, design_no, "
+                "(id, batch_id, sales_document_id, client_name, product_code, design_no, "
                 " quantity, unit_price, currency, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ("spl-test-1", BATCH, "sdoc-test-1", CLIENT, "R1",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("spl-test-1", BATCH, "sdoc-test-1", CLIENT, PRODUCT_CODE, "R1",
                  1.0, 100.0, "EUR", now),
             )
 
