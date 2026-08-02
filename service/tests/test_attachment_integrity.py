@@ -33,9 +33,11 @@ import json
 import os
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+
+from settings_factory import make_test_settings
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -224,8 +226,7 @@ def test_terminal_status_set_on_failure(tmp_path):
         "subject": "Test",
     }]), encoding="utf-8")
 
-    with patch("service.app.services.email_sender.settings") as mock_settings:
-        mock_settings.storage_root = tmp_path
+    with patch("service.app.services.email_sender.settings", make_test_settings(tmp_path)):
 
         # Patch _load_queue and _save_queue to use our temp file
         def _load():
@@ -277,10 +278,9 @@ def test_audit_timeline_event_logged_on_failure(tmp_path):
             "detail": detail or {},
         })
 
-    with patch("service.app.services.email_sender.settings") as mock_settings, \
+    with patch("service.app.services.email_sender.settings", make_test_settings(tmp_path)), \
          patch("service.app.services.email_sender.tl") as mock_tl:
 
-        mock_settings.storage_root = tmp_path
         mock_tl.log_event.side_effect = fake_log_event
 
         _log_attachment_failure_to_audit(
@@ -318,9 +318,8 @@ def test_queue_entry_attachments_bypass_audit_timing_race(tmp_path):
         attachments=[{"label": "Polish Description", "path": str(pdf)}],
     )
 
-    with patch("service.app.services.email_sender.settings") as mock_settings:
-        mock_settings.storage_root = tmp_path  # no audit.json exists here
-
+    with patch("service.app.services.email_sender.settings", make_test_settings(tmp_path)):
+        # storage_root = tmp_path, where no audit.json exists
         found, missing = _attachments_for_queue(entry)
 
     assert found == [pdf], f"Expected [{pdf}], got {found}"
@@ -357,8 +356,7 @@ def test_empty_queue_attachments_is_authoritative(tmp_path):
         "attachments": [],   # explicitly empty — declared by caller
     }
 
-    with patch("service.app.services.email_sender.settings") as mock_settings:
-        mock_settings.storage_root = tmp_path
+    with patch("service.app.services.email_sender.settings", make_test_settings(tmp_path)):
 
         found, missing = _attachments_for_queue(entry)
 

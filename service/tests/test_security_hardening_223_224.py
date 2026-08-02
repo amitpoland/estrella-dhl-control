@@ -14,65 +14,78 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+from settings_factory import make_test_settings
+
 
 # ─── Issue #223 — Lesson E Property 5: ENV isolation ────────────────────────
 
 class TestEmailEnvIsolationGuard:
-    """_assert_production_env_for_smtp must raise when env != prod and SMTP configured."""
+    """_assert_production_env_for_smtp must raise when env != prod and SMTP configured.
 
-    def test_raises_when_smtp_configured_in_dev(self, tmp_path):
+    These use the real Settings model via ``make_test_settings`` rather than a
+    ``MagicMock``. A mock manufactures any attribute on demand, so it cannot fail
+    when the guard starts reading a field that no longer exists — which is the
+    exact defect that broke test_email_sender.py. The guard is a security
+    control; its own tests must be checked against the real contract.
+    """
+
+    def test_raises_when_smtp_configured_in_dev(self, tmp_path, monkeypatch):
         """Dev environment with SMTP creds must not connect."""
         from app.services.email_sender import _assert_production_env_for_smtp
 
-        with patch("app.services.email_sender.settings") as mock_settings:
-            mock_settings.smtp_user = "user@example.com"
-            mock_settings.smtp_password = "secret"
-            mock_settings.smtp_host = "smtp.zoho.com"
-            mock_settings.environment = "dev"
+        monkeypatch.setattr(
+            "app.services.email_sender.settings",
+            make_test_settings(tmp_path, environment="dev",
+                               smtp_user="user@example.com",
+                               smtp_password="secret",
+                               smtp_host="smtp.zoho.com"),
+        )
 
-            with pytest.raises(RuntimeError, match="SMTP credentials are configured but environment="):
-                _assert_production_env_for_smtp()
+        with pytest.raises(RuntimeError, match="SMTP credentials are configured but environment="):
+            _assert_production_env_for_smtp()
 
-    def test_no_raise_in_prod_with_smtp(self):
+    def test_no_raise_in_prod_with_smtp(self, tmp_path, monkeypatch):
         """Production environment with SMTP creds is the intended state."""
         from app.services.email_sender import _assert_production_env_for_smtp
 
-        with patch("app.services.email_sender.settings") as mock_settings:
-            mock_settings.smtp_user = "user@example.com"
-            mock_settings.smtp_password = "secret"
-            mock_settings.smtp_host = "smtp.zoho.com"
-            mock_settings.environment = "prod"
+        monkeypatch.setattr(
+            "app.services.email_sender.settings",
+            make_test_settings(tmp_path, environment="prod",
+                               smtp_user="user@example.com",
+                               smtp_password="secret",
+                               smtp_host="smtp.zoho.com"),
+        )
 
-            # Must not raise
-            _assert_production_env_for_smtp()
+        # Must not raise
+        _assert_production_env_for_smtp()
 
-    def test_no_raise_when_smtp_not_configured(self):
+    def test_no_raise_when_smtp_not_configured(self, tmp_path, monkeypatch):
         """No SMTP creds → guard is a no-op (nothing to block)."""
         from app.services.email_sender import _assert_production_env_for_smtp
 
-        with patch("app.services.email_sender.settings") as mock_settings:
-            mock_settings.smtp_user = ""
-            mock_settings.smtp_password = ""
-            mock_settings.smtp_host = ""
-            mock_settings.environment = "dev"
+        monkeypatch.setattr(
+            "app.services.email_sender.settings",
+            make_test_settings(tmp_path, environment="dev",
+                               smtp_user="", smtp_password="", smtp_host=""),
+        )
 
-            # No creds → no SMTP risk → no raise
-            _assert_production_env_for_smtp()
+        # No creds → no SMTP risk → no raise
+        _assert_production_env_for_smtp()
 
-    def test_error_message_identifies_current_env(self):
+    def test_error_message_identifies_current_env(self, tmp_path, monkeypatch):
         """Error message must include the actual environment value for debuggability."""
         from app.services.email_sender import _assert_production_env_for_smtp
 
-        with patch("app.services.email_sender.settings") as mock_settings:
-            mock_settings.smtp_user = "u"
-            mock_settings.smtp_password = "p"
-            mock_settings.smtp_host = "h"
-            mock_settings.environment = "dev"
+        monkeypatch.setattr(
+            "app.services.email_sender.settings",
+            make_test_settings(tmp_path, environment="dev",
+                               smtp_user="u", smtp_password="p", smtp_host="h"),
+        )
 
-            with pytest.raises(RuntimeError) as exc_info:
-                _assert_production_env_for_smtp()
+        with pytest.raises(RuntimeError) as exc_info:
+            _assert_production_env_for_smtp()
 
-            assert "'dev'" in str(exc_info.value)
+        assert "'dev'" in str(exc_info.value)
 
 
 # ─── Issue #224 — Path traversal guard in save_file ────────────────────────
