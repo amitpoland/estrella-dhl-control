@@ -135,6 +135,22 @@ _REGULAR_INVOICE_XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _run_async(coro):
+    """Run *coro* on a dedicated event loop.
+
+    A bare ``asyncio.get_event_loop()`` breaks as soon as any other test
+    module has called ``asyncio.run()``: that sets the current loop to None,
+    and on 3.9 ``get_event_loop()`` then raises "no current event loop"
+    instead of creating one. Owning the loop here keeps this module
+    independent of collection order.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _make_fetch_ok(raw_xml=_PZ_XML):
     from app.services.wfirma_client import PZFetchResult
     return PZFetchResult(ok=True, pz_doc_id=_DOC_ID, pz_number=_PZ_NUMBER,
@@ -160,13 +176,13 @@ def _make_draft(wfirma_proforma_id=None):
 def _run_pz_doc(batch_id=_BATCH):
     import asyncio
     from app.api.routes_wfirma import wfirma_pz_document
-    return asyncio.get_event_loop().run_until_complete(wfirma_pz_document(batch_id))
+    return _run_async(wfirma_pz_document(batch_id))
 
 
 def _run_proforma_doc(batch_id=_BATCH, client_name=_CLIENT):
     import asyncio
     from app.api.routes_proforma import proforma_document
-    return asyncio.get_event_loop().run_until_complete(
+    return _run_async(
         proforma_document(batch_id, client_name)
     )
 

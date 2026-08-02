@@ -47,6 +47,24 @@ _AUDIT_WITH_DOC_ID = {
     "wfirma_export": {"wfirma_pz_doc_id": "PZ_EXISTING_999"},
 }
 
+def _run_async(coro):
+    """Run *coro* on a dedicated event loop.
+
+    A bare ``asyncio.get_event_loop()`` breaks as soon as any other test
+    module has called ``asyncio.run()``: that sets the current loop to None,
+    and on 3.9 ``get_event_loop()`` then raises "no current event loop"
+    instead of creating one. Owning the loop here keeps this module
+    independent of collection order.
+    """
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _make_row(product_code: str, qty: float = 2.0, price: float = 173.00) -> dict:
     return {
         "product_code":    product_code,
@@ -85,7 +103,7 @@ def _run(batch_id=_BATCH, x_operator=None):
     # Call the route function directly: FastAPI Header() defaults are not
     # resolved off-server, so pass x_operator explicitly (the route signature
     # gained the X-Operator attribution header).
-    return asyncio.get_event_loop().run_until_complete(
+    return _run_async(
         wfirma_pz_create(batch_id, x_operator=x_operator))
 
 
