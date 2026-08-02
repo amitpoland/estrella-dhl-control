@@ -153,6 +153,49 @@ def test_engine_filenames_only_in_config():
     )
 
 
+def test_engine_files_cover_every_root_module_the_app_imports():
+    """A root module the app imports but the deploy never copies is a startup crash.
+
+    Repository-root modules live OUTSIDE service/app, so the application sync does
+    not carry them; Invoke-EngineSync copies exactly config.engine_files. Until
+    2026-08-02 that list held 2 of the 16 root modules service/app imports, so the
+    other 14 were deployed NEVER -- they sat at whatever version a past manual copy
+    left. description_grammar.py had drifted since 2026-06-08, and PR #1070 added
+    three functions to it: the app tree would have imported symbols the runtime copy
+    did not have, failing at import time in four modules loaded at startup.
+
+    The suite cannot catch that by importing anything -- under pytest the repository
+    root is on sys.path, so every root module is always current. Only the DEPLOYED
+    layout splits app from engine. So this pin is a source fact: whatever service/app
+    imports from the repository root must be in the list that gets copied.
+    """
+    cfg = json.loads(_read(CONFIG))
+    root_modules = {p.stem for p in REPO.glob("*.py")}
+    import_rx = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+
+    imported = {}
+    for py in sorted((REPO / "service" / "app").rglob("*.py")):
+        for name in import_rx.findall(_read(py)):
+            if name in root_modules:
+                imported.setdefault(name, str(py.relative_to(REPO)).replace("\\", "/"))
+
+    declared = {n[:-3] for n in cfg["engine_files"] if n.endswith(".py")}
+    missing = {m: src for m, src in sorted(imported.items()) if m not in declared}
+    assert not missing, (
+        "these repository-root modules are imported by service/app but are NOT in "
+        "engine_files, so no deployment can ever update them in the runtime engine "
+        "directory (first importer shown): " + json.dumps(missing, indent=2)
+    )
+
+
+def test_engine_files_are_real_root_modules():
+    """The list must not name a missing file: robocopy would copy nothing and the
+    absence would surface only as a runtime ImportError in production."""
+    cfg = json.loads(_read(CONFIG))
+    absent = [n for n in cfg["engine_files"] if not (REPO / n).is_file()]
+    assert not absent, f"engine_files names non-existent repository-root files: {absent}"
+
+
 def test_test_counts_only_in_baseline_contract():
     """Deploy surfaces must not hardcode pass counts (they drifted to 604/469/412)."""
     count_rx = re.compile(r"\b(?:412|469|584|604)\b")
