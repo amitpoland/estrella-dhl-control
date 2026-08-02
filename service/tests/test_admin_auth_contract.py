@@ -13,8 +13,10 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+import pytest
+
 from app.auth.dependencies import get_current_user, require_admin, require_role
-from admin_auth import ADMIN_USER, admin_session, grant_admin
+from admin_auth import ADMIN_USER, SharedAppLeakError, admin_session, grant_admin
 
 
 def _app() -> FastAPI:
@@ -92,6 +94,31 @@ def test_admin_session_restores_a_pre_existing_override():
     with admin_session(app):
         pass
     assert app.dependency_overrides[get_current_user] is sentinel
+
+
+def test_grant_admin_refuses_the_shared_app_singleton():
+    """The unscoped form must not be usable on an app that outlives the test.
+
+    Restoration is deliberately not universal — grant_admin never restores, because
+    the apps it serves are built and discarded inside the test. That is only safe
+    while it cannot reach the shared singleton, so the separation is enforced here
+    rather than left to convention.
+    """
+    from app.main import app as shared_app
+
+    with pytest.raises(SharedAppLeakError, match="admin_session"):
+        grant_admin(shared_app)
+    assert get_current_user not in shared_app.dependency_overrides, (
+        "the refused call must leave the shared app untouched"
+    )
+
+
+def test_admin_session_is_the_permitted_form_on_the_shared_app():
+    from app.main import app as shared_app
+
+    with admin_session(shared_app):
+        assert get_current_user in shared_app.dependency_overrides
+    assert get_current_user not in shared_app.dependency_overrides
 
 
 def test_admin_session_restores_after_an_exception():

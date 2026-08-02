@@ -33,10 +33,16 @@ rejects it. Authentication is supplied; authorisation is still enforced.
 """
 from __future__ import annotations
 
+import sys
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator
 
 from app.auth.dependencies import get_current_user
+
+
+class SharedAppLeakError(RuntimeError):
+    """An unscoped admin override was aimed at an app that outlives the test."""
+
 
 ADMIN_USER: Dict[str, Any] = {
     "id":          "test-admin",
@@ -52,7 +58,20 @@ def grant_admin(app):
 
     For an app the test builds and throws away. Returns ``app`` so it can be
     chained onto ``FastAPI()`` construction.
+
+    Refuses the shared ``app.main:app`` singleton, which outlives the test — an
+    override left on it would silently authenticate every suite that ran after,
+    turning unrelated auth assertions green for the wrong reason. Use
+    ``admin_session`` there. ``sys.modules.get`` rather than an import, so this
+    check never constructs the real app just to compare against it.
     """
+    main = sys.modules.get("app.main")
+    if main is not None and app is getattr(main, "app", None):
+        raise SharedAppLeakError(
+            "grant_admin() was called on the shared app.main:app singleton. The "
+            "override would outlive this test and authenticate every suite that "
+            "runs after it. Use `with admin_session(app):` instead."
+        )
     app.dependency_overrides[get_current_user] = lambda: dict(ADMIN_USER)
     return app
 
@@ -66,7 +85,9 @@ def admin_session(app) -> Iterator[Any]:
     silently authenticate unrelated suites that ran after it.
     """
     previous = app.dependency_overrides.get(get_current_user)
-    grant_admin(app)
+    # Set directly, not via grant_admin: the shared singleton is precisely what
+    # this form exists to serve, and grant_admin refuses it by design.
+    app.dependency_overrides[get_current_user] = lambda: dict(ADMIN_USER)
     try:
         yield app
     finally:
