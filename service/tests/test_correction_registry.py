@@ -20,6 +20,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from admin_auth import grant_admin
 from app.services import correction_registry as cr
 from app.api.routes_correction_registry import router as cr_router
 
@@ -41,6 +42,8 @@ def isolated_registry(tmp_path, monkeypatch):
 def client(isolated_registry):
     app = FastAPI()
     app.include_router(cr_router)
+    # Decision routes moved onto RBAC session guards in 82327b52 — no dev bypass.
+    grant_admin(app)
     return TestClient(app)
 
 

@@ -37,6 +37,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from admin_auth import grant_admin
 from app.core.security import require_api_key
 from app.services import broker_followup_detector as bfd
 from app.services.audit_merge import PRESERVED_KEYS
@@ -77,6 +78,8 @@ def _make_client(tmp_path: Path, monkeypatch) -> tuple[TestClient, Path]:
     app = FastAPI()
     app.include_router(rd.router)
     app.dependency_overrides[require_api_key] = lambda: None
+    # Route moved onto require_admin in 82327b52 (RBAC Phase C) — no dev bypass.
+    grant_admin(app)
     return TestClient(app, raise_server_exceptions=True), outputs
 
 

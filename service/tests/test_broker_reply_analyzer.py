@@ -48,6 +48,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from admin_auth import grant_admin
 from app.core.security import require_api_key
 from app.api.routes_dashboard import _classify_broker_reply, router
 
@@ -59,6 +60,8 @@ def client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_api_key] = lambda: None
+    # Route moved onto require_admin in 82327b52 (RBAC Phase C) — no dev bypass.
+    grant_admin(app)
     return TestClient(app, raise_server_exceptions=True)
 
 

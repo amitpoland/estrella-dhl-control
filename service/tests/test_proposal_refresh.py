@@ -173,9 +173,12 @@ class TestProposalRefresh:
 
         from fastapi.testclient import TestClient
         from app.main import app
+        from admin_auth import admin_session
         client = TestClient(app)
 
-        with patch("app.agents.cowork_coordinator.detect_triggers", return_value=_dsk_trigger()):
+        # 82327b52 (RBAC Phase C) put action-proposals behind require_role, which
+        # has no dev bypass. app.main:app is shared — scope the identity.
+        with patch("app.agents.cowork_coordinator.detect_triggers", return_value=_dsk_trigger()),              admin_session(app):
             resp = client.post(f"/api/v1/action-proposals/{bid}/refresh",
                                headers={"X-API-Key": "test-key"})
 

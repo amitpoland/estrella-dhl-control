@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from app.services import cn_hsn_classifier as cn
 from app.services import correction_registry as cr
 from app.services import dhl_zc429_intake as zc
+from admin_auth import grant_admin
 from app.api.routes_dashboard import router as dashboard_router
 
 
@@ -160,6 +161,10 @@ def client(staged, monkeypatch):
     monkeypatch.setenv("API_KEY", "")
     app = FastAPI()
     app.include_router(dashboard_router)
+    # An empty API_KEY used to mean "auth disabled" via require_api_key's dev
+    # bypass. 82327b52 (RBAC Phase C) moved the decision routes onto session
+    # guards, which have no such bypass, so identity must be injected.
+    grant_admin(app)
     return TestClient(app)
 
 
