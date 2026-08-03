@@ -166,12 +166,21 @@ def test_document_delete_rejects_nonmaster_session_when_enforced(monkeypatch):
 def test_document_delete_default_config_is_no_op(monkeypatch):
     """With master_role_enforcement OFF (default) the write guard degrades to
     api-key semantics: a valid session reaches the handler (404 for the unknown
-    document), proving MEDIUM-2 is a no-op under current config."""
+    document), proving MEDIUM-2 is a no-op under current config.
+
+    `api_key` must be patched non-empty. The test suite leaves settings.api_key
+    at "", and `require_api_key` returns at its `# dev only — auth disabled`
+    branch BEFORE reading the cookie — so without this the session below is
+    decorative and the test passes identically with no cookie at all, proving
+    only that an UNAUTHENTICATED request reaches the handler. It read as passing
+    while testing nothing it names.
+    """
     from app.main import app
     from app.core.config import settings
     from app.auth.service import create_user, create_token
 
     monkeypatch.setattr(settings, "master_role_enforcement", False)
+    monkeypatch.setattr(settings, "api_key", "test-api-key")
 
     with TestClient(app) as c:
         u = create_user(
@@ -185,8 +194,31 @@ def test_document_delete_default_config_is_no_op(monkeypatch):
             "/api/v1/upload/shipment/BATCH_X/documents/DOC_MISSING",
             headers={"X-Confirm-Delete": "true"},
         )
-        # Auth passed (no 401/403); handler ran and could not find the document.
-        assert r.status_code not in (401, 403), r.text
+        # Auth passed via the SESSION branch; handler ran and found no document.
+        assert r.status_code == 404, r.text
+
+
+def test_document_delete_default_config_still_denies_without_a_session(monkeypatch):
+    """Negative control for the test above.
+
+    Without it, `assert r.status_code == 404` cannot distinguish "the session
+    was accepted" from "auth was disabled entirely". With api_key non-empty and
+    no cookie and no X-API-Key, the same request must be refused — that is what
+    makes the 404 above evidence of a working session.
+    """
+    from app.main import app
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "master_role_enforcement", False)
+    monkeypatch.setattr(settings, "api_key", "test-api-key")
+
+    with TestClient(app) as c:
+        r = c.request(
+            "DELETE",
+            "/api/v1/upload/shipment/BATCH_X/documents/DOC_MISSING",
+            headers={"X-Confirm-Delete": "true"},
+        )
+        assert r.status_code in (401, 403), r.text
 
 
 # ── LOW-2 — interior "/" is rejected by :path batch_id guards ──────────────────
