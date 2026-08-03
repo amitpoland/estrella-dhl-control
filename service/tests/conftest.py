@@ -70,35 +70,55 @@ _service_root = Path(__file__).parent.parent  # service/
 if str(_service_root) not in sys.path:
     sys.path.insert(0, str(_service_root))
 
-# ── Session/JWT signing key — MUST be set before app.core.config is imported ──
+# ── Session/JWT signing key for the test process ──────────────────────────────
 #
 # `Settings.auth_secret_key` defaults to "" (app/core/config.py), and
 # app/auth/service.py passes it straight to jwt.encode/jwt.decode, which raise
-# `InvalidKeyError: HMAC key must not be empty`. Any test that mints or verifies
-# a session token fails before reaching its assertion — deterministically, in a
-# pristine process, with no test ordering involved. It is missing configuration,
-# not an isolation leak.
+# `InvalidKeyError: HMAC key must not be empty` on current PyJWT. Any test that
+# mints or verifies a session token fails before reaching its assertion —
+# deterministically, in a pristine process, with no test ordering involved. It is
+# missing configuration, not an isolation leak.
 #
-# PLACEMENT IS THE WHOLE FIX. pydantic BaseSettings reads the environment exactly
-# once, when the module below is imported and the singleton is constructed. An
-# export placed after that line — or in any fixture — sets the variable for a
-# Settings object that already exists and will never re-read it. Measured: the
-# same export 43 lines lower changed nothing at all (11 failed / 1656 passed
-# before AND after, identical failure sets, 6 HMAC errors either way).
+# TWO mechanisms, and the second is the authoritative one:
 #
-# This does NOT weaken any security test. The key only lets tokens be signed and
-# verified; a test asserting auth DENIAL fails on the absence of a valid session,
-# not on the absence of a key. Production startup independently rejects an empty
-# or placeholder key, so a test-only value cannot reach a deployment.
-os.environ.setdefault("AUTH_SECRET_KEY", "test-only-not-a-real-secret")
+#   (1) the env export, BEFORE the import below. pydantic BaseSettings reads the
+#       environment when a Settings object is constructed, so this is what a
+#       *newly constructed* Settings — including one made by
+#       importlib.reload(app.core.config) inside a test — resolves from. Exactly
+#       mirrors the STORAGE_ROOT treatment further down.
+#
+#   (2) the unconditional repair after the import. This covers every case (1)
+#       cannot: a host that exports AUTH_SECRET_KEY as an EMPTY string (an unset
+#       CI secret referenced in an `env:` block resolves to "", not to absence —
+#       `setdefault` declines to overwrite it because the key is *present*), and
+#       any import path that constructed the singleton before this file ran
+#       (`app/tools/test_12line_proforma_internal.py` and `test_session_keys.py`
+#       both import app.services modules at collection time on a bare `pytest`
+#       from service/, though neither is in any CI shard).
+#
+# Do NOT collapse these into one. An earlier revision set the export 43 lines
+# lower, after the import, and was a silent no-op: identical failure sets, 6 HMAC
+# errors before and after. Pinned by tests/test_auth_secret_key_bootstrap.py.
+#
+# SECURITY SCOPE, stated precisely. The key only lets tokens be SIGNED and
+# VERIFIED — no test asserting auth DENIAL is affected, because those fail on the
+# absence of a valid session, not the absence of a key (verified: no test in this
+# suite asserts on an empty/placeholder key). What keeps this value out of a
+# deployment is that `service/tests/` is outside the `service/app -> C:\PZ\app`
+# sync, and that (1) never clobbers a host-provided value. NOT the startup guard:
+# `app/main.py` rejects only "" and one exact placeholder literal, and only when
+# environment == "prod", so it would happily accept this string.
+_PZ_TEST_AUTH_SECRET = "test-only-not-a-real-secret"
+os.environ.setdefault("AUTH_SECRET_KEY", _PZ_TEST_AUTH_SECRET)
 
 from app.core.config import settings as _pz_settings  # noqa: E402
 
-# Belt-and-braces, mirroring the storage_root treatment below: if any earlier
-# import path already constructed the singleton, the export above arrived too
-# late for it, so assign the attribute directly too.
+# Unconditional on falsy — assign the CONSTANT, never os.environ[...], which can
+# echo back the same empty string this is meant to rescue.
 if not _pz_settings.auth_secret_key:
-    _pz_settings.auth_secret_key = os.environ["AUTH_SECRET_KEY"]
+    _pz_settings.auth_secret_key = _PZ_TEST_AUTH_SECRET
+if not os.environ.get("AUTH_SECRET_KEY"):
+    os.environ["AUTH_SECRET_KEY"] = _PZ_TEST_AUTH_SECRET
 
 # The ORIGINAL host STORAGE_ROOT (if any) is what the leak-guard must keep
 # watching — capture it BEFORE we overwrite the env var with the sandbox below.
