@@ -36,6 +36,20 @@ separately. Mint it BEFORE you need it -- minting one mid-incident costs time:
 
     python .claude/hooks/sign_deploy_authorization.py <sha> rollback Both --ttl 1440
 
+RECONCILE NEEDS BOTH SHAs. When production's bytes and its version marker disagree,
+Deploy-PZ.ps1 -Reconcile repairs the marker, and its authorization is bound to the
+ordered PAIR so an artifact minted for one drift cannot repair a different one. Pass
+the identity production ACTUALLY holds as --from-sha:
+
+    python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both \
+        --from-sha <proved-current-sha> --ttl 60
+
+    Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
+
+--from-sha is REQUIRED for reconcile and REFUSED for deploy/rollback: it is a signed
+field, so a deploy artifact carrying one is a different operation shape and the
+verifier denies it.
+
 Artifacts are single-use: the jti is consumed on first successful use, so a repeat
 deploy or a second rollback needs a freshly minted artifact.
 """
@@ -50,7 +64,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deploy_authorization import (  # noqa: E402
-    VALID_ACTIONS, VALID_SCOPES, _load_key, _store_dir, sign,
+    VALID_ACTIONS, VALID_SCOPES, _load_key, _store_dir, artifact_name, sign,
 )
 
 
@@ -64,11 +78,36 @@ def main(argv=None):
                     help="repository identity recorded in the signed body")
     ap.add_argument("--gate-evidence", default="",
                     help="reference to the 7-agent gate evidence (report path, PR comment URL)")
+    ap.add_argument("--from-sha", default=None,
+                    help="reconcile ONLY: the identity production actually holds right now, "
+                         "proved against the runtime bytes. The signature covers this, so the "
+                         "artifact authorises exactly one (from -> to) direction.")
     args = ap.parse_args(argv)
 
     sha = args.reviewed_sha.strip().lower()
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
         print("ERROR: reviewed_sha must be a full 40-character commit SHA")
+        return 2
+
+    # from_sha is a SIGNED field, so its presence defines the operation shape. Mint only
+    # what the verifier will honour: reconcile is pair-bound and everything else must
+    # carry no direction at all.
+    from_sha = (args.from_sha or "").strip().lower() or None
+    if args.action == "reconcile":
+        if not from_sha:
+            print("ERROR: reconcile requires --from-sha (the identity production actually "
+                  "holds). Prove it against the runtime bytes first; if you do not know "
+                  "it, do not guess -- an artifact minted for the wrong starting identity "
+                  "authorises nothing and the gate will refuse it.")
+            return 2
+        if len(from_sha) != 40 or any(c not in "0123456789abcdef" for c in from_sha):
+            print("ERROR: --from-sha must be a full 40-character commit SHA")
+            return 2
+        if from_sha == sha:
+            print("ERROR: --from-sha and reviewed_sha are identical; nothing to reconcile")
+            return 2
+    elif from_sha:
+        print(f"ERROR: --from-sha is only meaningful for reconcile, not '{args.action}'")
         return 2
 
     key = _load_key()
@@ -89,6 +128,7 @@ def main(argv=None):
         "reviewed_sha": sha,
         "action": args.action,
         "scope": args.scope,
+        "from_sha": from_sha,
         "repository": args.repository,
         "gate_evidence_ref": args.gate_evidence,
         "issued_at": now.isoformat(),
@@ -97,12 +137,16 @@ def main(argv=None):
     }
     auth["signature"] = sign(auth, key)
 
-    path = os.path.join(store, f"{sha}.{args.action}.json")
+    # The filename is derived by the same authority the verifier looks the artifact up
+    # with; reconcile artifacts carry BOTH SHAs so a store listing shows the authorised
+    # direction without opening every file.
+    path = os.path.join(store, artifact_name(sha, args.action, from_sha))
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(auth, fh, indent=2, sort_keys=True)
 
     print(f"Authorization written: {path}")
-    print(f"  sha={sha[:12]} action={args.action} scope={args.scope} "
+    direction = f" direction={from_sha[:12]}->{sha[:12]}" if from_sha else ""
+    print(f"  sha={sha[:12]} action={args.action} scope={args.scope}{direction} "
           f"ttl={args.ttl}m jti={auth['jti'][:8]} (single-use)")
     if not args.gate_evidence:
         print("  NOTE: no --gate-evidence recorded; the artifact does not reference the gate result.")
