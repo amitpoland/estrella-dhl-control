@@ -17,7 +17,25 @@
   "version_file": "C:\\PZ\\version.txt",
   "lock_file": "C:\\PZ-backups\\.deploy.lock",
 
-  "engine_files": ["pz_import_processor.py", "polish_description_generator.py"],
+  "_engine_files_authority": "EVERY repository-root module that service/app imports. These live OUTSIDE service/app, so the application sync never carries them; Invoke-EngineSync copies exactly this list and nothing else. A root module missing here is deployed NEVER — it lingers at whatever version some past manual copy left, and the next release that adds a symbol to it ships an app tree whose imports fail at startup. Enforced by test_deploy_authority.py::test_engine_files_cover_every_root_module_the_app_imports.",
+  "engine_files": [
+    "audit_agent.py",
+    "audit_pdf.py",
+    "correction_engine.py",
+    "customs_description_engine.py",
+    "description_grammar.py",
+    "dhl_clearance_handler.py",
+    "dhl_email_monitor.py",
+    "dsk_generator.py",
+    "escalation.py",
+    "invoice_learning_agent.py",
+    "learning_agent.py",
+    "parser_fix_proposals.py",
+    "polish_description_generator.py",
+    "pz_dual_export.py",
+    "pz_import_processor.py",
+    "pz_pdf_export.py"
+  ],
 
   "protected_dirs": ["storage", "logs", "cloudflared", "__pycache__", ".pytest_cache"],
   "protected_files": [".env", "*.pyc", "*.pyo", "*.zip"],
@@ -72,6 +90,7 @@
     "version_file is written by Deploy-PZ.ps1 ONLY, as BOM-free ASCII, and is read at runtime by service/app/api/routes_webhooks_wfirma_status.py using Python's utf-8 codec. A UTF-8 BOM would NOT be stripped by that reader and would corrupt the served SHA. Exactly one writer, pinned by test_deploy_authority.py.",
     "Production writes require a signed, SHA-bound, single-use authorization artifact evaluated by authorization_helper. Presence of an environment variable is NOT authorization. The signing key lives outside this repository; with no key provisioned every deploy is denied, which is the intended default.",
     "Lesson J: engine_files are NOT covered by the application sync; they need the separate source_root -> runtime_engine copy, verified by content hash, never by Python import.",
+    "Lesson J corollary (2026-08-02): the list held only 2 of the 16 root modules service/app imports. description_grammar.py had drifted since 2026-06-08 and no deployment could ever refresh it, so PR #1070 -- which added canonical_item_type / canonical_item_type_fuzzy / is_item_type_token to it -- would have shipped an app tree importing symbols the runtime copy lacked, failing at startup in routes_dhl_clearance, sales_packing_parser, invoice_packing_extractor and description_engine. CI cannot see this: the suite imports root modules from the repo root, where they are always current; only the deployed layout splits app from engine. The list is now derived from the imports themselves and pinned by a test.",
     "Health-probe credential hygiene: the validator authenticates the health check with the service API_KEY (health_auth_env_var from health_auth_env_file) and NEVER writes it to output. Do NOT run Test-PZDeployClose.ps1 inside an active Start-Transcript session or with -Verbose: PowerShell would capture the X-API-Key header value verbatim regardless of the never-logged code path. The value is read into script scope either way; transcript/verbose capture is the only residual exposure and is an operator-shell hygiene rule, not a script defect."
   ]
 }

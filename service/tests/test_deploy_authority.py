@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,20 @@ def _prescriptive_markdown() -> list[Path]:
 
 def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8", errors="replace")
+
+
+def _tracked(pathspec: str) -> list[str]:
+    """Repository-TRACKED paths matching a pathspec, as forward-slash relatives.
+
+    The deployment copies out of a git checkout, so "a file exists on this disk"
+    is not the authority -- "this file is tracked in this repository" is. An
+    untracked stray would deploy from one machine and from nowhere else.
+    """
+    out = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z", "--", pathspec],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return [p for p in out.split("\0") if p]
 
 
 # --------------------------------------------------------------- single authority
@@ -150,6 +165,93 @@ def test_engine_filenames_only_in_config():
     assert not offenders, (
         "engine filenames are configuration; the script must iterate config.engine_files: "
         f"{offenders}"
+    )
+
+
+def test_engine_files_cover_every_root_module_the_app_imports():
+    """A root module the app imports but the deploy never copies is a startup crash.
+
+    Repository-root modules live OUTSIDE service/app, so the application sync does
+    not carry them; Invoke-EngineSync copies exactly config.engine_files. Until
+    2026-08-02 that list held 2 of the 16 root modules service/app imports, so the
+    other 14 were deployed NEVER -- they sat at whatever version a past manual copy
+    left. description_grammar.py had drifted since 2026-06-08, and PR #1070 added
+    three functions to it: the app tree would have imported symbols the runtime copy
+    did not have, failing at import time in four modules loaded at startup.
+
+    The suite cannot catch that by importing anything -- under pytest the repository
+    root is on sys.path, so every root module is always current. Only the DEPLOYED
+    layout splits app from engine. So this pin is a source fact: whatever service/app
+    imports from the repository root must be in the list that gets copied.
+    """
+    cfg = json.loads(_read(CONFIG))
+    root_modules = {p[:-3] for p in _tracked("*.py") if "/" not in p}
+    app_files = [p for p in _tracked("service/app") if p.endswith(".py")]
+
+    # An empty comparison set would make every assertion below pass while the
+    # hazard they guard stands wide open. A rename, a worktree layout change or a
+    # bad pathspec must fail LOUDLY here, not silently succeed.
+    assert root_modules, "no tracked root modules resolved -- path authority is broken"
+    assert len(app_files) > 100, (
+        f"only {len(app_files)} tracked service/app modules resolved -- path "
+        "authority is broken; this test cannot prove anything from an empty scan"
+    )
+
+    import_rx = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+    imported = {}
+    for rel in app_files:
+        # Strip the BOM: three tracked app modules carry one, and a BOM sitting
+        # ahead of column 0 hides a line-1 import from the ^ anchor.
+        for name in import_rx.findall(_read(REPO / rel).lstrip("﻿")):
+            if name in root_modules:
+                imported.setdefault(name, rel)
+
+    assert imported, (
+        "service/app imports NO repository-root module at all -- implausible, so "
+        "the import scan itself has stopped working"
+    )
+
+    declared = {n[:-3] for n in cfg["engine_files"] if n.endswith(".py")}
+    missing = {m: src for m, src in sorted(imported.items()) if m not in declared}
+    assert not missing, (
+        "these repository-root modules are imported by service/app but are NOT in "
+        "engine_files, so no deployment can ever update them in the runtime engine "
+        "directory (first importer shown): " + json.dumps(missing, indent=2)
+    )
+
+
+def test_engine_files_are_tracked_root_modules():
+    """Every engine_files entry must be a TRACKED repository-root .py file.
+
+    Three ways this list can be wrong, each invisible until production:
+      - a name with no file behind it: robocopy copies nothing and the absence
+        surfaces only as a runtime ImportError;
+      - a file present on the operator's disk but untracked: it would deploy from
+        that one machine and from nowhere else, so the release would not be
+        reproducible from the reviewed commit;
+      - a path that escapes the repository root, which is how a test fixture, a
+        doc, or a runtime storage file gets into the engine artifact. learning_store.json
+        is the live example: it sits beside these modules in the runtime engine
+        directory and is mutated at runtime, so copying it would destroy state.
+    """
+    cfg = json.loads(_read(CONFIG))
+    engine_files = cfg["engine_files"]
+    assert engine_files, "engine_files is empty -- no root module would ever deploy"
+
+    tracked_root = {p for p in _tracked("*.py") if "/" not in p}
+    assert tracked_root, "no tracked root modules resolved -- path authority is broken"
+
+    offenders = {}
+    for name in engine_files:
+        if "/" in name or "\\" in name or name != Path(name).name:
+            offenders[name] = "not a bare root-level filename"
+        elif not name.endswith(".py"):
+            offenders[name] = "not a Python module (the engine sync carries code only)"
+        elif name not in tracked_root:
+            offenders[name] = "not a tracked repository-root file"
+    assert not offenders, (
+        "engine_files must name only tracked repository-root Python modules: "
+        + json.dumps(offenders, indent=2)
     )
 
 
