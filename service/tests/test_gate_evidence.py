@@ -145,6 +145,72 @@ def test_unrecognised_status_is_refused_not_treated_as_pass(tmp_path):
     assert "unrecognised" in reason
 
 
+def test_duplicate_agent_block_is_refused(tmp_path):
+    """Blocker laundering by document layout (found by the 7-agent gate on PR #1094).
+
+    Records were last-wins, so a second `AGENT: x` block later in the file silently
+    overwrote an earlier STATUS: BLOCK. The digest binding cannot catch this -- it
+    proves the file did not change after signing, not that the file says what it
+    appears to say.
+    """
+    text = _evidence_text(statuses={"deploy_security_reviewer": "BLOCK"}).rstrip() + (
+        "\n\nAGENT: deploy_security_reviewer\nSTATUS: CLEAR\nDISPOSITION: GO\n")
+    ok, reason, _ = validate_evidence(_write(tmp_path, text), _SHA)
+    assert not ok
+    assert "more than one result" in reason and "deploy_security_reviewer" in reason
+
+
+def test_notes_bullet_cannot_launder_a_blocking_verdict(tmp_path):
+    """Decoration is stripped before parsing, so a NOTES bullet reaching the same
+    last-wins path was a second route to the same laundering."""
+    text = _evidence_text(statuses={"deploy_lead_coordinator": "BLOCK"}).rstrip() + (
+        "\n\nNOTES:\n  - AGENT: deploy_lead_coordinator\n  - STATUS: GO\n")
+    ok, reason, _ = validate_evidence(_write(tmp_path, text), _SHA)
+    assert not ok
+    assert "more than one result" in reason
+
+
+def test_duplicate_agent_refused_even_when_both_blocks_agree(tmp_path):
+    """Refused, not resolved. First-wins would silently drop a later BLOCK and
+    last-wins is the defect, so a repeat is always a refusal."""
+    text = _evidence_text().rstrip() + (
+        "\n\nAGENT: deploy_qa_reviewer\nSTATUS: CLEAR\nDISPOSITION: GO\n")
+    ok, reason, _ = validate_evidence(_write(tmp_path, text), _SHA)
+    assert not ok and "more than one result" in reason
+
+
+def test_conflicting_target_sha_declarations_are_refused(tmp_path):
+    """SHA-binding bypass found by the 7-agent gate on PR #1094.
+
+    _find_target_sha was first-wins across TARGET_SHA / REVIEWED_SHA / APPROVED_SHA, so
+    evidence genuinely approving commit A validated for commit B when a single line
+    `APPROVED_SHA: B` was prepended -- the seven verdicts below were never cross-checked
+    against it. That defeats the property this module exists to enforce.
+    """
+    real = _evidence_text(target=_SHA)
+    forged = f"APPROVED_SHA: {_OTHER_SHA}\n" + real
+    ok, reason, _ = validate_evidence(_write(tmp_path, forged), _OTHER_SHA)
+    assert not ok
+    assert "more than one distinct target SHA" in reason
+
+
+def test_repeated_identical_target_sha_is_still_accepted(tmp_path):
+    """Only DISTINCT declarations conflict; restating the same SHA is harmless."""
+    text = f"REVIEWED_SHA: {_SHA}\n" + _evidence_text(target=_SHA)
+    ok, reason, _ = validate_evidence(_write(tmp_path, text), _SHA)
+    assert ok, reason
+
+
+def test_digest_covers_exactly_the_bytes_that_were_parsed(tmp_path):
+    """TOCTOU: hashing and parsing were two separate reads, so a file swapped between
+    them bound a signature to bytes that were never validated."""
+    import gate_evidence as ge
+    path = _write(tmp_path, _evidence_text())
+    ok, _, digest = validate_evidence(path, _SHA)
+    assert ok
+    assert digest == ge.digest_file(path), "returned digest is not the parsed bytes"
+
+
 def test_expired_evidence_is_refused(tmp_path):
     past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     ok, reason, _ = validate_evidence(_write(tmp_path, _evidence_text(expires=past)), _SHA)

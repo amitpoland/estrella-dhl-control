@@ -66,6 +66,9 @@ _BLOCKING_STATUS = ("HOLD", "BLOCK", "FAIL")
 _REF_RX = re.compile(r"^(?P<path>.+)@sha256:(?P<digest>[0-9a-f]{64})$")
 _SHA_RX = re.compile(r"^[0-9a-f]{40}$")
 
+# Sentinel: the document declares more than one distinct target SHA.
+_CONFLICT = "CONFLICT"
+
 # Tolerated spellings of the agent name. The gate contract writes `AGENT: <agent_name>`;
 # agent files are kebab-case on disk and snake_case in CLAUDE.md, and operators
 # transcribe both.
@@ -111,7 +114,19 @@ def parse_evidence(text):
     fences and blockquotes. What must be unambiguous is which agent said what, and
     whether any of them blocked.
 
-    Returns {normalised_agent_name: {"status": str, "disposition": str}}.
+    Returns {normalised_agent_name: {"status", "disposition", "duplicate"}}.
+
+    AN AGENT MAY REPORT ONCE. Records were previously last-wins, which made the
+    document layout a laundering vector: a second `AGENT: x` block later in the file
+    silently overwrote an earlier `STATUS: BLOCK`, and because decoration is stripped
+    before parsing, a bullet inside a NOTES section (`  - AGENT: x`) was indistinguishable
+    from a real verdict block. Both were confirmed to launder a BLOCK into a GO.
+
+    The digest binding cannot catch this -- it proves the file did not change after
+    signing, not that the file says what it appears to say. So a repeated agent is
+    recorded as `duplicate` and refused by validate_evidence(), rather than resolved.
+    Refusing is the only safe resolution: first-wins would silently drop a later BLOCK,
+    and last-wins is the defect itself.
     """
     agents = {}
     current = None
@@ -125,7 +140,11 @@ def parse_evidence(text):
         value = value.strip().strip("`*_").strip()
         if key == "AGENT" and value:
             current = _normalise_agent(value)
-            agents.setdefault(current, {"status": "", "disposition": ""})
+            if current in agents:
+                agents[current]["duplicate"] = True
+                current = None          # ignore every field of the repeat block
+            else:
+                agents[current] = {"status": "", "disposition": "", "duplicate": False}
         elif current and key == "STATUS" and value:
             agents[current]["status"] = value.split()[0].upper()
         elif current and key == "DISPOSITION" and value:
@@ -134,12 +153,20 @@ def parse_evidence(text):
 
 
 def _find_target_sha(text):
-    """The full 40-char SHA the evidence declares it approved.
+    """The full 40-char SHA the evidence declares it approved, or "" / CONFLICT.
 
     Required and explicit. A gate report that does not name its target cannot be bound
     to one, and inferring the SHA from context is exactly how a verdict gets attached to
     the wrong revision (Lesson Q rule 7).
+
+    EVERY declaration is collected, not the first. This was first-wins across three
+    aliases, which was a SHA-binding bypass: evidence genuinely approving commit A
+    validated for commit B if a single line `APPROVED_SHA: B` was prepended, because the
+    first match bound and the seven verdicts below were never cross-checked against it.
+    That defeats the property this whole module exists to enforce, so a document
+    declaring more than one distinct target is refused rather than resolved.
     """
+    found = []
     for raw in text.splitlines():
         line = raw.strip().lstrip(">").strip().lstrip("#*-` ").strip()
         key, sep, value = line.partition(":")
@@ -148,10 +175,14 @@ def _find_target_sha(text):
         if key.strip().strip("`*_ ").upper().replace(" ", "_") in (
                 "TARGET_SHA", "REVIEWED_SHA", "APPROVED_SHA"):
             candidate = value.strip().strip("`*_").strip().lower()
-            if _SHA_RX.match(candidate):
-                return candidate
-            return ""          # present but malformed: do not fall through to a guess
-    return ""
+            if not _SHA_RX.match(candidate):
+                return ""      # present but malformed: do not fall through to a guess
+            found.append(candidate)
+    if not found:
+        return ""
+    if len(set(found)) > 1:
+        return _CONFLICT
+    return found[0]
 
 
 def _find_expiry(text):
@@ -183,16 +214,23 @@ def validate_evidence(path, target_sha, now=None):
     if not os.path.isfile(path):
         return (False, f"gate evidence file not found: {path}", None)
 
-    digest = digest_file(path)
-    if not digest:
-        return (False, f"gate evidence unreadable: {path}", None)
+    # ONE read. Hash exactly the bytes that get parsed: digest_file() plus a separate
+    # text read was a TOCTOU window in which a file swapped between the two calls would
+    # bind the signature to bytes that were never validated, then pass the use-time
+    # digest check once restored.
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
+        with open(path, "rb") as fh:
+            raw = fh.read()
     except OSError:
         return (False, f"gate evidence unreadable: {path}", None)
+    digest = hashlib.sha256(raw).hexdigest()
+    text = raw.decode("utf-8", errors="replace")
 
     declared = _find_target_sha(text)
+    if declared == _CONFLICT:
+        return (False, "gate evidence declares more than one distinct target SHA "
+                       "(TARGET_SHA / REVIEWED_SHA / APPROVED_SHA disagree); refusing "
+                       "rather than choosing one", digest)
     if not declared:
         return (False, "gate evidence declares no TARGET_SHA (a verdict with no named "
                        "revision cannot be bound to one)", digest)
@@ -213,6 +251,14 @@ def validate_evidence(path, target_sha, now=None):
     missing = [a for a in REQUIRED_AGENTS if a not in agents]
     if missing:
         return (False, "gate evidence missing agent result(s): " + ", ".join(missing), digest)
+
+    # A repeated agent block is refused, never resolved -- see parse_evidence().
+    repeated = sorted(a for a, rec in agents.items() if rec.get("duplicate"))
+    if repeated:
+        return (False, "gate evidence declares more than one result for: "
+                       + ", ".join(repeated)
+                       + " (an agent reports once; a repeated block cannot be "
+                         "distinguished from a laundered verdict)", digest)
 
     blocked = []
     for name in REQUIRED_AGENTS:
