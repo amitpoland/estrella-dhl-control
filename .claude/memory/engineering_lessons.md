@@ -876,3 +876,90 @@ to advisory, is incomplete by this lesson.
 **Reference**: operator governance directive 2026-06-23 (AWB 9158478722 post-PZ
 reconciliation); `service/app/api/routes_proforma.py:1000` (`advisory_gates_enabled`
 advisory routing); CLAUDE.md Engineering Lessons → Lesson N.
+
+## Lesson Q — Uncited safety claims in state files, and citations resolved against the wrong revision (2026-08-01, extended 2026-08-03)
+
+**Origin.** PR #1043's deploy handoff left production in a HYBRID condition: the version marker
+recorded one commit while the application bytes were another. (Operator ruling 2026-08-01: all 529
+files match the earlier commit; only `version.txt` is false — a deployment-provenance defect, not a
+runtime overlay.) The 2026-07-31 register recorded a resume caution explaining why the recorded
+`next_command` was no longer valid. The explanation it gave was invented, not read.
+
+**What the register claimed:**
+> "Running it as-is now snapshots the hybrid tree into the pre-deploy backup → the post-#1039
+> content-derived `restored_sha` resolves to no single clean SHA → the backup-provenance stop
+> condition fires by design."
+
+**What the source says.** `New-BackupUnit` sets the restored identity from
+`Read-VersionMarker -Path $Cfg.version_file` — the **marker**, not a content hash. The marker on the
+hybrid runtime was a valid, well-formed SHA. `Resolve-RestoredSha` refuses in exactly two cases:
+`unit.json`'s `restored_sha` disagreeing with `version.pre.txt`, or both being absent. Neither
+applied. **No stop fires.**
+
+**The actual hazard the false claim concealed.** A straight signed deploy would have minted a backup
+unit labelled with the old marker while holding the other commit's bytes — an untruthfully-labelled
+unit, minted **silently**, with no error at deploy time. It surfaces only on a later rollback, which
+restores one commit's files and then stamps production with a different commit's SHA. The single
+thing that actually detects this — `Assert-ProductionMatchesRecordedSha`, which compares runtime
+bytes to the marker by git object id before the backup is taken — lived only in PR #1062, then still
+open, **not on `main`**. So for the day the claim stood, the register asserted a tripwire that did
+not exist anywhere in shipped code.
+
+**Why it survived.** Nothing in the process required the claim to cite anything. It was written by a
+session reasoning about how the tooling *ought* to behave, in a file whose entries are otherwise
+mostly verified facts (SHAs, test counts, file lists) — so it inherited their credibility without
+earning it. The correction came only because a later session re-read the source while doing
+unrelated work.
+
+**The mirror failure (2026-08-03) — why rule 7 exists.** Two days after PR #1062 merged, the 7-agent
+deploy gate ran against the merged SHA. `deploy-lead-coordinator` returned a **HARD BLOCKER**: the
+authorization signer, it said, has no `--from-sha` flag, so no valid reconcile authorization could
+ever be minted, so the deploy required a preceding fix-PR. Unlike the 2026-07-31 claim, this one
+*was* cited — it named the file and the missing flag. It was still false. The coordinator had obeyed
+the then-unqualified subagent reading rule ("all verification reads must use `C:\PZ-verify`") and
+read a tree parked on a feature branch **21 commits behind `main`**, at a pre-amendment commit where
+the flag genuinely does not exist. Measured: `C:\PZ-main` @ `4e9301b6` (main) = **8** occurrences of
+`--from-sha`; `C:\PZ-verify` @ `cf04f472` = **0**. `git merge-base --is-ancestor` confirmed behind,
+not diverged. The same gate also mis-stated the rollback parameter (`-ReviewedSHA` instead of
+`-Unit`) — a second symptom of reading the wrong revision's parameter block.
+
+Two properties made this worse than an ordinary stale read. First, it was an **absence** claim: a
+stale tree produces "the thing isn't there" silently and confidently, whereas a stale *presence*
+claim usually trips over a missing symbol somewhere else. Second, a path had been mistaken for a
+revision by governance itself — the rule that caused the error was the rule the agent was following
+correctly. The fix therefore had to be in the rule, not in the agent: the **Subagent reading rule**
+now carries a commit-scoped exception requiring HEAD-equals-reviewed-SHA confirmation, with
+`C:\PZ-main` at the target SHA (or a clean `git archive` export) as the fallback source.
+
+**Detection signals** — treat any of these in a state file as an uncited safety claim until proven
+otherwise: "fires by design", "is caught", "blocks", "fails closed", "will refuse", "is safe" —
+appearing without a function name beside it. Also: any `next_command` whose *justification* is a
+behavioural claim rather than a checkpoint fact. For rule 7, treat as suspect: any reviewer verdict
+that does not name the tree and HEAD it read; any finding of the form "X does not exist" / "there is
+no guard for Y" in a commit-scoped review; any verdict citing line numbers that do not resolve on
+the reviewed SHA.
+
+**Worked example (the correct form).** Not: "the stop condition fires by design." But: "no stop
+fires — `Resolve-RestoredSha` refuses only on `unit.json` vs `version.pre.txt` disagreement or both
+absent, and neither applies here. The detection that would catch this is
+`Assert-ProductionMatchesRecordedSha`, which is in PR #1062 and **not on `main`**."
+
+And for rule 7 — not: "the signer has no `--from-sha` flag." But: "read `C:\PZ-main`, HEAD
+`4e9301b6` = the reviewed SHA: `sign_deploy_authorization.py` accepts `--from-sha` (8 occurrences,
+required for `reconcile`, rejected for `deploy`/`rollback`)."
+
+**Relationship to other lessons.** Lesson A is the same failure one layer down — a stub asserting a
+return shape nobody read from the real builder. Lesson P is its deploy-side sibling — trusting a
+tool's copy log instead of verifying content. Lesson B is rule 7's registry-side cousin — a mid-session
+`git pull` does not refresh what the running session can see, just as a fixed path does not track
+what `main` now contains. Lesson Q generalises all of them to the record itself: **the artifact that
+records what is safe is not itself evidence of safety, and a citation is only as good as the revision
+it was resolved against.**
+
+**Governance note.** Raised by `agent-performance-observer` on a session that dispatched zero
+subagents. The observer judged that defensible for the low-blast-radius work but named the
+safety-claim rewrite as the one act that warranted an independent reviewer — which is why binding
+rule 6 routes optimistic safety claims to `reviewer-challenge` rather than leaving it to judgement.
+Rule 7 was added on the opposite evidence: a gate that *did* dispatch all seven reviewers still
+produced a false blocker, because every one of them was pointed at the same wrong tree. Redundant
+reviewers do not correct a shared-input error — only naming the input does.
