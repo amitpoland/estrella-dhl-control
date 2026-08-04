@@ -20,6 +20,12 @@ an authorization, and only the pair proves the two halves still agree.
 
 No real signing key is touched: every test points the key and store env vars at a
 tmp_path.
+
+GATE EVIDENCE. `deploy` and `reconcile` now require a validated seven-agent evidence
+file (`.claude/hooks/gate_evidence.py`), so these mint calls supply one. The gate was
+tightened deliberately, which makes an unmodified test here a stale-test signal, not a
+reason to relax the signer -- Lesson O. `rollback` stays evidence-free on purpose: it is
+the incident path and must not depend on assembling a fresh gate report.
 """
 from __future__ import annotations
 
@@ -59,12 +65,25 @@ FROM = "a" * 40
 TO = "b" * 40
 
 
-def test_reconcile_artifact_mints_and_verifies(signing_env):
+@pytest.fixture()
+def evidence(tmp_path):
+    """A valid seven-agent GO for TO, as the signer now requires."""
+    ge = _load("gate_evidence")
+    body = [f"TARGET_SHA: {TO}", ""]
+    for agent in ge.REQUIRED_AGENTS:
+        body += [f"AGENT: {agent}", "STATUS: CLEAR", "DISPOSITION: GO", ""]
+    path = tmp_path / "gate-evidence.md"
+    path.write_text("\n".join(body), encoding="utf-8")
+    return str(path)
+
+
+def test_reconcile_artifact_mints_and_verifies(signing_env, evidence):
     """The round trip that was impossible before: mint a reconcile, verify it."""
     signer = _load("sign_deploy_authorization")
     auth = _load("deploy_authorization")
 
-    rc = signer.main([TO, "reconcile", "Both", "--from-sha", FROM, "--ttl", "60"])
+    rc = signer.main([TO, "reconcile", "Both", "--from-sha", FROM, "--ttl", "60",
+                      "--gate-evidence", evidence])
     assert rc == 0, "signer refused to mint a reconcile authorization"
 
     # Written where the verifier actually looks.
@@ -79,11 +98,12 @@ def test_reconcile_artifact_mints_and_verifies(signing_env):
     assert decision == "allow", f"minted reconcile did not verify: {reason}"
 
 
-def test_reconcile_artifact_is_bound_to_its_direction(signing_env):
+def test_reconcile_artifact_is_bound_to_its_direction(signing_env, evidence):
     """One ordered pair only -- an artifact must not repair a different drift."""
     signer = _load("sign_deploy_authorization")
     auth = _load("deploy_authorization")
-    assert signer.main([TO, "reconcile", "Both", "--from-sha", FROM]) == 0
+    assert signer.main([TO, "reconcile", "Both", "--from-sha", FROM,
+                        "--gate-evidence", evidence]) == 0
 
     other = "c" * 40
     decision, _ = auth.evaluate(TO, "reconcile", "Both", from_sha=other)
@@ -107,17 +127,20 @@ def test_from_sha_refused_for_non_reconcile(signing_env, action):
 
 
 @pytest.mark.parametrize("action", ["deploy", "rollback"])
-def test_plain_actions_still_mint_and_verify(signing_env, action):
+def test_plain_actions_still_mint_and_verify(signing_env, evidence, action):
     """Negative control: adding the signed field must not break the existing shapes."""
     signer = _load("sign_deploy_authorization")
     auth = _load("deploy_authorization")
-    assert signer.main([TO, action, "Both"]) == 0
+    argv = [TO, action, "Both"]
+    if action == "deploy":                      # rollback is evidence-exempt
+        argv += ["--gate-evidence", evidence]
+    assert signer.main(argv) == 0
     assert (signing_env / auth.artifact_name(TO, action)).is_file()
     decision, reason = auth.evaluate(TO, action, "Both")
     assert decision == "allow", reason
 
 
-def test_signer_can_mint_every_action_the_verifier_accepts(signing_env):
+def test_signer_can_mint_every_action_the_verifier_accepts(signing_env, evidence):
     """The general pin. This drift happened because the two sides were extended
     independently; VALID_ACTIONS is the shared authority, so every action in it
     must be mintable. A new action added to the verifier fails here until the
@@ -131,6 +154,8 @@ def test_signer_can_mint_every_action_the_verifier_accepts(signing_env):
         argv = [TO, action, "Both"]
         if action == "reconcile":
             argv += ["--from-sha", FROM]
+        if action in ("deploy", "reconcile"):
+            argv += ["--gate-evidence", evidence]
         try:
             rc = signer.main(argv)
         except SystemExit as exc:          # argparse rejected the action outright
