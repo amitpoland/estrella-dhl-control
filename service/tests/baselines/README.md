@@ -104,6 +104,28 @@ not source-greps: `test_wfirma_status.py::test_scheduler_health_boundary_exactly
 and both `test_proforma_purchase_transit_bypass.py` entries, which post to the
 proforma preview route and assert on readiness and blocking reasons.
 
+### Re-measured 2026-08-03 — still current
+
+Re-run after rebasing onto `4e9301b`, **25 commits** past the original base
+`542888a` (including several test repairs: RBAC session-guard migration, the
+governed test-settings authority, the `extract_packing` arity fix, and #1053's
+CWD sandbox).
+
+```
+9 failed, 1659 passed, 4 skipped
+resolved vs recorded:  the 2 test_wave8_security_hardening.py entries
+new vs recorded:       (none)
+InvalidKeyError:       0
+```
+
+The 9 remaining entries are **unchanged by node ID** — this scope was untouched
+by all 25 commits, so the recorded list below is still accurate and does not need
+re-recording. The passed count moved 1656 → 1659: +2 from the cleared failures,
++1 from the negative-control test added to `test_wave8_security_hardening.py`.
+
+Treat this as a confirmation stamp, not a new baseline. The pre-fix list is still
+the anchor; only its currency has been re-established.
+
 ### Why the file exists
 
 The first attempt at the fix set `AUTH_SECRET_KEY` **43 lines too late** — after
