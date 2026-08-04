@@ -710,6 +710,15 @@ Append-only — do not delete prior lessons; supersede with a new dated entry.
 Cross-reference: `memory-lessons` agent; `engineering_discipline_rules` auto-memory.
 Full origin narratives, detection signals, and worked examples: invoke `engineering-lessons`.
 
+**Letters are unique identifiers, and this file shares one letter space with
+`.claude/memory/engineering_lessons.md`.** Before adding a lesson, grep **both** files for the
+next free letter — a letter that labels two different lessons makes every downstream reference
+("per Lesson X") ambiguous, and the ambiguity is invisible until someone reads the wrong entry.
+On a collision, the *later-published* entry is relettered to the next free letter; its content,
+its date, and its position in the file are preserved, and it carries a **letter note** naming its
+former letter so historical references still resolve. Never renumber a lesson to close a gap, and
+never reuse a retired letter.
+
 **Enforcement surfaces**: Lesson A binds at GATE 1 (PR open
 discipline — real-builder regression test is a precondition;
 integration-boundary owns the verdict, testing-verification
@@ -802,9 +811,20 @@ Anything not on the true-blocker list is advisory. Default-classify a signal as 
 
 **Where it binds**: every readiness / gating change in `sales-proforma`, `pz-purchase-accounting`, and `readiness-closure` surfaces; every PR that adds, removes, or reclassifies a blocking reason on Approve / Post / Convert / Reservation; every reviewer-challenge on an authority / readiness PR. This aligns with existing code: `service/app/api/routes_proforma.py:1000` already routes the "sales design(s) not mapped to a wFirma product_code" signal to `line_mismatch_advisories` (advisory) rather than `blocking_reasons` when `settings.advisory_gates_enabled` is on — Lesson N makes that the permanent intended default for all advisory-class signals, not a flag-gated exception. A PR that promotes any advisory-class signal to a hard blocker, or demotes any true blocker to advisory, is incomplete by this lesson.
 
-**Reference**: operator governance directive 2026-06-23 (AWB 9158478722 post-PZ reconciliation); `service/app/api/routes_proforma.py:1000` (`advisory_gates_enabled` advisory routing); `.claude/memory/engineering_lessons.md` Lesson N.
+**Reference**: operator governance directive 2026-06-23 (AWB 9158478722 post-PZ reconciliation); `service/app/api/routes_proforma.py:1000` (`advisory_gates_enabled` advisory routing); `.claude/memory/engineering_lessons.md` Lesson N. **Distinct from Lesson R** (2026-06-22, authority separation), which carried the letter `N` until 2026-08-04 — see the letter note on Lesson R below.
 
-### Lesson N — Import, product master, proforma, warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities (2026-06-22)
+### Lesson R — Import, product master, proforma, warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities (2026-06-22)
+
+> **Letter note (2026-08-04).** This lesson was published as **Lesson N** and carried that letter
+> until 2026-08-04, when it was found to collide with the advisory-vs-blocker Lesson N above
+> (2026-06-23). Content, date, and position are unchanged; only the letter moved, to the next free
+> letter **R**. The advisory lesson keeps `N` because `.claude/memory/engineering_lessons.md` and
+> `.engineering-os/07_BUSINESS_OPERABILITY.md` already bind that letter to it.
+> **Resolving a historical reference:** "Lesson N" meaning *authority separation* / *six separate
+> authorities* / *single-authority rule* / *wrong authority* — including the docstrings in
+> `service/tests/**` and the dated records under `reports/**`, which are historical and were left
+> as written — means **this** lesson, Lesson R. "Lesson N" meaning *advisory vs blocker* or the
+> *true-blocker list* means Lesson N above.
 
 **GATE 1 + reviewer-challenge + frontend-flow-reviewer + backend-safety-reviewer.**
 Origin: recurring defect on AWB 9158478722 (batch `SHIPMENT_9158478722_2026-06_924c4e59`,

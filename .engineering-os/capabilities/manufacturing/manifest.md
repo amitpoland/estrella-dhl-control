@@ -30,7 +30,7 @@ warehouse document.
 | **Service** | `inventory_state_engine.py`, sample/consignment services, warehouse_receipt |
 | **DB** | `warehouse.db` — `sample_out_events`, returns/producer events, MM state |
 
-## Authority separation (Lesson N)
+## Authority separation (Lesson R)
 
 - **WAREHOUSE** owns quantity confirmation; **SALES** owns dispatch/allocation. A movement
   guard must not block across authority boundaries without a named business rule + a pinning test.

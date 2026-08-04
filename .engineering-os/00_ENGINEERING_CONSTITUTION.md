@@ -104,7 +104,7 @@ Executive Coordinator (01)   ← the single orchestrator (classify → route →
 
 When two rules appear to conflict, resolve top-down:
 
-1. `CLAUDE.md` **GATES 1–6** and the **Engineering Lessons** (A–N).
+1. `CLAUDE.md` **GATES 1–6** and the **Engineering Lessons** (A–R).
 2. The **7-agent deploy gate** for anything that syncs to `C:\PZ`.
 3. **Protected-domain** stop-and-ask (financial, customs, accounting, inventory, shipment,
    fiscal writes) and **Lesson N** (advisory-vs-blocker) for readiness/gating.
