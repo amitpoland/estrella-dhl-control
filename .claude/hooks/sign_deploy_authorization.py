@@ -66,6 +66,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from deploy_authorization import (  # noqa: E402
     VALID_ACTIONS, VALID_SCOPES, _load_key, _store_dir, artifact_name, sign,
 )
+from gate_evidence import digest_file, format_ref, validate_evidence  # noqa: E402
 
 
 def main(argv=None):
@@ -77,7 +78,11 @@ def main(argv=None):
     ap.add_argument("--repository", default=os.environ.get("PZ_DEPLOY_AUTH_REPO", ""),
                     help="repository identity recorded in the signed body")
     ap.add_argument("--gate-evidence", default="",
-                    help="reference to the 7-agent gate evidence (report path, PR comment URL)")
+                    help="PATH to the 7-agent gate evidence file. REQUIRED for deploy and "
+                         "reconcile: it is validated (all seven agents, no unresolved "
+                         "blocker, TARGET_SHA == reviewed_sha, not expired) and its SHA-256 "
+                         "is recorded in the signed body, so editing it afterwards "
+                         "invalidates the authorization.")
     ap.add_argument("--from-sha", default=None,
                     help="reconcile ONLY: the identity production actually holds right now, "
                          "proved against the runtime bytes. The signature covers this, so the "
@@ -110,6 +115,31 @@ def main(argv=None):
         print(f"ERROR: --from-sha is only meaningful for reconcile, not '{args.action}'")
         return 2
 
+    # Gate evidence is validated BEFORE the key is loaded: an operator who cannot
+    # produce a seven-agent GO for this exact SHA should never reach the signing step.
+    #
+    # Required for deploy and reconcile -- the two actions that write new bytes to
+    # production. NOT required for rollback: rollback is the incident path, its
+    # artifact is meant to be minted in advance (see the header), and gating a
+    # recovery on assembling a fresh seven-agent report is how an outage gets longer.
+    evidence_ref = args.gate_evidence.strip()
+    if args.action in ("deploy", "reconcile"):
+        ok, reason, digest = validate_evidence(evidence_ref, sha)
+        if not ok:
+            print(f"ERROR: {reason}")
+            print("       The 7-agent gate is the production approval authority. "
+                  "Pass --gate-evidence <path-to-gate-report>; see "
+                  ".claude/contracts/seven-agent-evidence.md for the required fields.")
+            return 2
+        print(f"  gate evidence: {reason}")
+        evidence_ref = format_ref(os.path.abspath(evidence_ref), digest)
+    elif evidence_ref:
+        # Bind it anyway when supplied, so a pre-minted rollback artifact that cites a
+        # gate run is still tamper-evident.
+        digest = digest_file(evidence_ref)
+        if digest:
+            evidence_ref = format_ref(os.path.abspath(evidence_ref), digest)
+
     key = _load_key()
     if not key:
         print("ERROR: no signing key. Set PZ_DEPLOY_AUTH_KEY_FILE (preferred) or "
@@ -130,7 +160,7 @@ def main(argv=None):
         "scope": args.scope,
         "from_sha": from_sha,
         "repository": args.repository,
-        "gate_evidence_ref": args.gate_evidence,
+        "gate_evidence_ref": evidence_ref,
         "issued_at": now.isoformat(),
         "expires_at": (now + timedelta(minutes=args.ttl)).isoformat(),
         "jti": str(uuid.uuid4()),
@@ -148,7 +178,7 @@ def main(argv=None):
     direction = f" direction={from_sha[:12]}->{sha[:12]}" if from_sha else ""
     print(f"  sha={sha[:12]} action={args.action} scope={args.scope}{direction} "
           f"ttl={args.ttl}m jti={auth['jti'][:8]} (single-use)")
-    if not args.gate_evidence:
+    if not evidence_ref:
         print("  NOTE: no --gate-evidence recorded; the artifact does not reference the gate result.")
     return 0
 

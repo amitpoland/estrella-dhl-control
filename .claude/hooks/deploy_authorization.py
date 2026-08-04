@@ -51,6 +51,9 @@ import os
 import sys
 from datetime import datetime, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gate_evidence import digest_file, parse_ref  # noqa: E402
+
 VALID_ACTIONS = ("deploy", "rollback", "reconcile")
 VALID_SCOPES = ("App", "Engine", "Both")
 
@@ -233,6 +236,27 @@ def evaluate(reviewed_sha, action, scope, from_sha=None, env=None):
         return ("deny", "authorization expired")
     if now < iat:
         return ("deny", "authorization not yet valid")
+
+    # Gate evidence, re-checked at USE time. The digest is inside the signed
+    # `gate_evidence_ref`, so the signature already proves which bytes the operator
+    # signed for -- this proves the file still holds those bytes. Signing time and
+    # deploy time are different moments, and the window between them is exactly when an
+    # evidence file gets "tidied up".
+    #
+    # Enforced for deploy/reconcile only, matching the signer. A legacy artifact whose
+    # ref carries no digest is refused for those actions rather than waved through:
+    # accepting it would leave the pre-binding shape permanently available.
+    if action in ("deploy", "reconcile"):
+        ev_path, ev_digest = parse_ref(auth.get("gate_evidence_ref"))
+        if not ev_digest:
+            return ("deny", "authorization carries no digest-bound gate evidence "
+                            "(re-mint it with --gate-evidence <path>)")
+        actual = digest_file(ev_path)
+        if actual is None:
+            return ("deny", f"gate evidence no longer readable at {ev_path}")
+        if not hmac.compare_digest(actual, ev_digest):
+            return ("deny", "gate evidence has changed since the authorization was "
+                            "signed (digest mismatch)")
 
     jti = auth.get("jti")
     if not isinstance(jti, str) or not jti:
