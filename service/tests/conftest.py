@@ -507,3 +507,63 @@ def _mirror_complete_product_seeding(monkeypatch):
 
     monkeypatch.setattr(_wfdb, "upsert_product", _mirror_complete)
     yield
+
+
+# ── Stringified-mock filesystem guard (issue #1089) ───────────────────────────
+#
+# A test that patches `settings` wholesale gets a MagicMock whose every unread
+# attribute auto-creates as a *truthy* child mock. Production resolves storage
+# paths as `settings.X or (settings.Y / "...")`, so an unpinned attribute makes
+# that expression a mock; the first `str()` coercion turns it into a filename
+# and the write lands in the process CWD — `service/`. Two carrier suites did
+# exactly this, creating SQLite databases named
+#
+#     <MagicMock name='settings.carrier_storage_root.__truediv__()' id='...'>
+#
+# 11 of which reached a commit before being caught (#1089, fixed in #1090).
+#
+# The defect is invisible two ways, which is why it needs a guard rather than a
+# convention:
+#
+#   1. Every affected test PASSES. Nothing in the run output mentions it.
+#   2. `<` and `>` are illegal in Windows filenames, so the write fails there
+#      and CI — which runs on windows-latest — cannot see it at all. This is a
+#      Linux/macOS developer-machine defect by construction.
+#
+# Checked per test rather than per session so the failure names the test that
+# caused it and lands in the JUnit XML as an ordinary failure; a session-teardown
+# error can be missing from the XML the shard aggregation reads.
+#
+# Matching on a leading "<" catches any repr coerced to a path (Mock, MagicMock,
+# AsyncMock, or a non-mock object with a default __repr__), and cannot false
+# positive: "<" is not a legal leading character for any file this repo creates.
+
+@pytest.fixture(autouse=True)
+def _no_stringified_mock_paths():
+    """Fail the test that writes a repr-named path into the CWD."""
+    cwd = os.getcwd()
+    try:
+        before = {n for n in os.listdir(cwd) if n.startswith("<")}
+    except OSError:          # CWD removed by a fixture; nothing to guard
+        yield
+        return
+    yield
+    try:
+        after = {n for n in os.listdir(cwd) if n.startswith("<")}
+    except OSError:
+        return
+    created = sorted(after - before)
+    if created:
+        for name in created:                     # leave the tree clean
+            try:
+                os.remove(os.path.join(cwd, name))
+            except OSError:
+                pass
+        raise AssertionError(
+            "test wrote stringified-mock path(s) into "
+            f"{cwd}:\n  " + "\n  ".join(created) + "\n"
+            "A patched `settings` left a storage attribute as an auto-created "
+            "mock. Pin it (e.g. `mock.carrier_storage_root = None` and a real "
+            "`mock.storage_root`) so the path expression yields a real Path. "
+            "See issue #1089."
+        )
