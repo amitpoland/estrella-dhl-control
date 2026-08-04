@@ -297,11 +297,16 @@ def test_swapped_file_cannot_bind_a_digest_to_unvalidated_bytes(tmp_path):
     """The property the single read buys: the returned digest is always the digest of
     the bytes that were actually parsed, on the refusal paths too."""
     import hashlib
-    bad = _evidence_text(statuses={"deploy_qa_reviewer": "BLOCK"})
-    path = _write(tmp_path, bad)
+    path = _write(tmp_path, _evidence_text(statuses={"deploy_qa_reviewer": "BLOCK"}))
     ok, _, digest = validate_evidence(path, _SHA)
     assert not ok
-    assert digest == hashlib.sha256(bad.encode()).hexdigest(), (
+    # Hash the file's ACTUAL bytes, not the string that was written. `write_text`
+    # translates \n -> \r\n on Windows, so comparing against text.encode() asserts a
+    # platform-specific expectation and fails on the runner while passing on Linux.
+    # The property under test is "the digest is over the bytes on disk" — so read them.
+    with open(path, "rb") as fh:
+        on_disk = fh.read()
+    assert digest == hashlib.sha256(on_disk).hexdigest(), (
         "a refusal returned a digest that is not the parsed bytes")
 
 
