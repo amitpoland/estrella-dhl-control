@@ -12,6 +12,8 @@ to maintain backward compatibility testing.
 """
 from __future__ import annotations
 
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -65,6 +67,44 @@ def _pending_config():
     )
 
 
+# ── Settings patch helper ─────────────────────────────────────────────────────
+#
+# Every settings patch in this module MUST go through _patched_settings().
+#
+# `patch("app.core.config.settings")` returns a MagicMock, so every attribute
+# the test does not set auto-creates as a *truthy* child mock. Production
+# resolves the carrier storage root as
+#
+#     settings.carrier_storage_root or (settings.storage_root / "carrier")
+#
+# (routes_carrier_actions.py, routes_carrier_webhook.py, routes_proforma.py,
+# services/carrier/event_processor.py, services/carrier/adapters/live.py).
+# Leaving `carrier_storage_root` unset makes the `or` short-circuit onto a mock;
+# leaving `storage_root` unset makes the fallback `mock / "carrier"` a mock too.
+# Either way the result is a MagicMock whose repr is later opened as a RELATIVE
+# path, creating a file literally named
+#
+#     <MagicMock name='settings.carrier_storage_root.__truediv__()' id='...'>
+#
+# in the pytest CWD — i.e. inside `service/`. The `id=` differs every run, so
+# they accumulate rather than overwrite, and 11 of them were once committed
+# (see issue #1089). Both attributes must therefore be real for that expression
+# to yield a real path.
+
+_MOCK_STORAGE_ROOT = Path(tempfile.mkdtemp(prefix="pz-carrier-gate-"))
+
+
+@contextmanager
+def _patched_settings(**overrides):
+    """Patch `app.core.config.settings` with the storage attributes pinned real."""
+    with patch("app.core.config.settings") as mock_settings:
+        mock_settings.carrier_storage_root = None
+        mock_settings.storage_root = _MOCK_STORAGE_ROOT
+        for name, value in overrides.items():
+            setattr(mock_settings, name, value)
+        yield mock_settings
+
+
 # ── Test app fixture ──────────────────────────────────────────────────────────
 
 
@@ -90,8 +130,7 @@ def test_post_shipment_pending_returns_503(test_app):
     test_app.dependency_overrides[_get_carrier_config] = _pending_config
     client = TestClient(test_app, raise_server_exceptions=False)
     # Mock settings with AWB authority flag OFF for gate test isolation
-    with patch('app.core.config.settings') as mock_settings:
-        mock_settings.awb_address_authority_enabled = False
+    with _patched_settings(awb_address_authority_enabled=False):
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
             json={
@@ -110,8 +149,7 @@ def test_post_shipment_pending_body_mentions_pending(test_app):
     test_app.dependency_overrides[_get_carrier_config] = _pending_config
     client = TestClient(test_app, raise_server_exceptions=False)
     # Mock settings with AWB authority flag OFF for gate test isolation
-    with patch('app.core.config.settings') as mock_settings:
-        mock_settings.awb_address_authority_enabled = False
+    with _patched_settings(awb_address_authority_enabled=False):
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
             json={
@@ -150,8 +188,7 @@ def _shadow_result() -> ShipmentResult:
 
 def _post_shipment(client: TestClient, batch_id: str = "BATCH-001"):
     # Mock settings with AWB authority flag OFF for shadow mode testing
-    with patch('app.core.config.settings') as mock_settings:
-        mock_settings.awb_address_authority_enabled = False
+    with _patched_settings(awb_address_authority_enabled=False):
         return client.post(
             f"/api/v1/carrier/{batch_id}/shipment",
             json={

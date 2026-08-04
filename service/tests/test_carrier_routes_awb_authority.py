@@ -5,6 +5,9 @@ existing carrier route infrastructure for Campaign 02.5 Workstream 3.
 """
 from __future__ import annotations
 
+import tempfile
+from contextlib import contextmanager
+
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,6 +23,38 @@ def _logistics_user():
     # POST /shipment is role-gated (require_role -> get_current_user, PR #1002).
     return {"id": 1, "email": "t@test.internal", "role": "logistics",
             "is_active": True, "is_approved": True}
+
+
+# ── Settings patch helper ─────────────────────────────────────────────────────
+#
+# Every settings patch in this module MUST go through _patched_settings().
+#
+# `patch("app.core.config.settings")` returns a MagicMock, so every attribute
+# the test does not set auto-creates as a *truthy* child mock. Production
+# resolves the carrier storage root as
+#
+#     settings.carrier_storage_root or (settings.storage_root / "carrier")
+#
+# so leaving `carrier_storage_root` unset makes the `or` short-circuit onto a
+# mock, and the resulting MagicMock repr is later opened as a RELATIVE path —
+# creating a file named `<MagicMock name='settings.carrier_storage_root.
+# __truediv__()' id='...'>` in the pytest CWD, i.e. inside `service/`.
+#
+# Setting `storage_root` alone (as this module used to) does NOT help: the `or`
+# never reaches it. Both attributes must be real. See issue #1089.
+
+_MOCK_STORAGE_ROOT = Path(tempfile.mkdtemp(prefix="pz-carrier-awb-"))
+
+
+@contextmanager
+def _patched_settings(**overrides):
+    """Patch `app.core.config.settings` with the storage attributes pinned real."""
+    with patch("app.core.config.settings") as mock_settings:
+        mock_settings.carrier_storage_root = None
+        mock_settings.storage_root = _MOCK_STORAGE_ROOT
+        for name, value in overrides.items():
+            setattr(mock_settings, name, value)
+        yield mock_settings
 
 
 # ── Test setup ─────────────────────────────────────────────────────────────────
@@ -50,10 +85,7 @@ def app_with_authority_flag_off():
     app.dependency_overrides[get_current_user] = _logistics_user
 
     # Mock settings with flag OFF
-    with patch('app.core.config.settings') as mock_settings:
-        mock_settings.awb_address_authority_enabled = False
-        mock_settings.storage_root = Path("/tmp/test")
-
+    with _patched_settings(awb_address_authority_enabled=False):
         from app.api.routes_carrier_actions import _get_coordinator
         app.dependency_overrides[_get_coordinator] = _mock_coordinator
 
@@ -85,10 +117,7 @@ def app_with_authority_flag_on():
     app.dependency_overrides[get_current_user] = _logistics_user
 
     # Mock settings with flag ON
-    with patch('app.core.config.settings') as mock_settings:
-        mock_settings.awb_address_authority_enabled = True
-        mock_settings.storage_root = Path("/tmp/test")
-
+    with _patched_settings(awb_address_authority_enabled=True):
         from app.api.routes_carrier_actions import _get_coordinator
         app.dependency_overrides[_get_coordinator] = _mock_coordinator
 
