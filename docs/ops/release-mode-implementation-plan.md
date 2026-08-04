@@ -13,13 +13,39 @@ reimplement them.
 
 ## Goal
 
-One operator command performs the whole production decision:
+One operator command, run **on the Windows production host**, performs the whole
+production decision:
 
 ```powershell
-.\.claude\deploy\Deploy-PZ.ps1 -Release -ReviewedSHA <full-sha> -GateEvidence <path>
+.\.claude\deploy\Deploy-PZ.ps1 -Release -ReviewedSHA <full-sha>
 ```
 
 Final line is exactly one of: `DEPLOYED`, `ALREADY CURRENT`, `ROLLED BACK`, `FAILED SAFE`.
+
+**Windows-specific by design.** Production runtime `C:\PZ`; source checkout `C:\PZ-main`;
+service `PZService`; surfaces `C:\PZ\app` and `C:\PZ\engine`; tooling is PowerShell,
+robocopy and Windows service control. Browser verification happens only after the service
+is restarted and closure passes.
+
+### No `-GateEvidence` parameter — the script finds the approval
+
+The command takes only `-ReviewedSHA`. `-Release` therefore has to **locate** the
+seven-agent approval for that SHA rather than be handed a path, which needs a
+convention:
+
+- Add `gate_evidence_dir` to `windows_prod_v2.json` (e.g. `C:\PZ-secrets\gate-evidence`).
+- `-Release` reads `<gate_evidence_dir>\<sha>.md` and validates it via `gate_evidence.py`.
+- Absent or invalid → `FAILED SAFE` before any lock, artifact, backup or service change.
+
+**Config-schema caution.** `Get-DeployConfig` requires every key in its `$required`
+list and pins `schema_version -eq 2`. Adding `gate_evidence_dir` to that list makes
+every existing config file invalid. Either add it as optional-with-default, or bump
+`schema_version` to 3 and update the config in the same change — do not add it to
+`$required` silently.
+
+Evidence still gates **signing**, not the write: `-Release` validates the file, then
+mints the signed single-use authorization internally, which is what `Assert-Authorization`
+consumes. The operator never runs the signer by hand.
 
 ## Authority model (settled)
 
@@ -37,6 +63,48 @@ this repository that would catch a syntax error in new `-Release` code. Author i
 `pwsh -NoProfile -Command { … }` parse validation is available.
 
 ---
+
+## Most of the 13-step sequence already exists
+
+`Invoke-Deploy` (line 1289) already implements the ordinary path in almost exactly the
+requested order, with the safety reasoning written into the code:
+
+| requested step | already implemented | where |
+|---|---|---|
+| 1 read seven-agent approval | **NO — new** | — |
+| 2 prove running runtime identity | yes | `Assert-ProductionMatchesRecordedSha`, under the lock, before any write (1320) |
+| 3 compare app + engine files by hash | yes | `Test-RuntimeUnchanged` (1361); hashes all 16 engine files |
+| 4 stop if everything matches | yes | runtime no-op short-circuit, returns without stopping the service (1361–1385) |
+| 5 create backup | yes | `New-BackupUnit` (1392) |
+| 6 stop `PZService` | yes | `Set-ServiceState -Target Stopped` (1388) |
+| 7 robocopy the immutable artifact | yes | `Invoke-Converge` (1408) |
+| 8 sync governed engine files | yes | `Invoke-EngineSync` (1409) |
+| 9 verify hashes | yes | `Test-AgainstManifest` (1411) |
+| 10 update `version.txt` | yes | `Write-VersionFile` (1413) |
+| 11 start `PZService` | yes | `Set-ServiceState -Target Running` (1414) |
+| 12 run closure automatically | **NO — new** (currently a printed hint, 1432) |
+| 13 one final result line | **NO — new** (prints `DEPLOY COMPLETE` + hints) |
+
+So `-Release` is genuinely an orchestrator: steps 2–11 exist and are already correctly
+ordered. The new work is steps 1, 12, 13, internal signing, and identity *resolution*.
+
+### One ordering correction
+
+The requested sequence lists **backup (5) before stop (6)**. The existing code does the
+reverse — `Set-ServiceState -Target Stopped` (1388) then `New-BackupUnit` (1392) — and
+that order is the safer one: backing up a **running** service risks a torn copy of files
+being written (SQLite databases mid-transaction, open logs), producing a backup that
+cannot be restored cleanly. The rollback path is the one thing that must never be
+subtly corrupt.
+
+**Recommendation: keep stop-before-backup.** If the intent behind 5-before-6 was "take
+the backup before anything destructive happens", that property already holds — the
+backup is taken before `Invoke-Converge`, which is the first step that modifies
+production. Nothing is written between the stop and the backup.
+
+What *must* stay ahead of the backup is the identity gate, and it does (1320): backing
+up an unproved tree is how a unit gets minted with one commit's label and another
+commit's bytes.
 
 ## Reuse map — every step already has an implementation
 
