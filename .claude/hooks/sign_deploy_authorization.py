@@ -134,8 +134,14 @@ def main(argv=None):
         print(f"  gate evidence: {reason}")
         evidence_ref = format_ref(os.path.abspath(evidence_ref), digest)
     elif evidence_ref:
-        # Bind it anyway when supplied, so a pre-minted rollback artifact that cites a
-        # gate run is still tamper-evident.
+        # Record a digest when evidence is supplied for a non-production action.
+        #
+        # This is tamper-RECORDED, not tamper-EVIDENT: deploy_authorization.evaluate()
+        # re-checks the digest for deploy and reconcile only, so a rollback's digest is
+        # never verified at use time. An earlier comment here claimed it was "still
+        # tamper-evident", which was an uncited optimistic safety claim (Lesson Q rules
+        # 1 and 6) — it described a check that does not run. The value is audit-trail
+        # only: it says which bytes the operator held when signing.
         digest = digest_file(evidence_ref)
         if digest:
             evidence_ref = format_ref(os.path.abspath(evidence_ref), digest)

@@ -116,17 +116,35 @@ def parse_evidence(text):
 
     Returns {normalised_agent_name: {"status", "disposition", "duplicate"}}.
 
-    AN AGENT MAY REPORT ONCE. Records were previously last-wins, which made the
-    document layout a laundering vector: a second `AGENT: x` block later in the file
-    silently overwrote an earlier `STATUS: BLOCK`, and because decoration is stripped
-    before parsing, a bullet inside a NOTES section (`  - AGENT: x`) was indistinguishable
-    from a real verdict block. Both were confirmed to launder a BLOCK into a GO.
+    EVERY VERDICT FIELD IS WRITE-ONCE. Not just `AGENT` -- `STATUS` and `DISPOSITION`
+    too. The whole class is "a restatement later in the document overrides an earlier
+    verdict", and it has three known routes:
 
-    The digest binding cannot catch this -- it proves the file did not change after
-    signing, not that the file says what it appears to say. So a repeated agent is
-    recorded as `duplicate` and refused by validate_evidence(), rather than resolved.
-    Refusing is the only safe resolution: first-wins would silently drop a later BLOCK,
-    and last-wins is the defect itself.
+      1. a second `AGENT: x` block;
+      2. a bare repeated `STATUS:` / `DISPOSITION:` pair inside one record, with no
+         second AGENT line at all;
+      3. a near-miss agent spelling (`AGENT: deploy_security_reviewer (round 1)`) whose
+         BLOCK is silently discarded because the name does not normalise to a required
+         agent, leaving a later clean block as the only record.
+
+    An earlier fix closed route 1 only and asserted the class was closed. It was not:
+    routes 2 and 3 were then demonstrated laundering a BLOCK into a GO. Fixing the
+    demonstrated vectors instead of the class is what made that fix wrong, so the rule
+    here is deliberately layout-independent: a field may be set once, and a second
+    occurrence marks the record `duplicate`, which validate_evidence() refuses.
+
+    Resetting `current` at blank lines was considered and rejected: the gate output
+    contract puts BLOCKERS / CHANGED_FILES / TESTS / RISKS between STATUS and
+    DISPOSITION, so a real block legitimately spans blank lines. Write-once needs no
+    guess about where a block ends.
+
+    A BLOCKING VERDICT IS NEVER DISCARDED, whoever wrote it. An unrecognised agent name
+    carrying HOLD/BLOCK/FAIL is retained and refused by validate_evidence() rather than
+    dropped -- that is route 3, and silently ignoring a stranger's BLOCK is exactly how
+    it laundered.
+
+    The digest binding cannot catch any of this: it proves the file did not change after
+    signing, not that the file says what it appears to say.
     """
     agents = {}
     current = None
@@ -146,9 +164,15 @@ def parse_evidence(text):
             else:
                 agents[current] = {"status": "", "disposition": "", "duplicate": False}
         elif current and key == "STATUS" and value:
-            agents[current]["status"] = value.split()[0].upper()
+            if agents[current]["status"]:
+                agents[current]["duplicate"] = True
+            else:
+                agents[current]["status"] = value.split()[0].upper()
         elif current and key == "DISPOSITION" and value:
-            agents[current]["disposition"] = value.split(":")[0].strip().upper()
+            if agents[current]["disposition"]:
+                agents[current]["duplicate"] = True
+            else:
+                agents[current]["disposition"] = value.split(":")[0].strip().upper()
     return agents
 
 
@@ -252,13 +276,27 @@ def validate_evidence(path, target_sha, now=None):
     if missing:
         return (False, "gate evidence missing agent result(s): " + ", ".join(missing), digest)
 
-    # A repeated agent block is refused, never resolved -- see parse_evidence().
+    # A repeated verdict field is refused, never resolved -- see parse_evidence().
     repeated = sorted(a for a, rec in agents.items() if rec.get("duplicate"))
     if repeated:
-        return (False, "gate evidence declares more than one result for: "
-                       + ", ".join(repeated)
-                       + " (an agent reports once; a repeated block cannot be "
-                         "distinguished from a laundered verdict)", digest)
+        return (False, "gate evidence restates a verdict for: " + ", ".join(repeated)
+                       + " (AGENT / STATUS / DISPOSITION are write-once; a restatement "
+                         "cannot be distinguished from a laundered verdict)", digest)
+
+    # A stranger's BLOCK is still a BLOCK. An agent name outside REQUIRED_AGENTS is
+    # normally ignored, which let a near-miss spelling swallow a blocking verdict --
+    # `AGENT: deploy_security_reviewer (round 1)` carrying BLOCK, followed by a clean
+    # block under the exact name. A blocking verdict is never silently discarded.
+    strangers = sorted(
+        a for a, rec in agents.items()
+        if a not in REQUIRED_AGENTS
+        and (rec.get("status") in _BLOCKING_STATUS or rec.get("disposition") in _BLOCKING_STATUS)
+    )
+    if strangers:
+        return (False, "gate evidence carries a blocking verdict under an unrecognised "
+                       "agent name: " + ", ".join(strangers)
+                       + " (a BLOCK is never discarded because the name does not match; "
+                         "correct the name or resolve the blocker)", digest)
 
     blocked = []
     for name in REQUIRED_AGENTS:
