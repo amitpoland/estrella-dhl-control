@@ -34,6 +34,24 @@ if str(_svc) not in sys.path:
 
 # ── suppliers_db helpers ──────────────────────────────────────────────────────
 
+def _run_async(coro):
+    """Run *coro* on a dedicated event loop.
+
+    A bare ``asyncio.get_event_loop()`` breaks as soon as any other test
+    module has called ``asyncio.run()``: that sets the current loop to None,
+    and on 3.9 ``get_event_loop()`` then raises "no current event loop"
+    instead of creating one. Owning the loop here keeps this module
+    independent of collection order.
+    """
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _make_suppliers_db(tmp_path: Path) -> Path:
     """Create an in-memory suppliers.sqlite with two known suppliers."""
     from app.services import suppliers_db as sdb
@@ -215,7 +233,7 @@ def test_pz_create_blocks_on_unresolved_supplier(tmp_path):
         patch("app.api.routes_wfirma.wfirma_client.create_warehouse_pz") as mock_create,
     ):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.get_event_loop().run_until_complete(wfirma_pz_create("TEST_UNRESOLVED_001"))
+            _run_async(wfirma_pz_create("TEST_UNRESOLVED_001"))
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["code"] == "PZ_CREATE_SUPPLIER_NOT_RESOLVED"
@@ -278,7 +296,7 @@ def test_pz_create_uses_resolved_supplier_not_global_env(tmp_path):
         patch("app.api.routes_wfirma._patch_pz_doc_id", return_value=None),
         patch("app.api.routes_wfirma.tl.log_event"),
     ):
-        asyncio.get_event_loop().run_until_complete(
+        _run_async(
             wfirma_pz_create("TEST_SUPPLIER_AUTH_001", x_operator=None)
         )
 
@@ -328,7 +346,7 @@ def test_pz_preview_includes_supplier_resolution_source(tmp_path):
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in products}),
     ):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_pz_preview("TEST_PREV_001")
         )
 
@@ -378,7 +396,7 @@ def test_pz_preview_blocker_when_supplier_unresolved(tmp_path):
         patch("app.api.routes_wfirma._build_rows", return_value=rows),
         patch("app.api.routes_wfirma._mirror_product_map", return_value={p["product_code"]: p["wfirma_product_id"] for p in products}),
     ):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_pz_preview("TEST_PREV_UNRESOLVED")
         )
 
@@ -429,7 +447,7 @@ def test_pz_pdf_response_has_generated_source_header():
         patch("app.api.routes_wfirma.wfirma_client.fetch_warehouse_pz", return_value=fake_fetch),
     ):
         try:
-            response = asyncio.get_event_loop().run_until_complete(
+            response = _run_async(
                 wfirma_pz_document_pdf("TEST_PDF_BATCH")
             )
         except Exception as exc:

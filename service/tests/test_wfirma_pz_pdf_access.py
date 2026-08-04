@@ -78,7 +78,19 @@ def _fetch_fail():
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Run *coro* on a dedicated event loop.
+
+    A bare ``asyncio.get_event_loop()`` breaks as soon as any other test
+    module has called ``asyncio.run()``: that sets the current loop to None,
+    and on 3.9 ``get_event_loop()`` then raises "no current event loop"
+    instead of creating one. Owning the loop here keeps this module
+    independent of collection order.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 # ── 1. UI note text present ───────────────────────────────────────────────────

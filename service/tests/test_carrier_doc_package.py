@@ -35,6 +35,24 @@ if str(_SVC) not in sys.path:
 FAKE_PDF = b"%PDF-1.4 fake commercial invoice bytes"
 
 
+def _run_async(coro):
+    """Run *coro* on a dedicated event loop.
+
+    A bare ``asyncio.get_event_loop()`` breaks as soon as any other test
+    module has called ``asyncio.run()``: that sets the current loop to None,
+    and on 3.9 ``get_event_loop()`` then raises "no current event loop"
+    instead of creating one. Owning the loop here keeps this module
+    independent of collection order.
+    """
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _make_storage(tmp_path: Path) -> Path:
     """Create a minimal storage directory with necessary SQLite databases."""
     (tmp_path / "outputs" / "BATCH_TEST" / "").mkdir(parents=True, exist_ok=True)
@@ -432,7 +450,7 @@ class TestMissingBoxType:
 
         body = LabelPackageBody(box_type_id=9999, client_name="Test Client GmbH")
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.get_event_loop().run_until_complete(
+            _run_async(
                 create_label_package(batch_id="BATCH_TEST", body=body, _auth=None)
             )
         assert exc_info.value.status_code == 422
@@ -660,7 +678,7 @@ class TestRouteUngated:
         import asyncio
         with patch("app.services.wfirma_client.fetch_invoice_pdf",
                    return_value=FAKE_PDF):
-            response = asyncio.get_event_loop().run_until_complete(
+            response = _run_async(
                 create_label_package(
                     batch_id="BATCH_TEST",
                     body=body,

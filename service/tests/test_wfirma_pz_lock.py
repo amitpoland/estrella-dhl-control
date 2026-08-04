@@ -41,6 +41,22 @@ _DOC_ID_B = "999999999"
 _DOC_NO   = "PZ 5/5/2026"
 
 
+def _run_async(coro):
+    """Run *coro* on a dedicated event loop.
+
+    A bare ``asyncio.get_event_loop()`` breaks as soon as any other test
+    module has called ``asyncio.run()``: that sets the current loop to None,
+    and on 3.9 ``get_event_loop()`` then raises "no current event loop"
+    instead of creating one. Owning the loop here keeps this module
+    independent of collection order.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _audit_with(*, doc_id="", source="", timeline=()):
     """Build an audit dict with optional pz_doc_id, pz_source, timeline events."""
     a = {
@@ -75,7 +91,7 @@ def _run_adopt(batch_id=_BATCH, body=None):
         body = _adopt_body()
     # Pass x_operator=None explicitly so FastAPI's Header sentinel is not used
     # as the default when the coroutine is invoked directly (outside DI machinery).
-    return asyncio.get_event_loop().run_until_complete(
+    return _run_async(
         wfirma_pz_adopt(batch_id, body, x_operator=None)
     )
 
@@ -83,7 +99,7 @@ def _run_adopt(batch_id=_BATCH, body=None):
 def _run_create(batch_id=_BATCH):
     from app.api.routes_wfirma import wfirma_pz_create
     # Same: pass x_operator=None to avoid FastAPI Header sentinel being the default.
-    return asyncio.get_event_loop().run_until_complete(
+    return _run_async(
         wfirma_pz_create(batch_id, x_operator=None)
     )
 

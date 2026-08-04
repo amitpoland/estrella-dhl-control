@@ -31,6 +31,24 @@ import sqlite3
 from app.services import reservation_db as _rdb
 
 
+def _run_async(coro):
+    """Run *coro* on a dedicated event loop.
+
+    A bare ``asyncio.get_event_loop()`` breaks as soon as any other test
+    module has called ``asyncio.run()``: that sets the current loop to None,
+    and on 3.9 ``get_event_loop()`` then raises "no current event loop"
+    instead of creating one. Owning the loop here keeps this module
+    independent of collection order.
+    """
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _mirror_row(db, code):
     """Read a wfirma_product_mirror row (or None) for DB-readback assertions."""
     con = sqlite3.connect(str(db))
@@ -140,7 +158,7 @@ def test_already_mapped_product_skipped():
     ):
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)
@@ -187,7 +205,7 @@ def test_goods_find_match_saved_to_db():
     ):
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)
@@ -228,7 +246,7 @@ def test_missing_gate_off_reported_not_created(tmp_path):
         mock_settings.storage_root = tmp_path
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)
@@ -280,7 +298,7 @@ def test_missing_gate_on_creates_product(tmp_path):
         mock_settings.storage_root = tmp_path
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)
@@ -337,7 +355,7 @@ def test_create_failure_writes_no_mapping(tmp_path):
         mock_settings.storage_root = tmp_path
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)
@@ -381,7 +399,7 @@ def test_idempotent_rerun_increments_already_mapped():
     ):
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)
@@ -435,7 +453,7 @@ def test_ready_for_pz_true_when_all_mapped(tmp_path):
 
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)
@@ -481,7 +499,7 @@ def test_c1e_goods_find_path_writes_mirror(tmp_path):
         mock_settings.storage_root = tmp_path
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)
@@ -543,7 +561,7 @@ def test_c1e_found_path_collision_returns_per_item_error(tmp_path):
         mock_settings.storage_root = tmp_path
         from app.api.routes_wfirma import wfirma_products_resolve
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run_async(
             wfirma_products_resolve(_BATCH)
         )
         body = json.loads(result.body)

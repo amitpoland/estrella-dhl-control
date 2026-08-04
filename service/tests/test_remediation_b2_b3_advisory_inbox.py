@@ -25,6 +25,22 @@ if str(_SVC) not in sys.path:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _run_async(coro):
+    """Run *coro* on a dedicated event loop.
+
+    A bare ``asyncio.get_event_loop()`` breaks as soon as any other test
+    module has called ``asyncio.run()``: that sets the current loop to None,
+    and on 3.9 ``get_event_loop()`` then raises "no current event loop"
+    instead of creating one. Owning the loop here keeps this module
+    independent of collection order.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _make_audit(tmp_path: Path, batch_id: str = "BATCH_ADV") -> Path:
     audit_path = tmp_path / "outputs" / batch_id / "audit.json"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +69,7 @@ class TestPzPipelineAdvisoryInbox:
         audit_path = _make_audit(tmp_path)
         audit = json.loads(audit_path.read_text())
 
-        asyncio.get_event_loop().run_until_complete(
+        _run_async(
             __import__("app.pipelines.pz", fromlist=["start_pz"]).start_pz(
                 audit=audit,
                 audit_path=audit_path,
@@ -81,7 +97,7 @@ class TestPzPipelineAdvisoryInbox:
         audit = json.loads(audit_path.read_text())
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.get_event_loop().run_until_complete(
+            _run_async(
                 __import__("app.pipelines.pz", fromlist=["start_pz"]).start_pz(
                     audit=audit,
                     audit_path=audit_path,
@@ -105,11 +121,11 @@ class TestPzPipelineAdvisoryInbox:
         audit = json.loads(audit_path.read_text())
         pz = __import__("app.pipelines.pz", fromlist=["start_pz"])
 
-        asyncio.get_event_loop().run_until_complete(
+        _run_async(
             pz.start_pz(audit=audit, audit_path=audit_path,
                          trigger_source="user", actor="test"))
         audit2 = _load_audit(audit_path)
-        asyncio.get_event_loop().run_until_complete(
+        _run_async(
             pz.start_pz(audit=audit2, audit_path=audit_path,
                          trigger_source="user", actor="test"))
 
@@ -140,7 +156,7 @@ class TestDhlPipelineAdvisoryInbox:
 
         audit_path, audit = self._make_clearance_audit(tmp_path)
 
-        asyncio.get_event_loop().run_until_complete(
+        _run_async(
             __import__("app.pipelines.dhl", fromlist=["start_clearance"]).start_clearance(
                 audit=audit,
                 audit_path=audit_path,
