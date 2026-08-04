@@ -12,6 +12,8 @@ so these tests are unaffected by the feature flag changes.
 """
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,6 +30,26 @@ from app.api.routes_carrier_shadow import (
 )
 from app.core.security import require_api_key
 from app.services.carrier.factory import CarrierConfig
+
+
+# ── Storage-attribute pin (issue #1089) ───────────────────────────────────────
+#
+# `patch("app.core.config.settings")` yields a MagicMock whose every unread
+# attribute auto-creates as a *truthy* child mock. Production resolves storage
+# paths as `settings.X or (settings.Y / "...")`, so an unpinned attribute leaves
+# a mock in that expression and the first str() coercion writes a repr-named
+# file into the CWD. Both attributes must be real for the expression to yield a
+# real path -- setting only `storage_root` does not help, because the `or` never
+# reaches it.
+
+_PINNED_STORAGE_ROOT = Path(tempfile.mkdtemp(prefix="pz-carrier-auth-"))
+
+
+def _pin_storage(mock_settings) -> None:
+    """Give a patched settings mock real storage paths."""
+    mock_settings.carrier_storage_root = None
+    mock_settings.storage_root = _PINNED_STORAGE_ROOT
+
 
 
 # ── Dependency stubs ──────────────────────────────────────────────────────────
@@ -64,6 +86,7 @@ def test_post_shipment_no_key_returns_401(auth_app):
     client = TestClient(auth_app, raise_server_exceptions=False)
     # Mock settings to prevent any potential import issues during auth failure
     with patch('app.core.config.settings') as mock_settings:
+        _pin_storage(mock_settings)
         mock_settings.awb_address_authority_enabled = False
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
@@ -193,6 +216,7 @@ def viewer_app():
 def test_mutation_routes_reject_viewer_with_403(viewer_app, path, body):
     client = TestClient(viewer_app, raise_server_exceptions=False)
     with patch("app.core.config.settings") as mock_settings:
+        _pin_storage(mock_settings)
         mock_settings.awb_address_authority_enabled = False
         resp = client.post(path, json=body)
     # 403 (wrong role) — NOT 200/404/422. The gate fires before the handler,

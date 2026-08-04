@@ -29,6 +29,7 @@ All tests:
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call as mock_call
 
@@ -44,9 +45,24 @@ from app.services import ai_gateway
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+_PINNED_STORAGE_ROOT = Path(tempfile.mkdtemp(prefix="pz-phase2b-"))
+
+
+def _pin_storage(mock_settings) -> None:
+    """Give a patched settings mock real storage paths (issue #1089).
+
+    Production resolves paths as `settings.X or (settings.Y / "...")`; an
+    unpinned attribute leaves a mock in that expression, and the first str()
+    coercion writes a repr-named file into the CWD.
+    """
+    mock_settings.carrier_storage_root = None
+    mock_settings.storage_root = _PINNED_STORAGE_ROOT
+
+
 def _settings(**kwargs):
     """Build a MagicMock settings object with sane Phase-2B defaults."""
     s = MagicMock()
+    _pin_storage(s)          # covers every _settings() caller in this module
     s.ai_parser_enabled           = kwargs.get("ai_parser_enabled", True)
     s.anthropic_api_key           = kwargs.get("anthropic_api_key", "sk-test-key")
     s.ai_cowork_enabled           = kwargs.get("ai_cowork_enabled", False)

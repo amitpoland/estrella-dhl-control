@@ -16,6 +16,7 @@ Active-shipment filter proof:
 """
 from __future__ import annotations
 
+import tempfile
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -31,6 +32,25 @@ from app.services.ai_dhl_followup_drafter import (  # noqa: E402
     _text_to_html,
     _build_user_prompt,
 )
+
+
+# ── Storage-attribute pin (issue #1089) ───────────────────────────────────────
+#
+# `patch("app.core.config.settings")` yields a MagicMock whose every unread
+# attribute auto-creates as a *truthy* child mock. Production resolves storage
+# paths as `settings.X or (settings.Y / "...")`, so an unpinned attribute leaves
+# a mock in that expression and the first str() coercion writes a repr-named
+# file into the CWD. Both attributes must be real for the expression to yield a
+# real path -- setting only `storage_root` does not help, because the `or` never
+# reaches it.
+
+_PINNED_STORAGE_ROOT = Path(tempfile.mkdtemp(prefix="pz-dhl-drafter-"))
+
+
+def _pin_storage(mock_settings) -> None:
+    """Give a patched settings mock real storage paths."""
+    mock_settings.carrier_storage_root = None
+    mock_settings.storage_root = _PINNED_STORAGE_ROOT
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -80,6 +100,7 @@ _AI_ENHANCED_TEXT = (
 def test_ai_flag_disabled_returns_deterministic_body():
     """When ai_advisory_llm_enabled=False the drafter must return the original body."""
     mock_settings = MagicMock()
+    _pin_storage(mock_settings)
     mock_settings.ai_advisory_llm_enabled = False
     mock_settings.ai_advisory_model = ""
 
@@ -101,6 +122,7 @@ def test_ai_flag_disabled_returns_deterministic_body():
 def test_ai_enabled_returns_enhanced_body_with_awb():
     """When AI is enabled and gateway returns valid text containing AWB, use it."""
     mock_settings = MagicMock()
+    _pin_storage(mock_settings)
     mock_settings.ai_advisory_llm_enabled = True
     mock_settings.ai_advisory_model = "claude-haiku-4-5-20251001"
 
@@ -132,6 +154,7 @@ def test_ai_enabled_returns_enhanced_body_with_awb():
 def test_ai_gateway_returns_none_falls_back_to_deterministic():
     """When gateway returns None (budget/CB/key), original body is used."""
     mock_settings = MagicMock()
+    _pin_storage(mock_settings)
     mock_settings.ai_advisory_llm_enabled = True
     mock_settings.ai_advisory_model = "claude-haiku-4-5-20251001"
 
@@ -161,6 +184,7 @@ def test_ai_body_missing_awb_rejected_and_fallback():
     assert len(body_without_awb) >= 50, "Test data error: string must be >= 50 chars"
 
     mock_settings = MagicMock()
+    _pin_storage(mock_settings)
     mock_settings.ai_advisory_llm_enabled = True
     mock_settings.ai_advisory_model = "claude-haiku-4-5-20251001"
 
@@ -181,6 +205,7 @@ def test_ai_body_missing_awb_rejected_and_fallback():
 def test_ai_gateway_exception_falls_back_no_propagation():
     """If ai_gateway.call raises any exception, function must not propagate it."""
     mock_settings = MagicMock()
+    _pin_storage(mock_settings)
     mock_settings.ai_advisory_llm_enabled = True
     mock_settings.ai_advisory_model = "claude-haiku-4-5-20251001"
 

@@ -18,6 +18,7 @@ already_stored catch-up path (via scan_and_ingest):
 """
 from __future__ import annotations
 
+import tempfile
 import json
 import sys
 from pathlib import Path
@@ -31,6 +32,26 @@ from app.services.email_evidence_ingestor import (
     _ingest_sad_attachments,
     _write_agency_receipt_to_audit,
 )
+
+
+
+# ── Storage-attribute pin (issue #1089) ───────────────────────────────────────
+#
+# `patch("app.core.config.settings")` yields a MagicMock whose every unread
+# attribute auto-creates as a *truthy* child mock. Production resolves storage
+# paths as `settings.X or (settings.Y / "...")`, so an unpinned attribute leaves
+# a mock in that expression and the first str() coercion writes a repr-named
+# file into the CWD. Both attributes must be real for the expression to yield a
+# real path -- setting only `storage_root` does not help, because the `or` never
+# reaches it.
+
+_PINNED_STORAGE_ROOT = Path(tempfile.mkdtemp(prefix="pz-email-sad-"))
+
+
+def _pin_storage(mock_settings) -> None:
+    """Give a patched settings mock real storage paths."""
+    mock_settings.carrier_storage_root = None
+    mock_settings.storage_root = _PINNED_STORAGE_ROOT
 
 TOKEN      = "test_token"
 ACCOUNT_ID = "acct123"
@@ -341,6 +362,7 @@ def _make_scan_ingest_env(tmp_path, monkeypatch):
     # scan_and_ingest does `from ..core.config import settings` at call time,
     # so patching the module-level name is the correct interception point.
     mock_settings = MagicMock()
+    _pin_storage(mock_settings)
     mock_settings.zoho_mail_account_id = "test_acct_123"
     mock_settings.zoho_mail_api_base   = "https://mail.zoho.eu/api"
     mock_settings.email_evidence_v2    = True
