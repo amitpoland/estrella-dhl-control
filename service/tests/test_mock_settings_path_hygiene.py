@@ -74,6 +74,82 @@ def _resolved_carrier_root(settings):
     return settings.carrier_storage_root or (settings.storage_root / "carrier")
 
 
+# Modules that wholesale-mock the GLOBAL singleton `app.core.config.settings`
+# and therefore expose every one of the ~315 `settings.storage_root` production
+# sites to their mock. Each pins the storage attributes through a module-local
+# `_pin_storage` helper. They were latent, not live — none was observed writing
+# junk — so nothing but this pin would notice the helper being dropped.
+_GLOBAL_SINGLETON_PATCHERS = [
+    "tests.test_ai_dhl_followup_drafter",
+    "tests.test_carrier_routes_auth",
+    "tests.test_email_sad_attachment_download",
+    "tests.test_ingestor_engine_path",
+    "tests.test_phase2b_provider_selection",
+]
+
+
+@pytest.mark.parametrize("module_name", _GLOBAL_SINGLETON_PATCHERS)
+def test_pin_storage_helper_yields_a_real_path(module_name):
+    """Each global-singleton patcher's `_pin_storage` must produce a real Path.
+
+    These modules pin rather than wrap: they patch `settings` in many places and
+    call `_pin_storage(mock)` at each. Verified against a bare `MagicMock`, the
+    same object `patch(...)` hands them.
+    """
+    module = pytest.importorskip(module_name)
+    pin = getattr(module, "_pin_storage", None)
+    assert pin is not None, (
+        f"{module_name} patches the global settings singleton and must expose a "
+        "`_pin_storage` helper applied at every patch site (issue #1089)"
+    )
+
+    from unittest.mock import MagicMock
+
+    mock_settings = MagicMock()
+    pin(mock_settings)
+    root = _resolved_carrier_root(mock_settings)
+    assert isinstance(root, Path), (
+        f"{module_name}._pin_storage left a mock in the carrier-root expression; "
+        f"got {type(root).__name__} ({root!r})"
+    )
+    assert root.is_absolute(), (
+        f"{module_name} resolved a RELATIVE carrier root ({root}); a relative "
+        "root is what lands junk in the pytest CWD"
+    )
+
+
+@pytest.mark.parametrize("module_name", _GLOBAL_SINGLETON_PATCHERS)
+def test_global_singleton_patchers_pin_every_site(module_name):
+    """Every `app.core.config.settings` patch site must be pinned.
+
+    Counting, not per-line matching: a new unpinned site is textually identical
+    to a pinned one, so only the ratio of patch sites to `_pin_storage` calls
+    can distinguish them. `_settings()`-style factories pin once and are counted
+    as covering all their callers, so the call count may exceed the site count —
+    it may never fall below it.
+    """
+    module = pytest.importorskip(module_name)
+    src = Path(module.__file__).read_text(encoding="utf-8")
+    sites = sum(
+        1
+        for line in src.splitlines()
+        if "patch(" in line
+        and "app.core.config.settings" in line
+        and not line.strip().startswith("#")
+    )
+    pins = sum(
+        1
+        for line in src.splitlines()
+        if "_pin_storage(" in line and not line.strip().startswith(("#", "def "))
+    )
+    assert pins >= 1, f"{module_name} defines no _pin_storage call"
+    # A factory pins once for many sites; a per-site module pins once per site.
+    assert pins >= sites or "_settings(" in src, (
+        f"{module_name} has {sites} settings patch site(s) but only {pins} "
+        "_pin_storage call(s) — at least one site is unpinned (issue #1089)"
+    )
+
+
 @pytest.mark.parametrize(
     "module_name",
     [

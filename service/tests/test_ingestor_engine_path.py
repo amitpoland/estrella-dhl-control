@@ -15,6 +15,7 @@ Also covers the daily-token env-fallback path:
 """
 from __future__ import annotations
 
+import tempfile
 import json
 import os
 import sys
@@ -22,6 +23,26 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+# ── Storage-attribute pin (issue #1089) ───────────────────────────────────────
+#
+# `patch("app.core.config.settings")` yields a MagicMock whose every unread
+# attribute auto-creates as a *truthy* child mock. Production resolves storage
+# paths as `settings.X or (settings.Y / "...")`, so an unpinned attribute leaves
+# a mock in that expression and the first str() coercion writes a repr-named
+# file into the CWD. Both attributes must be real for the expression to yield a
+# real path -- setting only `storage_root` does not help, because the `or` never
+# reaches it.
+
+_PINNED_STORAGE_ROOT = Path(tempfile.mkdtemp(prefix="pz-ingestor-"))
+
+
+def _pin_storage(mock_settings) -> None:
+    """Give a patched settings mock real storage paths."""
+    mock_settings.carrier_storage_root = None
+    mock_settings.storage_root = _PINNED_STORAGE_ROOT
+
 
 _ROOT = Path(__file__).parents[1]
 if str(_ROOT) not in sys.path:
@@ -89,6 +110,7 @@ class TestEngineRootFromSettings:
             sys.path.remove(str(fake_engine))
 
         with patch("app.core.config.settings") as mock_settings:
+            _pin_storage(mock_settings)
             mock_settings.engine_dir = fake_engine
             mock_settings.zoho_mail_api_base = "https://mail.zoho.eu/api"
 
@@ -146,6 +168,7 @@ class TestAuditPathDoesNotDetermineEngineRoot:
         sys_path_snapshot_before = list(sys.path)
 
         with patch("app.core.config.settings") as mock_settings:
+            _pin_storage(mock_settings)
             mock_settings.engine_dir = cli_root
             mock_settings.zoho_mail_api_base = "https://mail.zoho.eu/api"
 
