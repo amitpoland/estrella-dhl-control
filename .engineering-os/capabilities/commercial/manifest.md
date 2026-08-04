@@ -3,7 +3,7 @@
 **Status:** ACTIVE (sales persistence unified Pkg1 deployed; proforma detail parity + PDF work in flight)
 **Authority owners (SEPARATE — do not conflate):** **PROFORMA**, **IMPORT_PZ**, **SALES**
 
-> Lesson N (authority separation): Import, product master, proforma, warehouse receipt, barcode
+> Lesson R (authority separation): Import, product master, proforma, warehouse receipt, barcode
 > traceability, and sales linkage are separate authorities. Each owns its own gates. A guard that
 > blocks across a boundary without a named business rule + test is incomplete.
 

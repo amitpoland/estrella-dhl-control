@@ -6,6 +6,24 @@ This file is owned by the orchestrator and may be appended to after any campaign
 
 Cross-reference: `CLAUDE.md` "Engineering Lessons (permanent)" section mirrors the binding rules in summary form.
 
+**Letter registry.** This file and `CLAUDE.md` share ONE letter space: a letter identifies the same
+lesson in both, and a lesson may live in either file, both, or (historically) only one. Before
+adding a lesson, grep **both** files for the next free letter. A letter that labels two different
+lessons makes every "per Lesson X" reference ambiguous, and the ambiguity stays invisible until
+someone reads the wrong entry. On collision the *later-published* entry is relettered — content,
+date, and file position preserved, with a letter note naming its former letter. Never renumber to
+close a gap; never reuse a retired letter. Not every letter appears in both files: F, M, O, P and R
+live in `CLAUDE.md` only; H and L live here only.
+
+**Letter corrections (2026-08-04):** `CLAUDE.md` carried two `### Lesson N` entries. The
+advisory-vs-blocker lesson (2026-06-23) — the one recorded below — keeps **N**. The authority-
+separation lesson (2026-06-22, "six separate authorities") was relettered to **R** in `CLAUDE.md`;
+it has no entry in this file. A historical "Lesson N" that means *authority separation* /
+*single-authority rule* / *wrong authority* — including the docstrings under `service/tests/**` and
+the dated records under `reports/**`, which were left as written — means **Lesson R**. Separately,
+a byte-identical duplicate of the Lesson G block (97 lines, pasted between Lessons K and L) was
+removed the same day; Lesson G itself is unchanged and remains in its original position.
+
 ---
 
 ## Lesson A — Test stubs must match real production function signatures and return shapes (2026-05-13)
@@ -664,103 +682,6 @@ Every `.claude/agents/*.md` whose tool grant includes Bash, Write, Edit, or any 
 
 **Governance reference**: PROJECT_STATE.md DECISIONS entry 2026-05-23: "Lesson K THRESHOLD SUSTAINED (4th consecutive data point)". Pattern validated across the merge-gate / deploy-gate boundary, demonstrating that prompt-template specificity — not agent substitution, not access restriction — is the correct corrective mechanism for autonomy boundary drift.
 
-## Lesson G — Generated-artifact stale-display bugs are first a cache / atomicity problem, not a generator problem (2026-05-21)
-
-> Numbered Lesson G to avoid collision with `CLAUDE.md`'s existing
-> Lesson F (V2 frontend migration / V1-freeze) which uses the same
-> letter-key in the CLAUDE.md summary list.
-
-**Origin**: Global Jewellery AWB 4789974092 Polish Description regeneration incident (2026-05-21). Operator repeatedly reported "the stale Polish Description PDF keeps returning even after delete and regenerate." Three earlier hypotheses (stale audit cache, stale packing_lines, stale documents.db registry) were investigated and eliminated. The actual file on disk was the correct fresh 245-row version (97 KB, 42 pages, zero forbidden tokens — verified by direct `pdfplumber` readback). The real cause was the `/api/v1/dhl/download/{filename}` endpoint serving `Cache-Control: max-age=14400` — FastAPI's `FileResponse` default of 4-hour browser caching. The browser served its cached copy for 4 hours regardless of how many times the server file was regenerated; the operator could not see the new file until the cache expired or the browser was force-refreshed without cache (Ctrl+Shift+R + DevTools "Disable cache").
-
-**What happened**
-
-1. Phase-1 Polish Description closure was confirmed via authenticated browser smoke earlier in the session (PDF was 42 pages, 245 items, no forbidden tokens).
-2. Operator subsequently reported the PDF was "stale."
-3. Three diagnostic passes patched the wrong layer:
-   - Audit row cache was cleared (PR #260) — no effect on operator's perception
-   - Packing.db rows were re-parsed (PR #261) — no effect on operator's perception
-   - documents.db was inspected — no stale registry entry
-4. Only after a fourth pass with `fetch(url, cache:'no-store')` from the browser console did the response headers reveal `Cache-Control: max-age=14400`.
-5. PR #265 then set `no-store, no-cache, must-revalidate, max-age=0` headers and added an overwrite-safe validate-then-rollback gate for the generation path.
-
-The waste was three patches at the wrong layer. The pattern below would have located the root cause on the first diagnostic pass.
-
-**Binding rule** — when any generated artifact appears stale after a delete-and-regenerate cycle, follow this checklist BEFORE patching the generator:
-
-**Property 1 — Inspect the disk artifact first**
-Read the file directly from its on-disk path (bypass the HTTP endpoint). Compare the content against the expected fresh output. If the file IS the correct fresh content, the generator is not the bug — stop suspecting it and move to Property 2.
-
-Detection signal: any patch to the generator without first verifying that the on-disk file is genuinely stale.
-
-**Property 2 — Inspect every reference layer in this order**
-Verify each of the following can produce or point at the stale view, in this exact order:
-
-  1. **Disk file** — was it actually rewritten? (mtime, hash, size)
-  2. **Audit pointers** — does `audit.json` reference the correct file? (`polish_desc_filename`, `polish_desc_path`, `polish_desc_generated_at`)
-  3. **Registry rows** — any `documents.db` / packing.db / proforma_links.db row pointing at a stale file?
-  4. **Endpoint resolver** — does the download endpoint find the correct file? (call it with a cache-bust query parameter and capture the response)
-  5. **HTTP response headers** — what `Cache-Control`, `ETag`, `Last-Modified` does the response carry?
-  6. **Browser cache** — is the browser serving a cached copy?
-
-Detection signal: any debugging session that patches layer N without first ruling out layers 1..N-1.
-
-**Property 3 — When the disk content is correct but the rendered output is old, the root cause is almost always HTTP / browser caching**
-Generated PDFs are operator artifacts that change per click. The download endpoint MUST emit:
-
-```
-Cache-Control: no-store, no-cache, must-revalidate, max-age=0
-Pragma: no-cache
-Expires: 0
-```
-
-so the browser ALWAYS revalidates. FastAPI `FileResponse` defaults to a multi-hour cache when no `headers={…}` argument is passed — this is a footgun for any regenerable artifact.
-
-Detection signal: any download endpoint for a regenerable file that does not explicitly set `Cache-Control: no-store`.
-
-**Property 4 — Overwrite-safe generation (validate-then-rollback)**
-Every generation path that writes to a fixed filename (date-stamped or otherwise reused) MUST:
-
-  1. Write to a temp file (or accept post-write read-back)
-  2. Validate the generated content against the forbidden-token list and any other operator-locked invariants
-  3. On validation failure: unlink the bad file and do NOT update audit pointers; return HTTP 422 with the offending tokens
-  4. On validation success: atomically replace the final file (or accept the just-written file) and update audit pointers including `<artifact>_generated_at` timestamp + `<artifact>_file_exists` boolean
-  5. Audit pointer update MUST be the LAST step — never persist a pointer to an unvalidated file
-
-For Polish Description specifically, the forbidden tokens are:
-  - `UNKNOWN`
-  - `metal szlachetny`
-  - `Wyrób jubilerski`
-  - `grouped invoice aggregate`
-
-For other artifacts, the forbidden-token list is defined per-artifact by the operator.
-
-Detection signal: any generator that writes a file then updates audit pointers in the same code block without an intermediate validation step.
-
-**Property 5 — Regression test that the stale artifact cannot be served**
-Add a source-grep / response-header test pinning that:
-  - The download endpoint's response has `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`
-  - No code path emits `max-age=14400`, `max-age=3600`, or any other long cache for regenerable artifacts
-  - The generation path runs validate-then-rollback before the audit update
-  - Audit records `<artifact>_generated_at` timestamp
-
-Detection signal: a download endpoint or generation path without a regression test pinning the cache-policy or rollback contract.
-
-**Where it binds** — every generated artifact and every download endpoint that serves a regenerable file. Apply to:
-  - Polish Description (Polish customs description PDF)
-  - PZ PDFs (purchase goods receipt documents)
-  - PZ Calc XLSX (calculation workbooks)
-  - Audit EN / Audit PL (audit reports)
-  - Memo PDFs
-  - Corrections PDFs
-  - Proforma PDFs
-  - DSK PDFs (broker notification)
-  - SAD-ready JSON exports
-  - Any other DHL / customs / wFirma generated outputs that share a filename across regenerations
-
-Do not solve future stale-output bugs by manual file deletion only. The deletion masks the symptom; the cache / atomicity gap remains. Apply Properties 1–5 systematically.
-
-**Reference**: Global Jewellery AWB 4789974092 incident chain (2026-05-21); PR #260 (audit purge — wrong layer), PR #261 (packing reparse — wrong layer), PR #265 (cache headers + validate-then-rollback — the actual fix); `routes_dhl_clearance.py` `download_dhl_file` + `generate_description` validator block; `service/tests/test_polish_desc_cache_and_overwrite.py` (11 tests pinning the contract).
-
 ---
 
 ## Lesson L — Never patch JSON files with PowerShell default text output (2026-05-28)
@@ -876,3 +797,90 @@ to advisory, is incomplete by this lesson.
 **Reference**: operator governance directive 2026-06-23 (AWB 9158478722 post-PZ
 reconciliation); `service/app/api/routes_proforma.py:1000` (`advisory_gates_enabled`
 advisory routing); CLAUDE.md Engineering Lessons → Lesson N.
+
+## Lesson Q — Uncited safety claims in state files, and citations resolved against the wrong revision (2026-08-01, extended 2026-08-03)
+
+**Origin.** PR #1043's deploy handoff left production in a HYBRID condition: the version marker
+recorded one commit while the application bytes were another. (Operator ruling 2026-08-01: all 529
+files match the earlier commit; only `version.txt` is false — a deployment-provenance defect, not a
+runtime overlay.) The 2026-07-31 register recorded a resume caution explaining why the recorded
+`next_command` was no longer valid. The explanation it gave was invented, not read.
+
+**What the register claimed:**
+> "Running it as-is now snapshots the hybrid tree into the pre-deploy backup → the post-#1039
+> content-derived `restored_sha` resolves to no single clean SHA → the backup-provenance stop
+> condition fires by design."
+
+**What the source says.** `New-BackupUnit` sets the restored identity from
+`Read-VersionMarker -Path $Cfg.version_file` — the **marker**, not a content hash. The marker on the
+hybrid runtime was a valid, well-formed SHA. `Resolve-RestoredSha` refuses in exactly two cases:
+`unit.json`'s `restored_sha` disagreeing with `version.pre.txt`, or both being absent. Neither
+applied. **No stop fires.**
+
+**The actual hazard the false claim concealed.** A straight signed deploy would have minted a backup
+unit labelled with the old marker while holding the other commit's bytes — an untruthfully-labelled
+unit, minted **silently**, with no error at deploy time. It surfaces only on a later rollback, which
+restores one commit's files and then stamps production with a different commit's SHA. The single
+thing that actually detects this — `Assert-ProductionMatchesRecordedSha`, which compares runtime
+bytes to the marker by git object id before the backup is taken — lived only in PR #1062, then still
+open, **not on `main`**. So for the day the claim stood, the register asserted a tripwire that did
+not exist anywhere in shipped code.
+
+**Why it survived.** Nothing in the process required the claim to cite anything. It was written by a
+session reasoning about how the tooling *ought* to behave, in a file whose entries are otherwise
+mostly verified facts (SHAs, test counts, file lists) — so it inherited their credibility without
+earning it. The correction came only because a later session re-read the source while doing
+unrelated work.
+
+**The mirror failure (2026-08-03) — why rule 7 exists.** Two days after PR #1062 merged, the 7-agent
+deploy gate ran against the merged SHA. `deploy-lead-coordinator` returned a **HARD BLOCKER**: the
+authorization signer, it said, has no `--from-sha` flag, so no valid reconcile authorization could
+ever be minted, so the deploy required a preceding fix-PR. Unlike the 2026-07-31 claim, this one
+*was* cited — it named the file and the missing flag. It was still false. The coordinator had obeyed
+the then-unqualified subagent reading rule ("all verification reads must use `C:\PZ-verify`") and
+read a tree parked on a feature branch **21 commits behind `main`**, at a pre-amendment commit where
+the flag genuinely does not exist. Measured: `C:\PZ-main` @ `4e9301b6` (main) = **8** occurrences of
+`--from-sha`; `C:\PZ-verify` @ `cf04f472` = **0**. `git merge-base --is-ancestor` confirmed behind,
+not diverged. The same gate also mis-stated the rollback parameter (`-ReviewedSHA` instead of
+`-Unit`) — a second symptom of reading the wrong revision's parameter block.
+
+Two properties made this worse than an ordinary stale read. First, it was an **absence** claim: a
+stale tree produces "the thing isn't there" silently and confidently, whereas a stale *presence*
+claim usually trips over a missing symbol somewhere else. Second, a path had been mistaken for a
+revision by governance itself — the rule that caused the error was the rule the agent was following
+correctly. The fix therefore had to be in the rule, not in the agent: the **Subagent reading rule**
+now carries a commit-scoped exception requiring HEAD-equals-reviewed-SHA confirmation, with
+`C:\PZ-main` at the target SHA (or a clean `git archive` export) as the fallback source.
+
+**Detection signals** — treat any of these in a state file as an uncited safety claim until proven
+otherwise: "fires by design", "is caught", "blocks", "fails closed", "will refuse", "is safe" —
+appearing without a function name beside it. Also: any `next_command` whose *justification* is a
+behavioural claim rather than a checkpoint fact. For rule 7, treat as suspect: any reviewer verdict
+that does not name the tree and HEAD it read; any finding of the form "X does not exist" / "there is
+no guard for Y" in a commit-scoped review; any verdict citing line numbers that do not resolve on
+the reviewed SHA.
+
+**Worked example (the correct form).** Not: "the stop condition fires by design." But: "no stop
+fires — `Resolve-RestoredSha` refuses only on `unit.json` vs `version.pre.txt` disagreement or both
+absent, and neither applies here. The detection that would catch this is
+`Assert-ProductionMatchesRecordedSha`, which is in PR #1062 and **not on `main`**."
+
+And for rule 7 — not: "the signer has no `--from-sha` flag." But: "read `C:\PZ-main`, HEAD
+`4e9301b6` = the reviewed SHA: `sign_deploy_authorization.py` accepts `--from-sha` (8 occurrences,
+required for `reconcile`, rejected for `deploy`/`rollback`)."
+
+**Relationship to other lessons.** Lesson A is the same failure one layer down — a stub asserting a
+return shape nobody read from the real builder. Lesson P is its deploy-side sibling — trusting a
+tool's copy log instead of verifying content. Lesson B is rule 7's registry-side cousin — a mid-session
+`git pull` does not refresh what the running session can see, just as a fixed path does not track
+what `main` now contains. Lesson Q generalises all of them to the record itself: **the artifact that
+records what is safe is not itself evidence of safety, and a citation is only as good as the revision
+it was resolved against.**
+
+**Governance note.** Raised by `agent-performance-observer` on a session that dispatched zero
+subagents. The observer judged that defensible for the low-blast-radius work but named the
+safety-claim rewrite as the one act that warranted an independent reviewer — which is why binding
+rule 6 routes optimistic safety claims to `reviewer-challenge` rather than leaving it to judgement.
+Rule 7 was added on the opposite evidence: a gate that *did* dispatch all seven reviewers still
+produced a false blocker, because every one of them was pointed at the same wrong tree. Redundant
+reviewers do not correct a shared-input error — only naming the input does.

@@ -113,7 +113,14 @@ denies campaign-branch writes on owner/worktree/branch mismatch, unexpected HEAD
 concurrent writer; `expected_head`≠actual tip is an INCIDENT requiring an operator ruling —
 never auto-correct.
 
-**Subagent reading rule (enforced):** All verification reads and git operations must use `C:\PZ-verify`.
+**Subagent reading rule (enforced):** All verification reads and git operations must use `C:\PZ-verify`
+— **except when the read is scoped to a specific commit** (a deploy gate, a PR review, any "what does
+this SHA contain" question). `C:\PZ-verify` is a working tree, not a SHA: it is routinely parked on a
+feature branch and may sit many commits behind `main`. For a commit-scoped read, first confirm
+`git -C C:\PZ-verify rev-parse HEAD` **equals the SHA under review**; if it does not, read the deploy
+source `C:\PZ-main` at that SHA (or a clean `git archive` export of it) instead, and say in the verdict
+which tree and HEAD the finding came from. A verdict derived from the wrong revision is a false
+verdict, not a finding — see Lesson Q, binding rule 7.
 
 **One-session rule (enforced):** Only one Claude Code session may operate against
 `C:\PZ-verify` at a time. A second concurrent session on the same tree races branch
@@ -703,6 +710,15 @@ Append-only — do not delete prior lessons; supersede with a new dated entry.
 Cross-reference: `memory-lessons` agent; `engineering_discipline_rules` auto-memory.
 Full origin narratives, detection signals, and worked examples: invoke `engineering-lessons`.
 
+**Letters are unique identifiers, and this file shares one letter space with
+`.claude/memory/engineering_lessons.md`.** Before adding a lesson, grep **both** files for the
+next free letter — a letter that labels two different lessons makes every downstream reference
+("per Lesson X") ambiguous, and the ambiguity is invisible until someone reads the wrong entry.
+On a collision, the *later-published* entry is relettered to the next free letter; its content,
+its date, and its position in the file are preserved, and it carries a **letter note** naming its
+former letter so historical references still resolve. Never renumber a lesson to close a gap, and
+never reuse a retired letter.
+
 **Enforcement surfaces**: Lesson A binds at GATE 1 (PR open
 discipline — real-builder regression test is a precondition;
 integration-boundary owns the verdict, testing-verification
@@ -724,7 +740,15 @@ actions, roadmap placeholders) — reviewer-challenge and
 frontend-flow-reviewer must flag any capability suppression that
 lacks a formal cancellation recorded in PROJECT_STATE.md DECISIONS.
 Suppression without cancellation documentation is incomplete by
-Lesson M.
+Lesson M. **Lesson Q binds at every state-file write that asserts a
+safety property** — `reviewer-challenge` must flag any claim that a
+gate blocks / a guard fires / an operation is safe-by-design when the
+claim names no implementing function, and must treat an *optimistic*
+uncited claim (one that permits proceeding) as the higher-severity
+case. **Lesson Q rule 7 additionally binds every commit-scoped
+reviewer verdict** — a reviewer that reports what a SHA contains must
+name the tree and HEAD it read, and the deploy gate must reject a
+verdict read from a tree whose HEAD is not the reviewed SHA.
 
 ### Lesson A — Test stubs must match real production return shapes (2026-05-13)
 **GATE 1.** Stubs MUST match the real builder return shape; stub authors must read the real function first. Every coordinator/builder PR MUST include a real-builder regression test (no stub) asserting the type contract. Coordinators MUST normalise polymorphic inputs via `_normalise_X`. Post-merge Lesson-A failure → **GATE 4** salvage (SCHEDULED / ISSUE / REJECTED).
@@ -787,9 +811,20 @@ Anything not on the true-blocker list is advisory. Default-classify a signal as 
 
 **Where it binds**: every readiness / gating change in `sales-proforma`, `pz-purchase-accounting`, and `readiness-closure` surfaces; every PR that adds, removes, or reclassifies a blocking reason on Approve / Post / Convert / Reservation; every reviewer-challenge on an authority / readiness PR. This aligns with existing code: `service/app/api/routes_proforma.py:1000` already routes the "sales design(s) not mapped to a wFirma product_code" signal to `line_mismatch_advisories` (advisory) rather than `blocking_reasons` when `settings.advisory_gates_enabled` is on — Lesson N makes that the permanent intended default for all advisory-class signals, not a flag-gated exception. A PR that promotes any advisory-class signal to a hard blocker, or demotes any true blocker to advisory, is incomplete by this lesson.
 
-**Reference**: operator governance directive 2026-06-23 (AWB 9158478722 post-PZ reconciliation); `service/app/api/routes_proforma.py:1000` (`advisory_gates_enabled` advisory routing); `.claude/memory/engineering_lessons.md` Lesson N.
+**Reference**: operator governance directive 2026-06-23 (AWB 9158478722 post-PZ reconciliation); `service/app/api/routes_proforma.py:1000` (`advisory_gates_enabled` advisory routing); `.claude/memory/engineering_lessons.md` Lesson N. **Distinct from Lesson R** (2026-06-22, authority separation), which carried the letter `N` until 2026-08-04 — see the letter note on Lesson R below.
 
-### Lesson N — Import, product master, proforma, warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities (2026-06-22)
+### Lesson R — Import, product master, proforma, warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities (2026-06-22)
+
+> **Letter note (2026-08-04).** This lesson was published as **Lesson N** and carried that letter
+> until 2026-08-04, when it was found to collide with the advisory-vs-blocker Lesson N above
+> (2026-06-23). Content, date, and position are unchanged; only the letter moved, to the next free
+> letter **R**. The advisory lesson keeps `N` because `.claude/memory/engineering_lessons.md` and
+> `.engineering-os/07_BUSINESS_OPERABILITY.md` already bind that letter to it.
+> **Resolving a historical reference:** "Lesson N" meaning *authority separation* / *six separate
+> authorities* / *single-authority rule* / *wrong authority* — including the docstrings in
+> `service/tests/**` and the dated records under `reports/**`, which are historical and were left
+> as written — means **this** lesson, Lesson R. "Lesson N" meaning *advisory vs blocker* or the
+> *true-blocker list* means Lesson N above.
 
 **GATE 1 + reviewer-challenge + frontend-flow-reviewer + backend-safety-reviewer.**
 Origin: recurring defect on AWB 9158478722 (batch `SHIPMENT_9158478722_2026-06_924c4e59`,
@@ -853,6 +888,25 @@ a named business rule + test is incomplete by this lesson.
 **Where it binds**: every Step 5 robocopy sync, especially any deploy run from a `C:\PZ-wt\*` worktree instead of `C:\PZ-verify`.
 
 **Reference**: PR #1006 deploy (2026-07-23) — deployed from worktree `C:\PZ-wt\deploy1006` because `C:\PZ-verify` was detached/dirty; `/XO` re-copied the full app tree though only 2 CSV-writer files differed. Caught by the post-sync `Get-FileHash` parity check (content diff = 0 → correct), not by the copy log.
+
+### Lesson Q — A claim about a safety property is worthless without a source citation, and a citation is worthless if it is resolved against the wrong revision (2026-08-01)
+
+**GATE-1 + GATE-4 + every state-file / handoff register + every commit-scoped reviewer verdict.** A resume note recorded in `TASK_STATE.md` asserted that a straight signed deploy against the HYBRID production runtime would be caught: that the post-#1039 `restored_sha` was **content-derived**, would "resolve to no single clean SHA", and that "the backup-provenance stop condition fires by design." Read against the deploy tooling, **both halves were false.** `restored_sha` is **marker-derived** — `New-BackupUnit` takes it from `Read-VersionMarker` — and the production marker was perfectly readable and well-formed, so nothing resolved to "no single clean SHA" and **no stop condition fired.** `Resolve-RestoredSha` refuses on only two conditions (`unit.json` disagreeing with `version.pre.txt`, or both absent); neither applied. The claim was not merely wrong, it was wrong **in the operator's favour**: it described a tripwire where there was none, and so concealed the real hazard — a straight deploy would have **silently** minted a backup unit labelled with the old marker while holding different bytes, surfacing only later as a rollback that restores one commit's files and then stamps a different commit's SHA.
+
+The lesson recurred in its mirror form three days later, which is why rule 7 exists. In the 2026-08-03 deploy gate, `deploy-lead-coordinator` returned a **HARD BLOCKER** stating that `sign_deploy_authorization.py` has no `--from-sha` flag, therefore no valid reconcile authorization could ever be minted, therefore the deploy needed a preceding fix-PR. It had cited the source. The citation was simply resolved against the wrong revision: obeying the then-unqualified subagent reading rule, it read `C:\PZ-verify`, which was parked on a feature branch **21 commits behind `main`** at a pre-amendment commit where the flag genuinely does not exist (0 occurrences). On the reviewed SHA the flag is fully implemented (8 occurrences). A correct-looking citation produced a false blocker.
+
+**Binding rules:**
+1. **A safety-property claim in a state file requires a source citation.** Any assertion that a gate blocks, a guard fires, a check refuses, or an operation is "safe by design" must name the **function** (and file) that implements it — e.g. "`Resolve-RestoredSha` refuses when …". A claim with no citation is an **assumption wearing a fact's clothes** and must be written as one.
+2. **Cite the function, not just a line number.** Line numbers drift across branches: `Assert-ProductionMatchesRecordedSha` sits at a given line on the feature branch and **does not exist at all** on `main`. A citation that cannot be resolved on the reader's branch is not a citation.
+3. **Verify before relying, not before writing.** A recorded safety claim must be re-verified against source at the moment it is about to be *acted on* — a resume, a handoff, a deploy decision — not trusted because a prior session wrote it down. State files are memory, not authority; the code is the authority.
+4. **Name where the protection lives.** If the protection exists only on an unmerged branch, the state file must say so. "This is caught" and "this is caught by an open PR that has not merged" are opposite operational facts.
+5. **Correct by marking, never by deleting.** When a recorded claim is found wrong, mark it **WITHDRAWN** with the corrected mechanism beside it. Deleting the old claim destroys the audit trail of *why the reasoning changed* — which is the part a future session needs in order to not re-derive the same error.
+6. **Wrong-in-your-favour is the severe class.** A pessimistic error (claiming a block that is really permitted) costs a wasted stop. An optimistic error (claiming a tripwire that does not exist) removes a stop the operator believed they had. Treat any safety claim that *permits* proceeding as the higher-scrutiny case: it needs the citation, and it warrants a `reviewer-challenge` second pass before commit.
+7. **A citation must be resolved against the revision under review.** A path is not a revision. Before any commit-scoped read (deploy gate, PR review, "what does this SHA contain"), confirm the tree's `HEAD` **is** the SHA under review; if it is not, read `C:\PZ-main` at that SHA or a clean `git archive` export instead. Every such verdict must state **which tree and which HEAD** it was read from — a verdict that cannot name its revision is unverifiable and must be re-run, not weighed. An absence claim ("the flag does not exist", "there is no guard") is the highest-risk form, because a stale tree produces it silently and it reads as decisive; confirm an absence on the reviewed SHA before it may block anything.
+
+**Where it binds**: every `TASK_STATE.md` / `PROJECT_STATE.md` entry asserting a gate, guard, block, or stop condition; every handoff `next_command` or resume note; every `EXECUTION_BLOCKED` checkpoint validation; and — for rule 7 — every one of the 7 `deploy_*` gate agents, every `reviewer-challenge` on a PR diff, and any finding that a symbol, flag, or guard is absent. `reviewer-challenge` must flag an uncited safety claim in any state-file diff; the deploy gate must reject a verdict whose source tree HEAD ≠ the reviewed SHA.
+
+**Reference**: (rules 1–6) 2026-08-01 register refresh (`b5853935`, PR #1061) — caution recorded 2026-07-31, found wrong 2026-08-01 by reading `.claude/deploy/Deploy-PZ.ps1` (`Read-VersionMarker`, `New-BackupUnit`, `Resolve-RestoredSha`) rather than trusting the register; it had sat wrong for one day, over a HYBRID production runtime, while the only real protection (`Assert-ProductionMatchesRecordedSha`) existed solely in the then-unmerged PR #1062. Observer scorecard: `.claude/memory/scorecards/2026-08-01-pr1062-amendment-register-refresh.md`. (rule 7) 2026-08-03 deploy gate — `deploy-lead-coordinator` HB-1 withdrawn after measurement: `C:\PZ-main` @ `4e9301b6` (main) = 8 `--from-sha` occurrences vs `C:\PZ-verify` @ `cf04f472` (`fix/deploy-production-identity-gate`) = 0; `git merge-base --is-ancestor` confirmed behind, not diverged. Fix landed in the same PR as this lesson: the **Subagent reading rule** in the canonical working-tree registry now carries the commit-scoped exception.
 
 ---
 

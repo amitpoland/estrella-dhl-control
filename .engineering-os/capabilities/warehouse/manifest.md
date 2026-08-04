@@ -36,7 +36,7 @@ Single writer: `transition()`. Canonical state set pinned by `test_inventory_bat
   by `pz-design-v2.js:103`; a 3rd surface is `dashboard.html` inline view. Smallest consolidation
   = repoint that one route + freeze legacy (no new page — Lesson M/F).
 
-## Blockers vs advisories (Lesson N / authority separation)
+## Blockers vs advisories (Lesson N advisory-vs-blocker / Lesson R authority separation)
 
 - **WAREHOUSE authority = operator quantity confirmation** (advisory; quantity-risk only).
 - **Must NOT hard-block** on per-piece barcode scan unless the shipment is `serial_controlled`.
