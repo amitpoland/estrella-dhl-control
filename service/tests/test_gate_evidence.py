@@ -43,9 +43,8 @@ import os
 import re
 import subprocess
 import sys
-import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -156,7 +155,13 @@ _FROM_SHA_WITH_VALUE_RX = re.compile(r"--from-sha\s+\S")
 # A line explicitly marked as a historical record rather than an instruction.
 _SUPERSEDED_RX = re.compile(r"\bSUPERSEDED\b|\bDO NOT RUN\b|_superseded\b")
 # A line that continues onto the next one.
-_CONTINUED_RX = re.compile(r"(?:\\|`)\s*$")
+# A trailing backslash continues a line. A trailing BACKTICK does not — in Markdown it
+# closes an inline code span, so treating it as a continuation spliced the next prose
+# line into the command and reported a correct single-line command as broken. PowerShell
+# backtick-continuation is only a continuation at the end of a *code* line, which in
+# these files always sits inside a fence; the backslash form is what operators actually
+# paste, and it is what the pin needs to catch.
+_CONTINUED_RX = re.compile(r"\\\s*$")
 
 # Every tracked file that shows the operator how to invoke the signer. Discovered, not
 # hardcoded: a hardcoded list silently stops covering a doc the moment someone adds one,
@@ -229,28 +234,28 @@ def _checked_mint_lines():
             # line 2 matches nothing and vanishes from the pin entirely, which is exactly
             # the hole an earlier docstring here claimed was closed.
             tail = text[m.end():]
-            while line.rstrip().endswith(("\\", "`")) and tail:
+            while line.rstrip().endswith("\\") and tail:
                 # lstrip the newline first: m.end() sits BEFORE it, so partitioning
                 # directly yields an empty segment and the splice silently no-ops.
                 nxt, _, tail = tail.lstrip("\n").partition("\n")
                 if not nxt.strip():
                     break
-                line = line.rstrip().rstrip("\\`").rstrip() + " " + nxt.strip()
+                line = line.rstrip().rstrip("\\").rstrip() + " " + nxt.strip()
             # Strip the script name first: `sign_deploy_authorization.py` contains
             # "deploy" and would satisfy the action filter on its own.
             if not _ACTION_RX.search(line.replace("sign_deploy_authorization.py", "")):
                 continue                       # rollback, or a bare `--help` example
+            if _SUPERSEDED_RX.search(line):
+                # Checked BEFORE the wrap report: a line marked SUPERSEDED / DO NOT RUN
+                # is a historical record, and reporting it as a broken command would
+                # fail the pin on a line it declares exempt.
+                continue
             if _CONTINUED_RX.search(m.group(0)):
                 # Spliced above so the flags are visible — but the operator's shell will
                 # NOT join them. PowerShell does not honour a trailing backslash at all,
                 # so a wrapped mint command is broken however it reads on the page.
                 broken_wrap.append(f"{relpath}: command wrapped across lines; PowerShell "
                                    f"does not join these\n    {m.group(0).strip()}")
-            if _SUPERSEDED_RX.search(line):
-                # A historical record, not an instruction. The exemption is narrow on
-                # purpose: it requires an explicit marker ON THE LINE, so a stale command
-                # can only escape by being labelled unrunnable where a reader sees it.
-                continue
             out.append((relpath, line))
     return out, broken_wrap
 
@@ -269,14 +274,17 @@ def test_the_signer_documentation_pin_finds_something_to_check():
     assert found, "no file documents a signer invocation — the pin below checks nothing"
     names = {p for p, _ in found}
 
-    # Paths must be POSIX-form. On Windows `str(Path.relative_to(...))` uses backslashes,
-    # so the membership assertions below silently stopped matching there while passing on
-    # Linux — the suite reported green locally and failed on the runner whose platform is
-    # the actual deploy target. A Linux-only run cannot reproduce that, so pin the shape.
-    for name in names:
-        assert "\\" not in name, (
-            f"discovered path {name!r} is not POSIX-form; the comparisons below will "
-            "fail on Windows and pass on Linux")
+    # Pin the NORMALISATION, not its output. Asserting `"\\" not in name` over
+    # `as_posix()` results was vacuous twice over: as_posix() cannot emit a backslash on
+    # any platform, and the regression it named (reverting to `str()`) yields forward
+    # slashes on Linux, so it could not fire on the platform CI runs. Instead, take a
+    # path that WOULD differ across platforms and assert the comparison key is
+    # separator-independent — which is the actual property the membership checks need.
+    probe = PureWindowsPath(r"a\b\c.md")
+    assert probe.as_posix() == "a/b/c.md", "as_posix() is not normalising separators"
+    assert str(probe) != probe.as_posix(), (
+        "this probe no longer distinguishes str() from as_posix(), so it cannot pin "
+        "the normalisation the membership assertions depend on")
     for expected in (".claude/hooks/sign_deploy_authorization.py",
                      ".claude/commands/deploy.md"):
         assert expected in names, f"{expected} no longer shows a signer invocation"
@@ -375,7 +383,10 @@ def test_the_contract_does_not_document_a_timestamp_form_the_code_refuses(tmp_pa
         "naive": False,
     }
     for form, should_pass in forms.items():
-        base = (_now() + timedelta(hours=1)).replace(microsecond=0, tzinfo=None)
+        # +6h, not +1h. With +1h and a `+02:00` suffix the resolved instant is BEFORE
+        # created_at, so the document refused at the `expires <= created` check and the
+        # UTC rule was never reached — deleting the UTC check left this row green.
+        base = (_now() + timedelta(hours=6)).replace(microsecond=0, tzinfo=None)
         stamp = base.isoformat() + ("" if form == "naive" else
                                     ("Z" if form == "Z" else form))
         doc = _doc()
@@ -384,6 +395,10 @@ def test_the_contract_does_not_document_a_timestamp_form_the_code_refuses(tmp_pa
         assert ok is should_pass, (
             f"{form!r} timestamp: validator says {'accept' if ok else 'refuse'} "
             f"({reason}); the test table says {'accept' if should_pass else 'refuse'}")
+        if not should_pass:
+            assert "UTC" in reason, (
+                f"{form!r} was refused, but for the wrong reason ({reason}) — the UTC "
+                "rule was not what fired, so this row does not pin it")
 
     # The contract must not advertise either refused form as acceptable, and must not
     # still be telling operators that a bare local time is read as UTC.
@@ -418,12 +433,19 @@ def test_the_contract_publishes_the_ttl_ceiling_the_signer_enforces(tmp_path, mo
         f"the contract does not publish the {ceiling}-minute --ttl ceiling as a MAXIMUM; "
         "sign_deploy_authorization enforces it")
 
-    # And the enforcement is real at the boundary, in both directions.
+    # And the enforcement is real at the boundary, in both directions. Rollback is
+    # evidence-exempt, so no evidence file is needed here.
     store = _signer_env(tmp_path, monkeypatch)
-    ev = _write(tmp_path, _doc())
     assert _sign([_SHA, "rollback", "Both", "--ttl", str(ceiling)]) == 0
+    minted = json.loads((store / f"{_SHA}.rollback.json").read_text(encoding="utf-8"))
+    before = minted["expires_at"]
+
     assert _sign([_SHA, "rollback", "Both", "--ttl", str(ceiling + 1)]) == 2
-    assert len(list(store.iterdir())) == 1, "the over-ceiling mint wrote an artifact"
+    # Asserting the store still holds ONE file cannot fail: an over-ceiling mint would
+    # write to the same artifact_name and os.replace would overwrite it. Assert the
+    # CONTENT is untouched instead.
+    after = json.loads((store / f"{_SHA}.rollback.json").read_text(encoding="utf-8"))
+    assert after["expires_at"] == before, "the refused mint overwrote the existing artifact"
 
 
 def test_the_clock_skew_boundary_is_where_the_constant_says_it_is(tmp_path):
@@ -1504,6 +1526,10 @@ def test_an_artifact_that_is_not_yet_valid_is_refused(tmp_path, monkeypatch):
 
     decision, reason = _evaluate(_SHA, "deploy", "Both", dict(os.environ))
     assert decision == "deny", "an authorization from the future was accepted"
+    assert "not yet valid" in reason, (
+        f"denied for the wrong reason: {reason!r} — with issued_at pushed an hour out "
+        "and the clamped expires_at ~60m away, an expiry denial would also read as a "
+        "pass here")
 
 
 def test_a_jti_that_escapes_the_store_is_refused(tmp_path, monkeypatch):
@@ -1584,3 +1610,162 @@ def test_use_time_re_hashes_but_never_re_validates_the_document(tmp_path, monkey
         "improvement, but the migration instruction in .claude/commands/deploy.md and "
         "service/docs/production_deployment_rule.md documents the opposite — change "
         "them in the same commit.")
+
+
+# ── reconcile: the half of a published claim that had no test ────────────────
+
+def _sign_reconcile(ev, ttl="60"):
+    return _sign([_SHA, "reconcile", "Both", "--from-sha", _OTHER_SHA,
+                  "--gate-evidence", ev, "--ttl", ttl])
+
+
+def _evaluate_reconcile():
+    return _evaluate(_SHA, "reconcile", "Both", dict(os.environ), from_sha=_OTHER_SHA)
+
+
+def test_editing_evidence_after_signing_denies_a_reconcile(tmp_path, monkeypatch):
+    """`gate_evidence` publishes: "FOR `deploy` AND `reconcile` ONLY … re-hashes the file
+    at use time." Half of that claim had no test behind it.
+
+    Deleting `"reconcile"` from the action tuple in `deploy_authorization.evaluate()`
+    killed ZERO tests in either file: the existing reconcile tests only ever exercised
+    SIGNING, or denials produced by the filename / equality / signature layers with the
+    evidence file untouched. And reconcile is the more dangerous action — the module's
+    own docstring calls it "strictly more dangerous than deploy, because it is the one
+    mode that runs against a runtime the identity gate has already refused."
+    """
+    _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign_reconcile(ev) == 0
+    assert _evaluate_reconcile()[0] == "allow", "precondition: the artifact verifies"
+
+    assert _sign_reconcile(ev) == 0                      # fresh, unconsumed artifact
+    Path(ev).write_text(json.dumps(_doc(), indent=4), encoding="utf-8")
+    decision, reason = _evaluate_reconcile()
+    assert decision == "deny", "a reconcile accepted edited gate evidence"
+    assert "changed" in reason, f"denied for the wrong reason: {reason!r}"
+
+
+def test_deleting_evidence_after_signing_denies_a_reconcile(tmp_path, monkeypatch):
+    _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign_reconcile(ev) == 0
+    os.remove(ev)
+    decision, reason = _evaluate_reconcile()
+    assert decision == "deny", "a reconcile accepted missing gate evidence"
+    assert "no longer readable" in reason, f"denied for the wrong reason: {reason!r}"
+
+
+def test_a_prebinding_authorization_is_refused_for_reconcile(tmp_path, monkeypatch):
+    """The pre-binding shape is not grandfathered for reconcile either."""
+    import deploy_authorization
+    store = _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign_reconcile(ev) == 0
+
+    path = store / deploy_authorization.artifact_name(_SHA, "reconcile", _OTHER_SHA)
+    auth = json.loads(path.read_text(encoding="utf-8"))
+    auth["gate_evidence_ref"] = "see PR #1094"
+    auth.pop("signature")
+    auth["signature"] = deploy_authorization.sign(auth, deploy_authorization._load_key())
+    path.write_text(json.dumps(auth, indent=2, sort_keys=True), encoding="utf-8")
+
+    decision, reason = _evaluate_reconcile()
+    assert decision == "deny"
+    assert "digest-bound" in reason or "no digest" in reason, (
+        f"denied for the wrong reason: {reason!r}")
+
+
+def test_the_evidence_clamp_applies_to_reconcile_too(tmp_path, monkeypatch):
+    """The clamp is action-agnostic, but reconcile is the action worth pinning."""
+    store = _signer_env(tmp_path, monkeypatch)
+    created = _now() - timedelta(hours=1)
+    evidence_expires = created + timedelta(hours=2)
+    ev = _write(tmp_path, _doc(created=created, expires=evidence_expires))
+    assert _sign_reconcile(ev, ttl="1440") == 0
+
+    import deploy_authorization
+    art = json.loads((store / deploy_authorization.artifact_name(
+        _SHA, "reconcile", _OTHER_SHA)).read_text(encoding="utf-8"))
+    minted = datetime.fromisoformat(art["expires_at"])
+    assert minted <= evidence_expires + timedelta(seconds=1), (
+        "a reconcile authorization outlived the evidence that justified it")
+
+
+def test_the_repository_binding_is_enforced(tmp_path, monkeypatch):
+    """`repository` is a SIGNED field with a documented purpose — "an artifact minted for
+    one repository would validate against another if the key were reused".
+
+    Both fixtures delenv PZ_DEPLOY_AUTH_REPO, so `expected_repo` was always empty and the
+    branch never executed: deleting the check killed nothing.
+    """
+    _signer_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("PZ_DEPLOY_AUTH_REPO", "estrella/pz")
+    ev = _write(tmp_path, _doc())
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev]) == 0
+    assert _evaluate(_SHA, "deploy", "Both", dict(os.environ))[0] == "allow"
+
+    # Same artifact, different repository identity at use time.
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev]) == 0
+    env = dict(os.environ)
+    env["PZ_DEPLOY_AUTH_REPO"] = "someone-else/pz"
+    decision, reason = _evaluate(_SHA, "deploy", "Both", env)
+    assert decision == "deny", "an artifact minted for one repository validated in another"
+    assert "repositor" in reason, f"denied for the wrong reason: {reason!r}"
+
+
+def test_a_naive_timestamp_in_a_signed_artifact_is_refused(tmp_path, monkeypatch):
+    """`_parse_iso` must REFUSE a naive timestamp, not fill it to UTC.
+
+    Filling resolved the original TypeError crash in the permitting direction: a
+    hand-built artifact carrying naive LOCAL time would have `issued_at` read as UTC,
+    shifting it earlier and making the "not yet valid" check less likely to fire. The
+    sibling validator refuses naive outright; both halves of the authorization path must
+    mean the same thing by a timestamp.
+    """
+    import deploy_authorization
+    store = _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev]) == 0
+
+    path = store / f"{_SHA}.deploy.json"
+    auth = json.loads(path.read_text(encoding="utf-8"))
+    auth["expires_at"] = (_now() + timedelta(hours=1)).replace(tzinfo=None).isoformat()
+    auth["signature"] = deploy_authorization.sign(auth, deploy_authorization._load_key())
+    path.write_text(json.dumps(auth, indent=2, sort_keys=True), encoding="utf-8")
+
+    decision, reason = _evaluate(_SHA, "deploy", "Both", dict(os.environ))
+    assert decision == "deny", "a naive timestamp was interpreted rather than refused"
+    assert "expires_at" in reason or "malformed" in reason, (
+        f"denied for the wrong reason: {reason!r}")
+
+
+@pytest.mark.parametrize("argv", [[], ["prog"], ["prog", "a", "b"],
+                                 ["prog", "a", "b", "c", "d", "e"]])
+def test_the_verifier_cli_usage_contract(tmp_path, monkeypatch, argv):
+    """The deploy script reaches this module through its CLI and branches on the EXIT
+    CODE. Nothing pinned the argv handling or the mapping, so a refactor could change
+    the caller's behaviour without failing a test."""
+    import deploy_authorization
+    _signer_env(tmp_path, monkeypatch)
+    assert deploy_authorization.main(argv) == 2
+
+
+def test_the_verifier_cli_maps_allow_and_deny_to_exit_codes(tmp_path, monkeypatch, capsys):
+    """allow -> 0, deny -> 1. The PowerShell caller treats non-zero as BLOCKED."""
+    import deploy_authorization
+    _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev]) == 0
+
+    # sys.argv-shaped: main() indexes from argv[1], so argv[0] is the program name.
+    # The deploy script invokes it as `python <helper> <sha> <action> <scope> [<from>]`.
+    rc = deploy_authorization.main(["prog", _SHA, "deploy", "Both"])
+    out = capsys.readouterr().out
+    assert rc == 0, f"a valid authorization did not exit 0 (out={out!r})"
+    assert "ALLOW" in out.upper()
+
+    rc = deploy_authorization.main(["prog", _SHA, "deploy", "Both"])   # consumed
+    out = capsys.readouterr().out
+    assert rc == 1, f"a denied authorization did not exit 1 (out={out!r})"
+    assert "DENY" in out.upper()

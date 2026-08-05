@@ -38,9 +38,13 @@ drifted again, which is exactly the class of failure that produced the mislabell
 backup this mode exists to prevent. `from_sha` is a signed field, is required for
 reconcile, must differ from reviewed_sha, and must be ABSENT for deploy/rollback.
 
-CURRENT STATE: there is no deploy signer provisioned in this environment, so every
-call returns DENY. That is the intended default. Arming it is an operator action -
-see `MISSING PREREQUISITE` in the campaign report.
+CURRENT STATE: whether a signer is provisioned is an ENVIRONMENT fact, not a property
+of this file, and it must be measured rather than assumed. An earlier version of this
+docstring asserted "there is no deploy signer provisioned in this environment, so every
+call returns DENY" -- that was already false when written (`sign_deploy_authorization.py`
+IS the signer, and .claude/memory/TASK_STATE.md records artifacts minted with it). The
+claim matters because the signed-fields note below leans on "the store is empty" to
+justify a canonical-body change; check the store before relying on that.
 """
 from __future__ import annotations
 
@@ -64,9 +68,11 @@ VALID_SCOPES = ("App", "Engine", "Both")
 #
 # `from_sha` was added when `reconcile` was introduced. Adding a signed field changes the
 # canonical body, so artifacts minted before this change no longer verify. That is a
-# deliberate, disclosed break and it is safe here for one specific reason: no signer is
-# provisioned and the authorization store is empty, so there is no artifact to invalidate.
-# It must NOT be repeated silently once a signer exists - rotate the key instead.
+# deliberate, disclosed break. It was justified at the time by "no signer is provisioned
+# and the authorization store is empty, so there is no artifact to invalidate" -- do NOT
+# reuse that justification without re-measuring it: a signer exists, and the store may
+# hold artifacts. Adding a signed field now invalidates every outstanding artifact.
+# Rotate the key instead, or re-mint deliberately.
 _SIGNED_FIELDS = (
     "reviewed_sha",
     "action",
@@ -128,12 +134,19 @@ def sign(auth, key):
 def _parse_iso(value):
     """Aware datetime, or None.
 
-    A naive value is filled to UTC rather than returned as-is. Returning it naive meant
-    the `now >= exp` comparison below raised TypeError out of a function documented
-    "fail-closed -> DENY" and whose main() promises to print ALLOW/DENY with a reason:
-    on that path it printed neither. Not agent-reachable (the HMAC check runs first), but
-    gate_evidence closes this identical hole for its own caller and the sibling that
-    gates the actual write should not be the one that crashes.
+    A naive value is REFUSED (None), not filled to UTC.
+
+    Returning it naive meant the `now >= exp` comparison below raised TypeError out of a
+    function documented "fail-closed -> DENY", printing neither. An earlier fix filled it
+    to UTC instead -- but that resolves the same defect in the OPPOSITE direction to
+    gate_evidence._parse_ts, which refuses naive timestamps outright, and this side is
+    the permitting one: a hand-built artifact carrying naive LOCAL time would have its
+    `issued_at` read as UTC, shifting it earlier and making the "not yet valid" check
+    less likely to fire. Neither module emits a naive timestamp -- the signer always
+    writes aware `.isoformat()` output -- so refusing costs nothing and keeps the two
+    halves of the authorization path consistent about what a timestamp means.
+
+    Not agent-reachable either way: the HMAC check runs first.
     """
     if not isinstance(value, str) or not value:
         return None
@@ -141,7 +154,7 @@ def _parse_iso(value):
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo is not None else None
 
 
 # A jti is a uuid4 from the signer. Constrained because it is used as a path

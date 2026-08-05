@@ -137,8 +137,13 @@ from them.
 **The transcription step is the residual trust boundary.** The validator checks that the
 document is internally consistent and complete; it cannot check that it faithfully
 reflects what seven agents actually returned. All six Markdown laundering vectors are
-closed inside the parser, so this is now the only unverified link, and it is a human
-one. Keep the seven Markdown reports alongside the JSON.
+closed inside the parser, so the transcription is the largest remaining one — but not
+the only one. `created_at` is equally operator-asserted: nothing ties it to when the
+round actually ran, so "valid for 24 hours from `created_at`" bounds the window from a
+claimed instant, not a verified one. A round concluded on Monday can be written with
+Tuesday's `created_at` and deployed on Wednesday with every check passing. Both are
+human links. Keep the seven Markdown reports alongside the JSON, and write `created_at`
+when the round actually concludes.
 
 ## Validation rules
 
@@ -253,8 +258,6 @@ Every rule fails **closed** — refusal, never a warning. In order:
   COMPUTED — a four-hour window from now, already UTC — so the document cannot be born
   expired and cannot violate the UTC rule. An earlier version hardcoded them, so editing
   only the SHA produced a file valid for four hours on one specific day in the past.
-  ```
-  ```
 
   Then read the file back and check it says what the round actually decided. Writing it
   by hand in an editor set to UTF-8 no-BOM is equally fine.
@@ -306,12 +309,18 @@ passes the use-time check. The bytes are unchanged, so the digest matches; nothi
 re-validates the document against the JSON schema. `.claude/commands/deploy.md` carries
 the operator instruction — re-mint every `deploy`/`reconcile` artifact minted before the
 change, regardless of what its ref looks like.
- `evaluate()` re-hashes the bytes;
-it does not re-run `validate_evidence`. So the evidence rules — including expiry — are
-enforced **at signing time only**. An authorization minted against evidence that expires
-five minutes later still deploys until the *artifact's* own TTL runs out. That is the
-intended division (the single-use, short-TTL artifact is what bounds the deploy window),
-but do not read "expiry is enforced" as meaning it is re-checked at use time.
+**What the use-time check does and does not do.** `evaluate()` re-hashes the bytes; it
+does not re-run `validate_evidence`. So the evidence *rules* — schema, roster, statuses,
+the UTC requirement — are enforced **at signing time only**, and a document that would
+now fail those rules can still be cited by an artifact minted before they changed. That
+is why the migration instruction above says re-mint regardless of how a ref looks.
+
+**Expiry is the exception, and it is bounded at both ends.** The signer clamps the
+artifact's `expires_at` to the evidence's, so an authorization cannot outlive its
+evidence: when the evidence expires the artifact is already expired too, and
+`evaluate()` refuses it on its own signed `expires_at`. Do not read this paragraph as
+saying an artifact survives its evidence — an earlier version did say that, and it was
+made false by the clamp.
 
 ## Which actions require evidence
 
@@ -346,9 +355,11 @@ python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --gate-evide
 Run this from the repository root (`C:\PZ-main` on the production host); the
 `.claude/hooks/...` path is relative to it.
 
-Evidence is validated **before the signing key is loaded** — `validate_evidence()` is
-called at the top of `sign_deploy_authorization.main()`, ahead of `_load_key()` — so an
-operator who cannot produce a seven-agent GO for that exact SHA never reaches the key.
+Evidence is validated **before the signing key is loaded** — `sign_deploy_authorization.main()`
+calls `gate_evidence.validate_evidence_full()` and returns 2 on refusal, all ahead of
+`_load_key()` — so an operator who cannot produce a seven-agent GO for that exact SHA
+never reaches the key. (The signer uses the `_full` variant because it also needs the
+evidence expiry, to clamp the artifact against it.)
 That ordering is pinned by
 `test_evidence_is_validated_before_the_signing_key_is_loaded`.
 

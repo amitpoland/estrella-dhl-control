@@ -237,15 +237,43 @@ def main(argv=None):
     # catch it -- at use time it re-hashes the evidence, it never re-validates it, so
     # the evidence being long expired is invisible there.
     #
-    # Clamping here makes the artifact TTL genuinely SHORTER than the evidence window
-    # rather than merely equal to it, and bounds the whole chain at 24h from the moment
-    # the gate round concluded. `evidence_expires` comes from the same single read that
-    # produced the digest -- never re-read the file for it.
+    # WHAT THIS DOES AND DOES NOT BOUND -- stated precisely, because the previous
+    # version of this comment was wrong twice, in the permitting direction:
+    #
+    #   * it said the clamp makes the artifact TTL "genuinely SHORTER" than the evidence
+    #     window. It does not: the line below assigns EQUALITY. And because CLOCK_SKEW
+    #     permits a `created_at` up to 5 minutes in the future, the artifact window
+    #     measured from signing can be 24h05m -- LONGER than the evidence window.
+    #
+    #   * it said the chain is bounded "at 24h from the moment the gate round
+    #     concluded". It is not. It is bounded at 24h from the `created_at` the evidence
+    #     ASSERTS, and nothing ties that field to when the round actually ran. An
+    #     operator can conclude a round on Monday, write created_at as Tuesday, and
+    #     deploy on Wednesday -- ~47h after the real verdict, with every check passing.
+    #     `created_at` is operator-asserted and unverifiable, exactly like the seven
+    #     verdicts themselves.
+    #
+    # What the clamp DOES guarantee: an authorization never outlives the evidence that
+    # justified it, so the two windows cannot compose into ~48h of declared validity.
+    # `evidence_expires` comes from the same single read that produced the digest --
+    # never re-read the file for it.
     if evidence_expires is not None and expires > evidence_expires:
         print(f"  NOTE: TTL shortened to the gate evidence expiry "
               f"({evidence_expires.isoformat()}) -- an authorization may not outlive "
               f"the evidence that justified it.")
         expires = evidence_expires
+
+    # Refuse rather than write a born-dead artifact. `now` is captured after the key
+    # load and the makedirs, so evidence that was valid at validation time can expire in
+    # that gap; clamping to it would then produce expires_at <= now. The tool would
+    # print "Authorization written" and return 0, leaving a dead file at the canonical
+    # lookup path that the operator can neither use nor replace -- the evidence is
+    # expired too, so re-minting fails as well.
+    if expires <= now:
+        print(f"ERROR: the gate evidence expired at {evidence_expires.isoformat()}, "
+              f"before this authorization could be minted. Re-run the gate round and "
+              f"write fresh evidence; nothing was written.")
+        return 2
 
     auth = {
         "reviewed_sha": sha,
@@ -275,8 +303,14 @@ def main(argv=None):
 
     print(f"Authorization written: {path}")
     direction = f" direction={from_sha[:12]}->{sha[:12]}" if from_sha else ""
+    # The EFFECTIVE window, not the requested one. Printing `args.ttl` after a clamp
+    # made the artifact's own summary line over-report its validity -- and that is the
+    # line an operator copies into a deploy log.
+    effective = int((expires - now).total_seconds() // 60)
+    clamped = " (clamped to the evidence expiry)" if effective < args.ttl else ""
     print(f"  sha={sha[:12]} action={args.action} scope={args.scope}{direction} "
-          f"ttl={args.ttl}m jti={auth['jti'][:8]} (single-use)")
+          f"ttl={effective}m{clamped} expires={expires.isoformat()} "
+          f"jti={auth['jti'][:8]} (single-use)")
     if not evidence_ref:
         print("  NOTE: no --gate-evidence recorded; the artifact does not reference the gate result.")
     return 0
