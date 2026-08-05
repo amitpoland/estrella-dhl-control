@@ -32,11 +32,41 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 HOOKS = Path(__file__).resolve().parents[2] / ".claude" / "hooks"
+
+# The hook modules this file loads by path. They shadow whatever else in the session
+# holds these (very generic) top-level names -- see _isolate_hook_modules.
+_HOOK_MODULES = ("gate_evidence", "deploy_authorization", "sign_deploy_authorization")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_hook_modules():
+    """Restore sys.modules after every test in this file.
+
+    `_load` writes into `sys.modules` under bare names like `deploy_authorization`,
+    which is required -- `sign_deploy_authorization` does a plain
+    `from deploy_authorization import ...`, so the dependency must be resolvable by
+    name while the module executes. What was missing is the other half: nothing put
+    sys.modules back. Every test left three freshly-executed modules registered
+    globally, so a later test in the same session (in ANY file) could bind to a
+    module object this file happened to execute last, with this file's tmp_path env
+    already read. Test order then decides behaviour, which is how a suite starts
+    passing or failing depending on what ran before it.
+    """
+    saved = {name: sys.modules.get(name) for name in _HOOK_MODULES}
+    try:
+        yield
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 
 def _load(name):
@@ -67,13 +97,25 @@ TO = "b" * 40
 
 @pytest.fixture()
 def evidence(tmp_path):
-    """A valid seven-agent GO for TO, as the signer now requires."""
+    """A valid seven-agent GO for TO, as the signer now requires.
+
+    Strict JSON per `.claude/contracts/seven-agent-evidence.md`. The schema itself is
+    exercised in test_gate_evidence.py; here it is only a precondition, so this builds
+    the minimal valid document and nothing more.
+    """
     ge = _load("gate_evidence")
-    body = [f"TARGET_SHA: {TO}", ""]
-    for agent in ge.REQUIRED_AGENTS:
-        body += [f"AGENT: {agent}", "STATUS: CLEAR", "DISPOSITION: GO", ""]
-    path = tmp_path / "gate-evidence.md"
-    path.write_text("\n".join(body), encoding="utf-8")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "schema_version": ge.SCHEMA_VERSION,
+        "target_sha": TO,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=2)).isoformat(),
+        "agents": [{"agent": a, "status": "GO", "blockers": [], "risks": []}
+                   for a in sorted(ge.REQUIRED_AGENTS)],
+        "lead_verdict": "GO",
+    }
+    path = tmp_path / "gate-evidence.json"
+    path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     return str(path)
 
 

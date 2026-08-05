@@ -25,7 +25,16 @@ read every tracked file still cannot sign an authorization.
 --------------------------------------------------------------------------------
 PER-DEPLOY (operator, after the 7-agent gate has approved a SHA)
 --------------------------------------------------------------------------------
-    python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --ttl 60
+--gate-evidence is REQUIRED for deploy and reconcile. It is the path to the strict
+JSON record of the seven-agent round for THIS sha -- schema, storage convention and
+validation rules in .claude/contracts/seven-agent-evidence.md. It is validated before
+the signing key is loaded, so an unapproved SHA never reaches the key:
+
+    python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both \
+        --gate-evidence C:\\PZ-secrets\\gate-evidence\\<sha>.json --ttl 60
+
+Do NOT edit, reformat, move or delete the evidence file after signing. Its SHA-256 is
+recorded in the signed body and re-checked at deploy time; any change is a denial.
 
 Then run the deploy with the SAME SHA:
 
@@ -42,9 +51,14 @@ ordered PAIR so an artifact minted for one drift cannot repair a different one. 
 the identity production ACTUALLY holds as --from-sha:
 
     python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both \
-        --from-sha <proved-current-sha> --ttl 60
+        --from-sha <proved-current-sha> \
+        --gate-evidence C:\\PZ-secrets\\gate-evidence\\<to-sha>.json --ttl 60
 
     Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
+
+Reconcile writes new bytes to production, so it needs evidence exactly as deploy does,
+and that evidence must approve the TARGET sha -- not the identity production currently
+holds. A gate report for the drifted SHA does not authorise converging away from it.
 
 --from-sha is REQUIRED for reconcile and REFUSED for deploy/rollback: it is a signed
 field, so a deploy artifact carrying one is a different operation shape and the

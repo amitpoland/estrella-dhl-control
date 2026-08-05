@@ -28,10 +28,15 @@ the gate ran cannot ship.
 # 1. plan only - writes nothing, needs no authorization
 Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
 
-# 2. run the 7-agent gate against that SHA, out of band
+# 2. run the 7-agent gate against that SHA, out of band, and record the result as
+#    strict-JSON evidence (schema: .claude/contracts/seven-agent-evidence.md)
 
-# 3. mint a single-use authorization for the approved SHA (operator shell)
-python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --ttl 60
+# 3. mint a single-use authorization for the approved SHA (operator shell).
+#    --gate-evidence is REQUIRED: the file is validated (all seven agents GO, no
+#    unresolved blocker, target_sha == this SHA, not expired) BEFORE the signing key
+#    is loaded, and its SHA-256 is recorded in the signed body.
+python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both \
+    --gate-evidence <gate-evidence-dir>\<40-char-sha>.json --ttl 60
 
 # 4. deploy
 Deploy-PZ.ps1 -ReviewedSHA <40-char-sha>

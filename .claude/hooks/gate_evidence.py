@@ -1,4 +1,4 @@
-"""Seven-agent gate evidence: parse, validate, and bind it to a target SHA.
+"""Seven-agent gate evidence: a strict JSON authorization input.
 
 WHY THIS EXISTS
 ---------------
@@ -6,78 +6,122 @@ WHY THIS EXISTS
 `gate_evidence_ref` has always been a SIGNED field. But it was free text -- a report
 path or a PR comment URL -- that nothing read, nothing validated, and nothing bound to
 the SHA being deployed. An operator could mint a fully valid authorization with
-`--gate-evidence "looks fine to me"`, or with a reference to a gate run for a different
-commit, and every downstream check would pass.
+`--gate-evidence "looks fine to me"`, or citing a gate run for a different commit.
 
-That is the shape this module closes. The seven-agent gate is the production approval
-authority (CLAUDE.md, "Production deployment rule"); this makes its verdict a
-machine-checkable precondition of signing rather than a note in a field.
+WHY JSON, AND NOT MARKDOWN
+--------------------------
+The first implementation parsed a hand-written Markdown report. Over three review
+rounds the seven-agent gate found SIX distinct ways a human-visible BLOCK could be
+laundered into a validated GO:
+
+  1. a duplicate `AGENT:` block overriding an earlier BLOCK (last-wins);
+  2. an agent-like bullet inside a NOTES section;
+  3. a bare repeated STATUS/DISPOSITION pair with no second AGENT line;
+  4. a near-miss agent name whose BLOCK was silently discarded;
+  5. a verdict appearing before the first AGENT line (orphaned, dropped);
+  6. a verdict written as a Markdown table row, invisible to the parser;
+     plus first-wins `EXPIRES_AT` shadowing a genuine expiry.
+
+Each was patched; the next round found the next one. That is not a run of bad luck, it
+is the design. A tolerant parser strips decoration, accepts aliases, reconstructs record
+boundaries, and SKIPS what it does not recognise -- so a human and the validator are not
+guaranteed to be reading the same document. No finite list of patches closes that class.
+
+This module therefore does not parse a human document at all. Evidence is strict JSON
+with one schema and one meaning:
+
+  * `json.loads` either parses or refuses -- no partial understanding;
+  * duplicate keys are REFUSED via `object_pairs_hook` (stdlib json silently keeps the
+    last one, which is precisely the last-wins defect that started this);
+  * unknown fields are refused at both levels, so nothing can hide in a document the
+    validator ignores;
+  * agent names are matched EXACTLY -- no case folding, no separator equivalence, no
+    `.md` tolerance. A near-miss is an unknown agent, and unknown agents are refused;
+  * every status must be exactly "GO". There is no passing synonym to typo into.
+
+Human-readable review stays Markdown. Production authorization evidence is JSON.
 
 WHAT IT DOES NOT DO
 -------------------
 It does not replace the signed authorization. The HMAC artifact remains the thing that
-actually permits a production write. Evidence gates SIGNING; the signature gates the
-DEPLOY. Making a text file the gate on its own would be strictly weaker than what this
-repository already has: an operator-editable file cannot be single-use, cannot be
-key-protected, and cannot be revoked.
+permits a production write. Evidence gates SIGNING; the signature gates the DEPLOY. A
+text file -- JSON or otherwise -- cannot be single-use, key-protected, or revoked.
 
 HOW TAMPERING IS CAUGHT
 -----------------------
 The evidence file's SHA-256 is recorded inside `gate_evidence_ref`, which is already
-covered by the authorization's HMAC. So the digest is signed without adding a signed
-field -- deliberately, because `deploy_authorization._SIGNED_FIELDS` carries an explicit
-warning that changing the canonical body invalidates every previously minted artifact
-and must not be done silently once a signer exists. Reusing the existing field keeps
-this change compatible with any artifact already in an operator's store.
+covered by the authorization's HMAC. The digest is therefore signed WITHOUT adding a
+signed field -- deliberately, because `deploy_authorization._SIGNED_FIELDS` warns that
+changing the canonical body invalidates every previously minted artifact and must not be
+done silently once a signer exists.
 
-At verify time the file is re-hashed. Edit the evidence after signing and the digest no
-longer matches, so the authorization is refused.
+At use time `deploy_authorization.evaluate()` re-hashes the file. Editing, moving, or
+deleting the evidence after signing is a DENIAL, not a warning.
 
 REF FORMAT
 ----------
-    <path>@sha256:<64-hex>
-
-`path` is recorded for the audit trail. The digest is what is enforced: a moved or
-renamed evidence file is a warning, a changed one is a denial.
+    <absolute-path>@sha256:<64-hex>
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from datetime import datetime, timezone
 
-# The seven agents named by CLAUDE.md's production deployment rule. All seven must
-# report; a gate that ran six is not the gate this repository defines.
-REQUIRED_AGENTS = (
-    "deploy_lead_coordinator",
+# The seven authorities named by CLAUDE.md's production deployment rule, one per
+# `.claude/agents/deploy_*.md`. Pinned against those files by
+# test_required_agents_matches_the_agent_files_on_disk -- a rename, addition or removal
+# must fail a test rather than silently shrink the gate.
+REQUIRED_AGENTS = frozenset({
     "deploy_git_diff_reviewer",
-    "deploy_backend_impact_reviewer",
     "deploy_persistence_storage_reviewer",
+    "deploy_backend_impact_reviewer",
     "deploy_security_reviewer",
     "deploy_qa_reviewer",
     "deploy_release_manager",
-)
+    "deploy_lead_coordinator",
+})
 
-# Per-agent verdicts, from .claude/contracts/gate_output_contract.md.
-_PASSING_STATUS = ("CLEAR", "PASS", "GO")
-_BLOCKING_STATUS = ("HOLD", "BLOCK", "FAIL")
+SCHEMA_VERSION = 1
+
+# Exact field sets. Unknown fields are refused rather than ignored: an ignored field is
+# somewhere a reviewer's caveat can live while the validator sees approval.
+_TOP_FIELDS = frozenset({
+    "schema_version", "target_sha", "created_at", "expires_at", "agents", "lead_verdict",
+})
+_AGENT_FIELDS = frozenset({"agent", "status", "blockers", "risks"})
+
+# One passing value. Not a set of synonyms -- every synonym is a token to typo into, and
+# an unrecognised status must never read as approval.
+_GO = "GO"
 
 _REF_RX = re.compile(r"^(?P<path>.+)@sha256:(?P<digest>[0-9a-f]{64})$")
 _SHA_RX = re.compile(r"^[0-9a-f]{40}$")
 
-# Sentinel: the document declares more than one distinct target SHA.
-_CONFLICT = "CONFLICT"
 
-# Tolerated spellings of the agent name. The gate contract writes `AGENT: <agent_name>`;
-# agent files are kebab-case on disk and snake_case in CLAUDE.md, and operators
-# transcribe both.
-def _normalise_agent(name):
-    return name.strip().lower().replace("-", "_").removesuffix(".md")
+class _DuplicateKey(ValueError):
+    pass
+
+
+def _no_duplicate_keys(pairs):
+    """object_pairs_hook that refuses duplicate keys.
+
+    Stdlib json keeps the LAST value for a repeated key, silently. For authorization
+    evidence that is the same last-wins defect the Markdown parser died of, one layer
+    down: `{"status": "BLOCK", "status": "GO"}` would validate as GO.
+    """
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _DuplicateKey(f"duplicate JSON key: {key!r}")
+        seen.add(key)
+    return dict(pairs)
 
 
 def digest_file(path):
-    """SHA-256 of the evidence file, or None if it cannot be read."""
+    """SHA-256 of the file, or None if it cannot be read."""
     try:
         h = hashlib.sha256()
         with open(path, "rb") as fh:
@@ -93,11 +137,7 @@ def format_ref(path, digest):
 
 
 def parse_ref(ref):
-    """(path, digest) from a signed gate_evidence_ref, or (ref, None) if unbound.
-
-    A legacy free-text ref returns digest=None. Callers decide whether that is
-    acceptable; `evaluate` refuses it for production actions.
-    """
+    """(path, digest) from a signed gate_evidence_ref, or (ref, None) if unbound."""
     if not isinstance(ref, str):
         return ("", None)
     m = _REF_RX.match(ref.strip())
@@ -106,208 +146,157 @@ def parse_ref(ref):
     return (m.group("path"), m.group("digest"))
 
 
-def parse_evidence(text):
-    """Agent blocks from a gate evidence document.
-
-    Deliberately tolerant about layout and strict about content. Evidence is assembled
-    by a human from seven agent reports, so it arrives with varying headings, markdown
-    fences and blockquotes. What must be unambiguous is which agent said what, and
-    whether any of them blocked.
-
-    Returns {normalised_agent_name: {"status", "disposition", "duplicate"}}.
-
-    EVERY VERDICT FIELD IS WRITE-ONCE. Not just `AGENT` -- `STATUS` and `DISPOSITION`
-    too. The whole class is "a restatement later in the document overrides an earlier
-    verdict", and it has three known routes:
-
-      1. a second `AGENT: x` block;
-      2. a bare repeated `STATUS:` / `DISPOSITION:` pair inside one record, with no
-         second AGENT line at all;
-      3. a near-miss agent spelling (`AGENT: deploy_security_reviewer (round 1)`) whose
-         BLOCK is silently discarded because the name does not normalise to a required
-         agent, leaving a later clean block as the only record.
-
-    An earlier fix closed route 1 only and asserted the class was closed. It was not:
-    routes 2 and 3 were then demonstrated laundering a BLOCK into a GO. Fixing the
-    demonstrated vectors instead of the class is what made that fix wrong, so the rule
-    here is deliberately layout-independent: a field may be set once, and a second
-    occurrence marks the record `duplicate`, which validate_evidence() refuses.
-
-    Resetting `current` at blank lines was considered and rejected: the gate output
-    contract puts BLOCKERS / CHANGED_FILES / TESTS / RISKS between STATUS and
-    DISPOSITION, so a real block legitimately spans blank lines. Write-once needs no
-    guess about where a block ends.
-
-    A BLOCKING VERDICT IS NEVER DISCARDED, whoever wrote it. An unrecognised agent name
-    carrying HOLD/BLOCK/FAIL is retained and refused by validate_evidence() rather than
-    dropped -- that is route 3, and silently ignoring a stranger's BLOCK is exactly how
-    it laundered.
-
-    The digest binding cannot catch any of this: it proves the file did not change after
-    signing, not that the file says what it appears to say.
-    """
-    agents = {}
-    current = None
-    for raw in text.splitlines():
-        line = raw.strip().lstrip(">").strip()
-        line = line.lstrip("#*-` ").strip()
-        if not line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip().strip("`*_ ").upper()
-        value = value.strip().strip("`*_").strip()
-        if key == "AGENT" and value:
-            current = _normalise_agent(value)
-            if current in agents:
-                agents[current]["duplicate"] = True
-                current = None          # ignore every field of the repeat block
-            else:
-                agents[current] = {"status": "", "disposition": "", "duplicate": False}
-        elif current and key == "STATUS" and value:
-            if agents[current]["status"]:
-                agents[current]["duplicate"] = True
-            else:
-                agents[current]["status"] = value.split()[0].upper()
-        elif current and key == "DISPOSITION" and value:
-            if agents[current]["disposition"]:
-                agents[current]["duplicate"] = True
-            else:
-                agents[current]["disposition"] = value.split(":")[0].strip().upper()
-    return agents
+def _parse_ts(value, label):
+    """(datetime, None) or (None, reason). Naive timestamps are read as UTC."""
+    if not isinstance(value, str):
+        return (None, f"{label} must be a string")
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return (None, f"{label} is not a valid ISO 8601 timestamp")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (dt, None)
 
 
-def _find_target_sha(text):
-    """The full 40-char SHA the evidence declares it approved, or "" / CONFLICT.
+def _check_agent(entry, index):
+    """None if the entry is a well-formed GO, else a refusal reason."""
+    if not isinstance(entry, dict):
+        return f"agents[{index}] is not an object"
 
-    Required and explicit. A gate report that does not name its target cannot be bound
-    to one, and inferring the SHA from context is exactly how a verdict gets attached to
-    the wrong revision (Lesson Q rule 7).
+    fields = set(entry)
+    missing = _AGENT_FIELDS - fields
+    if missing:
+        return f"agents[{index}] is missing field(s): {', '.join(sorted(missing))}"
+    unknown = fields - _AGENT_FIELDS
+    if unknown:
+        return f"agents[{index}] has unknown field(s): {', '.join(sorted(unknown))}"
 
-    EVERY declaration is collected, not the first. This was first-wins across three
-    aliases, which was a SHA-binding bypass: evidence genuinely approving commit A
-    validated for commit B if a single line `APPROVED_SHA: B` was prepended, because the
-    first match bound and the seven verdicts below were never cross-checked against it.
-    That defeats the property this whole module exists to enforce, so a document
-    declaring more than one distinct target is refused rather than resolved.
-    """
-    found = []
-    for raw in text.splitlines():
-        line = raw.strip().lstrip(">").strip().lstrip("#*-` ").strip()
-        key, sep, value = line.partition(":")
-        if not sep:
-            continue
-        if key.strip().strip("`*_ ").upper().replace(" ", "_") in (
-                "TARGET_SHA", "REVIEWED_SHA", "APPROVED_SHA"):
-            candidate = value.strip().strip("`*_").strip().lower()
-            if not _SHA_RX.match(candidate):
-                return ""      # present but malformed: do not fall through to a guess
-            found.append(candidate)
-    if not found:
-        return ""
-    if len(set(found)) > 1:
-        return _CONFLICT
-    return found[0]
+    name = entry["agent"]
+    if not isinstance(name, str):
+        return f"agents[{index}].agent must be a string"
+    # Exact match. No normalisation: a near-miss is an unknown agent, and the caller
+    # refuses unknown agents. Tolerance here is what let "deploy_security_reviewer
+    # (round 1)" carry a BLOCK that was then discarded.
+    if name not in REQUIRED_AGENTS:
+        return f"unknown agent {name!r} (names must match exactly)"
 
+    status = entry["status"]
+    if status != _GO:
+        return f"{name} status is {status!r}, not {_GO!r}"
 
-def _find_expiry(text):
-    for raw in text.splitlines():
-        line = raw.strip().lstrip(">").strip().lstrip("#*-` ").strip()
-        key, sep, value = line.partition(":")
-        if sep and key.strip().strip("`*_ ").upper().replace(" ", "_") in (
-                "EXPIRES_AT", "VALID_UNTIL"):
-            try:
-                return datetime.fromisoformat(
-                    value.strip().strip("`*_").strip().replace("Z", "+00:00"))
-            except ValueError:
-                return False   # present but malformed -> refuse, never ignore
-    return None                # absent -> no expiry claimed
+    blockers = entry["blockers"]
+    if not isinstance(blockers, list):
+        return f"{name}.blockers must be a list"
+    if blockers:
+        return f"{name} reports {len(blockers)} unresolved blocker(s)"
+
+    if not isinstance(entry["risks"], list):
+        return f"{name}.risks must be a list"
+    return None
 
 
 def validate_evidence(path, target_sha, now=None):
-    """(ok, reason, digest) for evidence approving exactly `target_sha`.
+    """(ok, reason, digest) for strict-JSON evidence approving exactly `target_sha`.
 
-    Fail-closed throughout: anything unreadable, unparseable, incomplete, blocked,
-    expired, or bound to a different SHA is a refusal, never a warning.
+    Fail-closed throughout. `digest` is the SHA-256 of the bytes that were parsed, and
+    is returned on every post-read refusal so a caller can record what it rejected.
     """
     now = now or datetime.now(timezone.utc)
 
-    if not _SHA_RX.match((target_sha or "").lower()):
+    if not isinstance(target_sha, str) or not _SHA_RX.match(target_sha.lower()):
         return (False, "target_sha is not a full 40-character commit SHA", None)
     if not path:
         return (False, "no gate evidence supplied", None)
     if not os.path.isfile(path):
         return (False, f"gate evidence file not found: {path}", None)
 
-    # ONE read. Hash exactly the bytes that get parsed: digest_file() plus a separate
-    # text read was a TOCTOU window in which a file swapped between the two calls would
-    # bind the signature to bytes that were never validated, then pass the use-time
-    # digest check once restored.
+    # ONE read: hash exactly the bytes that get parsed. Two reads is a TOCTOU window in
+    # which a swapped file binds a signature to bytes that were never validated.
     try:
         with open(path, "rb") as fh:
             raw = fh.read()
     except OSError:
         return (False, f"gate evidence unreadable: {path}", None)
     digest = hashlib.sha256(raw).hexdigest()
-    text = raw.decode("utf-8", errors="replace")
 
-    declared = _find_target_sha(text)
-    if declared == _CONFLICT:
-        return (False, "gate evidence declares more than one distinct target SHA "
-                       "(TARGET_SHA / REVIEWED_SHA / APPROVED_SHA disagree); refusing "
-                       "rather than choosing one", digest)
-    if not declared:
-        return (False, "gate evidence declares no TARGET_SHA (a verdict with no named "
-                       "revision cannot be bound to one)", digest)
-    if declared != target_sha.lower():
-        return (False, f"gate evidence approves {declared[:12]}, not {target_sha[:12]} "
-                       "(evidence from a different gate run)", digest)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return (False, "gate evidence is not valid UTF-8", digest)
+    try:
+        doc = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+    except _DuplicateKey as exc:
+        return (False, f"gate evidence has a {exc}", digest)
+    except ValueError as exc:
+        return (False, f"gate evidence is not valid JSON: {exc}", digest)
 
-    expiry = _find_expiry(text)
-    if expiry is False:
-        return (False, "gate evidence EXPIRES_AT is malformed", digest)
-    if expiry is not None:
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
-        if now >= expiry:
-            return (False, f"gate evidence expired at {expiry.isoformat()}", digest)
+    if not isinstance(doc, dict):
+        return (False, "gate evidence must be a JSON object", digest)
 
-    agents = parse_evidence(text)
-    missing = [a for a in REQUIRED_AGENTS if a not in agents]
+    fields = set(doc)
+    missing = _TOP_FIELDS - fields
     if missing:
-        return (False, "gate evidence missing agent result(s): " + ", ".join(missing), digest)
+        return (False, "gate evidence is missing field(s): "
+                       + ", ".join(sorted(missing)), digest)
+    unknown = fields - _TOP_FIELDS
+    if unknown:
+        return (False, "gate evidence has unknown field(s): "
+                       + ", ".join(sorted(unknown)), digest)
 
-    # A repeated verdict field is refused, never resolved -- see parse_evidence().
-    repeated = sorted(a for a, rec in agents.items() if rec.get("duplicate"))
-    if repeated:
-        return (False, "gate evidence restates a verdict for: " + ", ".join(repeated)
-                       + " (AGENT / STATUS / DISPOSITION are write-once; a restatement "
-                         "cannot be distinguished from a laundered verdict)", digest)
+    if doc["schema_version"] != SCHEMA_VERSION:
+        return (False, f"gate evidence schema_version is {doc['schema_version']!r}, "
+                       f"expected {SCHEMA_VERSION}", digest)
 
-    # A stranger's BLOCK is still a BLOCK. An agent name outside REQUIRED_AGENTS is
-    # normally ignored, which let a near-miss spelling swallow a blocking verdict --
-    # `AGENT: deploy_security_reviewer (round 1)` carrying BLOCK, followed by a clean
-    # block under the exact name. A blocking verdict is never silently discarded.
-    strangers = sorted(
-        a for a, rec in agents.items()
-        if a not in REQUIRED_AGENTS
-        and (rec.get("status") in _BLOCKING_STATUS or rec.get("disposition") in _BLOCKING_STATUS)
-    )
-    if strangers:
-        return (False, "gate evidence carries a blocking verdict under an unrecognised "
-                       "agent name: " + ", ".join(strangers)
-                       + " (a BLOCK is never discarded because the name does not match; "
-                         "correct the name or resolve the blocker)", digest)
+    declared = doc["target_sha"]
+    if not isinstance(declared, str) or not _SHA_RX.match(declared):
+        return (False, "gate evidence target_sha is not a full 40-character "
+                       "lowercase commit SHA", digest)
+    if declared != target_sha.lower():
+        return (False, f"gate evidence approves {declared[:12]}, not "
+                       f"{target_sha[:12].lower()} (evidence from a different gate run)",
+                digest)
 
-    blocked = []
-    for name in REQUIRED_AGENTS:
-        rec = agents[name]
-        status = rec.get("status", "")
-        disp = rec.get("disposition", "")
-        if status in _BLOCKING_STATUS or disp in _BLOCKING_STATUS:
-            blocked.append(f"{name}={status or disp}")
-        elif status not in _PASSING_STATUS:
-            blocked.append(f"{name}=unrecognised status '{status}'")
-    if blocked:
-        return (False, "gate evidence carries unresolved blocker(s): " + ", ".join(blocked), digest)
+    created, err = _parse_ts(doc["created_at"], "created_at")
+    if err:
+        return (False, f"gate evidence {err}", digest)
+    expires, err = _parse_ts(doc["expires_at"], "expires_at")
+    if err:
+        return (False, f"gate evidence {err}", digest)
+    if expires <= created:
+        return (False, "gate evidence expires_at is not after created_at", digest)
+    if now >= expires:
+        return (False, f"gate evidence expired at {expires.isoformat()}", digest)
 
-    return (True, f"seven-agent GO for {target_sha[:12]}", digest)
+    agents = doc["agents"]
+    if not isinstance(agents, list):
+        return (False, "gate evidence agents must be a list", digest)
+
+    names = []
+    for i, entry in enumerate(agents):
+        reason = _check_agent(entry, i)
+        if reason:
+            return (False, f"gate evidence: {reason}", digest)
+        names.append(entry["agent"])
+
+    seen = set()
+    dupes = sorted({n for n in names if n in seen or seen.add(n)})
+    if dupes:
+        return (False, "gate evidence declares more than one result for: "
+                       + ", ".join(dupes), digest)
+
+    absent = REQUIRED_AGENTS - set(names)
+    if absent:
+        return (False, "gate evidence missing agent result(s): "
+                       + ", ".join(sorted(absent)), digest)
+    # Count is implied by "no duplicates, no unknown names, none absent", but assert it
+    # anyway: an eighth entry must never be able to ride along unexamined.
+    if len(names) != len(REQUIRED_AGENTS):
+        return (False, f"gate evidence declares {len(names)} agent results, "
+                       f"expected exactly {len(REQUIRED_AGENTS)}", digest)
+
+    if doc["lead_verdict"] != _GO:
+        return (False, f"gate evidence lead_verdict is {doc['lead_verdict']!r}, "
+                       f"not {_GO!r}", digest)
+
+    return (True, f"seven-agent {_GO} for {declared[:12]}", digest)

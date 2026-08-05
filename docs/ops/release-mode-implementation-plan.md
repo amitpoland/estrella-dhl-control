@@ -34,7 +34,9 @@ seven-agent approval for that SHA rather than be handed a path, which needs a
 convention:
 
 - Add `gate_evidence_dir` to `windows_prod_v2.json` (e.g. `C:\PZ-secrets\gate-evidence`).
-- `-Release` reads `<gate_evidence_dir>\<sha>.md` and validates it via `gate_evidence.py`.
+- `-Release` reads `<gate_evidence_dir>\<sha>.json` and validates it via `gate_evidence.py`.
+  Evidence is strict JSON — schema in `.claude/contracts/seven-agent-evidence.md`.
+  A Markdown report is not evidence and is refused outright, not partially read.
 - Absent or invalid → `FAILED SAFE` before any lock, artifact, backup or service change.
 
 **Config-schema caution.** `Get-DeployConfig` requires every key in its `$required`
@@ -201,9 +203,13 @@ Text assertions in the existing style (these do not need PowerShell):
 - All 16 `engine_files` participate in identity and closure.
 - Still exactly one `.ps1` deployer.
 
-Behavioural tests (single-use, evidence binding, wrong-SHA refusal, rollback exemption)
-already exist in `service/tests/test_gate_evidence.py` — 37 tests, and the two tamper
-tests were verified to fail when the use-time digest re-check is removed.
+Behavioural tests (schema validation, single-use, evidence binding, wrong-SHA refusal,
+rollback exemption) already exist in `service/tests/test_gate_evidence.py` — 134 tests,
+each mutating one field of a valid document and asserting refusal. Twelve independent
+mutations of `gate_evidence.py` (duplicate-key hook removed, unknown-field checks
+disabled, agent names normalised, expiry ignored, SHA comparison skipped, second read
+reintroduced, …) were each verified to fail the suite, so it distinguishes a strict
+validator from a permissive one rather than only exercising the happy path.
 
 ## Documentation to update
 
