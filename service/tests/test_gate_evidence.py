@@ -21,9 +21,18 @@ Refusals are asserted on `ok is False` plus a substring of the reason, never on 
 whole message: the reason is operator-facing prose and may be reworded, the refusal is
 the contract.
 
-Every test here runs on any OS. The PowerShell side of `-Release` cannot be exercised
-from a Linux session and is covered separately by the deploy-authority suite's text
-assertions plus operator parse validation.
+Every test here runs on any OS.
+
+WHAT IS **NOT** COVERED HERE, STATED PLAINLY. `Deploy-PZ.ps1 -Release` does not exist at
+this revision — `docs/ops/release-mode-implementation-plan.md` is a plan, and the tests
+it proposes have not been written. An earlier version of this docstring claimed the
+PowerShell side was "covered separately by the deploy-authority suite's text assertions
+plus operator parse validation." That was false, and false in the permitting direction
+(Lesson Q rule 6): it described coverage that does not exist. What IS live today is the
+Python path — the signer refuses to mint without valid evidence, and
+`deploy_authorization.evaluate()` re-checks the digest at use time, which `Deploy-PZ.ps1`
+already invokes through `Assert-Authorization`. No PowerShell change was needed for that,
+and none was made.
 """
 from __future__ import annotations
 
@@ -31,6 +40,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,8 +53,30 @@ if str(HOOKS) not in sys.path:
     sys.path.insert(0, str(HOOKS))
 
 from gate_evidence import (  # noqa: E402
-    REQUIRED_AGENTS, SCHEMA_VERSION, digest_file, format_ref, parse_ref, validate_evidence,
+    MAX_VALIDITY, REQUIRED_AGENTS, SCHEMA_VERSION, digest_file, format_ref, parse_ref,
+    validate_evidence,
 )
+
+# The hook modules this file imports under bare, very generic top-level names. They stay
+# registered in sys.modules for the session, so a later test in ANY file could bind to
+# the module object this file executed. Harmless today — they hold no state and resolve
+# to the same files — but it is the same order-dependence the sibling suite
+# (test_deploy_reconcile_signing.py) documents at length, and symmetry here is cheaper
+# than diagnosing it later.
+_HOOK_MODULES = ("gate_evidence", "deploy_authorization", "sign_deploy_authorization")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_hook_modules():
+    saved = {name: sys.modules.get(name) for name in _HOOK_MODULES}
+    try:
+        yield
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 _SHA = "6e1de8b1a2c34d5e6f708192a3b4c5d6e7f80912"
 _OTHER_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -97,6 +129,42 @@ def _refuse(tmp_path, doc, needle, target=_SHA, name="gate.json"):
 
 
 # ── the roster is pinned to the agent files, not editable in isolation ────────
+
+# An INVOCATION, not a prose mention: the line must actually run python against the
+# signer and name one of the two evidence-requiring actions as a bare word.
+_SIGNER_CMD_RX = re.compile(
+    r"^[^\n]*\bpython\b[^\n]*sign_deploy_authorization\.py[^\n]+\b(?:deploy|reconcile)\b"
+    r"[^\n]*$",
+    re.MULTILINE)
+
+_DOCS_SHOWING_THE_SIGNER = (
+    ".claude/hooks/sign_deploy_authorization.py",
+    ".claude/commands/deploy.md",
+    ".claude/contracts/seven-agent-evidence.md",
+)
+
+
+@pytest.mark.parametrize("relpath", _DOCS_SHOWING_THE_SIGNER)
+def test_every_documented_deploy_mint_carries_gate_evidence(relpath):
+    """An operator copy-pastes these. A documented command that now exits 2 is a defect.
+
+    This regressed once already: when `--gate-evidence` became mandatory, the canonical
+    PER-DEPLOY and RECONCILE commands in the signer's own docstring were left without
+    it, so the file that teaches the command taught a command it rejects. Nothing pinned
+    the text, so only a human reading it caught it — twice, in two separate gate rounds.
+
+    Scanned per LINE, which also enforces the PowerShell constraint: the operator shell
+    on the production host does not treat a trailing `\\` as a continuation, so a wrapped
+    command pastes as two broken ones. A single-line command keeps the flag on the same
+    line as the action, which is exactly what this regex requires.
+    """
+    text = (REPO / relpath).read_text(encoding="utf-8")
+    missing = [m.group(0).strip() for m in _SIGNER_CMD_RX.finditer(text)
+               if "--gate-evidence" not in m.group(0)]
+    assert not missing, (
+        f"{relpath} documents a deploy/reconcile mint without --gate-evidence; "
+        f"pasted as written it exits 2:\n  " + "\n  ".join(missing))
+
 
 def test_required_agents_matches_the_agent_files_on_disk():
     """REQUIRED_AGENTS is the WIDTH of the gate.
@@ -185,6 +253,41 @@ def test_invalid_utf8_is_refused(tmp_path):
     assert digest, "a decode refusal must still report which bytes it rejected"
 
 
+@pytest.mark.parametrize("encoding,label", [
+    ("utf-16", "UTF-16 (PowerShell 5.1 Set-Content / Out-File default)"),
+    ("utf-8-sig", "UTF-8 with BOM (Out-File -Encoding utf8 on PowerShell 5.1)"),
+])
+def test_windows_default_encodings_are_refused_not_half_read(tmp_path, encoding, label):
+    """The deploy target is Windows, where the obvious way to write this file produces
+    exactly these two encodings. Both must refuse cleanly — the failure mode to avoid is
+    a partial parse, not the refusal itself."""
+    p = tmp_path / "gate.json"
+    p.write_bytes(json.dumps(_doc()).encode(encoding))
+    ok, reason, _ = validate_evidence(str(p), _SHA)
+    assert not ok, f"{label} was accepted"
+    assert "not valid UTF-8" in reason or "not valid JSON" in reason
+
+
+def test_empty_file_is_refused(tmp_path):
+    """Zero bytes is valid UTF-8 and invalid JSON. It exists, so it reaches the parser."""
+    p = tmp_path / "gate.json"
+    p.write_bytes(b"")
+    ok, reason, digest = validate_evidence(str(p), _SHA)
+    assert not ok and "not valid JSON" in reason
+    assert digest == hashlib.sha256(b"").hexdigest()
+
+
+def test_deeply_nested_json_refuses_instead_of_raising(tmp_path):
+    """RecursionError is a RuntimeError, not a ValueError, so without an explicit catch
+    it propagates out of a function whose contract is "fail closed throughout". The
+    caller does abort — but a traceback is not a refusal reason, and this was the one
+    input class that left the stated invariant unproven."""
+    ok, reason, _ = validate_evidence(
+        _write(tmp_path, "[" * 100000 + "]" * 100000), _SHA)
+    assert not ok
+    assert "nested too deeply" in reason or "not valid JSON" in reason
+
+
 @pytest.mark.parametrize("field", sorted(_doc().keys()))
 def test_each_missing_top_level_field_is_refused(tmp_path, field):
     doc = _doc()
@@ -200,11 +303,23 @@ def test_unknown_top_level_field_is_refused(tmp_path):
     _refuse(tmp_path, doc, "override")
 
 
-@pytest.mark.parametrize("bad", [0, 2, "1", None])
+@pytest.mark.parametrize("bad", [0, 2, "1", None, [1], {}])
 def test_wrong_schema_version_is_refused(tmp_path, bad):
     doc = _doc()
     doc["schema_version"] = bad
     _refuse(tmp_path, doc, "schema_version")
+
+
+@pytest.mark.parametrize("bad", [True, False, 1.0])
+def test_schema_version_lookalikes_are_refused(tmp_path, bad):
+    """`True == 1` and `1.0 == 1` in Python, so a bare `!= SCHEMA_VERSION` accepts
+    `"schema_version": true`. Neither can reach a verdict — every approval-bearing field
+    compares against a str — but a module whose thesis is "no tolerance" must not have a
+    tolerated value anywhere in it."""
+    doc = _doc()
+    doc["schema_version"] = bad
+    reason, _ = _refuse(tmp_path, doc, "schema_version")
+    assert "must be an integer" in reason
 
 
 def test_evidence_for_another_sha_is_refused(tmp_path):
@@ -218,12 +333,25 @@ def test_evidence_for_another_sha_is_refused(tmp_path):
     _SHA[:39],      # short
     _SHA + "0",     # long
     _SHA.upper(),   # uppercase — the document is canonical lowercase
+    _SHA + "\n",    # trailing newline: `$` would accept this, `\Z` does not
+    "\n" + _SHA,
     "not-a-sha",
     123,
     None,
 ])
 def test_malformed_target_sha_in_the_document_is_refused(tmp_path, bad):
     _refuse(tmp_path, _doc(target=bad), "target_sha")
+
+
+def test_sha_shape_check_rejects_a_trailing_newline(tmp_path):
+    """Python's `$` also matches immediately before a trailing newline, so
+    `^[0-9a-f]{40}$` accepts "<40 hex>\\n" as well-formed. The equality compare would
+    then refuse it anyway — but a shape check that accepts a shape it calls invalid is
+    one you must re-derive every time you read it. `\\Z` is the fix; this pins it at the
+    shape stage by asserting the reason names the FORMAT, not the mismatch."""
+    reason, _ = _refuse(tmp_path, _doc(target=_SHA + "\n"), "target_sha")
+    assert "not a full 40-character" in reason, (
+        f"refused for the wrong reason ({reason!r}) — the shape check let it through")
 
 
 def test_bad_target_sha_argument_is_refused(tmp_path):
@@ -246,10 +374,46 @@ def test_evidence_expiring_exactly_now_is_refused(tmp_path):
 
 
 def test_expiry_before_creation_is_refused(tmp_path):
-    """A window that closes before it opens is a malformed document, not a long one —
-    and refusing it stops a backdated `created_at` from reading as plausible."""
+    """A window that closes before it opens is a malformed document, not a long one."""
     _refuse(tmp_path, _doc(created=_now(), expires=_now() - timedelta(hours=1)),
             "not after created_at")
+
+
+def test_a_validity_window_longer_than_the_maximum_is_refused(tmp_path):
+    """Before this, `created_at` was read and never constrained, and nothing bounded the
+    window — so a document valid until 2099 satisfied every other rule while the contract
+    said "hours, not days". That was advice with no enforcement behind it: a safety
+    property nobody was checking."""
+    created = _now() - timedelta(minutes=1)
+    reason, _ = _refuse(tmp_path, _doc(created=created,
+                                       expires=created + MAX_VALIDITY + timedelta(minutes=1)),
+                        "longer than")
+    assert "maximum" in reason
+
+
+def test_a_window_at_exactly_the_maximum_is_accepted(tmp_path):
+    """The cap is a ceiling, not an off-by-one trap for a document written to it."""
+    created = _now() - timedelta(minutes=1)
+    ok, reason, _ = validate_evidence(
+        _write(tmp_path, _doc(created=created, expires=created + MAX_VALIDITY)), _SHA)
+    assert ok, reason
+
+
+def test_future_created_at_is_refused(tmp_path):
+    """A gate round cannot have concluded in the future. This is also the shape a
+    long-window document takes once the window itself is capped."""
+    created = _now() + timedelta(hours=2)
+    _refuse(tmp_path, _doc(created=created, expires=created + timedelta(hours=1)),
+            "in the future")
+
+
+def test_clock_skew_does_not_refuse_a_genuine_document(tmp_path):
+    """Clocks disagree by seconds to minutes. Refusing on that would be a validator that
+    fails on correct input, which teaches operators to work around it."""
+    created = _now() + timedelta(minutes=2)
+    ok, reason, _ = validate_evidence(
+        _write(tmp_path, _doc(created=created, expires=created + timedelta(hours=1))), _SHA)
+    assert ok, reason
 
 
 @pytest.mark.parametrize("bad", ["soon", "", 1723000000, None])
@@ -513,6 +677,10 @@ def _signer_env(tmp_path, monkeypatch):
     store.mkdir()
     monkeypatch.setenv("PZ_DEPLOY_AUTH_KEY_FILE", str(key))
     monkeypatch.setenv("PZ_DEPLOY_AUTH_DIR", str(store))
+    # Clear the inline-key fallback too. `_load_key` prefers KEY_FILE whenever it is a
+    # readable file, so this is belt-and-braces — but if the tmp key ever went missing,
+    # an operator's real PZ_DEPLOY_AUTH_KEY would be reachable from a test run.
+    monkeypatch.delenv("PZ_DEPLOY_AUTH_KEY", raising=False)
     monkeypatch.delenv("PZ_DEPLOY_AUTH_REPO", raising=False)
     return store
 
@@ -587,6 +755,48 @@ def test_rollback_does_not_require_evidence(tmp_path, monkeypatch):
     assert _sign([_SHA, "rollback", "Both"]) == 0
 
 
+@pytest.mark.parametrize("argv_tail", [
+    [],                                            # no evidence at all
+    ["--gate-evidence", "nope.json"],              # evidence that does not exist
+])
+def test_a_refused_mint_writes_nothing_to_the_store(tmp_path, monkeypatch, argv_tail):
+    """A refusal must not leave an artifact. The evidence checks are the newest refusal
+    paths and were the ones not pinned: hoisting `os.makedirs`/`_load_key` above
+    `validate_evidence` would pass every other test in this file."""
+    store = _signer_env(tmp_path, monkeypatch)
+    assert _sign([_SHA, "deploy", "Both"] + argv_tail) == 2
+    assert not list(store.iterdir()), "a refused mint wrote to the authorization store"
+
+
+def test_evidence_is_validated_before_the_signing_key_is_loaded(tmp_path, monkeypatch):
+    """The claim in sign_deploy_authorization.py and in the contract — "an operator who
+    cannot produce a seven-agent GO for that exact SHA never reaches the key".
+
+    Every other signer test provisions a key first, so that ordering was an UNPINNED
+    safety claim: hoisting `_load_key()` above `validate_evidence()` broke nothing
+    (Lesson Q rules 1 and 6). Here the key is deliberately absent, so the error message
+    reveals which check ran first.
+    """
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.delenv("PZ_DEPLOY_AUTH_KEY_FILE", raising=False)
+    monkeypatch.delenv("PZ_DEPLOY_AUTH_KEY", raising=False)
+    monkeypatch.setenv("PZ_DEPLOY_AUTH_DIR", str(store))
+
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = _sign([_SHA, "deploy", "Both", "--gate-evidence",
+                    _write(tmp_path, _doc(target=_OTHER_SHA))])
+    out = buf.getvalue()
+    assert rc == 2
+    assert "approves" in out, (
+        f"expected the EVIDENCE refusal, got: {out!r} — if this says 'no signing key', "
+        "the key is being loaded before evidence is validated")
+    assert "no signing key" not in out
+
+
 # ── integration: evidence re-checked at USE time ──────────────────────────────
 
 def _evaluate(sha, action, scope, env, from_sha=None):
@@ -622,7 +832,9 @@ def test_swapping_in_a_different_valid_evidence_file_denies(tmp_path, monkeypatc
     """
     _signer_env(tmp_path, monkeypatch)
     signed = _write(tmp_path, _doc(), name="round2.json")
-    other = _doc(created=_now() - timedelta(days=1))
+    # Differs in created_at only, and stays inside MAX_VALIDITY so it is genuinely valid
+    # — the point is that validity is not what the digest check tests.
+    other = _doc(created=_now() - timedelta(hours=1))
     assert _sign([_SHA, "deploy", "Both", "--gate-evidence", signed]) == 0
     ok, reason, _ = validate_evidence(_write(tmp_path, other, name="round1.json"), _SHA)
     assert ok, f"precondition: the substituted document is itself valid ({reason})"
@@ -680,3 +892,53 @@ def test_rollback_authorization_needs_no_evidence_at_use_time(tmp_path, monkeypa
     _signer_env(tmp_path, monkeypatch)
     assert _sign([_SHA, "rollback", "Both"]) == 0
     assert _evaluate(_SHA, "rollback", "Both", dict(os.environ))[0] == "allow"
+
+
+def test_a_rollback_digest_is_recorded_but_never_re_checked(tmp_path, monkeypatch):
+    """Pins the EXEMPTION as an exemption, so nobody re-reads it as protection.
+
+    An earlier comment in the signer claimed a rollback's recorded digest was "still
+    tamper-evident". It is not: the use-time re-check is scoped to deploy and reconcile.
+    The digest is audit trail — it says which bytes the operator held when signing. This
+    test exists so that stays true by assertion rather than by memory, and so the
+    contract's wording is falsifiable.
+    """
+    store = _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign([_SHA, "rollback", "Both", "--gate-evidence", ev]) == 0
+
+    art = json.loads((store / f"{_SHA}.rollback.json").read_text(encoding="utf-8"))
+    _, digest = parse_ref(art["gate_evidence_ref"])
+    assert digest == digest_file(ev), "the digest was not recorded for audit"
+
+    os.remove(ev)   # the deploy path would DENY here
+    assert _evaluate(_SHA, "rollback", "Both", dict(os.environ))[0] == "allow", (
+        "a rollback was gated on its evidence — if this is now intended, the exemption "
+        "documented in .claude/contracts/seven-agent-evidence.md must change with it")
+
+
+def test_a_prebinding_authorization_is_refused_for_deploy(tmp_path, monkeypatch):
+    """The contract says the pre-binding shape "is not grandfathered"
+    (deploy_authorization.py, the `if not ev_digest` branch). Nothing exercised it: an
+    artifact with a free-text ref would deny anyway, but incidentally — via "no longer
+    readable" — so deleting the branch left the contract's claim false and the suite
+    green. Assert the reason, not just the denial.
+    """
+    import deploy_authorization
+    store = _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev]) == 0
+
+    # Re-sign the body with a legacy free-text ref, exactly as a pre-binding artifact
+    # would carry — a valid signature over an unbound reference.
+    path = store / f"{_SHA}.deploy.json"
+    auth = json.loads(path.read_text(encoding="utf-8"))
+    auth["gate_evidence_ref"] = "see PR #1094"
+    auth.pop("signature")
+    auth["signature"] = deploy_authorization.sign(auth, deploy_authorization._load_key())
+    path.write_text(json.dumps(auth, indent=2, sort_keys=True), encoding="utf-8")
+
+    decision, reason = _evaluate(_SHA, "deploy", "Both", dict(os.environ))
+    assert decision == "deny"
+    assert "digest-bound" in reason or "no digest" in reason, (
+        f"denied for the wrong reason: {reason!r}")

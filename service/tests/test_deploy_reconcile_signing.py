@@ -29,7 +29,9 @@ the incident path and must not depend on assembling a fresh gate report.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -152,19 +154,45 @@ def test_reconcile_artifact_is_bound_to_its_direction(signing_env, evidence):
     assert decision == "deny", "a reconcile artifact repaired a different starting identity"
 
 
-def test_reconcile_without_from_sha_is_refused(signing_env):
+def _refusal_output(signer, argv):
+    """(rc, stdout) — the reason matters, not just the exit code.
+
+    Both the from_sha guards and the gate-evidence check return 2. Asserting on `rc`
+    alone therefore does not distinguish them: with evidence omitted, deleting the
+    from_sha guards outright left these tests green, because the flow fell through to
+    "no gate evidence supplied" and still returned 2. Supplying valid evidence makes the
+    from_sha guard the ONLY remaining reason to refuse, and reading the message proves
+    it is the one that fired.
+    """
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = signer.main(argv)
+    return rc, buf.getvalue()
+
+
+def test_reconcile_without_from_sha_is_refused(signing_env, evidence):
     """Minting an unverifiable artifact is worse than refusing: it looks like authority."""
     signer = _load("sign_deploy_authorization")
-    assert signer.main([TO, "reconcile", "Both"]) == 2
+    rc, out = _refusal_output(
+        signer, [TO, "reconcile", "Both", "--gate-evidence", evidence])
+    assert rc == 2
+    assert "requires --from-sha" in out, f"refused for the wrong reason: {out!r}"
     assert not list(signing_env.iterdir()), "a refused mint still wrote an artifact"
 
 
 @pytest.mark.parametrize("action", ["deploy", "rollback"])
-def test_from_sha_refused_for_non_reconcile(signing_env, action):
+def test_from_sha_refused_for_non_reconcile(signing_env, evidence, action):
     """from_sha is signed, so a deploy carrying one is a different operation shape
-    and the verifier denies it. Refuse at mint time rather than at 3am."""
+    and the verifier denies it. Refuse at mint time rather than at 3am.
+
+    Evidence is supplied for both actions — harmless for rollback, which is exempt —
+    so that the from_sha guard is the only check left that can refuse.
+    """
     signer = _load("sign_deploy_authorization")
-    assert signer.main([TO, action, "Both", "--from-sha", FROM]) == 2
+    rc, out = _refusal_output(
+        signer, [TO, action, "Both", "--from-sha", FROM, "--gate-evidence", evidence])
+    assert rc == 2
+    assert "only meaningful for reconcile" in out, f"refused for the wrong reason: {out!r}"
     assert not list(signing_env.iterdir()), "a refused mint still wrote an artifact"
 
 

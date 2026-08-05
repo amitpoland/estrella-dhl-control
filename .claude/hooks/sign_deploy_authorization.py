@@ -11,16 +11,23 @@ shell, never in an agent session. It never prints the key.
 --------------------------------------------------------------------------------
 ONE-TIME PROVISIONING (operator, once per machine)
 --------------------------------------------------------------------------------
-Choose a key location OUTSIDE this repository, generate a key, and export both vars:
+Choose a key location OUTSIDE this repository, generate a key, and export both vars.
+These are PowerShell commands, run on the production host, IN THIS ORDER -- the mkdir
+creates both levels, and the key write below fails with "could not find a part of the
+path" if C:\\PZ-secrets does not exist yet:
 
+    mkdir C:\\PZ-secrets\\deploy-auth
     python -c "import secrets;print(secrets.token_hex(32))" > C:\\PZ-secrets\\deploy-auth.key
     setx PZ_DEPLOY_AUTH_KEY_FILE C:\\PZ-secrets\\deploy-auth.key
     setx PZ_DEPLOY_AUTH_DIR      C:\\PZ-secrets\\deploy-auth
 
-    mkdir C:\\PZ-secrets\\deploy-auth
-
 The key must NOT live in the repository, and must not be committed. An agent that can
 read every tracked file still cannot sign an authorization.
+
+NOTE ON THE COMMANDS BELOW: every one is written on a SINGLE line. The operator shell on
+the production host is PowerShell, which does not treat a trailing backslash as a line
+continuation -- a wrapped command pastes as two broken commands, and argparse exits 2 on
+the stray argument.
 
 --------------------------------------------------------------------------------
 PER-DEPLOY (operator, after the 7-agent gate has approved a SHA)
@@ -30,8 +37,7 @@ JSON record of the seven-agent round for THIS sha -- schema, storage convention 
 validation rules in .claude/contracts/seven-agent-evidence.md. It is validated before
 the signing key is loaded, so an unapproved SHA never reaches the key:
 
-    python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both \
-        --gate-evidence C:\\PZ-secrets\\gate-evidence\\<sha>.json --ttl 60
+    python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --gate-evidence C:\\PZ-secrets\\gate-evidence\\<sha>.json --ttl 60
 
 Do NOT edit, reformat, move or delete the evidence file after signing. Its SHA-256 is
 recorded in the signed body and re-checked at deploy time; any change is a denial.
@@ -50,9 +56,7 @@ Deploy-PZ.ps1 -Reconcile repairs the marker, and its authorization is bound to t
 ordered PAIR so an artifact minted for one drift cannot repair a different one. Pass
 the identity production ACTUALLY holds as --from-sha:
 
-    python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both \
-        --from-sha <proved-current-sha> \
-        --gate-evidence C:\\PZ-secrets\\gate-evidence\\<to-sha>.json --ttl 60
+    python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence C:\\PZ-secrets\\gate-evidence\\<to-sha>.json --ttl 60
 
     Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
 
@@ -92,11 +96,11 @@ def main(argv=None):
     ap.add_argument("--repository", default=os.environ.get("PZ_DEPLOY_AUTH_REPO", ""),
                     help="repository identity recorded in the signed body")
     ap.add_argument("--gate-evidence", default="",
-                    help="PATH to the 7-agent gate evidence file. REQUIRED for deploy and "
-                         "reconcile: it is validated (all seven agents, no unresolved "
-                         "blocker, TARGET_SHA == reviewed_sha, not expired) and its SHA-256 "
-                         "is recorded in the signed body, so editing it afterwards "
-                         "invalidates the authorization.")
+                    help="PATH to the 7-agent gate evidence file (strict JSON). REQUIRED "
+                         "for deploy and reconcile: it is validated (all seven agents GO, "
+                         "no unresolved blocker, target_sha == reviewed_sha, not expired) "
+                         "and its SHA-256 is recorded in the signed body, so editing it "
+                         "afterwards invalidates the authorization for those two actions.")
     ap.add_argument("--from-sha", default=None,
                     help="reconcile ONLY: the identity production actually holds right now, "
                          "proved against the runtime bytes. The signature covers this, so the "

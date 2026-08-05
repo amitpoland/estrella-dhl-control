@@ -111,6 +111,35 @@ The roster is pinned to `.claude/agents/deploy_*.md` by
 `test_required_agents_matches_the_agent_files_on_disk`, so renaming or removing an
 agent file fails a test rather than silently narrowing the gate.
 
+## Transcribing an agent's report into this schema
+
+The reviewers do not emit this JSON. They emit Markdown per
+`.claude/contracts/gate_output_contract.md`, whose vocabulary is deliberately wider:
+`STATUS: CLEAR | PASS | GO | HOLD | BLOCK | FAIL` plus a separate
+`DISPOSITION: GO | HOLD:<reason> | BLOCK:<reason> | N/A`. **The evidence schema accepts
+only `"GO"`**, so a verbatim copy of `STATUS: CLEAR` is refused with
+`status is 'CLEAR', not 'GO'`. That is fail-closed — a faithful transcription is
+*denied*, never wrongly accepted — but it will surprise the first operator who tries it,
+so the mapping is stated here:
+
+| the agent wrote | evidence `status` | evidence `blockers` |
+|---|---|---|
+| `STATUS: CLEAR` / `PASS` / `GO`, `DISPOSITION: GO` | `"GO"` | `[]` |
+| any `HOLD` / `BLOCK` / `FAIL`, or `DISPOSITION: HOLD:…` / `BLOCK:…` | — | **there is nothing to transcribe** |
+
+A round in which any agent returned HOLD, BLOCK, or FAIL produces **no evidence file at
+all**. This schema has no way to record a non-approving verdict, and that is deliberate:
+its only purpose is to answer "did all seven approve this SHA". Fix the finding and run
+a fresh round. Per-agent reasoning, caveats and the `DISPOSITION` text live in the
+Markdown reports, which are the human record — the JSON is the machine assertion drawn
+from them.
+
+**The transcription step is the residual trust boundary.** The validator checks that the
+document is internally consistent and complete; it cannot check that it faithfully
+reflects what seven agents actually returned. All six Markdown laundering vectors are
+closed inside the parser, so this is now the only unverified link, and it is a human
+one. Keep the seven Markdown reports alongside the JSON.
+
 ## Validation rules
 
 Every rule fails **closed** — refusal, never a warning. In order:
@@ -127,8 +156,20 @@ Every rule fails **closed** — refusal, never a warning. In order:
 6. `target_sha` is a full 40-char lowercase SHA **and equal to the SHA being signed**.
    It is never inferred from context: a verdict that does not name its revision cannot
    be bound to one (Lesson Q rule 7).
-7. `created_at` and `expires_at` parse as ISO 8601; `expires_at > created_at`; and
+7. `created_at` and `expires_at` parse as ISO 8601; `expires_at > created_at`;
+   `created_at` is not in the future (5 minutes of clock skew allowed); the window
+   `expires_at - created_at` is at most **24 hours** (`gate_evidence.MAX_VALIDITY`); and
    `expires_at` is in the future. A timestamp with no offset is read as UTC.
+
+   **Write timestamps as `datetime.isoformat()` output** — e.g.
+   `2026-08-05T14:00:00+00:00`, or with a trailing `Z`, which is rewritten to `+00:00`
+   before parsing. The grammar is whatever the running interpreter's
+   `datetime.fromisoformat` accepts, and that widened in Python 3.11: basic format
+   (`20260805`), ISO week dates, `,` as decimal separator and 1–2 digit fractional
+   seconds parse on 3.11+ and are **refused on 3.9**, which is what CI and the
+   production host run. The older interpreter is the stricter one, so this cannot
+   launder anything — but an exotic spelling accepted on your laptop may be refused
+   where it counts, and a reviewer on 3.9 could not re-validate it.
 8. `agents` is a list of objects, each with exactly the four fields above.
 9. Every `agent` name is in the roster, **exactly**. Unknown → refusal.
 10. Every `status` is exactly `"GO"`. There is no passing synonym — every synonym is a
@@ -150,10 +191,16 @@ Every rule fails **closed** — refusal, never a warning. In order:
   that this one cannot.
 - **One file per gate round.** Name it by the SHA it approves. A round that fails
   produces no evidence file.
-- **How long it is valid.** `expires_at` is set by whoever writes the file. Keep it
-  short — hours, not days. The window exists because a gate verdict is about a tree and
-  a moment; the longer it stays valid, the more likely the world has moved. The signed
-  authorization has its own, shorter TTL (`--ttl`, default 60 minutes) on top.
+- **How long it is valid.** `expires_at` is set by whoever writes the file, and the
+  window is **capped at 24 hours** — enforced, not advised (`gate_evidence.MAX_VALIDITY`;
+  a longer window is refused). Keep it far shorter in practice. The window exists because
+  a gate verdict is about a tree and a moment; the longer it stays valid, the more likely
+  the world has moved. The signed authorization has its own, shorter TTL (`--ttl`,
+  default 60 minutes) on top.
+- **Write it in UTF-8 without a BOM.** On Windows, PowerShell 5.1's `Out-File` and
+  `Set-Content` default to UTF-16LE, and `Out-File -Encoding utf8` emits a BOM — all
+  three are refused (`not valid UTF-8` / `not valid JSON`). Use
+  `Set-Content -Encoding utf8NoBOM` on PowerShell 7+, or write the file with Python.
 - **Signer and verifier must read the same immutable file.** The digest is taken at
   signing time and re-checked at use time, so the file must not be edited, regenerated,
   reformatted, moved, or deleted between minting the authorization and running the
@@ -182,7 +229,10 @@ when an evidence file gets "tidied up".
 - **Edited after signing → DENY** (digest mismatch), including a reformat that preserves
   the meaning.
 - **Moved or renamed after signing → DENY.** The ref records an absolute path so
-  relocation cannot silently resolve elsewhere. This is a denial, not a warning.
+  relocation cannot silently resolve elsewhere. This is a denial, not a warning. Note
+  the path is `os.path.abspath`, not `realpath`: reaching the same file by an equivalent
+  but differently-spelled path (mapped drive vs UNC, a junction) also denies. Fail-closed,
+  but sign and deploy from the same shell to avoid the surprise.
 - **Deleted after signing → DENY.**
 - An artifact whose ref carries **no digest** is refused for `deploy` and `reconcile`.
   The pre-binding shape is not grandfathered.
@@ -209,13 +259,19 @@ tamper evidence. Do not describe it as protection.
 
 ## Use
 
-```bash
-python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both \
-    --gate-evidence C:\PZ-secrets\gate-evidence\<sha>.json --ttl 60
+One line — the operator shell on the production host is PowerShell, which does **not**
+treat a trailing `\` as a line continuation. Pasted wrapped, argparse gets a stray `\`
+and exits 2:
+
+```powershell
+python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --gate-evidence C:\PZ-secrets\gate-evidence\<sha>.json --ttl 60
 ```
 
-Evidence is validated **before the signing key is loaded**, so an operator who cannot
-produce a seven-agent GO for that exact SHA never reaches the key.
+Evidence is validated **before the signing key is loaded** — `validate_evidence()` is
+called at the top of `sign_deploy_authorization.main()`, ahead of `_load_key()` — so an
+operator who cannot produce a seven-agent GO for that exact SHA never reaches the key.
+That ordering is pinned by
+`test_evidence_is_validated_before_the_signing_key_is_loaded`.
 
 Coverage: `service/tests/test_gate_evidence.py` — every field is mutated independently
 and the refusal asserted, plus the signing and use-time integration paths.

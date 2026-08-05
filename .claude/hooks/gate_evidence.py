@@ -47,16 +47,23 @@ It does not replace the signed authorization. The HMAC artifact remains the thin
 permits a production write. Evidence gates SIGNING; the signature gates the DEPLOY. A
 text file -- JSON or otherwise -- cannot be single-use, key-protected, or revoked.
 
-HOW TAMPERING IS CAUGHT
------------------------
+HOW TAMPERING IS CAUGHT -- AND FOR WHICH ACTIONS
+------------------------------------------------
 The evidence file's SHA-256 is recorded inside `gate_evidence_ref`, which is already
 covered by the authorization's HMAC. The digest is therefore signed WITHOUT adding a
 signed field -- deliberately, because `deploy_authorization._SIGNED_FIELDS` warns that
 changing the canonical body invalidates every previously minted artifact and must not be
 done silently once a signer exists.
 
-At use time `deploy_authorization.evaluate()` re-hashes the file. Editing, moving, or
-deleting the evidence after signing is a DENIAL, not a warning.
+FOR `deploy` AND `reconcile` ONLY: `deploy_authorization.evaluate()` re-hashes the file
+at use time, under `if action in ("deploy", "reconcile")`. Editing, moving, or deleting
+the evidence after signing is a DENIAL, not a warning.
+
+FOR `rollback` THERE IS NO SUCH CHECK. A rollback's recorded digest is audit trail -- it
+says which bytes the operator held when signing -- and is never re-read. Do not describe
+it as protection. (Stated explicitly because the unqualified version of the sentence
+above was a Lesson Q rule 1+6 defect: an uncited safety claim, wrong in the permitting
+direction, describing a stop that does not exist for one of the three actions.)
 
 REF FORMAT
 ----------
@@ -68,7 +75,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # The seven authorities named by CLAUDE.md's production deployment rule, one per
 # `.claude/agents/deploy_*.md`. Pinned against those files by
@@ -97,8 +104,22 @@ _AGENT_FIELDS = frozenset({"agent", "status", "blockers", "risks"})
 # an unrecognised status must never read as approval.
 _GO = "GO"
 
+# A gate verdict is about a tree AND a moment. Beyond this the round has stopped
+# describing the world it was taken in, so an unbounded window is refused rather than
+# left to convention -- the contract's "hours, not days" was previously advice with no
+# enforcement behind it, which is a safety property nobody was checking.
+MAX_VALIDITY = timedelta(hours=24)
+
+# Clocks disagree. A few minutes of skew must not refuse a genuine document, but a
+# `created_at` hours in the future is a backdated or mis-generated file, not skew.
+CLOCK_SKEW = timedelta(minutes=5)
+
 _REF_RX = re.compile(r"^(?P<path>.+)@sha256:(?P<digest>[0-9a-f]{64})$")
-_SHA_RX = re.compile(r"^[0-9a-f]{40}$")
+# `\Z`, not `$`: Python's `$` also matches immediately before a trailing newline, so
+# `^[0-9a-f]{40}$` accepts "<40 hex>\n". Harmless today because the equality compare
+# would then mismatch -- but a shape check that accepts a shape it names as invalid is
+# a check you have to re-derive every time you read it.
+_SHA_RX = re.compile(r"\A[0-9a-f]{40}\Z")
 
 
 class _DuplicateKey(ValueError):
@@ -230,6 +251,12 @@ def validate_evidence(path, target_sha, now=None):
         return (False, f"gate evidence has a {exc}", digest)
     except ValueError as exc:
         return (False, f"gate evidence is not valid JSON: {exc}", digest)
+    except RecursionError:
+        # Deeply nested JSON exhausts the stack inside the decoder. RecursionError is a
+        # RuntimeError, not a ValueError, so without this it propagates out of a
+        # function whose contract is "fail closed throughout" -- fail-closed in effect,
+        # since the caller aborts, but a traceback is not a refusal reason.
+        return (False, "gate evidence is nested too deeply to parse", digest)
 
     if not isinstance(doc, dict):
         return (False, "gate evidence must be a JSON object", digest)
@@ -244,8 +271,16 @@ def validate_evidence(path, target_sha, now=None):
         return (False, "gate evidence has unknown field(s): "
                        + ", ".join(sorted(unknown)), digest)
 
-    if doc["schema_version"] != SCHEMA_VERSION:
-        return (False, f"gate evidence schema_version is {doc['schema_version']!r}, "
+    version = doc["schema_version"]
+    # `isinstance(True, int)` is True and `True == 1`, so a bare `!= SCHEMA_VERSION`
+    # accepts `"schema_version": true`. Likewise `1.0 == 1`. Neither can reach a verdict
+    # -- every approval-bearing field compares against a str -- but a module whose whole
+    # thesis is "no tolerance" should not have a tolerated value anywhere in it.
+    if isinstance(version, bool) or not isinstance(version, int):
+        return (False, f"gate evidence schema_version must be an integer, got "
+                       f"{version!r}", digest)
+    if version != SCHEMA_VERSION:
+        return (False, f"gate evidence schema_version is {version!r}, "
                        f"expected {SCHEMA_VERSION}", digest)
 
     declared = doc["target_sha"]
@@ -265,6 +300,17 @@ def validate_evidence(path, target_sha, now=None):
         return (False, f"gate evidence {err}", digest)
     if expires <= created:
         return (False, "gate evidence expires_at is not after created_at", digest)
+    if created > now + CLOCK_SKEW:
+        # A gate round cannot have concluded in the future. Without this, `created_at`
+        # is a field the validator reads and never constrains -- and a future-dated pair
+        # is how an unbounded window gets written while still satisfying every other
+        # rule.
+        return (False, f"gate evidence created_at is in the future "
+                       f"({created.isoformat()})", digest)
+    if expires - created > MAX_VALIDITY:
+        return (False, f"gate evidence is valid for "
+                       f"{expires - created}, longer than the {MAX_VALIDITY} maximum",
+                digest)
     if now >= expires:
         return (False, f"gate evidence expired at {expires.isoformat()}", digest)
 

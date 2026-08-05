@@ -194,7 +194,10 @@ staging or authorization minting. A no-op that restarts the service is not a no-
 
 Text assertions in the existing style (these do not need PowerShell):
 
-- `-Release` and `-GateEvidence` exist in the param block.
+- `-Release` exists in the param block. **`-GateEvidence` does NOT** — see "No
+  `-GateEvidence` parameter" above; `-Release` locates the evidence by convention from
+  `gate_evidence_dir` rather than taking a path. (An earlier draft of this list said the
+  opposite; the section above is the decision.)
 - `-Release` sets `-Reconcile`/`-FromSha`/`-ToSha` internally and does not require them.
 - The script contains no reference to CI, workflow runs, or node IDs.
 - `Assert-SevenAgentEvidence` is called before `Assert-Authorization`.
@@ -204,7 +207,7 @@ Text assertions in the existing style (these do not need PowerShell):
 - Still exactly one `.ps1` deployer.
 
 Behavioural tests (schema validation, single-use, evidence binding, wrong-SHA refusal,
-rollback exemption) already exist in `service/tests/test_gate_evidence.py` — 134 tests,
+rollback exemption) already exist in `service/tests/test_gate_evidence.py` — 158 tests,
 each mutating one field of a valid document and asserting refusal. Twelve independent
 mutations of `gate_evidence.py` (duplicate-key hook removed, unknown-field checks
 disabled, agent names normalised, expiry ignored, SHA comparison skipped, second read

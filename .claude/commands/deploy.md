@@ -34,9 +34,9 @@ Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
 # 3. mint a single-use authorization for the approved SHA (operator shell).
 #    --gate-evidence is REQUIRED: the file is validated (all seven agents GO, no
 #    unresolved blocker, target_sha == this SHA, not expired) BEFORE the signing key
-#    is loaded, and its SHA-256 is recorded in the signed body.
-python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both \
-    --gate-evidence <gate-evidence-dir>\<40-char-sha>.json --ttl 60
+#    is loaded, and its SHA-256 is recorded in the signed body. One line - the
+#    operator shell is PowerShell, where a trailing \ is not a continuation.
+python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --gate-evidence <gate-evidence-dir>\<40-char-sha>.json --ttl 60
 
 # 4. deploy
 Deploy-PZ.ps1 -ReviewedSHA <40-char-sha>
@@ -47,6 +47,27 @@ Test-PZDeployClose.ps1 -ExpectedSHA <40-char-sha>
 
 Options: `-Scope App|Engine|Both`, `-Bootstrap` (first-ever deploy, no rollback
 target), `-ForceUnlock` (clear a lock whose process is provably gone).
+
+**Gate evidence is required, digest-bound, and re-checked at deploy time.** Between
+minting the authorization and running the deploy, do not edit, reformat, move, rename,
+or delete the evidence file — each of those is a denial, not a warning, because its
+SHA-256 is inside the signed body. This applies to `deploy` and `reconcile`. It does
+**not** apply to `rollback`: a rollback needs no evidence, and any digest recorded for
+one is audit trail that is never re-read.
+
+**Any pre-existing `deploy` / `reconcile` authorization whose `gate_evidence_ref`
+carries no `@sha256:` digest is now denied.** The pre-binding shape is not
+grandfathered. Before the first deploy after this change, list `PZ_DEPLOY_AUTH_DIR` and
+re-mint any such artifact. `rollback` artifacts are unaffected, so incident capability
+survives.
+
+**Reconcile needs both a `--from-sha` and its own evidence.** The evidence must approve
+the SHA being converged *to*, not the identity production currently holds:
+
+```
+python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence <gate-evidence-dir>\<to-sha>.json --ttl 60
+Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
+```
 
 **Rollback needs its own authorization.** Mint it *before* you need it - doing so
 mid-incident costs time you will not have:
