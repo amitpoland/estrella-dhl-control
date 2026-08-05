@@ -48,6 +48,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -131,6 +132,11 @@ def _parse_iso(value):
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+# A jti is a uuid4 from the signer. Constrained because it is used as a path
+# component in _consume().
+_JTI_RX = re.compile(r"\A[0-9a-fA-F-]{8,64}\Z")
 
 
 def _consume(store, jti):
@@ -263,6 +269,13 @@ def evaluate(reviewed_sha, action, scope, from_sha=None, env=None):
     jti = auth.get("jti")
     if not isinstance(jti, str) or not jti:
         return ("deny", "authorization jti missing")
+    # The jti becomes a PATH COMPONENT in _consume (store/consumed/<jti>.used), so a
+    # non-empty check is not enough: "../x" would place the single-use marker outside the
+    # store, and that marker IS the replay record. Minting one requires the signing key,
+    # so this is not agent-reachable -- but a durable safety record should not depend on
+    # the attacker not having a key. uuid4 is what the signer emits; pin that shape.
+    if not _JTI_RX.match(jti):
+        return ("deny", f"authorization jti is not a well-formed identifier: {jti!r}")
     if not _consume(store, jti):
         return ("deny", "authorization already consumed (replay refused)")
 

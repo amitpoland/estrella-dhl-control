@@ -203,6 +203,15 @@ without one — it is validated *before* the signing key is loaded.
 - **CI is not consulted** by any of this. A red inherited baseline is not a production
   hold; node-ID comparison remains a test-PR merge tool.
 
+**One-time migration, before the first deploy after this landed.** List
+`PZ_DEPLOY_AUTH_DIR` and re-mint every `deploy` and `reconcile` authorization minted
+beforehand — **regardless of what its `gate_evidence_ref` looks like**. Two independent
+reasons: an artifact with no `@sha256:` digest is denied outright, and an artifact that
+*does* carry a digest but bound to a Markdown evidence file is still **accepted**,
+because the use-time check re-hashes the bytes rather than re-validating the document.
+`rollback` artifacts are unaffected, so incident capability survives. Full operator
+sequence: `.claude/commands/deploy.md`.
+
 ---
 
 ## Deployment procedure (every time)

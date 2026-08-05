@@ -61,6 +61,7 @@ def _isolate_hook_modules():
     passing or failing depending on what ran before it.
     """
     saved = {name: sys.modules.get(name) for name in _HOOK_MODULES}
+    saved_path = list(sys.path)
     try:
         yield
     finally:
@@ -69,6 +70,9 @@ def _isolate_hook_modules():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+        # sys.path too, symmetric with test_gate_evidence.py. Each `_load` re-executes a
+        # hook, and path resolution is the half that can change a LATER file's imports.
+        sys.path[:] = saved_path
 
 
 def _load(name):
@@ -145,13 +149,23 @@ def test_reconcile_artifact_mints_and_verifies(signing_env, evidence):
 def test_reconcile_artifact_is_bound_to_its_direction(signing_env, evidence):
     """One ordered pair only -- an artifact must not repair a different drift.
 
-    Asserting the bare denial is not enough. `evaluate(..., from_sha=other)` resolves a
-    DIFFERENT artifact filename (`artifact_name(TO, "reconcile", other)`), so the
-    denial it produces is "no authorization artifact" -- the filename is what fires, not
-    the signature. Removing `from_sha` from `_SIGNED_FIELDS` entirely would leave that
-    green. So this checks BOTH layers: the filename miss, and then the signature by
-    renaming the real artifact onto the wrong-direction path so the lookup succeeds and
-    only the signed body can refuse it.
+    THREE layers, because the first two do NOT test the signature and an earlier version
+    of this docstring claimed they did:
+
+      1. the artifact FILENAME -- `evaluate(..., from_sha=other)` resolves
+         `artifact_name(TO, "reconcile", other)`, so the denial is "no authorization
+         artifact";
+      2. the plain equality check `auth["from_sha"] != from_sha`, which runs AFTER the
+         signature is validated and is independent of `_SIGNED_FIELDS`. Deleting
+         "from_sha" from `_SIGNED_FIELDS` removes it from the canonical body on BOTH
+         sides symmetrically, so the HMAC still verifies and layer 2 still fires -- which
+         is exactly why layers 1-2 cannot establish signature coverage;
+      3. the SIGNATURE itself -- edit `from_sha` in the stored artifact WITHOUT
+         re-signing. Only a signature that actually covers the field can refuse this.
+
+    Layer 3 is the one that pins `from_sha in _SIGNED_FIELDS` behaviourally. (A
+    source-text assertion also exists in test_deploy_authority.py, but a grep for a
+    string is not a behavioural pin.)
     """
     signer = _load("sign_deploy_authorization")
     auth = _load("deploy_authorization")
@@ -164,14 +178,31 @@ def test_reconcile_artifact_is_bound_to_its_direction(signing_env, evidence):
     assert "no authorization artifact" in reason, (
         f"expected the filename layer to refuse first, got: {reason!r}")
 
-    # Now defeat the filename layer: put the real artifact where the wrong-direction
-    # lookup will find it. Only the SIGNED from_sha can refuse now.
+    # Layer 2: defeat the filename by putting the real artifact where the wrong-direction
+    # lookup finds it. The signature still validates (the body is untouched), so the
+    # refusal now comes from the equality check on the parsed from_sha.
     real = signing_env / auth.artifact_name(TO, "reconcile", FROM)
-    real.rename(signing_env / auth.artifact_name(TO, "reconcile", other))
+    moved = signing_env / auth.artifact_name(TO, "reconcile", other)
+    real.rename(moved)
     decision, reason = auth.evaluate(TO, "reconcile", "Both", from_sha=other)
-    assert decision == "deny", "the signed from_sha did not bind the direction"
+    assert decision == "deny", "the from_sha equality check did not bind the direction"
     assert "no authorization artifact" not in reason, (
-        f"the lookup still missed, so the signature was never tested: {reason!r}")
+        f"the lookup still missed, so layer 2 was never reached: {reason!r}")
+
+    # Layer 3: edit from_sha in the artifact WITHOUT re-signing. Now the body disagrees
+    # with the signature, so only a signature that genuinely covers from_sha can refuse.
+    # If `from_sha` were dropped from _SIGNED_FIELDS, this forgery would verify and the
+    # equality check would pass -- an artifact minted for one drift repairing another.
+    forged = json.loads(moved.read_text(encoding="utf-8"))
+    forged["from_sha"] = other
+    moved.write_text(json.dumps(forged, indent=2, sort_keys=True), encoding="utf-8")
+    decision, reason = auth.evaluate(TO, "reconcile", "Both", from_sha=other)
+    assert decision == "deny", (
+        "an artifact whose from_sha was edited without the key was ACCEPTED — "
+        "from_sha is not covered by the signature")
+    assert "signature" in reason, (
+        f"expected a signature refusal, got {reason!r} — if this says the direction "
+        "mismatched, the edit did not take effect and layer 3 proved nothing")
 
 
 def _refusal_output(signer, argv):

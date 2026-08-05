@@ -194,14 +194,12 @@ Every rule fails **closed** — refusal, never a warning. In order:
   a fresh round.
 - **Where it lives.** Outside the repository, alongside the signing key store — e.g.
   `C:\PZ-secrets\gate-evidence\<sha>.json`, created by the provisioning block at the top
-  of `sign_deploy_authorization.py`. It is not committed, so it cannot be modified by a
-  pull request or by anything reviewing this repository.
+  of `sign_deploy_authorization.py`. It is not committed, so no pull request can change it.
 
   **What that does NOT mean.** Keeping it out of the repo does not put it beyond reach of
-  an agent session: no guard implements that. Both deploy guards' production-path
-  patterns exclude `C:\PZ-secrets` (`pz-deploy-guard.py`'s `PROD_PZ_RX` uses a
-  `(?![\w\-])` lookahead, so the `-secrets` suffix does not match), and the provisioning
-  block sets no ACL. Anything that can write the filesystem can write an evidence file,
+  an agent session: no guard implements that. The deploy guard's production-path pattern
+  excludes it — `pz-deploy-guard.py`'s `PROD_PZ_RX` uses a `(?![\w\-])` lookahead, so the
+  `-secrets` suffix does not match — and the provisioning block sets no ACL. Anything that can write the filesystem can write an evidence file,
   and the digest binding does not help — it faithfully binds whatever bytes were there.
 
   **What actually protects production is the signing key**, which lives outside the repo
@@ -229,7 +227,14 @@ Every rule fails **closed** — refusal, never a warning. In order:
   The reliable command, on any PowerShell version — edit the values, then run it:
 
   ```powershell
-  python -c "import json,sys; json.dump({'schema_version':1,'target_sha':'<sha>','created_at':'2026-08-05T14:00:00+00:00','expires_at':'2026-08-05T18:00:00+00:00','agents':[{'agent':a,'status':'GO','blockers':[],'risks':[]} for a in ['deploy_git_diff_reviewer','deploy_backend_impact_reviewer','deploy_persistence_storage_reviewer','deploy_security_reviewer','deploy_qa_reviewer','deploy_release_manager','deploy_lead_coordinator']],'lead_verdict':'GO'}, open(sys.argv[1],'w',encoding='utf-8'), indent=2)" C:\PZ-secrets\gate-evidence\<sha>.json
+  python -c "import json,sys;from datetime import datetime,timedelta,timezone;n=datetime.now(timezone.utc).replace(microsecond=0);json.dump({'schema_version':1,'target_sha':sys.argv[2],'created_at':n.isoformat(),'expires_at':(n+timedelta(hours=4)).isoformat(),'agents':[{'agent':a,'status':'GO','blockers':[],'risks':[]} for a in ['deploy_git_diff_reviewer','deploy_backend_impact_reviewer','deploy_persistence_storage_reviewer','deploy_security_reviewer','deploy_qa_reviewer','deploy_release_manager','deploy_lead_coordinator']],'lead_verdict':'GO'}, open(sys.argv[1],'w',encoding='utf-8'), indent=2)" C:\PZ-secrets\gate-evidence\THESHA.json THESHA
+  ```
+
+  Replace both `THESHA` occurrences with the 40-character SHA. The timestamps are
+  COMPUTED — a four-hour window from now, already UTC — so the document cannot be born
+  expired and cannot violate the UTC rule. An earlier version hardcoded them, so editing
+  only the SHA produced a file valid for four hours on one specific day in the past.
+  ```
   ```
 
   Then read the file back and check it says what the round actually decided. Writing it
@@ -274,7 +279,15 @@ inside `if action in ("deploy", "reconcile")`. For `rollback` none of them fires
 - An artifact whose ref carries **no digest** is refused. The pre-binding shape is not
   grandfathered.
 
-**The re-check compares the digest, not the document.** `evaluate()` re-hashes the bytes;
+**The re-check compares the digest, not the document.**
+
+One consequence worth naming, because it is easy to miss: an authorization minted
+*before* this format change and digest-bound to a **Markdown** evidence file still
+passes the use-time check. The bytes are unchanged, so the digest matches; nothing
+re-validates the document against the JSON schema. `.claude/commands/deploy.md` carries
+the operator instruction — re-mint every `deploy`/`reconcile` artifact minted before the
+change, regardless of what its ref looks like.
+ `evaluate()` re-hashes the bytes;
 it does not re-run `validate_evidence`. So the evidence rules — including expiry — are
 enforced **at signing time only**. An authorization minted against evidence that expires
 five minutes later still deploys until the *artifact's* own TTL runs out. That is the

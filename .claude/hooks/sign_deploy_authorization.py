@@ -21,6 +21,18 @@ path" if C:\PZ-secrets does not exist yet:
     python -c "import secrets;print(secrets.token_hex(32))" > C:\PZ-secrets\deploy-auth.key
     setx PZ_DEPLOY_AUTH_KEY_FILE C:\PZ-secrets\deploy-auth.key
     setx PZ_DEPLOY_AUTH_DIR      C:\PZ-secrets\deploy-auth
+    $env:PZ_DEPLOY_AUTH_KEY_FILE = 'C:\PZ-secrets\deploy-auth.key'
+    $env:PZ_DEPLOY_AUTH_DIR      = 'C:\PZ-secrets\deploy-auth'
+
+`setx` writes the registry for FUTURE shells and does NOT touch the running session, so
+without the two `$env:` lines the very next command in the same window fails with
+"no signing key" and exit 2. The `setx` lines make it survive a reboot; the `$env:` lines
+make it work now. (Opening a fresh PowerShell window instead is equally fine.)
+
+The key file's ENCODING is irrelevant and must not be "cleaned up": `>` writes UTF-16LE
+on PowerShell 5.1, and both the signer and the verifier read the key as raw bytes, so it
+signs and verifies consistently. Rewriting that file in a different encoding changes the
+key and silently invalidates every outstanding authorization as "signature invalid".
 
 The second directory holds the gate evidence files the PER-DEPLOY step below reads.
 Creating it here is not decoration: without it, an operator's very first evidence write
@@ -29,7 +41,9 @@ fails on a fresh machine with the same "could not find a part of the path" error
 The key must NOT live in the repository, and must not be committed. An agent that can
 read every tracked file still cannot sign an authorization.
 
-NOTE ON THE COMMANDS BELOW: every one is written on a SINGLE line. The operator shell on
+NOTE ON THE COMMANDS BELOW: run them from the deploy source checkout (C:\PZ-main on the
+production host) -- the `.claude/hooks/...` paths are relative to the repository root.
+Every command is written on a SINGLE line. The operator shell on
 the production host is PowerShell, which does not treat a trailing backslash as a line
 continuation -- a wrapped command pastes as two broken commands, and argparse exits 2 on
 the stray argument.
@@ -91,7 +105,9 @@ if _HOOKS_DIR not in sys.path:      # guarded: see deploy_authorization.py
 from deploy_authorization import (  # noqa: E402
     VALID_ACTIONS, VALID_SCOPES, _load_key, _store_dir, artifact_name, sign,
 )
-from gate_evidence import digest_file, format_ref, validate_evidence  # noqa: E402
+from gate_evidence import (  # noqa: E402
+    MAX_VALIDITY, digest_file, format_ref, validate_evidence,
+)
 
 
 def main(argv=None):
@@ -99,7 +115,10 @@ def main(argv=None):
     ap.add_argument("reviewed_sha", help="full 40-char SHA approved by the 7-agent gate")
     ap.add_argument("action", choices=VALID_ACTIONS)
     ap.add_argument("scope", choices=VALID_SCOPES)
-    ap.add_argument("--ttl", type=int, default=60, help="validity in minutes (default 60)")
+    ap.add_argument("--ttl", type=int, default=60,
+                    help="validity in minutes (default 60, maximum 1440 = 24h). The "
+                         "artifact TTL is the only bound on the deploy window, because "
+                         "evaluate() re-hashes the evidence but never re-validates it.")
     ap.add_argument("--repository", default=os.environ.get("PZ_DEPLOY_AUTH_REPO", ""),
                     help="repository identity recorded in the signed body")
     ap.add_argument("--gate-evidence", default="",
@@ -117,6 +136,25 @@ def main(argv=None):
     sha = args.reviewed_sha.strip().lower()
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
         print("ERROR: reviewed_sha must be a full 40-character commit SHA")
+        return 2
+
+    # The artifact TTL is the ONLY bound on the deploy window: evaluate() re-hashes the
+    # evidence at use time but never re-runs validate_evidence, so the evidence rules --
+    # including its own expiry and the 24h MAX_VALIDITY -- are enforced at signing time
+    # only. An unbounded --ttl therefore let `--ttl 43200` mint a 30-day authorization
+    # off a document the validator capped at 24 hours, while the contract described the
+    # artifact TTL as "shorter". That was a safety word with nothing enforcing it -- the
+    # identical defect this tooling fixed for evidence, sitting in the compensating
+    # control. Capped at the same 24h ceiling; the documented rollback TTL (1440) is
+    # exactly at it.
+    max_ttl = int(MAX_VALIDITY.total_seconds() // 60)
+    if args.ttl < 1:
+        print(f"ERROR: --ttl must be at least 1 minute (got {args.ttl})")
+        return 2
+    if args.ttl > max_ttl:
+        print(f"ERROR: --ttl {args.ttl} exceeds the {max_ttl}-minute maximum. The signed "
+              f"artifact is the only bound on the deploy window, so it may not outlive "
+              f"the {max_ttl}-minute ceiling the gate evidence itself is held to.")
         return 2
 
     # from_sha is a SIGNED field, so its presence defines the operation shape. Mint only
@@ -202,8 +240,14 @@ def main(argv=None):
     # with; reconcile artifacts carry BOTH SHAs so a store listing shows the authorised
     # direction without opening every file.
     path = os.path.join(store, artifact_name(sha, args.action, from_sha))
-    with open(path, "w", encoding="utf-8") as fh:
+    # Write-then-rename: a crash mid-write would otherwise leave a truncated artifact at
+    # the exact path the verifier looks up. That is fail-closed today (the verifier
+    # refuses unreadable JSON), but an authorization store should not contain a
+    # half-written authorization at all.
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(auth, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
 
     print(f"Authorization written: {path}")
     direction = f" direction={from_sha[:12]}->{sha[:12]}" if from_sha else ""

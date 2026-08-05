@@ -36,9 +36,12 @@ with one schema and one meaning:
   * unknown fields are refused at both levels, so no field the validator never looks at
     can be introduced. NOTE the exact scope: `risks` is a KNOWN field whose CONTENTS are
     deliberately unvalidated (any JSON, any depth). A blocking finding transcribed into
-    `risks` instead of `blockers` therefore validates -- that is intended (Lesson N:
-    recorded risk is advisory, an unresolved blocker is not), but it means "nothing can
-    hide" would be false. `risks` is exactly where free text lives;
+    `risks` instead of `blockers` therefore validates -- so "nothing can hide" would be
+    false, and `risks` is exactly where free text lives. That is intended: constraining
+    it would rebuild the tolerant parser this module exists to replace, and the honest
+    statement of the residual is in the contract's "the transcription step is the
+    residual trust boundary" -- a reviewer who files a blocker in the wrong field is a
+    transcription error, which no validator can catch;
   * agent names are matched EXACTLY -- no case folding, no separator equivalence, no
     `.md` tolerance. A near-miss is an unknown agent, and unknown agents are refused;
   * every status must be exactly "GO". There is no passing synonym to typo into.
@@ -172,19 +175,31 @@ def parse_ref(ref):
 
 
 def _parse_ts(value, label):
-    """(datetime, None) or (None, reason). Naive timestamps are read as UTC.
+    """(datetime, None) or (None, reason). The timestamp must state UTC explicitly.
 
-    A non-UTC offset is REFUSED. Not pedantry: offsets are the one place left where a
-    human reader and the validator can read the same document differently. Given
+    TWO refusals here, and they are the same defect in two shapes: a document whose
+    meaning to a human differs from its meaning to the validator.
+
+    A NON-UTC OFFSET is refused. Given
 
         "created_at": "2026-08-05T12:00:00+12:00",
         "expires_at": "2026-08-05T12:00:00-11:00"
 
     a reader sees two identical wall-clock instants and expects the
     "expires_at is not after created_at" refusal. The validator resolves 00:00Z and
-    23:00Z -- a 23-hour window, inside MAX_VALIDITY, ACCEPTED. Requiring UTC removes the
-    divergence instead of documenting it, which is the same argument that turned the
-    validity window from advice into MAX_VALIDITY.
+    23:00Z -- a 23-hour window, inside MAX_VALIDITY, ACCEPTED.
+
+    A NAIVE timestamp is refused TOO, and this is the case an earlier version of this
+    module got wrong while claiming offsets were "the one place left". A bare
+    `2026-08-05T16:00:00` was read as UTC. That is strictly worse than an offset the
+    reader can at least see and compare: this project's operator works in UTC+2 (see the
+    `+02:00` stamps in .claude/memory/TASK_STATE.md), so writing 16:00 to mean 14:00Z
+    silently bought two extra hours of validity -- and on `expires_at` that direction is
+    FAIL-OPEN. Worse, the old refusal message offered "or no offset at all" as a remedy,
+    so an operator refused for writing +02:00 would follow the advice, delete the offset,
+    and land exactly on the wider window. Refusing both removes the divergence rather
+    than documenting it -- the same argument that turned the validity window from advice
+    into MAX_VALIDITY.
     """
     if not isinstance(value, str):
         return (None, f"{label} must be a string")
@@ -193,10 +208,14 @@ def _parse_ts(value, label):
     except ValueError:
         return (None, f"{label} is not a valid ISO 8601 timestamp")
     if dt.tzinfo is None:
-        return (dt.replace(tzinfo=timezone.utc), None)
+        return (None, f"{label} must state UTC explicitly -- end it with '+00:00' or "
+                      f"'Z'. A bare local time is refused because it reads as one "
+                      f"instant to you and another to this validator; got {value!r}")
     if dt.utcoffset() != timedelta(0):
-        return (None, f"{label} must be UTC (offset +00:00, a trailing 'Z', or no "
-                      f"offset at all); got {value!r}")
+        return (None, f"{label} must be UTC: end it with '+00:00' or 'Z' and convert "
+                      f"the time itself. Do NOT just delete the offset -- that keeps "
+                      f"the local wall-clock reading and shifts the instant. "
+                      f"Got {value!r}")
     return (dt, None)
 
 
@@ -254,21 +273,32 @@ def validate_evidence(path, target_sha, now=None):
     if not path:
         return (False, "no gate evidence supplied", None)
     if not os.path.isfile(path):
+        if os.path.isdir(path):
+            return (False, f"gate evidence path is a directory, not a file: {path}", None)
         return (False, f"gate evidence file not found: {path}", None)
 
     # ONE read: hash exactly the bytes that get parsed. Two reads is a TOCTOU window in
     # which a swapped file binds a signature to bytes that were never validated.
+    # MemoryError is caught on the read and the decode as well as the parse: an
+    # unbounded fh.read() of a huge file, or decoding it, raises before json.loads is
+    # reached. Catching it only around the parse left two paths that produce a traceback
+    # instead of a refusal -- fail-closed in effect, since a crashed signer signs
+    # nothing, but "fail closed throughout" should not have an asterisk.
     try:
         with open(path, "rb") as fh:
             raw = fh.read()
     except OSError:
         return (False, f"gate evidence unreadable: {path}", None)
+    except MemoryError:
+        return (False, f"gate evidence is too large to read: {path}", None)
     digest = hashlib.sha256(raw).hexdigest()
 
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         return (False, "gate evidence is not valid UTF-8", digest)
+    except MemoryError:
+        return (False, "gate evidence is too large to decode", digest)
     try:
         doc = json.loads(text, object_pairs_hook=_no_duplicate_keys)
     except _DuplicateKey as exc:

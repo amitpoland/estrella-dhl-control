@@ -39,7 +39,7 @@ Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
 #    most 24h, and not expired. Full rules: .claude/contracts/seven-agent-evidence.md.
 #    One line - the operator shell is PowerShell, where a trailing \ is not a
 #    continuation.
-python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --gate-evidence <gate-evidence-dir>\<40-char-sha>.json --ttl 60
+python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --gate-evidence C:\PZ-secrets\gate-evidence\<40-char-sha>.json --ttl 60
 
 # 4. deploy
 Deploy-PZ.ps1 -ReviewedSHA <40-char-sha>
@@ -76,7 +76,7 @@ artifacts are unaffected, so incident capability survives.
 the SHA being converged *to*, not the identity production currently holds:
 
 ```
-python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence <gate-evidence-dir>\<to-sha>.json --ttl 60
+python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence C:\PZ-secrets\gate-evidence\<to-sha>.json --ttl 60
 Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
 ```
 
