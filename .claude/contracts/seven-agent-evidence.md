@@ -161,13 +161,24 @@ Every rule fails **closed** — refusal, never a warning. In order:
 7. `created_at` and `expires_at` parse as ISO 8601; `expires_at > created_at`;
    `created_at` is not in the future (5 minutes of clock skew allowed); the window
    `expires_at - created_at` is at most **24 hours** (`gate_evidence.MAX_VALIDITY`); and
-   `expires_at` is in the future. A timestamp with no offset is read as UTC.
+   `expires_at` is in the future.
 
-   **Both timestamps must be UTC** — `+00:00`, a trailing `Z`, or no offset at all
-   (read as UTC). A non-zero offset is refused. This is not pedantry: offsets were the
-   last place a human reader and the validator could read the same document differently.
-   `created_at: 2026-08-05T12:00:00+12:00` with `expires_at: 2026-08-05T12:00:00-11:00`
-   reads as two identical instants and resolves to a 23-hour window.
+   **Both timestamps must state UTC explicitly** — end each with `+00:00` or `Z`.
+   TWO forms are refused, and they are the same defect in two shapes:
+
+   * a **non-zero offset**. `created_at: 2026-08-05T12:00:00+12:00` with
+     `expires_at: 2026-08-05T12:00:00-11:00` reads as two identical instants and
+     resolves to a 23-hour window.
+   * a **bare local time with no offset at all** — `2026-08-05T16:00:00`. This is worse
+     than an offset, because there is nothing on the line for a reader to notice. An
+     operator in UTC+2 writing that to mean 14:00Z gets 16:00Z, two hours more validity
+     than intended, and on `expires_at` that direction is **fail-open**.
+
+   Earlier versions of this contract said a timestamp with no offset "is read as UTC",
+   and offered "no offset at all" as an accepted form. **That is WITHDRAWN** — it is not
+   what `gate_evidence._parse_ts` does, and it was the exact remedy an operator refused
+   for writing `+02:00` would have followed, landing them on the wider window. If you are
+   refused for an offset, **convert the time to UTC**; do not delete the offset.
 
    **Write timestamps as `datetime.isoformat()` output** — e.g.
    `2026-08-05T14:00:00+00:00`. The grammar is whatever the running interpreter's
@@ -213,8 +224,15 @@ Every rule fails **closed** — refusal, never a warning. In order:
   window is **capped at 24 hours** — enforced, not advised (`gate_evidence.MAX_VALIDITY`;
   a longer window is refused). Keep it far shorter in practice. The window exists because
   a gate verdict is about a tree and a moment; the longer it stays valid, the more likely
-  the world has moved. The signed authorization has its own, shorter TTL (`--ttl`,
-  default 60 minutes) on top.
+  the world has moved.
+
+  The signed authorization carries its own TTL (`--ttl`, default 60 minutes, **maximum
+  1440**) on top, and **it may not outlive the evidence**: the signer clamps the
+  artifact's `expires_at` to the evidence's, so the two windows cannot compose. Without
+  that clamp, evidence created at T and valid to T+24h, minted against at T+23h59m with
+  `--ttl 1440`, would deploy at T+47h58m — double what this paragraph promises, and
+  invisible to the use-time check, which re-hashes the evidence without re-validating it.
+  The whole chain is therefore bounded at 24 hours from the moment the round concluded.
 - **Write it in UTF-8 without a BOM**, and prefer writing it with Python rather than a
   PowerShell redirect. On Windows PowerShell 5.1: `Out-File` and `>` default to
   **UTF-16LE** (refused: `not valid UTF-8`), and `Out-File -Encoding utf8` emits a
@@ -230,7 +248,8 @@ Every rule fails **closed** — refusal, never a warning. In order:
   python -c "import json,sys;from datetime import datetime,timedelta,timezone;n=datetime.now(timezone.utc).replace(microsecond=0);json.dump({'schema_version':1,'target_sha':sys.argv[2],'created_at':n.isoformat(),'expires_at':(n+timedelta(hours=4)).isoformat(),'agents':[{'agent':a,'status':'GO','blockers':[],'risks':[]} for a in ['deploy_git_diff_reviewer','deploy_backend_impact_reviewer','deploy_persistence_storage_reviewer','deploy_security_reviewer','deploy_qa_reviewer','deploy_release_manager','deploy_lead_coordinator']],'lead_verdict':'GO'}, open(sys.argv[1],'w',encoding='utf-8'), indent=2)" C:\PZ-secrets\gate-evidence\THESHA.json THESHA
   ```
 
-  Replace both `THESHA` occurrences with the 40-character SHA. The timestamps are
+  Replace both `THESHA` occurrences with the 40-character SHA, **lowercase** — the
+  schema requires it and an uppercase paste is refused. The timestamps are
   COMPUTED — a four-hour window from now, already UTC — so the document cannot be born
   expired and cannot violate the UTC rule. An earlier version hardcoded them, so editing
   only the SHA produced a file valid for four hours on one specific day in the past.
@@ -323,6 +342,9 @@ and exits 2:
 ```powershell
 python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --gate-evidence C:\PZ-secrets\gate-evidence\<sha>.json --ttl 60
 ```
+
+Run this from the repository root (`C:\PZ-main` on the production host); the
+`.claude/hooks/...` path is relative to it.
 
 Evidence is validated **before the signing key is loaded** — `validate_evidence()` is
 called at the top of `sign_deploy_authorization.main()`, ahead of `_load_key()` — so an

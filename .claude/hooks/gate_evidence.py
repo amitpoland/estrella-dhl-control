@@ -259,8 +259,25 @@ def _check_agent(entry, index):
 def validate_evidence(path, target_sha, now=None):
     """(ok, reason, digest) for strict-JSON evidence approving exactly `target_sha`.
 
-    Fail-closed throughout. `digest` is the SHA-256 of the bytes that were parsed, and
-    is returned on every post-read refusal so a caller can record what it rejected.
+    Thin wrapper over `validate_evidence_full` for callers that do not need the
+    document's expiry. Fail-closed throughout. `digest` is the SHA-256 of the bytes that
+    were parsed, and is returned on every post-read refusal so a caller can record what
+    it rejected.
+    """
+    ok, reason, digest, _expires = validate_evidence_full(path, target_sha, now)
+    return (ok, reason, digest)
+
+
+def validate_evidence_full(path, target_sha, now=None):
+    """(ok, reason, digest, expires_at) -- as validate_evidence, plus the evidence expiry.
+
+    The signer needs `expires_at` so the authorization it mints cannot OUTLIVE the
+    evidence that justified it. Without that, the two windows compose: evidence valid
+    for 24h, minted against at 23h59m with a 24h TTL, deploying 47h58m after the gate
+    round concluded -- roughly double what "capped at 24 hours, enforced" leads a reader
+    to expect. `expires_at` is returned from the SAME single read that produced the
+    digest; a caller must never re-read the file to obtain it, because a swapped file
+    would then widen the window using bytes that were never validated.
     """
     now = now or datetime.now(timezone.utc)
     # A naive `now` from a caller would raise TypeError on the comparisons below --
@@ -269,13 +286,13 @@ def validate_evidence(path, target_sha, now=None):
         now = now.replace(tzinfo=timezone.utc)
 
     if not isinstance(target_sha, str) or not _SHA_RX.match(target_sha.lower()):
-        return (False, "target_sha is not a full 40-character commit SHA", None)
+        return (False, "target_sha is not a full 40-character commit SHA", None, None)
     if not path:
-        return (False, "no gate evidence supplied", None)
+        return (False, "no gate evidence supplied", None, None)
     if not os.path.isfile(path):
         if os.path.isdir(path):
-            return (False, f"gate evidence path is a directory, not a file: {path}", None)
-        return (False, f"gate evidence file not found: {path}", None)
+            return (False, f"gate evidence path is a directory, not a file: {path}", None, None)
+        return (False, f"gate evidence file not found: {path}", None, None)
 
     # ONE read: hash exactly the bytes that get parsed. Two reads is a TOCTOU window in
     # which a swapped file binds a signature to bytes that were never validated.
@@ -288,23 +305,23 @@ def validate_evidence(path, target_sha, now=None):
         with open(path, "rb") as fh:
             raw = fh.read()
     except OSError:
-        return (False, f"gate evidence unreadable: {path}", None)
+        return (False, f"gate evidence unreadable: {path}", None, None)
     except MemoryError:
-        return (False, f"gate evidence is too large to read: {path}", None)
+        return (False, f"gate evidence is too large to read: {path}", None, None)
     digest = hashlib.sha256(raw).hexdigest()
 
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return (False, "gate evidence is not valid UTF-8", digest)
+        return (False, "gate evidence is not valid UTF-8", digest, None)
     except MemoryError:
-        return (False, "gate evidence is too large to decode", digest)
+        return (False, "gate evidence is too large to decode", digest, None)
     try:
         doc = json.loads(text, object_pairs_hook=_no_duplicate_keys)
     except _DuplicateKey as exc:
-        return (False, f"gate evidence has a {exc}", digest)
+        return (False, f"gate evidence has a {exc}", digest, None)
     except ValueError as exc:
-        return (False, f"gate evidence is not valid JSON: {exc}", digest)
+        return (False, f"gate evidence is not valid JSON: {exc}", digest, None)
     except (RecursionError, MemoryError):
         # Deeply nested JSON exhausts the decoder's recursion budget. RecursionError is
         # a RuntimeError, not a ValueError, so without this it propagates out of a
@@ -316,20 +333,20 @@ def validate_evidence(path, target_sha, now=None):
         # MemoryError("Stack overflow") rather than RecursionError when the native stack
         # is the binding limit. Catching only RecursionError would leave exactly this
         # path open on exactly the platform that runs the deploy.
-        return (False, "gate evidence is nested too deeply to parse", digest)
+        return (False, "gate evidence is nested too deeply to parse", digest, None)
 
     if not isinstance(doc, dict):
-        return (False, "gate evidence must be a JSON object", digest)
+        return (False, "gate evidence must be a JSON object", digest, None)
 
     fields = set(doc)
     missing = _TOP_FIELDS - fields
     if missing:
         return (False, "gate evidence is missing field(s): "
-                       + ", ".join(sorted(missing)), digest)
+                       + ", ".join(sorted(missing)), digest, None)
     unknown = fields - _TOP_FIELDS
     if unknown:
         return (False, "gate evidence has unknown field(s): "
-                       + ", ".join(sorted(unknown)), digest)
+                       + ", ".join(sorted(unknown)), digest, None)
 
     version = doc["schema_version"]
     # `isinstance(True, int)` is True and `True == 1`, so a bare `!= SCHEMA_VERSION`
@@ -338,71 +355,71 @@ def validate_evidence(path, target_sha, now=None):
     # thesis is "no tolerance" should not have a tolerated value anywhere in it.
     if isinstance(version, bool) or not isinstance(version, int):
         return (False, f"gate evidence schema_version must be an integer, got "
-                       f"{version!r}", digest)
+                       f"{version!r}", digest, None)
     if version != SCHEMA_VERSION:
         return (False, f"gate evidence schema_version is {version!r}, "
-                       f"expected {SCHEMA_VERSION}", digest)
+                       f"expected {SCHEMA_VERSION}", digest, None)
 
     declared = doc["target_sha"]
     if not isinstance(declared, str) or not _SHA_RX.match(declared):
         return (False, "gate evidence target_sha is not a full 40-character "
-                       "lowercase commit SHA", digest)
+                       "lowercase commit SHA", digest, None)
     if declared != target_sha.lower():
         return (False, f"gate evidence approves {declared[:12]}, not "
                        f"{target_sha[:12].lower()} (evidence from a different gate run)",
-                digest)
+                digest, None)
 
     created, err = _parse_ts(doc["created_at"], "created_at")
     if err:
-        return (False, f"gate evidence {err}", digest)
+        return (False, f"gate evidence {err}", digest, None)
     expires, err = _parse_ts(doc["expires_at"], "expires_at")
     if err:
-        return (False, f"gate evidence {err}", digest)
+        return (False, f"gate evidence {err}", digest, None)
     if expires <= created:
-        return (False, "gate evidence expires_at is not after created_at", digest)
+        return (False, "gate evidence expires_at is not after created_at", digest, None)
     if created > now + CLOCK_SKEW:
         # A gate round cannot have concluded in the future. Without this, `created_at`
         # is a field the validator reads and never constrains -- and a future-dated pair
         # is how an unbounded window gets written while still satisfying every other
         # rule.
         return (False, f"gate evidence created_at is in the future "
-                       f"({created.isoformat()})", digest)
+                       f"({created.isoformat()})", digest, None)
     if expires - created > MAX_VALIDITY:
         return (False, f"gate evidence is valid for "
                        f"{expires - created}, longer than the {MAX_VALIDITY} maximum",
-                digest)
+                digest, None)
     if now >= expires:
-        return (False, f"gate evidence expired at {expires.isoformat()}", digest)
+        return (False, f"gate evidence expired at {expires.isoformat()}", digest, None)
 
     agents = doc["agents"]
     if not isinstance(agents, list):
-        return (False, "gate evidence agents must be a list", digest)
+        return (False, "gate evidence agents must be a list", digest, None)
 
     names = []
     for i, entry in enumerate(agents):
         reason = _check_agent(entry, i)
         if reason:
-            return (False, f"gate evidence: {reason}", digest)
+            return (False, f"gate evidence: {reason}", digest, None)
         names.append(entry["agent"])
 
     seen = set()
     dupes = sorted({n for n in names if n in seen or seen.add(n)})
     if dupes:
         return (False, "gate evidence declares more than one result for: "
-                       + ", ".join(dupes), digest)
+                       + ", ".join(dupes), digest, None)
 
     absent = REQUIRED_AGENTS - set(names)
     if absent:
         return (False, "gate evidence missing agent result(s): "
-                       + ", ".join(sorted(absent)), digest)
+                       + ", ".join(sorted(absent)), digest, None)
     # Count is implied by "no duplicates, no unknown names, none absent", but assert it
     # anyway: an eighth entry must never be able to ride along unexamined.
     if len(names) != len(REQUIRED_AGENTS):
         return (False, f"gate evidence declares {len(names)} agent results, "
-                       f"expected exactly {len(REQUIRED_AGENTS)}", digest)
+                       f"expected exactly {len(REQUIRED_AGENTS)}", digest, None)
 
     if doc["lead_verdict"] != _GO:
         return (False, f"gate evidence lead_verdict is {doc['lead_verdict']!r}, "
-                       f"not {_GO!r}", digest)
+                       f"not {_GO!r}", digest, None)
 
-    return (True, f"seven-agent {_GO} for {declared[:12]}", digest)
+    return (True, f"seven-agent {_GO} for {declared[:12]}", digest, expires)

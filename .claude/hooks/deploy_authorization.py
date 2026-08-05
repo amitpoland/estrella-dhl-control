@@ -126,12 +126,22 @@ def sign(auth, key):
 
 
 def _parse_iso(value):
+    """Aware datetime, or None.
+
+    A naive value is filled to UTC rather than returned as-is. Returning it naive meant
+    the `now >= exp` comparison below raised TypeError out of a function documented
+    "fail-closed -> DENY" and whose main() promises to print ALLOW/DENY with a reason:
+    on that path it printed neither. Not agent-reachable (the HMAC check runs first), but
+    gate_evidence closes this identical hole for its own caller and the sibling that
+    gates the actual write should not be the one that crashes.
+    """
     if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 # A jti is a uuid4 from the signer. Constrained because it is used as a path

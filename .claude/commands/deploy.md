@@ -24,6 +24,11 @@ Nothing is hardcoded anywhere else.
 approved. The target is never inferred from `origin/main`, so a commit pushed after
 the gate ran cannot ship.
 
+All `python .claude/hooks/...` commands below are relative to the repository root —
+run them from the deploy source checkout (`C:\PZ-main` on the production host).
+`--ttl` is capped at **1440 minutes (24h)**, and the signer additionally clamps an
+authorization so it cannot outlive the gate evidence that justified it.
+
 ```
 # 1. plan only - writes nothing, needs no authorization
 Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
@@ -81,7 +86,9 @@ Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
 ```
 
 **Rollback needs its own authorization.** Mint it *before* you need it - doing so
-mid-incident costs time you will not have:
+mid-incident costs time you will not have. Note the ceiling: `--ttl` may not exceed
+**1440 minutes (24h)**, so a standby rollback artifact expires within a day of minting
+and must be re-minted regularly. A longer value exits 2 rather than silently shortening.
 
 ```
 python .claude/hooks/sign_deploy_authorization.py <sha> rollback Both --ttl 1440

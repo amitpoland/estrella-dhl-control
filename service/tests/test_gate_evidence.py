@@ -43,6 +43,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -154,6 +155,8 @@ _EVIDENCE_WITH_VALUE_RX = re.compile(r"--gate-evidence\s+\S")
 _FROM_SHA_WITH_VALUE_RX = re.compile(r"--from-sha\s+\S")
 # A line explicitly marked as a historical record rather than an instruction.
 _SUPERSEDED_RX = re.compile(r"\bSUPERSEDED\b|\bDO NOT RUN\b|_superseded\b")
+# A line that continues onto the next one.
+_CONTINUED_RX = re.compile(r"(?:\\|`)\s*$")
 
 # Every tracked file that shows the operator how to invoke the signer. Discovered, not
 # hardcoded: a hardcoded list silently stops covering a doc the moment someone adds one,
@@ -178,8 +181,16 @@ def _tracked_files():
             ["git", "-C", str(REPO), "ls-files", "-z", "--", *_SEARCH_ROOTS],
             capture_output=True, timeout=30, check=True,
         ).stdout.decode("utf-8", "replace")
-    except (OSError, subprocess.SubprocessError):
-        pytest.skip("git unavailable; cannot enumerate tracked files")
+    except (OSError, subprocess.SubprocessError) as exc:
+        # FAIL, not skip. A skip is invisible in a green summary — the pin would report
+        # success while running zero assertions, which is the same vacuity the
+        # precondition test exists to prevent, reopened at the discovery layer. And
+        # `check=True` means this fires on more than "git absent": a `git archive`
+        # export with no .git (which Lesson Q rule 7 actively recommends for
+        # commit-scoped reads), a safe.directory/dubious-ownership container, a corrupt
+        # index, or the timeout would each silently disarm the only pin keeping the
+        # operator's copy-pasted mint commands runnable.
+        pytest.fail(f"git unavailable, so the documentation pin cannot run: {exc}")
     for rel in filter(None, out.split("\0")):
         path = REPO / rel
         if path.suffix in _SEARCH_SUFFIXES and path.is_file():
@@ -208,21 +219,40 @@ def _checked_mint_lines():
     Shared by the precondition and the pin so the two cannot drift: a filter change
     narrows both at once, and the precondition notices.
     """
-    out = []
+    out, broken_wrap = [], []
     for relpath, text in _files_invoking_the_signer():
         for m in _SIGNER_INVOCATION_RX.finditer(text):
             line = m.group(0).strip()
+            # A WRAPPED command is still one command. If the invocation line ends in a
+            # continuation (`\` or PowerShell's backtick), splice the following lines in
+            # before filtering — otherwise a command wrapped so the ACTION word falls on
+            # line 2 matches nothing and vanishes from the pin entirely, which is exactly
+            # the hole an earlier docstring here claimed was closed.
+            tail = text[m.end():]
+            while line.rstrip().endswith(("\\", "`")) and tail:
+                # lstrip the newline first: m.end() sits BEFORE it, so partitioning
+                # directly yields an empty segment and the splice silently no-ops.
+                nxt, _, tail = tail.lstrip("\n").partition("\n")
+                if not nxt.strip():
+                    break
+                line = line.rstrip().rstrip("\\`").rstrip() + " " + nxt.strip()
             # Strip the script name first: `sign_deploy_authorization.py` contains
             # "deploy" and would satisfy the action filter on its own.
             if not _ACTION_RX.search(line.replace("sign_deploy_authorization.py", "")):
                 continue                       # rollback, or a bare `--help` example
+            if _CONTINUED_RX.search(m.group(0)):
+                # Spliced above so the flags are visible — but the operator's shell will
+                # NOT join them. PowerShell does not honour a trailing backslash at all,
+                # so a wrapped mint command is broken however it reads on the page.
+                broken_wrap.append(f"{relpath}: command wrapped across lines; PowerShell "
+                                   f"does not join these\n    {m.group(0).strip()}")
             if _SUPERSEDED_RX.search(line):
                 # A historical record, not an instruction. The exemption is narrow on
                 # purpose: it requires an explicit marker ON THE LINE, so a stale command
                 # can only escape by being labelled unrunnable where a reader sees it.
                 continue
             out.append((relpath, line))
-    return out
+    return out, broken_wrap
 
 
 def test_the_signer_documentation_pin_finds_something_to_check():
@@ -256,14 +286,15 @@ def test_the_signer_documentation_pin_finds_something_to_check():
     # empties, the universal quantifier below is vacuous again while this precondition
     # stays green. Marking every command `SUPERSEDED` would do it. Count what actually
     # reaches an assertion.
-    checked = _checked_mint_lines()
-    assert len(checked) >= 4, (
+    checked, _wrapped = _checked_mint_lines()
+    assert len(checked) >= 5, (
         f"only {len(checked)} documented mint command(s) reach an assertion; the pin is "
         "nearly vacuous. Lines are dropped by the action filter or the SUPERSEDED "
         f"exemption: {[c[0] for c in checked]}")
     files_checked = {relpath for relpath, _ in checked}
     for expected in (".claude/hooks/sign_deploy_authorization.py",
-                     ".claude/commands/deploy.md"):
+                     ".claude/commands/deploy.md",
+                     ".claude/contracts/seven-agent-evidence.md"):
         assert expected in files_checked, (
             f"{expected} has a signer invocation but none of its lines survive the "
             "filters, so nothing in it is actually checked")
@@ -284,8 +315,9 @@ def test_every_documented_mint_is_runnable_as_written():
       * each flag has its VALUE on the same line — a flag whose argument wrapped to the
         next line exits 2 with "expected one argument", which is exactly as broken.
     """
-    broken = []
-    for relpath, line in _checked_mint_lines():
+    checked, wrapped = _checked_mint_lines()
+    broken = list(wrapped)
+    for relpath, line in checked:
             if not _EVIDENCE_WITH_VALUE_RX.search(line):
                 broken.append(f"{relpath}: --gate-evidence missing or has no value\n    {line}")
             if "reconcile" in line and not _FROM_SHA_WITH_VALUE_RX.search(line):
@@ -317,6 +349,81 @@ def test_the_time_constants_match_the_figures_the_contract_publishes():
         "the contract no longer publishes the 24-hour cap in the field table")
     assert re.search(r"\b5 min(?:utes)? skew\b|\(5 min skew allowed\)", contract), (
         "the contract no longer publishes the 5-minute clock skew")
+
+
+def test_the_contract_does_not_document_a_timestamp_form_the_code_refuses(tmp_path):
+    """The contract is the AUTHORITY; drift between it and the validator is the defect.
+
+    Five of six reviewers in one gate round found the same thing: the code was changed to
+    refuse naive timestamps, and the contract kept saying "a timestamp with no offset is
+    read as UTC" and listing "no offset at all" as accepted. The code's own refusal
+    message points the operator at that document, so the guard was routed around by its
+    own error text.
+
+    Prose cannot be diffed against behaviour in general — but the specific claims can be
+    executed. For each timestamp form the contract could describe, this asserts the
+    contract's stance and the validator's stance agree.
+    """
+    contract = (REPO / ".claude" / "contracts" / "seven-agent-evidence.md").read_text(
+        encoding="utf-8")
+
+    # Every form, and what the validator ACTUALLY does with it, measured not assumed.
+    forms = {
+        "+00:00": True,
+        "Z": True,
+        "+02:00": False,
+        "naive": False,
+    }
+    for form, should_pass in forms.items():
+        base = (_now() + timedelta(hours=1)).replace(microsecond=0, tzinfo=None)
+        stamp = base.isoformat() + ("" if form == "naive" else
+                                    ("Z" if form == "Z" else form))
+        doc = _doc()
+        doc["expires_at"] = stamp
+        ok, reason, _ = validate_evidence(_write(tmp_path, doc), _SHA)
+        assert ok is should_pass, (
+            f"{form!r} timestamp: validator says {'accept' if ok else 'refuse'} "
+            f"({reason}); the test table says {'accept' if should_pass else 'refuse'}")
+
+    # The contract must not advertise either refused form as acceptable, and must not
+    # still be telling operators that a bare local time is read as UTC.
+    banned = [
+        "A timestamp with no offset is read as UTC",
+        "or no offset at all\n   (read as UTC)",
+    ]
+    for phrase in banned:
+        assert phrase not in contract, (
+            f"the contract still documents a form the validator refuses: {phrase!r}")
+
+    # ...and it must positively state the rule the code enforces.
+    assert "must state UTC explicitly" in contract, (
+        "the contract no longer states the explicit-UTC requirement that "
+        "gate_evidence._parse_ts enforces")
+
+
+def test_the_contract_publishes_the_ttl_ceiling_the_signer_enforces(tmp_path, monkeypatch):
+    """The `--ttl` maximum existed only in argparse help and a source comment.
+
+    An operator planning a standby rollback artifact needs to know it cannot outlive
+    24 hours BEFORE the incident, not at exit 2 during one.
+    """
+    contract = (REPO / ".claude" / "contracts" / "seven-agent-evidence.md").read_text(
+        encoding="utf-8")
+    ceiling = int(MAX_VALIDITY.total_seconds() // 60)
+    # Anchored to the CLAIM, not the digits. A bare `str(ceiling) in contract` is
+    # satisfied by the number appearing anywhere — including inside the worked example
+    # two lines below, which is how the first version of this pin passed while the
+    # ceiling itself had been deleted.
+    assert re.search(rf"maximum\s*\*{{0,2}}\s*{ceiling}\b", contract), (
+        f"the contract does not publish the {ceiling}-minute --ttl ceiling as a MAXIMUM; "
+        "sign_deploy_authorization enforces it")
+
+    # And the enforcement is real at the boundary, in both directions.
+    store = _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign([_SHA, "rollback", "Both", "--ttl", str(ceiling)]) == 0
+    assert _sign([_SHA, "rollback", "Both", "--ttl", str(ceiling + 1)]) == 2
+    assert len(list(store.iterdir())) == 1, "the over-ceiling mint wrote an artifact"
 
 
 def test_the_clock_skew_boundary_is_where_the_constant_says_it_is(tmp_path):
@@ -1303,7 +1410,7 @@ def test_out_of_range_ttl_is_refused(tmp_path, monkeypatch, ttl):
     assert not list(store.iterdir()), "a refused mint wrote to the store"
 
 
-def test_the_ttl_ceiling_is_the_evidence_ceiling(tmp_path, monkeypatch):
+def test_the_ttl_ceiling_is_accepted_at_the_boundary(tmp_path, monkeypatch):
     """Exactly at the cap is accepted — the documented rollback TTL (1440) sits there,
     so an off-by-one would break the incident path."""
     _signer_env(tmp_path, monkeypatch)
@@ -1312,6 +1419,91 @@ def test_the_ttl_ceiling_is_the_evidence_ceiling(tmp_path, monkeypatch):
     assert at_cap == 1440
     assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev, "--ttl", str(at_cap)]) == 0
     assert _sign([_SHA, "rollback", "Both", "--ttl", str(at_cap)]) == 0
+
+
+def test_the_authorization_may_not_outlive_the_evidence(tmp_path, monkeypatch):
+    """The two windows must not COMPOSE.
+
+    Capping --ttl at 24h is not enough by itself: evidence created at T and valid to
+    T+24h, minted against at T+23h59m with --ttl 1440, would deploy at T+47h58m —
+    roughly double what "the evidence window is capped at 24 hours, enforced" leads a
+    reader to expect. `evaluate()` cannot catch it, because at use time it re-hashes the
+    evidence and never re-validates it, so an expired document is invisible there.
+
+    The signer therefore clamps the artifact expiry to the evidence expiry, which also
+    makes the contract's word "shorter" true rather than aspirational.
+    """
+    store = _signer_env(tmp_path, monkeypatch)
+    created = _now() - timedelta(hours=1)
+    evidence_expires = created + timedelta(hours=2)        # 1h of life left
+    ev = _write(tmp_path, _doc(created=created, expires=evidence_expires))
+
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev, "--ttl", "1440"]) == 0
+    art = json.loads((store / f"{_SHA}.deploy.json").read_text(encoding="utf-8"))
+    minted = datetime.fromisoformat(art["expires_at"])
+
+    assert minted <= evidence_expires + timedelta(seconds=1), (
+        f"the authorization expires at {minted.isoformat()}, AFTER the evidence expires "
+        f"at {evidence_expires.isoformat()} — the two windows composed")
+    # ...and it is genuinely shorter than the requested TTL, not merely capped at 24h.
+    assert minted < _now() + timedelta(hours=23), (
+        "the 1440-minute TTL was honoured in full despite shorter evidence")
+
+
+def test_a_ttl_inside_the_evidence_window_is_left_alone(tmp_path, monkeypatch):
+    """The clamp must not shorten a TTL that already fits — otherwise every mint would
+    silently inherit the evidence expiry and --ttl would stop meaning anything."""
+    store = _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc(created=_now() - timedelta(minutes=1),
+                               expires=_now() + timedelta(hours=20)))
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev, "--ttl", "60"]) == 0
+    art = json.loads((store / f"{_SHA}.deploy.json").read_text(encoding="utf-8"))
+    minted = datetime.fromisoformat(art["expires_at"])
+    assert minted < _now() + timedelta(minutes=75), (
+        f"a 60-minute TTL was stretched to {minted.isoformat()}")
+
+
+def test_the_artifact_expiry_is_enforced_at_use_time(tmp_path, monkeypatch):
+    """The gap the --ttl cap's entire justification rests on.
+
+    `sign_deploy_authorization` argues the artifact TTL is "the ONLY bound on the deploy
+    window". Nothing pinned that bound: deleting the `now >= expires_at` check in
+    `evaluate()` killed no test in either file, while making the window UNBOUNDED. A
+    safety word with nothing enforcing it is exactly what the cap was added to fix — this
+    pins the enforcement one layer down.
+    """
+    import deploy_authorization
+    store = _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev, "--ttl", "60"]) == 0
+
+    # Back-date the artifact's expiry and re-sign, so only the expiry check can refuse.
+    path = store / f"{_SHA}.deploy.json"
+    auth = json.loads(path.read_text(encoding="utf-8"))
+    auth["expires_at"] = (_now() - timedelta(minutes=1)).isoformat()
+    auth["signature"] = deploy_authorization.sign(auth, deploy_authorization._load_key())
+    path.write_text(json.dumps(auth, indent=2, sort_keys=True), encoding="utf-8")
+
+    decision, reason = _evaluate(_SHA, "deploy", "Both", dict(os.environ))
+    assert decision == "deny", "an expired authorization was accepted"
+    assert "expired" in reason, f"denied for the wrong reason: {reason!r}"
+
+
+def test_an_artifact_that_is_not_yet_valid_is_refused(tmp_path, monkeypatch):
+    """The sibling check at the other end of the window, equally unpinned."""
+    import deploy_authorization
+    store = _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev, "--ttl", "60"]) == 0
+
+    path = store / f"{_SHA}.deploy.json"
+    auth = json.loads(path.read_text(encoding="utf-8"))
+    auth["issued_at"] = (_now() + timedelta(hours=1)).isoformat()
+    auth["signature"] = deploy_authorization.sign(auth, deploy_authorization._load_key())
+    path.write_text(json.dumps(auth, indent=2, sort_keys=True), encoding="utf-8")
+
+    decision, reason = _evaluate(_SHA, "deploy", "Both", dict(os.environ))
+    assert decision == "deny", "an authorization from the future was accepted"
 
 
 def test_a_jti_that_escapes_the_store_is_refused(tmp_path, monkeypatch):
@@ -1336,32 +1528,59 @@ def test_a_jti_that_escapes_the_store_is_refused(tmp_path, monkeypatch):
     decision, reason = _evaluate(_SHA, "deploy", "Both", dict(os.environ))
     assert decision == "deny", "a jti containing a path traversal was accepted"
     assert "jti" in reason
-    assert not (tmp_path / "escaped.used").exists(), "the marker escaped the store"
+    # `_consume` builds <store>/consumed/<jti>.used, so "../escaped" would land in
+    # <store>/escaped.used — NOT tmp_path/escaped.used, which the earlier version of
+    # this assertion checked and which therefore could never fail.
+    assert not (store / "escaped.used").exists(), "the marker escaped into the store root"
+    assert not (tmp_path / "escaped.used").exists(), "the marker escaped the store entirely"
+    consumed = store / "consumed"
+    if consumed.is_dir():
+        assert not any(consumed.iterdir()), "a refused jti still consumed the artifact"
 
 
-def test_evidence_expiry_is_not_re_checked_at_use_time(tmp_path, monkeypatch):
-    """Pin the PERMISSIVE property, deliberately.
+def test_use_time_re_hashes_but_never_re_validates_the_document(tmp_path, monkeypatch):
+    """Pin the PERMISSIVE property, deliberately — and pin the case that matters.
 
-    `evaluate()` re-hashes the evidence; it does not re-validate it. So an
-    authorization minted against evidence that has since expired still deploys, bounded
-    only by the artifact's own TTL. That is the intended division — but it is a
-    permitting property, which is the class Lesson Q rule 6 says must not live only in
-    prose. Pinned here so it stays falsifiable and cannot change by accident in either
-    direction.
+    `evaluate()` compares the evidence digest; it does not re-run `validate_evidence`.
+    The operational consequence is the migration hazard both the runbook and the
+    governance doc call out: an authorization minted BEFORE the JSON format existed, and
+    digest-bound to a MARKDOWN evidence file, still verifies. The bytes are unchanged, so
+    the digest matches, and nothing checks the document against the schema. That is why
+    the migration instruction says re-mint every deploy/reconcile artifact regardless of
+    what its ref looks like — the no-digest case is not the only one.
+
+    An earlier version demonstrated the property via evidence expiry. That stopped being
+    observable once the signer began clamping the artifact expiry to the evidence expiry
+    (they now expire together), and it had been vacuous before that anyway: `evaluate()`
+    takes no `now`, so the evidence had not really expired at use time and a
+    re-validating implementation would have allowed too.
     """
-    _signer_env(tmp_path, monkeypatch)
-    created = _now() - timedelta(hours=1)
-    ev = _write(tmp_path, _doc(created=created, expires=_now() + timedelta(seconds=2)))
-    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev]) == 0
+    import deploy_authorization
+    store = _signer_env(tmp_path, monkeypatch)
 
-    # The evidence is now past its own expires_at...
-    ok, reason, _ = validate_evidence(ev, _SHA, now=_now() + timedelta(minutes=5))
-    assert not ok and "expired" in reason, "precondition: the evidence has expired"
+    # A Markdown evidence file — the retired format, which validate_evidence refuses.
+    md = tmp_path / "gate.md"
+    md.write_text(f"TARGET_SHA: {_SHA}\nAGENT: all\nSTATUS: GO\n", encoding="utf-8")
+    ok, _reason, _ = validate_evidence(str(md), _SHA)
+    assert not ok, "precondition: the Markdown document must fail validation"
 
-    # ...and the authorization still allows, because the use-time check is a digest
-    # comparison, not a re-validation.
+    # Hand-mint an artifact digest-bound to it, exactly as a pre-JSON signer would have.
+    now = _now()
+    auth = {
+        "reviewed_sha": _SHA, "action": "deploy", "scope": "Both", "from_sha": None,
+        "repository": "",
+        "gate_evidence_ref": format_ref(str(md.resolve()), digest_file(str(md))),
+        "issued_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=60)).isoformat(),
+        "jti": "0123abcd-4567-89ef-0123-456789abcdef",
+    }
+    auth["signature"] = deploy_authorization.sign(auth, deploy_authorization._load_key())
+    (store / f"{_SHA}.deploy.json").write_text(
+        json.dumps(auth, indent=2, sort_keys=True), encoding="utf-8")
+
     decision, reason = _evaluate(_SHA, "deploy", "Both", dict(os.environ))
     assert decision == "allow", (
         f"use time now re-validates the evidence document ({reason}). That may be an "
-        "improvement, but .claude/contracts/seven-agent-evidence.md documents the "
-        "opposite — change the contract in the same commit.")
+        "improvement, but the migration instruction in .claude/commands/deploy.md and "
+        "service/docs/production_deployment_rule.md documents the opposite — change "
+        "them in the same commit.")

@@ -106,7 +106,7 @@ from deploy_authorization import (  # noqa: E402
     VALID_ACTIONS, VALID_SCOPES, _load_key, _store_dir, artifact_name, sign,
 )
 from gate_evidence import (  # noqa: E402
-    MAX_VALIDITY, digest_file, format_ref, validate_evidence,
+    MAX_VALIDITY, digest_file, format_ref, validate_evidence_full,
 )
 
 
@@ -186,8 +186,11 @@ def main(argv=None):
     # artifact is meant to be minted in advance (see the header), and gating a
     # recovery on assembling a fresh seven-agent report is how an outage gets longer.
     evidence_ref = args.gate_evidence.strip()
+    # None for rollback, which is evidence-exempt: there is no evidence expiry to clamp
+    # the artifact against, so its TTL stands on its own (bounded by the --ttl cap).
+    evidence_expires = None
     if args.action in ("deploy", "reconcile"):
-        ok, reason, digest = validate_evidence(evidence_ref, sha)
+        ok, reason, digest, evidence_expires = validate_evidence_full(evidence_ref, sha)
         if not ok:
             print(f"ERROR: {reason}")
             print("       The 7-agent gate is the production approval authority. "
@@ -223,6 +226,27 @@ def main(argv=None):
     os.makedirs(store, exist_ok=True)
 
     now = datetime.now(timezone.utc)
+    expires = now + timedelta(minutes=args.ttl)
+
+    # THE AUTHORIZATION MAY NOT OUTLIVE THE EVIDENCE.
+    #
+    # Capping --ttl at 24h is not enough on its own, because the two windows COMPOSE:
+    # evidence created at T and valid to T+24h, minted against at T+23h59m with
+    # --ttl 1440, deploys at T+47h58m. That is roughly double what "the evidence window
+    # is capped at 24 hours, enforced" leads a reader to expect, and evaluate() cannot
+    # catch it -- at use time it re-hashes the evidence, it never re-validates it, so
+    # the evidence being long expired is invisible there.
+    #
+    # Clamping here makes the artifact TTL genuinely SHORTER than the evidence window
+    # rather than merely equal to it, and bounds the whole chain at 24h from the moment
+    # the gate round concluded. `evidence_expires` comes from the same single read that
+    # produced the digest -- never re-read the file for it.
+    if evidence_expires is not None and expires > evidence_expires:
+        print(f"  NOTE: TTL shortened to the gate evidence expiry "
+              f"({evidence_expires.isoformat()}) -- an authorization may not outlive "
+              f"the evidence that justified it.")
+        expires = evidence_expires
+
     auth = {
         "reviewed_sha": sha,
         "action": args.action,
@@ -231,7 +255,7 @@ def main(argv=None):
         "repository": args.repository,
         "gate_evidence_ref": evidence_ref,
         "issued_at": now.isoformat(),
-        "expires_at": (now + timedelta(minutes=args.ttl)).isoformat(),
+        "expires_at": expires.isoformat(),
         "jti": str(uuid.uuid4()),
     }
     auth["signature"] = sign(auth, key)
