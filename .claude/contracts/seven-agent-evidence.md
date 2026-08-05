@@ -67,8 +67,8 @@ No finite list of patches closes that class. JSON does: it parses or it refuses.
 |---|---|---|
 | `schema_version` | int | exactly `1` |
 | `target_sha` | string | full 40-char **lowercase** commit SHA the gate approved |
-| `created_at` | string | ISO 8601; when the gate round concluded |
-| `expires_at` | string | ISO 8601; must be after `created_at` and in the future |
+| `created_at` | string | ISO 8601 **UTC**; when the gate round concluded. Not in the future (5 min skew allowed) |
+| `expires_at` | string | ISO 8601 **UTC**; after `created_at`, in the future, and **at most 24 h** after `created_at` |
 | `agents` | list | exactly seven objects, one per authority |
 | `lead_verdict` | string | exactly `"GO"` — the coordinator's final decision |
 
@@ -147,7 +147,9 @@ Every rule fails **closed** — refusal, never a warning. In order:
 1. The file exists and is readable; it is read **once**, and the digest is taken over
    exactly the bytes that are parsed (a second read is a TOCTOU window in which a
    swapped file binds a signature to bytes that were never validated).
-2. Valid UTF-8, valid JSON, and a JSON **object** at the top level.
+2. Valid UTF-8, valid JSON, and a JSON **object** at the top level. A document
+   nested too deeply for the interpreter to parse is refused as such, not raised
+   as a traceback.
 3. **No duplicate keys**, at any depth. Stdlib `json` silently keeps the last value for
    a repeated key — the same last-wins defect the Markdown parser died of, one layer
    down. `object_pairs_hook` refuses instead.
@@ -161,9 +163,14 @@ Every rule fails **closed** — refusal, never a warning. In order:
    `expires_at - created_at` is at most **24 hours** (`gate_evidence.MAX_VALIDITY`); and
    `expires_at` is in the future. A timestamp with no offset is read as UTC.
 
+   **Both timestamps must be UTC** — `+00:00`, a trailing `Z`, or no offset at all
+   (read as UTC). A non-zero offset is refused. This is not pedantry: offsets were the
+   last place a human reader and the validator could read the same document differently.
+   `created_at: 2026-08-05T12:00:00+12:00` with `expires_at: 2026-08-05T12:00:00-11:00`
+   reads as two identical instants and resolves to a 23-hour window.
+
    **Write timestamps as `datetime.isoformat()` output** — e.g.
-   `2026-08-05T14:00:00+00:00`, or with a trailing `Z`, which is rewritten to `+00:00`
-   before parsing. The grammar is whatever the running interpreter's
+   `2026-08-05T14:00:00+00:00`. The grammar is whatever the running interpreter's
    `datetime.fromisoformat` accepts, and that widened in Python 3.11: basic format
    (`20260805`), ISO week dates, `,` as decimal separator and 1–2 digit fractional
    seconds parse on 3.11+ and are **refused on 3.9**, which is what CI and the
@@ -186,9 +193,22 @@ Every rule fails **closed** — refusal, never a warning. In order:
   agent returned HOLD or BLOCK, there is nothing to transcribe: fix the finding and run
   a fresh round.
 - **Where it lives.** Outside the repository, alongside the signing key store — e.g.
-  `C:\PZ-secrets\gate-evidence\<sha>.json`. It is not committed. A file inside the repo
-  can be changed by any agent session that can write tracked files; the whole point is
-  that this one cannot.
+  `C:\PZ-secrets\gate-evidence\<sha>.json`, created by the provisioning block at the top
+  of `sign_deploy_authorization.py`. It is not committed, so it cannot be modified by a
+  pull request or by anything reviewing this repository.
+
+  **What that does NOT mean.** Keeping it out of the repo does not put it beyond reach of
+  an agent session: no guard implements that. Both deploy guards' production-path
+  patterns exclude `C:\PZ-secrets` (`pz-deploy-guard.py`'s `PROD_PZ_RX` uses a
+  `(?![\w\-])` lookahead, so the `-secrets` suffix does not match), and the provisioning
+  block sets no ACL. Anything that can write the filesystem can write an evidence file,
+  and the digest binding does not help — it faithfully binds whatever bytes were there.
+
+  **What actually protects production is the signing key**, which lives outside the repo
+  and never enters an agent session (`sign_deploy_authorization.py` header). Forged
+  evidence alone authorizes nothing: it is one input to a mint the operator performs.
+  If you want the stronger property, restrict the directory's ACL to the operator
+  account — that is a real mechanism; "it lives outside the repo" is not.
 - **One file per gate round.** Name it by the SHA it approves. A round that fails
   produces no evidence file.
 - **How long it is valid.** `expires_at` is set by whoever writes the file, and the
@@ -197,10 +217,23 @@ Every rule fails **closed** — refusal, never a warning. In order:
   a gate verdict is about a tree and a moment; the longer it stays valid, the more likely
   the world has moved. The signed authorization has its own, shorter TTL (`--ttl`,
   default 60 minutes) on top.
-- **Write it in UTF-8 without a BOM.** On Windows, PowerShell 5.1's `Out-File` and
-  `Set-Content` default to UTF-16LE, and `Out-File -Encoding utf8` emits a BOM — all
-  three are refused (`not valid UTF-8` / `not valid JSON`). Use
-  `Set-Content -Encoding utf8NoBOM` on PowerShell 7+, or write the file with Python.
+- **Write it in UTF-8 without a BOM**, and prefer writing it with Python rather than a
+  PowerShell redirect. On Windows PowerShell 5.1: `Out-File` and `>` default to
+  **UTF-16LE** (refused: `not valid UTF-8`), and `Out-File -Encoding utf8` emits a
+  **BOM** (refused: `not valid JSON`, with a message that says nothing about a BOM).
+  `Set-Content` on 5.1 defaults to the system **ANSI** code page — which is
+  byte-identical to UTF-8 for ASCII-only content, so it usually works and then fails the
+  first time a non-ASCII character appears in `risks`. That is the worst failure mode of
+  the three, because it is intermittent. PowerShell 7+ defaults to UTF-8 no-BOM.
+
+  The reliable command, on any PowerShell version — edit the values, then run it:
+
+  ```powershell
+  python -c "import json,sys; json.dump({'schema_version':1,'target_sha':'<sha>','created_at':'2026-08-05T14:00:00+00:00','expires_at':'2026-08-05T18:00:00+00:00','agents':[{'agent':a,'status':'GO','blockers':[],'risks':[]} for a in ['deploy_git_diff_reviewer','deploy_backend_impact_reviewer','deploy_persistence_storage_reviewer','deploy_security_reviewer','deploy_qa_reviewer','deploy_release_manager','deploy_lead_coordinator']],'lead_verdict':'GO'}, open(sys.argv[1],'w',encoding='utf-8'), indent=2)" C:\PZ-secrets\gate-evidence\<sha>.json
+  ```
+
+  Then read the file back and check it says what the round actually decided. Writing it
+  by hand in an editor set to UTF-8 no-BOM is equally fine.
 - **Signer and verifier must read the same immutable file.** The digest is taken at
   signing time and re-checked at use time, so the file must not be edited, regenerated,
   reformatted, moved, or deleted between minting the authorization and running the
@@ -226,6 +259,10 @@ At **use** time `deploy_authorization.evaluate()` re-hashes the file and refuses
 mismatch. Signing and deploying are different moments; the gap between them is exactly
 when an evidence file gets "tidied up".
 
+**Every bullet below applies to `deploy` and `reconcile` only** — the whole re-check sits
+inside `if action in ("deploy", "reconcile")`. For `rollback` none of them fires; see
+*Which actions require evidence*.
+
 - **Edited after signing → DENY** (digest mismatch), including a reformat that preserves
   the meaning.
 - **Moved or renamed after signing → DENY.** The ref records an absolute path so
@@ -234,8 +271,15 @@ when an evidence file gets "tidied up".
   but differently-spelled path (mapped drive vs UNC, a junction) also denies. Fail-closed,
   but sign and deploy from the same shell to avoid the surprise.
 - **Deleted after signing → DENY.**
-- An artifact whose ref carries **no digest** is refused for `deploy` and `reconcile`.
-  The pre-binding shape is not grandfathered.
+- An artifact whose ref carries **no digest** is refused. The pre-binding shape is not
+  grandfathered.
+
+**The re-check compares the digest, not the document.** `evaluate()` re-hashes the bytes;
+it does not re-run `validate_evidence`. So the evidence rules — including expiry — are
+enforced **at signing time only**. An authorization minted against evidence that expires
+five minutes later still deploys until the *artifact's* own TTL runs out. That is the
+intended division (the single-use, short-TTL artifact is what bounds the deploy window),
+but do not read "expiry is enforced" as meaning it is re-checked at use time.
 
 ## Which actions require evidence
 

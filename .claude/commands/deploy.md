@@ -32,10 +32,13 @@ Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
 #    strict-JSON evidence (schema: .claude/contracts/seven-agent-evidence.md)
 
 # 3. mint a single-use authorization for the approved SHA (operator shell).
-#    --gate-evidence is REQUIRED: the file is validated (all seven agents GO, no
-#    unresolved blocker, target_sha == this SHA, not expired) BEFORE the signing key
-#    is loaded, and its SHA-256 is recorded in the signed body. One line - the
-#    operator shell is PowerShell, where a trailing \ is not a continuation.
+#    --gate-evidence is REQUIRED: the file is validated BEFORE the signing key is
+#    loaded, and its SHA-256 is recorded in the signed body. It must be strict JSON,
+#    UTF-8 no BOM, with all seven agents GO, no unresolved blocker, target_sha == this
+#    SHA, both timestamps in UTC, created_at not in the future, a validity window of at
+#    most 24h, and not expired. Full rules: .claude/contracts/seven-agent-evidence.md.
+#    One line - the operator shell is PowerShell, where a trailing \ is not a
+#    continuation.
 python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --gate-evidence <gate-evidence-dir>\<40-char-sha>.json --ttl 60
 
 # 4. deploy
@@ -55,11 +58,19 @@ SHA-256 is inside the signed body. This applies to `deploy` and `reconcile`. It 
 **not** apply to `rollback`: a rollback needs no evidence, and any digest recorded for
 one is audit trail that is never re-read.
 
-**Any pre-existing `deploy` / `reconcile` authorization whose `gate_evidence_ref`
-carries no `@sha256:` digest is now denied.** The pre-binding shape is not
-grandfathered. Before the first deploy after this change, list `PZ_DEPLOY_AUTH_DIR` and
-re-mint any such artifact. `rollback` artifacts are unaffected, so incident capability
-survives.
+**Re-mint every `deploy` / `reconcile` authorization minted before this change.** Two
+distinct reasons, and the second is easy to miss:
+
+1. An artifact whose `gate_evidence_ref` carries no `@sha256:` digest is now denied —
+   the pre-binding shape is not grandfathered.
+2. An artifact that *does* carry a digest, but bound to a **Markdown** evidence file, is
+   **still accepted**: the use-time check re-hashes the bytes, it does not re-validate
+   the document. The strict-JSON rules gate signing only. So a stale artifact can deploy
+   citing evidence that would no longer pass the gate that produced it.
+
+Before the first deploy after this change, list `PZ_DEPLOY_AUTH_DIR` and re-mint
+anything for `deploy` or `reconcile`, regardless of what its ref looks like. `rollback`
+artifacts are unaffected, so incident capability survives.
 
 **Reconcile needs both a `--from-sha` and its own evidence.** The evidence must approve
 the SHA being converged *to*, not the identity production currently holds:

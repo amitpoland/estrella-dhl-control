@@ -116,7 +116,7 @@ commit's bytes.
 | source tree sane | `Invoke-Preflight` | branch/dirty/local-only checks |
 | prove runtime identity | `Assert-ProductionMatchesRecordedSha` | the identity gate |
 | detect real delta | `Test-RuntimeUnchanged` | **already hashes all 16 engine files** and fails safe toward *deploy* on any uncertainty |
-| authorization | `Assert-Authorization` | calls `deploy_authorization.py`, which now enforces the evidence digest |
+| authorization | `Assert-Authorization` | calls `deploy_authorization.py`, which enforces the evidence digest for `deploy` and `reconcile` (never for `rollback`) |
 | stage artifact | `New-ReleaseArtifact` | immutable, hash-manifested |
 | backup | `New-BackupUnit` | |
 | converge app | `Invoke-Converge` | |
@@ -213,6 +213,12 @@ mutations of `gate_evidence.py` (duplicate-key hook removed, unknown-field check
 disabled, agent names normalised, expiry ignored, SHA comparison skipped, second read
 reintroduced, …) were each verified to fail the suite, so it distinguishes a strict
 validator from a permissive one rather than only exercising the happy path.
+
+That mutation run is a **process claim with no artifact in the repository** — a future
+reader cannot re-derive it from anything here, so do not treat it as evidence. To
+re-establish it, change one line of `gate_evidence.py` (e.g. drop `object_pairs_hook`
+from the `json.loads` call) and confirm `service/tests/test_gate_evidence.py` fails,
+then revert. The durable coverage claim is the suite itself.
 
 ## Documentation to update
 

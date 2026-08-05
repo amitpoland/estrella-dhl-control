@@ -53,8 +53,8 @@ if str(HOOKS) not in sys.path:
     sys.path.insert(0, str(HOOKS))
 
 from gate_evidence import (  # noqa: E402
-    MAX_VALIDITY, REQUIRED_AGENTS, SCHEMA_VERSION, digest_file, format_ref, parse_ref,
-    validate_evidence,
+    CLOCK_SKEW, MAX_VALIDITY, REQUIRED_AGENTS, SCHEMA_VERSION, digest_file, format_ref,
+    parse_ref, validate_evidence,
 )
 
 # The hook modules this file imports under bare, very generic top-level names. They stay
@@ -69,6 +69,7 @@ _HOOK_MODULES = ("gate_evidence", "deploy_authorization", "sign_deploy_authoriza
 @pytest.fixture(autouse=True)
 def _isolate_hook_modules():
     saved = {name: sys.modules.get(name) for name in _HOOK_MODULES}
+    saved_path = list(sys.path)
     try:
         yield
     finally:
@@ -77,6 +78,12 @@ def _isolate_hook_modules():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+        # sys.path too. Popping the hook modules means each test re-executes them, and
+        # each execution used to re-run their sys.path.insert -- so a full run left
+        # dozens of duplicate entries behind. Path resolution is the half that can
+        # actually change a LATER file's imports, so restoring modules but not path
+        # closed the visible leak and left the consequential one.
+        sys.path[:] = saved_path
 
 _SHA = "6e1de8b1a2c34d5e6f708192a3b4c5d6e7f80912"
 _OTHER_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -130,40 +137,134 @@ def _refuse(tmp_path, doc, needle, target=_SHA, name="gate.json"):
 
 # ── the roster is pinned to the agent files, not editable in isolation ────────
 
-# An INVOCATION, not a prose mention: the line must actually run python against the
-# signer and name one of the two evidence-requiring actions as a bare word.
-_SIGNER_CMD_RX = re.compile(
-    r"^[^\n]*\bpython\b[^\n]*sign_deploy_authorization\.py[^\n]+\b(?:deploy|reconcile)\b"
-    r"[^\n]*$",
+# Any line that INVOKES the signer, however the interpreter is spelled (`python`,
+# `python3`, `py -3`) — a prose mention of the filename is not a command.
+_SIGNER_INVOCATION_RX = re.compile(
+    r"^[^\n]*\b(?:python[0-9.]*|py)\b[^\n]*sign_deploy_authorization\.py[^\n]*$",
     re.MULTILINE)
+# ...and of those, the ones naming an evidence-requiring action as a bare word.
+_ACTION_RX = re.compile(r"\b(?:deploy|reconcile)\b")
+# A flag is only usable if its VALUE is on the same line.
+_EVIDENCE_WITH_VALUE_RX = re.compile(r"--gate-evidence\s+\S")
+_FROM_SHA_WITH_VALUE_RX = re.compile(r"--from-sha\s+\S")
+# A line explicitly marked as a historical record rather than an instruction.
+_SUPERSEDED_RX = re.compile(r"\bSUPERSEDED\b|\bDO NOT RUN\b|_superseded\b")
 
-_DOCS_SHOWING_THE_SIGNER = (
-    ".claude/hooks/sign_deploy_authorization.py",
-    ".claude/commands/deploy.md",
-    ".claude/contracts/seven-agent-evidence.md",
-)
+# Every tracked file that shows the operator how to invoke the signer. Discovered, not
+# hardcoded: a hardcoded list silently stops covering a doc the moment someone adds one,
+# and one such file (.claude/memory/TASK_STATE.md) was already outside an earlier
+# hardcoded tuple while carrying a mint command that exits 2.
+_SEARCH_ROOTS = (".claude", "docs", "service/docs")
+_SEARCH_SUFFIXES = (".md", ".py", ".ps1", ".txt")
 
 
-@pytest.mark.parametrize("relpath", _DOCS_SHOWING_THE_SIGNER)
-def test_every_documented_deploy_mint_carries_gate_evidence(relpath):
-    """An operator copy-pastes these. A documented command that now exits 2 is a defect.
+def _files_invoking_the_signer():
+    hits = []
+    for root in _SEARCH_ROOTS:
+        base = REPO / root
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.suffix not in _SEARCH_SUFFIXES or not path.is_file():
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if _SIGNER_INVOCATION_RX.search(text):
+                hits.append((path.relative_to(REPO), text))
+    return hits
 
-    This regressed once already: when `--gate-evidence` became mandatory, the canonical
-    PER-DEPLOY and RECONCILE commands in the signer's own docstring were left without
-    it, so the file that teaches the command taught a command it rejects. Nothing pinned
-    the text, so only a human reading it caught it — twice, in two separate gate rounds.
 
-    Scanned per LINE, which also enforces the PowerShell constraint: the operator shell
-    on the production host does not treat a trailing `\\` as a continuation, so a wrapped
-    command pastes as two broken ones. A single-line command keeps the flag on the same
-    line as the action, which is exactly what this regex requires.
+def test_the_signer_documentation_pin_finds_something_to_check():
+    """Guard against the pin becoming vacuous.
+
+    The test below is a universal quantifier over a discovered set: if the discovery
+    finds nothing, it passes while pinning nothing, and a docs reword is all it takes.
+    An earlier version had exactly this shape with no precondition — and its docstring
+    additionally claimed to enforce the PowerShell single-line rule, which it did not:
+    a command wrapped so the ACTION word falls on the continuation line matched no line
+    at all and was invisible. Both are fixed; this asserts the discovery is live.
     """
-    text = (REPO / relpath).read_text(encoding="utf-8")
-    missing = [m.group(0).strip() for m in _SIGNER_CMD_RX.finditer(text)
-               if "--gate-evidence" not in m.group(0)]
-    assert not missing, (
-        f"{relpath} documents a deploy/reconcile mint without --gate-evidence; "
-        f"pasted as written it exits 2:\n  " + "\n  ".join(missing))
+    found = _files_invoking_the_signer()
+    assert found, "no file documents a signer invocation — the pin below checks nothing"
+    names = {str(p) for p, _ in found}
+    for expected in (".claude/hooks/sign_deploy_authorization.py",
+                     ".claude/commands/deploy.md"):
+        assert expected in names, f"{expected} no longer shows a signer invocation"
+
+
+def test_every_documented_mint_is_runnable_as_written():
+    """An operator copy-pastes these. A documented command that exits 2 is a defect.
+
+    This regressed twice across gate rounds with nothing to catch it: when
+    `--gate-evidence` became mandatory, the canonical PER-DEPLOY and RECONCILE commands
+    in the signer's own docstring were left without it, so the file that teaches the
+    command taught a command the tool rejects.
+
+    Three properties, all per-line — which is also how the PowerShell constraint is
+    enforced, since the operator shell does not treat a trailing `\\` as a continuation:
+      * a deploy/reconcile mint carries `--gate-evidence` (required, both actions);
+      * a reconcile mint also carries `--from-sha` (required, refused for the others);
+      * each flag has its VALUE on the same line — a flag whose argument wrapped to the
+        next line exits 2 with "expected one argument", which is exactly as broken.
+    """
+    broken = []
+    for relpath, text in _files_invoking_the_signer():
+        for m in _SIGNER_INVOCATION_RX.finditer(text):
+            line = m.group(0).strip()
+            if not _ACTION_RX.search(line.replace("sign_deploy_authorization.py", "")):
+                continue                       # rollback, or a bare `--help` example
+            if _SUPERSEDED_RX.search(line):
+                # A historical record, not an instruction. The exemption is narrow on
+                # purpose: it requires an explicit marker ON THE LINE, so a stale command
+                # can only escape by being labelled unrunnable where a reader sees it.
+                continue
+            if not _EVIDENCE_WITH_VALUE_RX.search(line):
+                broken.append(f"{relpath}: --gate-evidence missing or has no value\n    {line}")
+            if "reconcile" in line and not _FROM_SHA_WITH_VALUE_RX.search(line):
+                broken.append(f"{relpath}: reconcile without --from-sha\n    {line}")
+    assert not broken, (
+        "documented mint commands that do not run as written (each exits 2):\n  "
+        + "\n  ".join(broken))
+
+
+def test_the_time_constants_match_the_figures_the_contract_publishes():
+    """Pin the MAGNITUDES, not just the behaviour.
+
+    Every window test computes its inputs from the imported symbols, so widening
+    `MAX_VALIDITY` to 30 days — or `CLOCK_SKEW` to an hour — leaves the entire suite
+    green while the contract still tells operators "at most 24 hours" and "5 minutes".
+    The published figure and the enforced figure must be the same number, and this is
+    the same code-to-document pin the roster already gets below.
+    """
+    contract = (REPO / ".claude" / "contracts" / "seven-agent-evidence.md").read_text(
+        encoding="utf-8")
+    assert MAX_VALIDITY == timedelta(hours=24), (
+        f"MAX_VALIDITY is {MAX_VALIDITY}; the contract publishes 24 hours")
+    assert CLOCK_SKEW == timedelta(minutes=5), (
+        f"CLOCK_SKEW is {CLOCK_SKEW}; the contract publishes 5 minutes")
+    assert "24 h" in contract or "24 hours" in contract
+    assert "5 min" in contract or "5 minutes" in contract
+
+
+def test_the_clock_skew_boundary_is_where_the_constant_says_it_is(tmp_path):
+    """Derive the inputs FROM the constant, so the pair brackets the real boundary.
+
+    Fixed 2-minute / 2-hour cases could not distinguish a 5-minute skew from a
+    119-minute one, so widening CLOCK_SKEW survived them. Just inside must pass, just
+    outside must refuse — at whatever value the constant holds.
+    """
+    inside = _now() + CLOCK_SKEW - timedelta(seconds=30)
+    ok, reason, _ = validate_evidence(
+        _write(tmp_path, _doc(created=inside, expires=inside + timedelta(hours=1))), _SHA)
+    assert ok, f"a document inside the skew allowance was refused: {reason}"
+
+    outside = _now() + CLOCK_SKEW + timedelta(minutes=1)
+    _refuse(tmp_path, _doc(created=outside, expires=outside + timedelta(hours=1)),
+            "in the future")
 
 
 def test_required_agents_matches_the_agent_files_on_disk():
@@ -377,6 +478,69 @@ def test_expiry_before_creation_is_refused(tmp_path):
     """A window that closes before it opens is a malformed document, not a long one."""
     _refuse(tmp_path, _doc(created=_now(), expires=_now() - timedelta(hours=1)),
             "not after created_at")
+
+
+def test_a_zero_length_window_is_refused(tmp_path):
+    """`expires == created` — a surviving mutant until now.
+
+    Every other test used expires < created, so relaxing `<=` to `<` failed nothing:
+    a document with created == expires == now+2min passes the skew check (not far
+    enough future), the cap (window is 0), and the expiry check (now < expires), and
+    would be ACCEPTED. A window with no duration is not a window.
+    """
+    at = _now() + timedelta(minutes=2)
+    _refuse(tmp_path, _doc(created=at, expires=at), "not after created_at")
+
+
+@pytest.mark.parametrize("offset,label", [
+    ("+12:00", "east"),
+    ("-11:00", "west"),
+    ("+05:30", "half-hour offset"),
+    ("+00:01", "one minute off UTC"),
+])
+def test_non_utc_offsets_are_refused(tmp_path, offset, label):
+    """Offsets were the last place a human and the validator could read one document
+    two ways. `created_at: 12:00+12:00` with `expires_at: 12:00-11:00` reads as two
+    identical instants and resolves to a 23-hour window — inside the cap, accepted.
+    Requiring UTC removes the divergence rather than documenting it."""
+    doc = _doc()
+    doc["created_at"] = f"2026-08-05T12:00:00{offset}"
+    reason, _ = _refuse(tmp_path, doc, "must be UTC")
+    assert "created_at" in reason
+
+
+def test_the_mixed_offset_window_that_motivated_the_utc_rule(tmp_path):
+    """The concrete document from the round-5 security finding, pinned as refused."""
+    doc = _doc()
+    doc["created_at"] = "2026-08-05T12:00:00+12:00"
+    doc["expires_at"] = "2026-08-05T12:00:00-11:00"
+    _refuse(tmp_path, doc, "must be UTC")
+
+
+@pytest.mark.parametrize("spelling", ["+00:00", "Z"])
+def test_utc_spellings_are_accepted(tmp_path, spelling):
+    """Both canonical UTC forms must work — refusing `Z` would reject the spelling the
+    contract itself recommends."""
+    created = _now() - timedelta(minutes=1)
+    expires = created + timedelta(hours=2)
+
+    def fmt(dt):
+        base = dt.replace(microsecond=0, tzinfo=None).isoformat()
+        return base + ("+00:00" if spelling == "+00:00" else "Z")
+
+    ok, reason, _ = validate_evidence(
+        _write(tmp_path, _doc(created=fmt(created), expires=fmt(expires))), _SHA)
+    assert ok, reason
+
+
+def test_a_naive_now_does_not_crash_the_validator(tmp_path):
+    """`fail closed throughout` had one hole: a naive `now=` raised TypeError out of
+    validate_evidence instead of producing a verdict. Unreachable from the two hook
+    call sites, which use the default — but a contract that says "throughout" should
+    not have an asterisk."""
+    ok, reason, _ = validate_evidence(
+        _write(tmp_path, _doc()), _SHA, now=datetime.utcnow())
+    assert ok, reason
 
 
 def test_a_validity_window_longer_than_the_maximum_is_refused(tmp_path):
@@ -757,12 +921,17 @@ def test_rollback_does_not_require_evidence(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("argv_tail", [
     [],                                            # no evidence at all
-    ["--gate-evidence", "nope.json"],              # evidence that does not exist
+    ["--gate-evidence", "__absent__.json"],        # evidence that does not exist
 ])
 def test_a_refused_mint_writes_nothing_to_the_store(tmp_path, monkeypatch, argv_tail):
-    """A refusal must not leave an artifact. The evidence checks are the newest refusal
-    paths and were the ones not pinned: hoisting `os.makedirs`/`_load_key` above
-    `validate_evidence` would pass every other test in this file."""
+    """A refusal must not leave an artifact.
+
+    Scope, stated precisely: this pins that no ARTIFACT is written on the evidence
+    refusal paths, which are the newest ones. It does NOT catch a hoisted
+    `os.makedirs`, because `_signer_env` pre-creates the store, so an early makedirs is
+    a no-op here and the directory is empty either way. The `_load_key` ordering is
+    pinned separately, by test_evidence_is_validated_before_the_signing_key_is_loaded.
+    """
     store = _signer_env(tmp_path, monkeypatch)
     assert _sign([_SHA, "deploy", "Both"] + argv_tail) == 2
     assert not list(store.iterdir()), "a refused mint wrote to the authorization store"
@@ -781,6 +950,7 @@ def test_evidence_is_validated_before_the_signing_key_is_loaded(tmp_path, monkey
     store.mkdir()
     monkeypatch.delenv("PZ_DEPLOY_AUTH_KEY_FILE", raising=False)
     monkeypatch.delenv("PZ_DEPLOY_AUTH_KEY", raising=False)
+    monkeypatch.delenv("PZ_DEPLOY_AUTH_REPO", raising=False)
     monkeypatch.setenv("PZ_DEPLOY_AUTH_DIR", str(store))
 
     import io
@@ -911,10 +1081,41 @@ def test_a_rollback_digest_is_recorded_but_never_re_checked(tmp_path, monkeypatc
     _, digest = parse_ref(art["gate_evidence_ref"])
     assert digest == digest_file(ev), "the digest was not recorded for audit"
 
+    # EDIT the content first: an implementation that re-checked a present file and only
+    # tolerated absence would pass a deletion-only test, so absence alone does not prove
+    # "never re-checked".
+    Path(ev).write_text(json.dumps(_doc(), indent=4), encoding="utf-8")
+    assert _evaluate(_SHA, "rollback", "Both", dict(os.environ))[0] == "allow", (
+        "a rollback was gated on its evidence CONTENT — the digest is audit trail")
+
+    # ...and then delete it, for the absence half.
+    assert _sign([_SHA, "rollback", "Both", "--gate-evidence", ev]) == 0
     os.remove(ev)   # the deploy path would DENY here
     assert _evaluate(_SHA, "rollback", "Both", dict(os.environ))[0] == "allow", (
         "a rollback was gated on its evidence — if this is now intended, the exemption "
         "documented in .claude/contracts/seven-agent-evidence.md must change with it")
+
+
+def test_an_evidence_tamper_denial_does_not_burn_the_single_use_artifact(tmp_path, monkeypatch):
+    """A recoverable denial must stay recoverable.
+
+    `evaluate()` re-checks the evidence digest BEFORE `_consume()`. If those were
+    reordered, an operator who tampered with — or merely reformatted — the evidence
+    would get a denial AND lose the artifact, turning a fixable mistake into a re-mint
+    mid-deploy. Nothing pinned the ordering; hoisting `_consume` broke no test.
+    """
+    _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    original = Path(ev).read_bytes()
+    assert _sign([_SHA, "deploy", "Both", "--gate-evidence", ev]) == 0
+
+    Path(ev).write_text(json.dumps(_doc(), indent=4), encoding="utf-8")
+    assert _evaluate(_SHA, "deploy", "Both", dict(os.environ))[0] == "deny"
+
+    Path(ev).write_bytes(original)          # undo the change
+    decision, reason = _evaluate(_SHA, "deploy", "Both", dict(os.environ))
+    assert decision == "allow", (
+        f"the artifact was consumed by a denial it should have survived: {reason}")
 
 
 def test_a_prebinding_authorization_is_refused_for_deploy(tmp_path, monkeypatch):

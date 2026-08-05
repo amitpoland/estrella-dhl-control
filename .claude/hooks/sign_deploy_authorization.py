@@ -1,4 +1,4 @@
-"""OPERATOR TOOL — mint a signed deploy/rollback authorization artifact.
+r"""OPERATOR TOOL — mint a signed deploy/rollback authorization artifact.
 
 Deploy-PZ.ps1 refuses every production write without one of these. Without this tool
 an operator would have to reverse-engineer the canonical body, the JSON schema, the
@@ -12,14 +12,19 @@ shell, never in an agent session. It never prints the key.
 ONE-TIME PROVISIONING (operator, once per machine)
 --------------------------------------------------------------------------------
 Choose a key location OUTSIDE this repository, generate a key, and export both vars.
-These are PowerShell commands, run on the production host, IN THIS ORDER -- the mkdir
+These are PowerShell commands, run on the production host, IN THIS ORDER -- each mkdir
 creates both levels, and the key write below fails with "could not find a part of the
-path" if C:\\PZ-secrets does not exist yet:
+path" if C:\PZ-secrets does not exist yet:
 
-    mkdir C:\\PZ-secrets\\deploy-auth
-    python -c "import secrets;print(secrets.token_hex(32))" > C:\\PZ-secrets\\deploy-auth.key
-    setx PZ_DEPLOY_AUTH_KEY_FILE C:\\PZ-secrets\\deploy-auth.key
-    setx PZ_DEPLOY_AUTH_DIR      C:\\PZ-secrets\\deploy-auth
+    mkdir C:\PZ-secrets\deploy-auth
+    mkdir C:\PZ-secrets\gate-evidence
+    python -c "import secrets;print(secrets.token_hex(32))" > C:\PZ-secrets\deploy-auth.key
+    setx PZ_DEPLOY_AUTH_KEY_FILE C:\PZ-secrets\deploy-auth.key
+    setx PZ_DEPLOY_AUTH_DIR      C:\PZ-secrets\deploy-auth
+
+The second directory holds the gate evidence files the PER-DEPLOY step below reads.
+Creating it here is not decoration: without it, an operator's very first evidence write
+fails on a fresh machine with the same "could not find a part of the path" error.
 
 The key must NOT live in the repository, and must not be committed. An agent that can
 read every tracked file still cannot sign an authorization.
@@ -37,7 +42,7 @@ JSON record of the seven-agent round for THIS sha -- schema, storage convention 
 validation rules in .claude/contracts/seven-agent-evidence.md. It is validated before
 the signing key is loaded, so an unapproved SHA never reaches the key:
 
-    python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --gate-evidence C:\\PZ-secrets\\gate-evidence\\<sha>.json --ttl 60
+    python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --gate-evidence C:\PZ-secrets\gate-evidence\<sha>.json --ttl 60
 
 Do NOT edit, reformat, move or delete the evidence file after signing. Its SHA-256 is
 recorded in the signed body and re-checked at deploy time; any change is a denial.
@@ -56,7 +61,7 @@ Deploy-PZ.ps1 -Reconcile repairs the marker, and its authorization is bound to t
 ordered PAIR so an artifact minted for one drift cannot repair a different one. Pass
 the identity production ACTUALLY holds as --from-sha:
 
-    python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence C:\\PZ-secrets\\gate-evidence\\<to-sha>.json --ttl 60
+    python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence C:\PZ-secrets\gate-evidence\<to-sha>.json --ttl 60
 
     Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
 
@@ -80,7 +85,9 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _HOOKS_DIR not in sys.path:      # guarded: see deploy_authorization.py
+    sys.path.insert(0, _HOOKS_DIR)
 from deploy_authorization import (  # noqa: E402
     VALID_ACTIONS, VALID_SCOPES, _load_key, _store_dir, artifact_name, sign,
 )

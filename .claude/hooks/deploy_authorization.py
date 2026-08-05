@@ -51,7 +51,9 @@ import os
 import sys
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _HOOKS_DIR not in sys.path:      # guarded: a test suite that re-executes this module
+    sys.path.insert(0, _HOOKS_DIR)  # per test would otherwise stack dozens of copies
 from gate_evidence import digest_file, parse_ref  # noqa: E402
 
 VALID_ACTIONS = ("deploy", "rollback", "reconcile")

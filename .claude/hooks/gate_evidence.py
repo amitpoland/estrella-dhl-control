@@ -33,8 +33,12 @@ with one schema and one meaning:
   * `json.loads` either parses or refuses -- no partial understanding;
   * duplicate keys are REFUSED via `object_pairs_hook` (stdlib json silently keeps the
     last one, which is precisely the last-wins defect that started this);
-  * unknown fields are refused at both levels, so nothing can hide in a document the
-    validator ignores;
+  * unknown fields are refused at both levels, so no field the validator never looks at
+    can be introduced. NOTE the exact scope: `risks` is a KNOWN field whose CONTENTS are
+    deliberately unvalidated (any JSON, any depth). A blocking finding transcribed into
+    `risks` instead of `blockers` therefore validates -- that is intended (Lesson N:
+    recorded risk is advisory, an unresolved blocker is not), but it means "nothing can
+    hide" would be false. `risks` is exactly where free text lives;
   * agent names are matched EXACTLY -- no case folding, no separator equivalence, no
     `.md` tolerance. A near-miss is an unknown agent, and unknown agents are refused;
   * every status must be exactly "GO". There is no passing synonym to typo into.
@@ -114,7 +118,7 @@ MAX_VALIDITY = timedelta(hours=24)
 # `created_at` hours in the future is a backdated or mis-generated file, not skew.
 CLOCK_SKEW = timedelta(minutes=5)
 
-_REF_RX = re.compile(r"^(?P<path>.+)@sha256:(?P<digest>[0-9a-f]{64})$")
+_REF_RX = re.compile(r"\A(?P<path>.+)@sha256:(?P<digest>[0-9a-f]{64})\Z")
 # `\Z`, not `$`: Python's `$` also matches immediately before a trailing newline, so
 # `^[0-9a-f]{40}$` accepts "<40 hex>\n". Harmless today because the equality compare
 # would then mismatch -- but a shape check that accepts a shape it names as invalid is
@@ -168,7 +172,20 @@ def parse_ref(ref):
 
 
 def _parse_ts(value, label):
-    """(datetime, None) or (None, reason). Naive timestamps are read as UTC."""
+    """(datetime, None) or (None, reason). Naive timestamps are read as UTC.
+
+    A non-UTC offset is REFUSED. Not pedantry: offsets are the one place left where a
+    human reader and the validator can read the same document differently. Given
+
+        "created_at": "2026-08-05T12:00:00+12:00",
+        "expires_at": "2026-08-05T12:00:00-11:00"
+
+    a reader sees two identical wall-clock instants and expects the
+    "expires_at is not after created_at" refusal. The validator resolves 00:00Z and
+    23:00Z -- a 23-hour window, inside MAX_VALIDITY, ACCEPTED. Requiring UTC removes the
+    divergence instead of documenting it, which is the same argument that turned the
+    validity window from advice into MAX_VALIDITY.
+    """
     if not isinstance(value, str):
         return (None, f"{label} must be a string")
     try:
@@ -176,7 +193,10 @@ def _parse_ts(value, label):
     except ValueError:
         return (None, f"{label} is not a valid ISO 8601 timestamp")
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        return (dt.replace(tzinfo=timezone.utc), None)
+    if dt.utcoffset() != timedelta(0):
+        return (None, f"{label} must be UTC (offset +00:00, a trailing 'Z', or no "
+                      f"offset at all); got {value!r}")
     return (dt, None)
 
 
@@ -224,6 +244,10 @@ def validate_evidence(path, target_sha, now=None):
     is returned on every post-read refusal so a caller can record what it rejected.
     """
     now = now or datetime.now(timezone.utc)
+    # A naive `now` from a caller would raise TypeError on the comparisons below --
+    # the one hole in "fail closed throughout". Fill it rather than crash.
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
 
     if not isinstance(target_sha, str) or not _SHA_RX.match(target_sha.lower()):
         return (False, "target_sha is not a full 40-character commit SHA", None)
@@ -251,11 +275,17 @@ def validate_evidence(path, target_sha, now=None):
         return (False, f"gate evidence has a {exc}", digest)
     except ValueError as exc:
         return (False, f"gate evidence is not valid JSON: {exc}", digest)
-    except RecursionError:
-        # Deeply nested JSON exhausts the stack inside the decoder. RecursionError is a
-        # RuntimeError, not a ValueError, so without this it propagates out of a
+    except (RecursionError, MemoryError):
+        # Deeply nested JSON exhausts the decoder's recursion budget. RecursionError is
+        # a RuntimeError, not a ValueError, so without this it propagates out of a
         # function whose contract is "fail closed throughout" -- fail-closed in effect,
         # since the caller aborts, but a traceback is not a refusal reason.
+        #
+        # MemoryError is here for Windows specifically: CPython compiles
+        # _Py_CheckRecursiveCall with USE_STACKCHECK there, and PyOS_CheckStack() raises
+        # MemoryError("Stack overflow") rather than RecursionError when the native stack
+        # is the binding limit. Catching only RecursionError would leave exactly this
+        # path open on exactly the platform that runs the deploy.
         return (False, "gate evidence is nested too deeply to parse", digest)
 
     if not isinstance(doc, dict):

@@ -143,15 +143,35 @@ def test_reconcile_artifact_mints_and_verifies(signing_env, evidence):
 
 
 def test_reconcile_artifact_is_bound_to_its_direction(signing_env, evidence):
-    """One ordered pair only -- an artifact must not repair a different drift."""
+    """One ordered pair only -- an artifact must not repair a different drift.
+
+    Asserting the bare denial is not enough. `evaluate(..., from_sha=other)` resolves a
+    DIFFERENT artifact filename (`artifact_name(TO, "reconcile", other)`), so the
+    denial it produces is "no authorization artifact" -- the filename is what fires, not
+    the signature. Removing `from_sha` from `_SIGNED_FIELDS` entirely would leave that
+    green. So this checks BOTH layers: the filename miss, and then the signature by
+    renaming the real artifact onto the wrong-direction path so the lookup succeeds and
+    only the signed body can refuse it.
+    """
     signer = _load("sign_deploy_authorization")
     auth = _load("deploy_authorization")
     assert signer.main([TO, "reconcile", "Both", "--from-sha", FROM,
                         "--gate-evidence", evidence]) == 0
 
     other = "c" * 40
-    decision, _ = auth.evaluate(TO, "reconcile", "Both", from_sha=other)
+    decision, reason = auth.evaluate(TO, "reconcile", "Both", from_sha=other)
     assert decision == "deny", "a reconcile artifact repaired a different starting identity"
+    assert "no authorization artifact" in reason, (
+        f"expected the filename layer to refuse first, got: {reason!r}")
+
+    # Now defeat the filename layer: put the real artifact where the wrong-direction
+    # lookup will find it. Only the SIGNED from_sha can refuse now.
+    real = signing_env / auth.artifact_name(TO, "reconcile", FROM)
+    real.rename(signing_env / auth.artifact_name(TO, "reconcile", other))
+    decision, reason = auth.evaluate(TO, "reconcile", "Both", from_sha=other)
+    assert decision == "deny", "the signed from_sha did not bind the direction"
+    assert "no authorization artifact" not in reason, (
+        f"the lookup still missed, so the signature was never tested: {reason!r}")
 
 
 def _refusal_output(signer, argv):
