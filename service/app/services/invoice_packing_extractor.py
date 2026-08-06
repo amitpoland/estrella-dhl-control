@@ -21,7 +21,7 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from .excel_reader import read_excel_rows as _read_excel_rows
 
@@ -1193,6 +1193,27 @@ def _canonical_metal(*texts: str) -> str:
     return ""
 
 
+def _metal_tokens(*texts: str) -> FrozenSet[str]:
+    """EVERY metal token present across the given fragments, not just the first.
+
+    A single canonical token cannot describe a two-tone piece.  An invoice
+    description like "18KT Gold, LGD Stud PT950 Com Jewell RING" names two real
+    metals; _canonical_metal() returns whichever pattern happens to be tried
+    first (PT before KT), so comparing single tokens would report PT950 vs an
+    18KT packing row as a *disagreement* when the two sides in fact agree on
+    18KT.  Matching must compare sets: see _cmp_metal().
+    """
+    found = set()
+    for raw in texts:
+        if not raw:
+            continue
+        s = str(raw)
+        for pat, fmt in _METAL_PATTERNS:
+            for m in pat.finditer(s):
+                found.add(fmt(m).upper())
+    return frozenset(found)
+
+
 def _approx(a: float, b: float, tol_abs: float = 0.01, tol_rel: float = 0.02) -> bool:
     """True if two floats agree within tol_abs OR tol_rel of the larger value."""
     if abs(a - b) <= tol_abs:
@@ -1201,152 +1222,347 @@ def _approx(a: float, b: float, tol_abs: float = 0.01, tol_rel: float = 0.02) ->
     return base > 0 and abs(a - b) / base <= tol_rel
 
 
+# ── Match confidence ladder ──────────────────────────────────────────────────
+# Confidence records HOW MUCH corroborating evidence a pair had.  It is never a
+# licence to contradict evidence that WAS available — see _score_pair().
+_CONF_DIRECT         = 1.0    # explicit (invoice_no, invoice_line_position)
+_CONF_TYPE_QTY_RATE  = 0.95   # item type + quantity + unit rate agree
+_CONF_TYPE_QTY_METAL = 0.85   # item type + quantity + metal agree (no rate)
+_CONF_TYPE_QTY       = 0.80   # item type + quantity only
+_CONF_QTY_RATE       = 0.70   # quantity + rate; packing list has no Ctg column
+_CONF_AGGREGATE      = 0.60   # N:1 — row belongs to an aggregated invoice line
+
+# Tiers that consume an invoice line exclusively (1:1), strongest first.
+_EXCLUSIVE_TIERS = (
+    _CONF_TYPE_QTY_RATE, _CONF_TYPE_QTY_METAL, _CONF_TYPE_QTY, _CONF_QTY_RATE,
+)
+
+# A row assigned below this floor carries requires_manual_review=True.
+# _CONF_TYPE_QTY (item type + quantity, with neither rate nor metal available
+# to corroborate) sits below the floor by design: that is the evidence level at
+# which a 14KT pendant was assigned to a 925 invoice line.
+_REVIEW_CONFIDENCE_FLOOR = 0.85
+
+# Discriminator comparison outcomes.
+_AGREE, _UNKNOWN, _CONFLICT = 1, 0, -1
+
+
+def _cmp_token(a: str, b: str) -> int:
+    """Compare two canonical tokens; absent on either side → _UNKNOWN."""
+    if not a or not b:
+        return _UNKNOWN
+    return _AGREE if a == b else _CONFLICT
+
+
+def _cmp_metal(a: FrozenSet[str], b: FrozenSet[str]) -> int:
+    """Compare two metal token SETS; absent on either side → _UNKNOWN.
+
+    Agreement is a non-empty intersection, not equality: a two-tone invoice
+    line ({18KT, PT950}) and a packing row that records only its primary metal
+    ({18KT}) describe the same piece.  Only genuinely disjoint sets — both
+    sides declaring metals, with nothing in common — are a conflict.
+    """
+    if not a or not b:
+        return _UNKNOWN
+    return _AGREE if a & b else _CONFLICT
+
+
+def _cmp_num(a: float, b: float, tol_abs: float = 0.01, tol_rel: float = 0.02) -> int:
+    """Compare two positive numbers; missing on either side → _UNKNOWN."""
+    if a <= 0 or b <= 0:
+        return _UNKNOWN
+    return _AGREE if _approx(a, b, tol_abs=tol_abs, tol_rel=tol_rel) else _CONFLICT
+
+
+def _line_rate(il: Dict[str, Any]) -> float:
+    return _safe_float(
+        il.get("rate_usd") or il.get("unit_netto_pln") or il.get("unit_price") or 0
+    )
+
+
+def _line_total(il: Dict[str, Any], qty: float, rate: float) -> float:
+    """Invoice line total — explicit column when present, else qty × rate."""
+    for key in ("total_value", "amount_usd", "total_usd"):
+        val = _safe_float(il.get(key))
+        if val > 0:
+            return val
+    return qty * rate
+
+
+def _invoice_line_facts(il: Dict[str, Any]) -> Dict[str, Any]:
+    qty  = _safe_float(il.get("quantity"))
+    rate = _line_rate(il)
+    return {
+        "line":   il,
+        "inv_no": str(il.get("invoice_no", "") or "").strip(),
+        "item":   _canonical_item_type(
+            str(il.get("item_type", "") or il.get("description", "") or "")),
+        "qty":    qty,
+        "rate":   rate,
+        "total":  _line_total(il, qty, rate),
+        "metal":  _metal_tokens(il.get("description", ""), il.get("item_type", "")),
+        "pos":    il.get("invoice_line_position"),
+    }
+
+
+def _packing_row_facts(r: Dict[str, Any], idx: int) -> Dict[str, Any]:
+    return {
+        "idx":     idx,
+        "inv_no":  str(r.get("invoice_no", "") or "").strip(),
+        "item":    _canonical_item_type(str(r.get("item_type", "") or "")),
+        "qty":     _safe_float(r.get("quantity")),
+        "rate":    _safe_float(r.get("unit_price")),
+        "metal":   _metal_tokens(r.get("metal", ""), r.get("karat", "")),
+        "sr":      _safe_float(r.get("pack_sr")),
+        "raw_pos": r.get("invoice_line_position"),
+    }
+
+
+def _score_pair(rf: Dict[str, Any], lf: Dict[str, Any]) -> Optional[Tuple[float, str]]:
+    """
+    Strongest tier at which a packing row may be paired with an invoice line,
+    or None if it may not be paired with it at all.
+
+    INVARIANT — the rule this function exists to enforce:
+
+        A discriminator that is present on BOTH sides and DISAGREES vetoes the
+        pair at EVERY tier.  A weaker tier may relax a discriminator that is
+        *unavailable*; it may never relax one that is available and contradicts.
+
+    Without this invariant a low tier can claim an invoice line that a higher
+    tier already refused on the evidence — e.g. a 14KT pendant taking the 925
+    pendant's line on "item type + quantity" alone after the metal check had
+    correctly rejected it, leaving the genuine 925 row with no line at all.
+    """
+    if not rf["inv_no"] or rf["inv_no"] != lf["inv_no"]:
+        return None
+
+    item  = _cmp_token(rf["item"],  lf["item"])
+    metal = _cmp_metal(rf["metal"], lf["metal"])
+    qty   = _cmp_num(rf["qty"],  lf["qty"])
+    rate  = _cmp_num(rf["rate"], lf["rate"], tol_abs=0.05, tol_rel=0.05)
+
+    if _CONFLICT in (item, metal, qty, rate):
+        return None
+
+    if item == _AGREE and qty == _AGREE and rate == _AGREE:
+        return (_CONF_TYPE_QTY_RATE,
+                "type+qty+rate+metal" if metal == _AGREE else "type+qty+rate")
+    if item == _AGREE and qty == _AGREE and metal == _AGREE:
+        return (_CONF_TYPE_QTY_METAL, "type+qty+metal")
+    if item == _AGREE and qty == _AGREE:
+        return (_CONF_TYPE_QTY, "type+qty")
+    if qty == _AGREE and rate == _AGREE:
+        return (_CONF_QTY_RATE, "qty+rate")
+    return None
+
+
+def _rate_distance(rf: Dict[str, Any], lf: Dict[str, Any]) -> float:
+    """Relative rate gap, used only to break ties deterministically."""
+    if rf["rate"] <= 0 or lf["rate"] <= 0:
+        return 0.0
+    base = max(rf["rate"], lf["rate"])
+    return abs(rf["rate"] - lf["rate"]) / base if base > 0 else 0.0
+
+
 def match_packing_to_invoice(
     packing_rows: List[Dict[str, Any]],
     invoice_lines: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """
-    Match packing rows → invoice lines using a layered strategy:
+    Match packing rows → invoice lines.
 
-      1. Direct  — explicit (invoice_no, invoice_line_position)
-      2. Strong  — (invoice_no, item_type_canon, qty, rate) — rate breaks ties
-      3. Fuzzy   — (invoice_no, item_type_canon, qty)
-      4. Fuzzy² — (invoice_no, qty, rate) — for packing lists that lack a Ctg col
-      5. Unmatched → requires_manual_review=True
+    Product codes are minted on INVOICE lines (`invoice_no + "-" + position`).
+    This function copies them onto packing rows; a packing row that ends with
+    `product_code = None` is a row this function failed to place, never a row
+    whose code "was not generated".
 
-    A given invoice line is consumed by the first packing row that matches it
-    so two packing rows can't both claim the same invoice position.
+    Assignment is evidence-ordered, not row-ordered:
+
+      1. Direct      1.00 — explicit (invoice_no, invoice_line_position)
+      2. type+qty+rate       0.95  ┐
+      3. type+qty+metal      0.85  │ exclusive (1:1) tiers, strongest first,
+      4. type+qty            0.80  │ mutually-unique pairs committed first
+      5. qty+rate            0.70  ┘
+      6. aggregate           0.60 — N:1, capacity-bounded
+      7. unmatched           0.00 — requires_manual_review=True
+
+    Two invariants distinguish this from a greedy single pass:
+
+      * **No tier may contradict available evidence.** A discriminator present
+        on both sides that disagrees vetoes the pair at every tier — a weaker
+        tier may relax a discriminator that is *missing*, never one that is
+        present and conflicting. See `_score_pair()`.
+      * **Order independence.** Every (row, line) pair is scored before
+        anything is committed, tiers are resolved strongest-first taking only
+        mutually-unique pairs, and residual ties break on a deterministic key.
+        Shuffling `packing_rows` cannot change the outcome.
+
+    Rows assigned below `_REVIEW_CONFIDENCE_FLOOR`, rows placed by a tie-break,
+    and unmatched rows all carry `requires_manual_review=True`.
     """
-    # ── Build maps ────────────────────────────────────────────────────────────
-    direct_map: Dict[Tuple[str, int], Dict[str, Any]] = {}
-    for il in invoice_lines:
-        inv_no = il.get("invoice_no", "")
-        pos    = il.get("invoice_line_position")
-        if inv_no and pos:
+    rows: List[Dict[str, Any]] = [dict(r) for r in packing_rows]
+    row_facts  = [_packing_row_facts(r, i) for i, r in enumerate(rows)]
+    line_facts = [_invoice_line_facts(il) for il in invoice_lines]
+
+    # row index → (line index, confidence, strategy, ambiguous)
+    assigned: Dict[int, Tuple[int, float, str, bool]] = {}
+    claimed: set = set()          # invoice line indexes consumed by a 1:1 tier
+
+    # ── Tier 1 — direct (invoice_no, invoice_line_position) ───────────────────
+    direct_map: Dict[Tuple[str, int], int] = {}
+    for li, lf in enumerate(line_facts):
+        if lf["inv_no"] and lf["pos"] is not None:
             try:
-                direct_map[(inv_no, int(pos))] = il
+                direct_map.setdefault((lf["inv_no"], int(lf["pos"])), li)
             except (ValueError, TypeError):
                 pass
-
-    # Available pool — invoice lines yet to be claimed
-    available: List[Dict[str, Any]] = list(invoice_lines)
-
-    def _claim(line: Dict[str, Any]) -> None:
+    for rf in row_facts:
+        if not rf["inv_no"] or rf["raw_pos"] is None:
+            continue
         try:
-            available.remove(line)
-        except ValueError:
-            pass
+            li = direct_map.get((rf["inv_no"], int(rf["raw_pos"])))
+        except (ValueError, TypeError):
+            continue
+        if li is not None and li not in claimed:
+            claimed.add(li)
+            assigned[rf["idx"]] = (li, _CONF_DIRECT, "direct", False)
 
-    matched: List[Dict[str, Any]] = []
-    for row in packing_rows:
-        r = dict(row)
-        inv_no = str(r.get("invoice_no", "")).strip()
-        item_canon = _canonical_item_type(str(r.get("item_type", "")))
-        qty   = _safe_float(r.get("quantity"))
-        rate  = _safe_float(r.get("unit_price"))    # EJL packing "Value" column ("$ N" / "$ N,NNN")
-        # Metal/material — packing list has "metal" and "karat" columns
-        # (mapped from "Kt/Color"). Combine them so "18KT/W" → "18KT" and
-        # "PT950/-" → "PT950".
-        pack_metal = _canonical_metal(r.get("metal", ""), r.get("karat", ""))
+    # ── Score every remaining (row, line) pair once ───────────────────────────
+    candidates: Dict[int, Dict[int, Tuple[float, str]]] = {}
+    for rf in row_facts:
+        if rf["idx"] in assigned:
+            continue
+        scored: Dict[int, Tuple[float, str]] = {}
+        for li, lf in enumerate(line_facts):
+            if li in claimed:
+                continue
+            hit = _score_pair(rf, lf)
+            if hit is not None:
+                scored[li] = hit
+        candidates[rf["idx"]] = scored
 
-        chosen: Optional[Dict[str, Any]] = None
-        confidence = 0.0
-        strategy   = ""
-
-        # Strategy 1 — direct
-        raw_pos = r.get("invoice_line_position")
-        if inv_no and raw_pos:
-            try:
-                pos = int(raw_pos)
-                il  = direct_map.get((inv_no, pos))
-                if il and il in available:
-                    chosen = il; confidence = 1.0; strategy = "direct"
-            except (ValueError, TypeError):
-                pass
-
-        # Strategy 2 — invoice + item_type + qty + rate
-        # Only applied when BOTH sides actually carry a rate; otherwise fall
-        # through to strategy 3 (type+qty+metal) so confidence isn't inflated.
-        if chosen is None and inv_no and item_canon and rate > 0:
-            for il in available:
-                if il.get("invoice_no") != inv_no: continue
-                if _canonical_item_type(il.get("item_type", "") or il.get("description", "")) != item_canon: continue
-                if not _approx(float(il.get("quantity", 0) or 0), qty): continue
-                il_rate = float(il.get("rate_usd", il.get("unit_netto_pln", il.get("unit_price", 0))) or 0)
-                if il_rate <= 0: continue   # invoice line has no rate → skip
-                if not _approx(il_rate, rate, tol_abs=0.05, tol_rel=0.05): continue
-                # Metal sanity check: when both sides have a metal token, they
-                # must agree. Prevents 18KT ↔ PT950 swap if rates ever collide.
-                il_metal = _canonical_metal(il.get("description", ""), il.get("item_type", ""))
-                if pack_metal and il_metal and pack_metal != il_metal:
+    # ── Exclusive tiers, strongest first, unique pairs before contested ones ──
+    for tier in _EXCLUSIVE_TIERS:
+        while True:
+            open_at_tier: Dict[int, List[int]] = {}
+            for ridx, scored in candidates.items():
+                if ridx in assigned:
                     continue
-                chosen = il; confidence = 0.95; strategy = "type+qty+rate+metal"
+                lines = sorted(
+                    li for li, (conf, _s) in scored.items()
+                    if conf == tier and li not in claimed
+                )
+                if lines:
+                    open_at_tier[ridx] = lines
+            if not open_at_tier:
                 break
 
-        # Strategy 3 — invoice + item_type + qty + metal (rate missing)
-        # Distinguishes 18KT vs PT950 vs 925 silver vs 999 even with no rate.
-        if chosen is None and inv_no and item_canon and pack_metal:
-            for il in available:
-                if il.get("invoice_no") != inv_no: continue
-                if _canonical_item_type(il.get("item_type", "") or il.get("description", "")) != item_canon: continue
-                if not _approx(float(il.get("quantity", 0) or 0), qty): continue
-                il_metal = _canonical_metal(il.get("description", ""), il.get("item_type", ""))
-                if il_metal != pack_metal: continue
-                chosen = il; confidence = 0.85; strategy = "type+qty+metal"
-                break
+            claimants: Dict[int, List[int]] = defaultdict(list)
+            for ridx, lines in open_at_tier.items():
+                for li in lines:
+                    claimants[li].append(ridx)
 
-        # Strategy 4 — invoice + item_type + qty (no rate, no metal)
-        if chosen is None and inv_no and item_canon:
-            for il in available:
-                if il.get("invoice_no") != inv_no: continue
-                if _canonical_item_type(il.get("item_type", "") or il.get("description", "")) != item_canon: continue
-                if not _approx(float(il.get("quantity", 0) or 0), qty): continue
-                chosen = il; confidence = 0.8; strategy = "type+qty"
-                break
+            # Commit only pairs where the row has one option AND the line has
+            # one suitor — then re-derive, because each commit can make other
+            # pairs unique.  Fixed point, so the result cannot depend on order.
+            progressed = False
+            for ridx in sorted(open_at_tier):
+                lines = [li for li in open_at_tier[ridx] if li not in claimed]
+                if len(lines) != 1:
+                    continue
+                li = lines[0]
+                if len(claimants[li]) != 1:
+                    continue
+                conf, strat = candidates[ridx][li]
+                assigned[ridx] = (li, conf, strat, False)
+                claimed.add(li)
+                progressed = True
+            if progressed:
+                continue
 
-        # Strategy 5 — invoice + qty + rate (when packing list has no Ctg column)
-        if chosen is None and inv_no and rate > 0:
-            for il in available:
-                if il.get("invoice_no") != inv_no: continue
-                if not _approx(float(il.get("quantity", 0) or 0), qty): continue
-                il_rate = float(il.get("rate_usd", il.get("unit_netto_pln", il.get("unit_price", 0))) or 0)
-                if not _approx(il_rate, rate, tol_abs=0.05, tol_rel=0.05): continue
-                chosen = il; confidence = 0.7; strategy = "qty+rate"
-                break
+            # Everything left at this tier is genuinely contested.  Break the
+            # tie on a stable key — closest rate, then row order, then line
+            # order — and mark the row for review.
+            options = [
+                (_rate_distance(row_facts[ridx], line_facts[li]), ridx, li)
+                for ridx, lines in open_at_tier.items()
+                for li in lines
+            ]
+            options.sort()
+            _dist, ridx, li = options[0]
+            conf, strat = candidates[ridx][li]
+            assigned[ridx] = (li, conf, strat, True)
+            claimed.add(li)
 
-        # Strategy 6 — N:1 loose match for AGGREGATED invoice lines.
-        # Used when an invoice groups many packing rows under one summary line
-        # (e.g. invoice line "21 RINGs @ $371.10" ↔ 21 detailed packing rows).
-        # Looks at INVOICE LINES (full pool, not 'available') because multiple
-        # packing rows are expected to point to the same invoice line.
-        if chosen is None and inv_no and item_canon:
-            for il in invoice_lines:
-                if il.get("invoice_no") != inv_no: continue
-                if _canonical_item_type(il.get("item_type", "") or il.get("description", "")) != item_canon: continue
-                il_metal = _canonical_metal(il.get("description", ""), il.get("item_type", ""))
-                if pack_metal and il_metal and pack_metal != il_metal: continue
-                # Invoice line must be aggregated (qty > 1) for loose match
-                if float(il.get("quantity", 0) or 0) <= 1.0: continue
-                chosen = il; confidence = 0.6; strategy = "type+metal_aggregate"
-                break  # do NOT _claim() — N:1 reuse
+    # ── Tier 6 — N:1 aggregate, bounded by the invoice line's own capacity ────
+    # An invoice line may summarise many packing rows ("21 RINGs @ $371.10").
+    # Capacity is what stops one line absorbing rows that belong to another:
+    # quantity is a hard bound, value a preference.
+    rem_qty = [lf["qty"] for lf in line_facts]
+    rem_val = [lf["total"] for lf in line_facts]
+    for ridx, (li, _c, _s, _a) in assigned.items():
+        rem_qty[li] -= row_facts[ridx]["qty"]
+        rem_val[li] -= row_facts[ridx]["qty"] * row_facts[ridx]["rate"]
 
-        if chosen is not None:
-            # Aggregate strategy is N:1 — don't consume the invoice line so
-            # subsequent packing rows can map to it too.
-            if strategy != "type+metal_aggregate":
-                _claim(chosen)
-            r["invoice_line_position"] = chosen.get("invoice_line_position")
-            r["product_code"]          = chosen.get("product_code")
-            r["invoice_no"]            = chosen.get("invoice_no") or inv_no
-            r["requires_manual_review"] = False
-            r["extracted_confidence"]  = confidence
-            r["match_strategy"]        = strategy
+    # Capacity is consumed as rows are placed, so the ORDER rows are considered
+    # in changes the outcome.  Order by the rows' own content — largest value
+    # first (those have the fewest viable homes), then source serial — never by
+    # the order the caller happened to supply them in.
+    aggregate_queue = sorted(
+        (rf for rf in row_facts if rf["idx"] not in assigned),
+        key=lambda rf: (-(rf["qty"] * rf["rate"]), rf["sr"], rf["idx"]),
+    )
+    for rf in aggregate_queue:
+        if rf["qty"] <= 0 or not rf["inv_no"] or not rf["item"]:
+            continue
+        row_val = rf["qty"] * rf["rate"]
+        eligible = [
+            li for li, lf in enumerate(line_facts)
+            if lf["inv_no"] == rf["inv_no"]
+            and _cmp_token(rf["item"], lf["item"]) == _AGREE
+            and _cmp_metal(rf["metal"], lf["metal"]) != _CONFLICT
+            and rem_qty[li] + 1e-9 >= rf["qty"]
+        ]
+        if not eligible:
+            continue
+        fits = [li for li in eligible if row_val <= rem_val[li] * 1.02 + 0.01]
+        if fits:
+            # Tightest value fit first — keeps rows off lines they would blow.
+            li = min(fits, key=lambda i: (rem_val[i] - row_val, i))
         else:
-            r["invoice_line_position"] = None
-            r["product_code"]          = None
+            # Nothing fits by value; the largest remainder is the least-bad
+            # home.  Quantity still reconciles; residual value error is
+            # surfaced as an advisory, not silently absorbed.
+            li = min(eligible, key=lambda i: (-rem_val[i], i))
+        rem_qty[li] -= rf["qty"]
+        rem_val[li] -= row_val
+        assigned[rf["idx"]] = (li, _CONF_AGGREGATE, "type+metal_aggregate", False)
+
+    # ── Emit, preserving the caller's row order ──────────────────────────────
+    matched: List[Dict[str, Any]] = []
+    for rf in row_facts:
+        r = rows[rf["idx"]]
+        hit = assigned.get(rf["idx"])
+        if hit is None:
+            r["invoice_line_position"]  = None
+            r["product_code"]           = None
             r["requires_manual_review"] = True
-            r["extracted_confidence"]  = 0.0
-            r["match_strategy"]        = "unmatched"
+            r["extracted_confidence"]   = 0.0
+            r["match_strategy"]         = "unmatched"
+            r["match_ambiguous"]        = False
+        else:
+            li, conf, strat, ambiguous = hit
+            line = invoice_lines[li]
+            r["invoice_line_position"]  = line.get("invoice_line_position")
+            r["product_code"]           = line.get("product_code")
+            r["invoice_no"]             = line.get("invoice_no") or rf["inv_no"]
+            r["requires_manual_review"] = bool(
+                ambiguous or conf < _REVIEW_CONFIDENCE_FLOOR
+            )
+            r["extracted_confidence"]   = conf
+            r["match_strategy"]         = strat
+            r["match_ambiguous"]        = ambiguous
         matched.append(r)
 
     return matched
@@ -1443,8 +1659,9 @@ def process_packing_upload(
         "invoice_lines": [...],
         "packing_rows": [...],          # enriched with product_code
         "document": {...},              # packing_document fields
-        "matched_count": int,
-        "unmatched_count": int,
+        "matched_count": int,           # rows that received a product_code
+        "unmatched_count": int,         # rows with no invoice line at all
+        "review_count": int,            # matched-but-uncertain + unmatched
         "total_rows": int,
       }
     """
@@ -1490,8 +1707,14 @@ def process_packing_upload(
     else:
         doc_invoice_no = ""
 
-    matched   = sum(1 for r in enriched if not r.get("requires_manual_review"))
+    # "Matched" means the row was placed on an invoice line, i.e. it carries a
+    # product_code.  It deliberately does NOT mean "clean": a row can be matched
+    # and still need review (low confidence or a tie-break), which is what
+    # review_count reports.  Conflating the two is how low-confidence
+    # assignments used to pass as verified.
+    matched   = sum(1 for r in enriched if r.get("product_code"))
     unmatched = len(enriched) - matched
+    review    = sum(1 for r in enriched if r.get("requires_manual_review"))
 
     return {
         "invoice_lines":         invoice_lines,
@@ -1511,5 +1734,6 @@ def process_packing_upload(
         },
         "matched_count":   matched,
         "unmatched_count": unmatched,
+        "review_count":    review,
         "total_rows":      len(enriched),
     }

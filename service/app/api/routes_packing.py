@@ -452,6 +452,9 @@ async def upload_packing_list(
             "remarks":              str(row.get("remarks", "") or ""),
             "extracted_confidence": _safe_float(row.get("extracted_confidence", 0)),
             "requires_manual_review": bool(row.get("requires_manual_review", False)),
+            # WHICH evidence placed this row on its line — the account behind
+            # extracted_confidence.
+            "match_strategy":       row.get("match_strategy") or None,
             # PR 2A — product identity enrichment from packing XLSX
             # unit_price_eur: client billing price (packing list Value column, EUR
             #   namespace) — distinct from unit_price which carries the supplier
@@ -1113,6 +1116,7 @@ async def reprocess_packing_documents(
                         "remarks":               str(r.get("remarks", "") or ""),
                         "extracted_confidence":  float(r.get("extracted_confidence", 0) or 0),
                         "requires_manual_review": bool(r.get("requires_manual_review", False)),
+                        "match_strategy":        r.get("match_strategy") or None,
                         "pack_sr":               r.get("line_position"),
                         "unit_price":            _safe_float(r.get("unit_price")),
                         "total_value":           _safe_float(r.get("total_value")),
