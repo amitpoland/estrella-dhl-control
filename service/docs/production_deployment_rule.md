@@ -176,6 +176,41 @@ All 7 agents run in parallel.  No deployment proceeds until all 7 return clear.
 - [ ] No data-loss risk identified
 - [ ] Rollback command is written and verified
 - [ ] Lead Coordinator has issued written approval
+- [ ] The round's outcome is recorded as **gate evidence** and the signed authorization
+      is minted from it (below)
+
+### Gate evidence — the machine-checkable record of this round
+
+The checklist above is a human procedure. Since PR #1094 the outcome of a passing round
+must additionally be recorded as a strict-JSON **gate evidence** file, because
+`sign_deploy_authorization.py` will not mint a `deploy` or `reconcile` authorization
+without one — it is validated *before* the signing key is loaded.
+
+- **Schema, storage location, validity window, and the transcription mapping:**
+  `.claude/contracts/seven-agent-evidence.md`. Do not re-derive the rules here; that
+  file is the authority and this section is a pointer to it.
+- **The file records approval only.** A round in which any agent returned HOLD, BLOCK or
+  FAIL produces **no evidence file at all**. There is no way to record a non-approving
+  verdict, so "the gate ran" and "the gate approved" cannot be confused.
+- **Authority model:** evidence gates *signing*; the signed HMAC artifact gates the
+  *write*. Evidence never replaces the signature — a file on disk cannot be single-use,
+  key-protected, or revoked.
+- **It is digest-bound.** The evidence file's SHA-256 is inside the signed body and
+  re-checked at deploy time for `deploy` and `reconcile`. Editing, reformatting, moving,
+  renaming or deleting it between minting and deploying is a **denial**, not a warning.
+  `rollback` is exempt at both ends: it needs no evidence, and any digest recorded for
+  one is audit trail that is never re-read.
+- **CI is not consulted** by any of this. A red inherited baseline is not a production
+  hold; node-ID comparison remains a test-PR merge tool.
+
+**One-time migration, before the first deploy after this landed.** List
+`PZ_DEPLOY_AUTH_DIR` and re-mint every `deploy` and `reconcile` authorization minted
+beforehand — **regardless of what its `gate_evidence_ref` looks like**. Two independent
+reasons: an artifact with no `@sha256:` digest is denied outright, and an artifact that
+*does* carry a digest but bound to a Markdown evidence file is still **accepted**,
+because the use-time check re-hashes the bytes rather than re-validating the document.
+`rollback` artifacts are unaffected, so incident capability survives. Full operator
+sequence: `.claude/commands/deploy.md`.
 
 ---
 

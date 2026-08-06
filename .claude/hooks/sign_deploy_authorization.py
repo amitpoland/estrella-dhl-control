@@ -1,4 +1,4 @@
-"""OPERATOR TOOL — mint a signed deploy/rollback authorization artifact.
+r"""OPERATOR TOOL — mint a signed deploy/rollback authorization artifact.
 
 Deploy-PZ.ps1 refuses every production write without one of these. Without this tool
 an operator would have to reverse-engineer the canonical body, the JSON schema, the
@@ -11,21 +11,55 @@ shell, never in an agent session. It never prints the key.
 --------------------------------------------------------------------------------
 ONE-TIME PROVISIONING (operator, once per machine)
 --------------------------------------------------------------------------------
-Choose a key location OUTSIDE this repository, generate a key, and export both vars:
+Choose a key location OUTSIDE this repository, generate a key, and export both vars.
+These are PowerShell commands, run on the production host, IN THIS ORDER -- each mkdir
+creates both levels, and the key write below fails with "could not find a part of the
+path" if C:\PZ-secrets does not exist yet:
 
-    python -c "import secrets;print(secrets.token_hex(32))" > C:\\PZ-secrets\\deploy-auth.key
-    setx PZ_DEPLOY_AUTH_KEY_FILE C:\\PZ-secrets\\deploy-auth.key
-    setx PZ_DEPLOY_AUTH_DIR      C:\\PZ-secrets\\deploy-auth
+    mkdir C:\PZ-secrets\deploy-auth
+    mkdir C:\PZ-secrets\gate-evidence
+    python -c "import secrets;print(secrets.token_hex(32))" > C:\PZ-secrets\deploy-auth.key
+    setx PZ_DEPLOY_AUTH_KEY_FILE C:\PZ-secrets\deploy-auth.key
+    setx PZ_DEPLOY_AUTH_DIR      C:\PZ-secrets\deploy-auth
+    $env:PZ_DEPLOY_AUTH_KEY_FILE = 'C:\PZ-secrets\deploy-auth.key'
+    $env:PZ_DEPLOY_AUTH_DIR      = 'C:\PZ-secrets\deploy-auth'
 
-    mkdir C:\\PZ-secrets\\deploy-auth
+`setx` writes the registry for FUTURE shells and does NOT touch the running session, so
+without the two `$env:` lines the very next command in the same window fails with
+"no signing key" and exit 2. The `setx` lines make it survive a reboot; the `$env:` lines
+make it work now. (Opening a fresh PowerShell window instead is equally fine.)
+
+The key file's ENCODING is irrelevant and must not be "cleaned up": `>` writes UTF-16LE
+on PowerShell 5.1, and both the signer and the verifier read the key as raw bytes, so it
+signs and verifies consistently. Rewriting that file in a different encoding changes the
+key and silently invalidates every outstanding authorization as "signature invalid".
+
+The second directory holds the gate evidence files the PER-DEPLOY step below reads.
+Creating it here is not decoration: without it, an operator's very first evidence write
+fails on a fresh machine with the same "could not find a part of the path" error.
 
 The key must NOT live in the repository, and must not be committed. An agent that can
 read every tracked file still cannot sign an authorization.
 
+NOTE ON THE COMMANDS BELOW: run them from the deploy source checkout (C:\PZ-main on the
+production host) -- the `.claude/hooks/...` paths are relative to the repository root.
+Every command is written on a SINGLE line. The operator shell on
+the production host is PowerShell, which does not treat a trailing backslash as a line
+continuation -- a wrapped command pastes as two broken commands, and argparse exits 2 on
+the stray argument.
+
 --------------------------------------------------------------------------------
 PER-DEPLOY (operator, after the 7-agent gate has approved a SHA)
 --------------------------------------------------------------------------------
-    python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --ttl 60
+--gate-evidence is REQUIRED for deploy and reconcile. It is the path to the strict
+JSON record of the seven-agent round for THIS sha -- schema, storage convention and
+validation rules in .claude/contracts/seven-agent-evidence.md. It is validated before
+the signing key is loaded, so an unapproved SHA never reaches the key:
+
+    python .claude/hooks/sign_deploy_authorization.py <sha> deploy Both --gate-evidence C:\PZ-secrets\gate-evidence\<sha>.json --ttl 60
+
+Do NOT edit, reformat, move or delete the evidence file after signing. Its SHA-256 is
+recorded in the signed body and re-checked at deploy time; any change is a denial.
 
 Then run the deploy with the SAME SHA:
 
@@ -41,10 +75,13 @@ Deploy-PZ.ps1 -Reconcile repairs the marker, and its authorization is bound to t
 ordered PAIR so an artifact minted for one drift cannot repair a different one. Pass
 the identity production ACTUALLY holds as --from-sha:
 
-    python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both \
-        --from-sha <proved-current-sha> --ttl 60
+    python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence C:\PZ-secrets\gate-evidence\<to-sha>.json --ttl 60
 
     Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
+
+Reconcile writes new bytes to production, so it needs evidence exactly as deploy does,
+and that evidence must approve the TARGET sha -- not the identity production currently
+holds. A gate report for the drifted SHA does not authorise converging away from it.
 
 --from-sha is REQUIRED for reconcile and REFUSED for deploy/rollback: it is a signed
 field, so a deploy artifact carrying one is a different operation shape and the
@@ -62,9 +99,14 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _HOOKS_DIR not in sys.path:      # guarded: see deploy_authorization.py
+    sys.path.insert(0, _HOOKS_DIR)
 from deploy_authorization import (  # noqa: E402
     VALID_ACTIONS, VALID_SCOPES, _load_key, _store_dir, artifact_name, sign,
+)
+from gate_evidence import (  # noqa: E402
+    MAX_VALIDITY, digest_file, format_ref, validate_evidence_full,
 )
 
 
@@ -73,11 +115,18 @@ def main(argv=None):
     ap.add_argument("reviewed_sha", help="full 40-char SHA approved by the 7-agent gate")
     ap.add_argument("action", choices=VALID_ACTIONS)
     ap.add_argument("scope", choices=VALID_SCOPES)
-    ap.add_argument("--ttl", type=int, default=60, help="validity in minutes (default 60)")
+    ap.add_argument("--ttl", type=int, default=60,
+                    help="validity in minutes (default 60, maximum 1440 = 24h). The "
+                         "artifact TTL is the only bound on the deploy window, because "
+                         "evaluate() re-hashes the evidence but never re-validates it.")
     ap.add_argument("--repository", default=os.environ.get("PZ_DEPLOY_AUTH_REPO", ""),
                     help="repository identity recorded in the signed body")
     ap.add_argument("--gate-evidence", default="",
-                    help="reference to the 7-agent gate evidence (report path, PR comment URL)")
+                    help="PATH to the 7-agent gate evidence file (strict JSON). REQUIRED "
+                         "for deploy and reconcile: it is validated (all seven agents GO, "
+                         "no unresolved blocker, target_sha == reviewed_sha, not expired) "
+                         "and its SHA-256 is recorded in the signed body, so editing it "
+                         "afterwards invalidates the authorization for those two actions.")
     ap.add_argument("--from-sha", default=None,
                     help="reconcile ONLY: the identity production actually holds right now, "
                          "proved against the runtime bytes. The signature covers this, so the "
@@ -87,6 +136,25 @@ def main(argv=None):
     sha = args.reviewed_sha.strip().lower()
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
         print("ERROR: reviewed_sha must be a full 40-character commit SHA")
+        return 2
+
+    # The artifact TTL is the ONLY bound on the deploy window: evaluate() re-hashes the
+    # evidence at use time but never re-runs validate_evidence, so the evidence rules --
+    # including its own expiry and the 24h MAX_VALIDITY -- are enforced at signing time
+    # only. An unbounded --ttl therefore let `--ttl 43200` mint a 30-day authorization
+    # off a document the validator capped at 24 hours, while the contract described the
+    # artifact TTL as "shorter". That was a safety word with nothing enforcing it -- the
+    # identical defect this tooling fixed for evidence, sitting in the compensating
+    # control. Capped at the same 24h ceiling; the documented rollback TTL (1440) is
+    # exactly at it.
+    max_ttl = int(MAX_VALIDITY.total_seconds() // 60)
+    if args.ttl < 1:
+        print(f"ERROR: --ttl must be at least 1 minute (got {args.ttl})")
+        return 2
+    if args.ttl > max_ttl:
+        print(f"ERROR: --ttl {args.ttl} exceeds the {max_ttl}-minute maximum. The signed "
+              f"artifact is the only bound on the deploy window, so it may not outlive "
+              f"the {max_ttl}-minute ceiling the gate evidence itself is held to.")
         return 2
 
     # from_sha is a SIGNED field, so its presence defines the operation shape. Mint only
@@ -110,6 +178,40 @@ def main(argv=None):
         print(f"ERROR: --from-sha is only meaningful for reconcile, not '{args.action}'")
         return 2
 
+    # Gate evidence is validated BEFORE the key is loaded: an operator who cannot
+    # produce a seven-agent GO for this exact SHA should never reach the signing step.
+    #
+    # Required for deploy and reconcile -- the two actions that write new bytes to
+    # production. NOT required for rollback: rollback is the incident path, its
+    # artifact is meant to be minted in advance (see the header), and gating a
+    # recovery on assembling a fresh seven-agent report is how an outage gets longer.
+    evidence_ref = args.gate_evidence.strip()
+    # None for rollback, which is evidence-exempt: there is no evidence expiry to clamp
+    # the artifact against, so its TTL stands on its own (bounded by the --ttl cap).
+    evidence_expires = None
+    if args.action in ("deploy", "reconcile"):
+        ok, reason, digest, evidence_expires = validate_evidence_full(evidence_ref, sha)
+        if not ok:
+            print(f"ERROR: {reason}")
+            print("       The 7-agent gate is the production approval authority. "
+                  "Pass --gate-evidence <path-to-gate-report>; see "
+                  ".claude/contracts/seven-agent-evidence.md for the required fields.")
+            return 2
+        print(f"  gate evidence: {reason}")
+        evidence_ref = format_ref(os.path.abspath(evidence_ref), digest)
+    elif evidence_ref:
+        # Record a digest when evidence is supplied for a non-production action.
+        #
+        # This is tamper-RECORDED, not tamper-EVIDENT: deploy_authorization.evaluate()
+        # re-checks the digest for deploy and reconcile only, so a rollback's digest is
+        # never verified at use time. An earlier comment here claimed it was "still
+        # tamper-evident", which was an uncited optimistic safety claim (Lesson Q rules
+        # 1 and 6) — it described a check that does not run. The value is audit-trail
+        # only: it says which bytes the operator held when signing.
+        digest = digest_file(evidence_ref)
+        if digest:
+            evidence_ref = format_ref(os.path.abspath(evidence_ref), digest)
+
     key = _load_key()
     if not key:
         print("ERROR: no signing key. Set PZ_DEPLOY_AUTH_KEY_FILE (preferred) or "
@@ -124,15 +226,64 @@ def main(argv=None):
     os.makedirs(store, exist_ok=True)
 
     now = datetime.now(timezone.utc)
+    expires = now + timedelta(minutes=args.ttl)
+
+    # THE AUTHORIZATION MAY NOT OUTLIVE THE EVIDENCE.
+    #
+    # Capping --ttl at 24h is not enough on its own, because the two windows COMPOSE:
+    # evidence created at T and valid to T+24h, minted against at T+23h59m with
+    # --ttl 1440, deploys at T+47h58m. That is roughly double what "the evidence window
+    # is capped at 24 hours, enforced" leads a reader to expect, and evaluate() cannot
+    # catch it -- at use time it re-hashes the evidence, it never re-validates it, so
+    # the evidence being long expired is invisible there.
+    #
+    # WHAT THIS DOES AND DOES NOT BOUND -- stated precisely, because the previous
+    # version of this comment was wrong twice, in the permitting direction:
+    #
+    #   * it said the clamp makes the artifact TTL "genuinely SHORTER" than the evidence
+    #     window. It does not: the line below assigns EQUALITY. And because CLOCK_SKEW
+    #     permits a `created_at` up to 5 minutes in the future, the artifact window
+    #     measured from signing can be 24h05m -- LONGER than the evidence window.
+    #
+    #   * it said the chain is bounded "at 24h from the moment the gate round
+    #     concluded". It is not. It is bounded at 24h from the `created_at` the evidence
+    #     ASSERTS, and nothing ties that field to when the round actually ran. An
+    #     operator can conclude a round on Monday, write created_at as Tuesday, and
+    #     deploy on Wednesday -- ~47h after the real verdict, with every check passing.
+    #     `created_at` is operator-asserted and unverifiable, exactly like the seven
+    #     verdicts themselves.
+    #
+    # What the clamp DOES guarantee: an authorization never outlives the evidence that
+    # justified it, so the two windows cannot compose into ~48h of declared validity.
+    # `evidence_expires` comes from the same single read that produced the digest --
+    # never re-read the file for it.
+    if evidence_expires is not None and expires > evidence_expires:
+        print(f"  NOTE: TTL shortened to the gate evidence expiry "
+              f"({evidence_expires.isoformat()}) -- an authorization may not outlive "
+              f"the evidence that justified it.")
+        expires = evidence_expires
+
+    # Refuse rather than write a born-dead artifact. `now` is captured after the key
+    # load and the makedirs, so evidence that was valid at validation time can expire in
+    # that gap; clamping to it would then produce expires_at <= now. The tool would
+    # print "Authorization written" and return 0, leaving a dead file at the canonical
+    # lookup path that the operator can neither use nor replace -- the evidence is
+    # expired too, so re-minting fails as well.
+    if expires <= now:
+        print(f"ERROR: the gate evidence expired at {evidence_expires.isoformat()}, "
+              f"before this authorization could be minted. Re-run the gate round and "
+              f"write fresh evidence; nothing was written.")
+        return 2
+
     auth = {
         "reviewed_sha": sha,
         "action": args.action,
         "scope": args.scope,
         "from_sha": from_sha,
         "repository": args.repository,
-        "gate_evidence_ref": args.gate_evidence,
+        "gate_evidence_ref": evidence_ref,
         "issued_at": now.isoformat(),
-        "expires_at": (now + timedelta(minutes=args.ttl)).isoformat(),
+        "expires_at": expires.isoformat(),
         "jti": str(uuid.uuid4()),
     }
     auth["signature"] = sign(auth, key)
@@ -141,14 +292,26 @@ def main(argv=None):
     # with; reconcile artifacts carry BOTH SHAs so a store listing shows the authorised
     # direction without opening every file.
     path = os.path.join(store, artifact_name(sha, args.action, from_sha))
-    with open(path, "w", encoding="utf-8") as fh:
+    # Write-then-rename: a crash mid-write would otherwise leave a truncated artifact at
+    # the exact path the verifier looks up. That is fail-closed today (the verifier
+    # refuses unreadable JSON), but an authorization store should not contain a
+    # half-written authorization at all.
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(auth, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
 
     print(f"Authorization written: {path}")
     direction = f" direction={from_sha[:12]}->{sha[:12]}" if from_sha else ""
+    # The EFFECTIVE window, not the requested one. Printing `args.ttl` after a clamp
+    # made the artifact's own summary line over-report its validity -- and that is the
+    # line an operator copies into a deploy log.
+    effective = int((expires - now).total_seconds() // 60)
+    clamped = " (clamped to the evidence expiry)" if effective < args.ttl else ""
     print(f"  sha={sha[:12]} action={args.action} scope={args.scope}{direction} "
-          f"ttl={args.ttl}m jti={auth['jti'][:8]} (single-use)")
-    if not args.gate_evidence:
+          f"ttl={effective}m{clamped} expires={expires.isoformat()} "
+          f"jti={auth['jti'][:8]} (single-use)")
+    if not evidence_ref:
         print("  NOTE: no --gate-evidence recorded; the artifact does not reference the gate result.")
     return 0
 

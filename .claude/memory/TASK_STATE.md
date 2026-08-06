@@ -117,7 +117,7 @@ merge_provenance: a14a9eae741077af42cb2b2d353e19b4af986172 (PR #1043 squash; anc
 preserved_files: []
 authority_owner: production deploy (7-agent gate re-confirmed 2026-07-31, verdict READY-TO-DEPLOY, risk LOW)
 next_command: OPERATOR HANDOFF — no valid single agent command; task is agent-side COMPLETE. Operator-first chain: (1) provision signing key C:\PZ-secrets\deploy-auth.key (not on box); (2) reconcile the HYBRID prod tree via the approved signed deployment process — the old straight `sign_deploy_authorization.py 423fa3cb … →then→ Deploy-PZ.ps1 -ReviewedSHA 423fa3cb` is INVALID as-recorded (snapshots the hybrid into the pre-deploy backup → #1039 backup-provenance stop fires; see Hybrid resume caution below); (3) THEN agent runs post-deploy verification (see "Post-deploy (owed)"). Do NOT run the old command without operator reconciliation of the hybrid first.
-next_command_superseded: python .claude/hooks/sign_deploy_authorization.py 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0 deploy Both --ttl 60   →then→   .claude\deploy\Deploy-PZ.ps1 -ReviewedSHA 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0   # INVALID against HYBRID prod — retained for provenance only
+next_command_superseded: python .claude/hooks/sign_deploy_authorization.py 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0 deploy Both --ttl 60   →then→   .claude\deploy\Deploy-PZ.ps1 -ReviewedSHA 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0   # SUPERSEDED — retained for provenance only, DO NOT RUN. Invalid for TWO independent reasons: (1) against the HYBRID prod tree it snapshots the hybrid into the pre-deploy backup; (2) since PR #1094 the mint itself exits 2 — --gate-evidence is mandatory for deploy and reconcile. Reason (2) applies even once the hybrid is reconciled, so resolving the hybrid caveat does NOT make this line runnable.
 retry_policy: NO_REPEATED_RETRIES
 checkpoint_recorded_at: 2026-07-31T02:20:00+02:00
 gate_reconfirmed_at: 2026-07-31T (this session; READY-TO-DEPLOY, LOW)
@@ -167,8 +167,16 @@ gate_reconfirmed_at: 2026-07-31T (this session; READY-TO-DEPLOY, LOW)
     tooling to stop this on current `main`.**
   - **What does catch it.** `Assert-ProductionMatchesRecordedSha` — it runs before the backup,
     compares runtime bytes to the marker by git object id, and fails closed on exactly this
-    state. It is in **PR #1062, still OPEN and NOT on `main`**. Until #1062 merges, the
-    protection described here does not exist in the deploy authority.
+    state. ~~It is in **PR #1062, still OPEN and NOT on `main`**. Until #1062 merges, the
+    protection described here does not exist in the deploy authority.~~
+    **WITHDRAWN 2026-08-05** (corrected by marking, not deleting — Lesson Q rule 5). #1062
+    has merged. Measured at `12376dc6`: the function is present at
+    `.claude/deploy/Deploy-PZ.ps1:337` and wired into the deploy and reconcile paths, and
+    `Deploy-PZ.ps1` is not in PR #1094's diff, so that content is inherited from `main`.
+    **The protection exists in the deploy authority today.** The withdrawn claim erred
+    pessimistically — it asserted an absent guard where one is present, which costs a
+    wasted stop rather than removing one (Lesson Q rule 6, lower-severity direction) — but
+    a session reading it would have held a deploy for a reason that no longer applies.
   - **Correct repair, once #1062 is merged and a signer is provisioned:**
     `-Reconcile -FromSha 423fa3cb0d599b29dc5e7da0efbf1d057e7d7aa0 -ToSha
     c3629786e9ccf66cabddd41ccdfa2a5f3b8badb9` — proves runtime == FromSha (twice, the second

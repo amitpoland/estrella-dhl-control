@@ -24,14 +24,27 @@ Nothing is hardcoded anywhere else.
 approved. The target is never inferred from `origin/main`, so a commit pushed after
 the gate ran cannot ship.
 
+All `python .claude/hooks/...` commands below are relative to the repository root —
+run them from the deploy source checkout (`C:\PZ-main` on the production host).
+`--ttl` is capped at **1440 minutes (24h)**, and the signer additionally clamps an
+authorization so it cannot outlive the gate evidence that justified it.
+
 ```
 # 1. plan only - writes nothing, needs no authorization
 Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
 
-# 2. run the 7-agent gate against that SHA, out of band
+# 2. run the 7-agent gate against that SHA, out of band, and record the result as
+#    strict-JSON evidence (schema: .claude/contracts/seven-agent-evidence.md)
 
-# 3. mint a single-use authorization for the approved SHA (operator shell)
-python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --ttl 60
+# 3. mint a single-use authorization for the approved SHA (operator shell).
+#    --gate-evidence is REQUIRED: the file is validated BEFORE the signing key is
+#    loaded, and its SHA-256 is recorded in the signed body. It must be strict JSON,
+#    UTF-8 no BOM, with all seven agents GO, no unresolved blocker, target_sha == this
+#    SHA, both timestamps in UTC, created_at not in the future, a validity window of at
+#    most 24h, and not expired. Full rules: .claude/contracts/seven-agent-evidence.md.
+#    One line - the operator shell is PowerShell, where a trailing \ is not a
+#    continuation.
+python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --gate-evidence C:\PZ-secrets\gate-evidence\<40-char-sha>.json --ttl 60
 
 # 4. deploy
 Deploy-PZ.ps1 -ReviewedSHA <40-char-sha>
@@ -43,8 +56,39 @@ Test-PZDeployClose.ps1 -ExpectedSHA <40-char-sha>
 Options: `-Scope App|Engine|Both`, `-Bootstrap` (first-ever deploy, no rollback
 target), `-ForceUnlock` (clear a lock whose process is provably gone).
 
+**Gate evidence is required, digest-bound, and re-checked at deploy time.** Between
+minting the authorization and running the deploy, do not edit, reformat, move, rename,
+or delete the evidence file — each of those is a denial, not a warning, because its
+SHA-256 is inside the signed body. This applies to `deploy` and `reconcile`. It does
+**not** apply to `rollback`: a rollback needs no evidence, and any digest recorded for
+one is audit trail that is never re-read.
+
+**Re-mint every `deploy` / `reconcile` authorization minted before this change.** Two
+distinct reasons, and the second is easy to miss:
+
+1. An artifact whose `gate_evidence_ref` carries no `@sha256:` digest is now denied —
+   the pre-binding shape is not grandfathered.
+2. An artifact that *does* carry a digest, but bound to a **Markdown** evidence file, is
+   **still accepted**: the use-time check re-hashes the bytes, it does not re-validate
+   the document. The strict-JSON rules gate signing only. So a stale artifact can deploy
+   citing evidence that would no longer pass the gate that produced it.
+
+Before the first deploy after this change, list `PZ_DEPLOY_AUTH_DIR` and re-mint
+anything for `deploy` or `reconcile`, regardless of what its ref looks like. `rollback`
+artifacts are unaffected, so incident capability survives.
+
+**Reconcile needs both a `--from-sha` and its own evidence.** The evidence must approve
+the SHA being converged *to*, not the identity production currently holds:
+
+```
+python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence C:\PZ-secrets\gate-evidence\<to-sha>.json --ttl 60
+Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
+```
+
 **Rollback needs its own authorization.** Mint it *before* you need it - doing so
-mid-incident costs time you will not have:
+mid-incident costs time you will not have. Note the ceiling: `--ttl` may not exceed
+**1440 minutes (24h)**, so a standby rollback artifact expires within a day of minting
+and must be re-minted regularly. A longer value exits 2 rather than silently shortening.
 
 ```
 python .claude/hooks/sign_deploy_authorization.py <sha> rollback Both --ttl 1440
