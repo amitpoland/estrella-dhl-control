@@ -36,7 +36,8 @@ greener. `test_ci_shard_partition.py` pins this.
 diagnostic, and per the 2026-08-07 operator ruling CI may not gate merges or
 production deploys. Enabling any required status check is an operator decision
 requiring a PROJECT_STATE.md DECISIONS entry. Normative rule (not restated here):
-`CLAUDE.md` § PRODUCTION DELIVERY AUTHORITY — CI IS NOT A GATE.
+`CLAUDE.md` § OPERATING MODEL — governance reset, subsection "CI authority —
+diagnostic, never a gate".
 
 ### If branch protection is ever enabled by operator decision…
 

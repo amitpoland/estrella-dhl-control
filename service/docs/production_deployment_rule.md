@@ -214,11 +214,12 @@ without one — it is validated *before* the signing key is loaded.
 
 **Production delivery authority (operator reset, 2026-08-07) — summary only.** After a
 seven-agent GO, deployment is Priority 1: until smoke verification (or rollback)
-completes, only deploy, smoke, rollback, and rollback-preparation work is permitted. A GO
-binds to the runtime payload's bytes and remains valid while a byte-for-byte payload
-comparison against the gated head is empty — bookkeeping commits do not re-open the gate.
-CI never authorizes or blocks a deploy. **Normative rule (sole authority — not restated
-here): `CLAUDE.md` § PRODUCTION DELIVERY AUTHORITY — CI IS NOT A GATE.**
+completes, only deploy, smoke, rollback, and rollback-preparation work is on the release
+track. A GO binds to the runtime payload's bytes and remains valid while a byte-for-byte
+payload comparison against the gated head is empty — bookkeeping commits do not re-open
+the gate. CI never authorizes or blocks a deploy. **Normative rule (sole authority — not
+restated here): `CLAUDE.md` § OPERATING MODEL — governance reset, subsections "CI
+authority" and "Runtime payload".**
 
 **One-time migration, before the first deploy after this landed.** List
 `PZ_DEPLOY_AUTH_DIR` and re-mint every `deploy` and `reconcile` authorization minted
