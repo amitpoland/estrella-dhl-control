@@ -1255,35 +1255,23 @@ async def shipment_intake(
                 for r in sp_rows
             )
             if has_pnd and inv_no_for_pnd:
-                # Pull supplier-side pendants for this invoice. We use
-                # invoice_lines (cost rows) joined to packing.db product_code
-                # → product_code. invoice_lines item_type isn't projected,
-                # but packing.packing_lines.item_type is. Build from packing
-                # then attach unit_price from invoice_lines by product_code.
+                # Supplier-side pendant candidates come from invoice_lines —
+                # the authority that mints every product_code and carries its
+                # own price. Packing rows are passed only as corroborating
+                # evidence (design_no attribution); building candidates FROM
+                # packing rows made the sales mapping inherit every
+                # purchase-side mis-assignment (circular truth).
                 supplier_candidates: List[Dict[str, Any]] = []
                 try:
                     from ..services import packing_db as _pdb
-                    p_rows = _pdb.get_packing_lines_for_batch(batch_id)
-                    inv_price_index: Dict[str, float] = {}
-                    for il in ddb.get_invoice_lines_for_batch(batch_id) or []:
-                        ipc = (il.get("product_code") or "").strip()
-                        if ipc and ipc not in inv_price_index:
-                            inv_price_index[ipc] = float(
-                                il.get("rate_usd") or il.get("unit_price") or 0
-                            )
-                    for pl in p_rows:
-                        if (pl.get("invoice_no") or "") != inv_no_for_pnd:
-                            continue
-                        item_type = (pl.get("item_type") or "").strip().upper()
-                        if not (item_type.startswith("PEND") or item_type == "PND"):
-                            continue
-                        pc = (pl.get("product_code") or "").strip()
-                        supplier_candidates.append({
-                            "product_code": pc,
-                            "design_no":    pl.get("design_no") or "",
-                            "item_type":    item_type,
-                            "unit_price":   inv_price_index.get(pc, 0.0),
-                        })
+                    from ..services.sales_pnd_disambiguator import (
+                        build_supplier_candidates,
+                    )
+                    supplier_candidates = build_supplier_candidates(
+                        ddb.get_invoice_lines_for_batch(batch_id) or [],
+                        _pdb.get_packing_lines_for_batch(batch_id),
+                        invoice_no=inv_no_for_pnd,
+                    )
                 except Exception as exc:
                     log.warning("[%s] supplier PND candidate load failed: %s",
                                 batch_id, exc)
@@ -2475,30 +2463,16 @@ async def sales_packing_reingest(
         )
         if has_pnd and inv_no_for_pnd:
             try:
-                p_rows = pdb.get_packing_lines_for_batch(batch_id)
-                inv_price_index: Dict[str, float] = {}
-                for il in ddb.get_invoice_lines_for_batch(batch_id) or []:
-                    ipc = (il.get("product_code") or "").strip()
-                    if ipc and ipc not in inv_price_index:
-                        inv_price_index[ipc] = float(
-                            il.get("rate_usd") or il.get("unit_price") or 0
-                        )
-                supplier_candidates: List[Dict[str, Any]] = []
-                for pl in p_rows:
-                    if (pl.get("invoice_no") or "") != inv_no_for_pnd:
-                        continue
-                    item_type = (pl.get("item_type") or "").strip().upper()
-                    if not (item_type.startswith("PEND")
-                            or item_type == "PND"):
-                        continue
-                    supplier_candidates.append({
-                        "product_code": pl.get("product_code") or "",
-                        "design_no":    pl.get("design_no") or "",
-                        "item_type":    item_type,
-                        "unit_price":   inv_price_index.get(
-                            pl.get("product_code") or "", 0.0,
-                        ),
-                    })
+                # Same builder as intake: candidates from invoice_lines (the
+                # authority), packing rows as corroborating evidence only.
+                from ..services.sales_pnd_disambiguator import (
+                    build_supplier_candidates,
+                )
+                supplier_candidates = build_supplier_candidates(
+                    ddb.get_invoice_lines_for_batch(batch_id) or [],
+                    pdb.get_packing_lines_for_batch(batch_id),
+                    invoice_no=inv_no_for_pnd,
+                )
                 sp_rows, pnd_summary = disambiguate_pnd(
                     sp_rows, supplier_candidates, invoice_no=inv_no_for_pnd,
                 )
