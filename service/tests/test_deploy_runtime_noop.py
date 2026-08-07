@@ -111,3 +111,29 @@ def test_inconclusive_git_result_is_never_a_no_op():
     assert "$paths.Count -lt 1" in fn, (
         "an empty pathspec makes 'git diff' compare the whole tree; it must be refused"
     )
+
+
+def test_name_status_diagnostic_does_not_pollute_boolean_return():
+    """PS 5.1: uncaptured git stdout becomes part of the function return value.
+
+    A bare `& git … diff --name-status` on the differences path made
+    `if (Test-RuntimeUnchanged …)` truthy (non-empty array) even when the
+    function intended `return $false`, so real deploys took the NO-OP path and
+    then failed Assert-ProductionMatchesRecordedSha against the target SHA.
+    """
+    body = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    fn = body[body.index("function Test-RuntimeUnchanged"):body.index("function Invoke-Preflight")]
+    assert "diff --name-status" in fn
+    assert re.search(
+        r"diff --name-status[^\n]*\|\s*ForEach-Object\s*\{\s*Write-Host",
+        fn,
+    ), (
+        "name-status output must be Write-Host-piped so it cannot enter the "
+        "success stream and flip the no-op boolean"
+    )
+    for line in fn.splitlines():
+        if "diff --name-status" in line and "Write-Host" not in line:
+            raise AssertionError(
+                "name-status line without Write-Host reintroduces the PS 5.1 "
+                f"return-pollution deploy failure: {line!r}"
+            )
