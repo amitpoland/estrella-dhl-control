@@ -3,6 +3,13 @@
 Single source of truth for which rule wins when rules appear to conflict.
 Applies to all agents, all sessions, all deploy decisions.
 
+> **Superseded-framework note (2026-08-07).** GATES 1–6 were replaced by the
+> three-mode operating model in `CLAUDE.md` § OPERATING MODEL — governance reset
+> (operator-ratified 2026-08-07). Historical "GATE n" references resolve per the
+> mapping at the top of that section. The ladder and resolved conflicts below are
+> retained for historical reference; where anything below conflicts with the
+> OPERATING MODEL, the OPERATING MODEL wins.
+
 ---
 
 ## Precedence ladder (highest → lowest)
@@ -22,6 +29,12 @@ Applies to all agents, all sessions, all deploy decisions.
 4. **Operating rules and workflow sequences** (`CLAUDE.md` §§ Operating rules, Required workflow, When asked to run a shipment)
    Convenience sequences for day-to-day operation.
    Subordinate to GATES 1–6 and the deploy gate. If a workflow step would skip a gate, the gate wins.
+
+**CI appears at no level of this ladder.** GitHub Actions CI is evidence, never
+authority: it may not gate PR merges or production deploys, and no repository
+configuration may elevate it without an operator DECISIONS entry. Normative rule (sole
+authority): `CLAUDE.md` § OPERATING MODEL — governance reset, subsection "CI authority
+— diagnostic, never a gate". It is summarized, never restated, everywhere else.
 
 ---
 
@@ -46,6 +59,15 @@ Engineering Lessons — those bind at the same or higher layer.
 Lesson A: every coordinator/builder PR must include a real-builder regression test. Binds at GATE 1 (PR opening).
 Lesson D: LOCAL-COMMIT-ONLY deploys must carry a disclosure header. Binds at the 7-agent deploy gate.
 Different triggers, different layers. No conflict.
+
+### Deploy priority vs observer / backlog / queue scheduling (2026-08-07)
+
+Resolved by the OPERATING MODEL itself: observers and state updates are post-merge
+background work, never release conditions; LOW/MEDIUM findings are backlog issues;
+open-PR count is never a deploy blocker. During the post-GO window only deploy, smoke
+verification, rollback, and rollback preparation run on the release track; deferred
+obligations fire immediately after smoke verification or rollback completion.
+Normative rule: `CLAUDE.md` § OPERATING MODEL — governance reset.
 
 ---
 

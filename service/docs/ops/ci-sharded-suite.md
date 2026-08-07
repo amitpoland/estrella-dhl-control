@@ -32,11 +32,19 @@ truncated is reported INCOMPLETE, never as zero failures.** A hard-killed
 process writes no XML — counting that as clean would make a worse run look
 greener. `test_ci_shard_partition.py` pins this.
 
-**Branch protection:** the verdict lives in `Service pytest (aggregate)`, not in
-the shard jobs. Shard steps are `continue-on-error: true` so a red or hung shard
-still uploads its XML, which means a shard job can report success while its tests
-failed. Requiring a shard job as a status check would be a green light with
-nothing behind it.
+**CI does not gate.** Branch protection is intentionally not set: this suite is a
+diagnostic, and per the 2026-08-07 operator ruling CI may not gate merges or
+production deploys. Enabling any required status check is an operator decision
+requiring a PROJECT_STATE.md DECISIONS entry. Normative rule (not restated here):
+`CLAUDE.md` § OPERATING MODEL — governance reset, subsection "CI authority —
+diagnostic, never a gate".
+
+### If branch protection is ever enabled by operator decision…
+
+…the verdict lives in `Service pytest (aggregate)`, not in the shard jobs. Shard
+steps are `continue-on-error: true` so a red or hung shard still uploads its XML,
+which means a shard job can report success while its tests failed. Requiring a
+shard job as a status check would be a green light with nothing behind it.
 
 ## The watchdog must outlast the longest blocking wait
 
