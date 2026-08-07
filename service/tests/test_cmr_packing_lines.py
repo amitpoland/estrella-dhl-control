@@ -32,6 +32,18 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _agg_src() -> str:
+    """Body of the _cmrAggPackingLines IIFE in proforma-detail.jsx.
+
+    Scoped so the aggregation greps below assert against the aggregation
+    itself, not a coincidental match elsewhere in the file.
+    """
+    src = _read(PROFORMA_DETAIL)
+    start = src.index("const _cmrAggPackingLines")
+    end = src.index("})();", start)
+    return src[start:end]
+
+
 # ── Proforma-detail: packing-lines fetch ──────────────────────────────────────
 
 def test_batchPackingLines_state_declared():
@@ -113,21 +125,29 @@ def test_cmrAggPackingLines_exists():
 
 
 def test_aggregation_reads_item_type_metal_stone_from_packing_lines():
-    """Aggregation reads l.item_type for grouping; reads l.metal and l.stone_type for goods_summary."""
-    src = _read(PROFORMA_DETAIL)
-    assert "l.item_type" in src, "l.item_type not referenced in aggregation"
-    assert "l.metal" in src, "l.metal not read for goods_summary building"
-    assert "l.stone_type" in src, "l.stone_type not read for goods_summary building"
+    """Aggregation groups by item_type (draft line first, matched packing row as
+    fallback); metal and stone_type come from the matched packing row and feed
+    goods_summary. Draft-scoped rewrite: PR #699 (ln = draft editable_line,
+    pk = _enrichPacking(ln) = matched batch packing row)."""
+    agg = _agg_src()
+    assert "ln.item_type" in agg and "pk.item_type" in agg, (
+        "item_type not read from draft line + packing fallback in aggregation"
+    )
+    assert "pk.metal" in agg, "packing metal not read for goods_summary building"
+    assert "pk.stone_type" in agg, "packing stone_type not read for goods_summary building"
 
 
 def test_aggregation_sums_quantity():
-    src = _read(PROFORMA_DETAIL)
-    assert "l.quantity" in src, "Aggregation must sum l.quantity from packing lines"
+    """Qty authority is the DRAFT billed line (ln.qty), never the full-shipment
+    batch packing which spans all clients (PR #699)."""
+    agg = _agg_src()
+    assert "ln.qty" in agg, "Aggregation must sum ln.qty from draft editable_lines"
 
 
 def test_aggregation_sums_net_weight():
-    src = _read(PROFORMA_DETAIL)
-    assert "l.net_weight" in src, "Aggregation must handle l.net_weight from packing lines"
+    """Physical net weight is enrichment from the matched packing row (pk.net_weight)."""
+    agg = _agg_src()
+    assert "pk.net_weight" in agg, "Aggregation must handle pk.net_weight from matched packing row"
 
 
 def test_aggregation_builds_goods_summary():

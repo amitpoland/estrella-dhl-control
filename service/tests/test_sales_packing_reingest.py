@@ -12,8 +12,13 @@ Pins (each maps to a numbered scope rule):
   4. Clear-Diamonds USD persists from Excel symbol
   5. Anastazia EUR persists from Excel symbol
   6. PND tiebreak persists 5.13 USD → 123-3 and 51.30 USD → 123-2
+     (candidates from invoice_lines authority — descriptions carry PENDANT)
   7. mixed-currency file blocks insert (no override)
   8. response includes counts + warnings
+  9. PND resolver fires from invoice_lines authority alone — zero packing
+     rows required, packing can never veto (PR #1100)
+ 10. PND authority-qty refusal through the route is all-or-nothing: no row
+     is stamped, rows persist with product_code='' (PR #1100)
 """
 from __future__ import annotations
 
@@ -332,14 +337,18 @@ def test_pnd_tiebreak_persists(client, storage, tmp_path):
          "requires_manual_review": False, "pack_sr": 2.0,
          "unit_price": 0, "total_value": 0},
     ])
-    # Seed import invoice prices so the disambiguator has supplier prices.
+    # Seed import invoice lines — the candidate AUTHORITY since PR #1100:
+    # identity, price and item type all come from here (item type derives
+    # from the description; invoice_lines has no item_type column).
     ddb.store_invoice_lines("doc-x", BATCH, [
         {"invoice_no": "EJL/26-27/123", "line_position": 2,
-         "product_code": "EJL/26-27/123-2", "description": "",
+         "product_code": "EJL/26-27/123-2",
+         "description": "PCS, 14KT Gold PENDANT",
          "quantity": 1.0, "unit_price": 36.0, "total_value": 36.0,
          "currency": "USD", "rate_usd": 36.0, "amount_usd": 36.0},
         {"invoice_no": "EJL/26-27/123", "line_position": 3,
-         "product_code": "EJL/26-27/123-3", "description": "",
+         "product_code": "EJL/26-27/123-3",
+         "description": "PCS, 18KT Gold PENDANT",
          "quantity": 1.0, "unit_price": 4.0, "total_value": 4.0,
          "currency": "USD", "rate_usd": 4.0, "amount_usd": 4.0},
     ])
@@ -361,6 +370,111 @@ def test_pnd_tiebreak_persists(client, storage, tmp_path):
     assert by_price[5.13]  == "EJL/26-27/123-3"
     # Currency persisted on both rows.
     assert {r["currency"] for r in rows} == {"USD"}
+
+
+# ── 9. & 10. PND candidates from invoice_lines authority (PR #1100) ─────────
+# GATE-4 follow-up from the PR #1100 gate (UNCOVERED_ROUTE): route-level
+# coverage of build_supplier_candidates + disambiguate_pnd through
+# POST /sales-packing/reingest.
+
+INV_PND = "EJL/26-27/500"
+
+
+def _seed_pendant_invoice_lines(qty_2: float = 1.0, qty_3: float = 1.0):
+    """Two pendant invoice lines — the PND candidate authority."""
+    ddb.store_invoice_lines("doc-pnd", BATCH, [
+        {"invoice_no": INV_PND, "line_position": 2,
+         "product_code": f"{INV_PND}-2",
+         "description": "PCS, 14KT Gold PENDANT",
+         "quantity": qty_2, "unit_price": 36.0, "total_value": 36.0 * qty_2,
+         "currency": "USD", "rate_usd": 36.0, "amount_usd": 36.0 * qty_2},
+        {"invoice_no": INV_PND, "line_position": 3,
+         "product_code": f"{INV_PND}-3",
+         "description": "PCS, 18KT Gold PENDANT",
+         "quantity": qty_3, "unit_price": 4.0, "total_value": 4.0 * qty_3,
+         "currency": "USD", "rate_usd": 4.0, "amount_usd": 4.0 * qty_3},
+    ])
+
+
+def test_reingest_pnd_resolves_from_invoice_authority_without_packing(
+    client, storage, tmp_path,
+):
+    """The resolver fires through the reingest route with ZERO packing rows.
+
+    Candidates come from invoice_lines (the authority) — packing rows are
+    corroboration only and are not required. Pre-#1100 the route built
+    candidates FROM packing rows, so an empty packing table refused; this
+    pins the decoupling end-to-end through the route.
+    """
+    _seed_pendant_invoice_lines()          # no pdb.upsert_packing_lines at all
+    _seed_sales_doc("Clear-Diamonds")
+    p = _make_xlsx(tmp_path, name="pnd_auth.xlsx",
+                    currency_format='[$-10409]"$"\\ 0',
+                    invoice_no=INV_PND,
+                    rows=[
+                        {"design": "PND", "qty": 1, "value": 51.30},
+                        {"design": "PND", "qty": 1, "value":  5.13},
+                    ])
+    body = _post(client, files=[p],
+                  sales_blocks=[{"packing_index": 0,
+                                  "client_name": "Clear-Diamonds"}]).json()
+    f0 = body["files"][0]
+    assert f0["pnd_summary"]["applied"] is True, f0["pnd_summary"]
+    assert len(f0["pnd_summary"]["pairs"]) == 2
+    assert "paired 2 PND" in f0["pnd_summary"]["reason"]
+    assert f0["inserted_count"] == 2
+    rows = _all_rows(storage)
+    by_price = {r["unit_price"]: r["product_code"] for r in rows}
+    # Ascending-price pairing against the invoice authority's product_codes.
+    assert by_price[51.30] == f"{INV_PND}-2"
+    assert by_price[5.13]  == f"{INV_PND}-3"
+    assert {r["currency"] for r in rows} == {"USD"}
+
+
+def test_reingest_pnd_qty_over_authority_refuses_all_or_nothing(
+    client, storage, tmp_path,
+):
+    """A sales PND row demanding more pieces than the invoice line
+    authorises refuses the WHOLE pairing — no row is stamped, including the
+    pair that would have passed alone (all-or-nothing), and the refusal is
+    advisory: rows still persist, with product_code='' for the manual
+    correction path.
+
+    The violating row is deliberately the HIGHER-priced one: pairing walks
+    both sides sorted ascending by price, so the first pair (5.13 ↔ $4,
+    qty 1 ≤ cap 1) PASSES and is staged before the second pair
+    (51.30 ↔ $36, qty 2 > cap 1) refuses. A mutate-as-you-go
+    implementation would stamp the first row; only the staged
+    all-or-nothing contract leaves it untouched.
+    """
+    _seed_pendant_invoice_lines()          # both lines authorise qty 1
+    _seed_sales_doc("Clear-Diamonds")
+    p = _make_xlsx(tmp_path, name="pnd_overqty.xlsx",
+                    currency_format='[$-10409]"$"\\ 0',
+                    invoice_no=INV_PND,
+                    rows=[
+                        {"design": "PND", "qty": 2, "value": 51.30},  # exceeds cap 1
+                        {"design": "PND", "qty": 1, "value":  5.13},  # passes, staged first
+                    ])
+    body = _post(client, files=[p],
+                  sales_blocks=[{"packing_index": 0,
+                                  "client_name": "Clear-Diamonds"}]).json()
+    f0 = body["files"][0]
+    assert f0["pnd_summary"]["applied"] is False
+    assert "exceeds invoice authority" in f0["pnd_summary"]["reason"]
+    # No partially-populated pairs leak out of a refusal.
+    assert f0["pnd_summary"]["pairs"] == []
+    # Refusal reason surfaced to the operator in the per-file warnings.
+    assert any("exceeds invoice authority" in w for w in f0["warnings"])
+    # Advisory, not a blocker (Lesson N): the write still happened…
+    assert f0["inserted_count"] == 2
+    rows = _all_rows(storage)
+    assert len(rows) == 2
+    # …but NO row carries a stamped code — not even the first pair, which
+    # had already passed its own gate before the second pair refused.
+    assert {r["product_code"] for r in rows} == {""}
+    # design_no stays "PND" — the operator-visible signal is preserved.
+    assert {r["design_no"] for r in rows} == {"PND"}
 
 
 # ── 7. mixed currency blocks ────────────────────────────────────────────────
