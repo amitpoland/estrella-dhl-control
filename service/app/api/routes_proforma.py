@@ -4910,6 +4910,11 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     # projection of the mapped Customer Master commercial defaults. Never
     # mutates the draft, the posting payload, or customer identity.
     full["customer_master_suggestions"] = _customer_master_suggestions(d, full)
+    # Commercial issue-date authority (read-only): operator payment_terms.invoice_date
+    # || wfirma_issue_date. Never created_at. Shared by preview warning + Issued header.
+    _pt_for_issue = full.get("payment_terms") if isinstance(full.get("payment_terms"), dict) else {}
+    _pt_issue = str(_pt_for_issue.get("invoice_date") or "").strip() or None
+    full["issue_date"] = _pt_issue or getattr(d, "wfirma_issue_date", None)
     return full
 
 
@@ -5588,10 +5593,11 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
         log.warning("draft %s product_master fallback unavailable "
                     "(non-fatal): %s", draft_id, exc)
     # Pre-load product_local origin_country index for read-time origin enrichment.
-    # Source: master_data.sqlite / product_local.origin_country (authority: IN default).
+    # Source: master_data.sqlite / product_local.origin_country.
+    # Keys are stored both as-stripped and casefolded so line lookups match
+    # Product Master even when casing differs. Absent SKUs are NOT invented.
     _pl_origin_index: Dict[str, str] = {}
     try:
-        from ..services.master_data_db import get_product_local as _get_pl_local
         _mdb_path = _master_db_path()
         if _mdb_path.exists():
             import sqlite3 as _sl3
@@ -5603,7 +5609,9 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                 ).fetchall():
                     _pcode = ((_r["product_code"] or "").strip())
                     if _pcode:
-                        _pl_origin_index[_pcode] = (_r["origin_country"] or "IN") or "IN"
+                        _oc = ((_r["origin_country"] or "").strip() or "IN")
+                        _pl_origin_index[_pcode] = _oc
+                        _pl_origin_index[_pcode.casefold()] = _oc
     except Exception as exc:
         log.warning("draft %s product_local origin index unavailable "
                     "(non-fatal): %s", draft_id, exc)
@@ -5646,8 +5654,9 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                         ln["item_type"] = v
             # Origin enrichment — product_local authority.
             # Never overwrite an operator-supplied origin; only fill when blank.
+            # Never invent origin for SKUs absent from Product Master.
             if not (ln.get("origin") or "").strip():
-                oc = _pl_origin_index.get(pc)
+                oc = _pl_origin_index.get(pc) or _pl_origin_index.get(pc.casefold())
                 if oc:
                     ln["origin"] = oc
     except Exception as exc:
@@ -6342,12 +6351,34 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         )
         return f"<div class='addr'><div class='addr-h'>{label}</div>{items}</div>"
 
+    # Customer-facing payment terms only — never dump internal keys
+    # (invoice_language_id, vat_mode, invoice_date, …).
+    _PT_METHOD_LABELS = {
+        "transfer": "Bank transfer",
+        "paymentmethod": "Bank transfer",
+        "przelew": "Bank transfer",
+        "cash": "Cash",
+        "card": "Card",
+        "kompensata": "Compensation",
+    }
     terms_html = ""
-    if terms:
-        terms_html = "<dl class='terms'>" + "".join(
-            f"<dt>{_safe(k)}</dt><dd>{_safe(v)}</dd>"
-            for k, v in terms.items()
-        ) + "</dl>"
+    if terms and isinstance(terms, dict):
+        _parts = []
+        _method = str(terms.get("method") or terms.get("paymentmethod") or "").strip()
+        if _method:
+            _parts.append(
+                ("Payment method",
+                 _PT_METHOD_LABELS.get(_method.lower(), _method))
+            )
+        if terms.get("days") not in (None, ""):
+            _parts.append(("Payment days", f"{terms.get('days')} days"))
+        if _parts:
+            terms_html = "<dl class='terms'>" + "".join(
+                f"<dt>{_safe(k)}</dt><dd>{_safe(v)}</dd>"
+                for k, v in _parts
+            ) + "</dl>"
+        else:
+            terms_html = "<div class='terms-empty'>— default payment terms —</div>"
     else:
         terms_html = "<div class='terms-empty'>— default payment terms —</div>"
 
