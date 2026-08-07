@@ -82,10 +82,18 @@ def test_tracking_card_present_and_wired():
     src = _detail()
     assert 'data-testid="dhl-tracking-card"' in src
     assert 'data-testid="dhl-tracking-refresh"' in src
+    assert 'data-testid="dhl-tracking-status-badge"' in src
     assert "window.PzApi.getDhlTracking" in src
     assert "window.PzApi.refreshDhlTracking" in src
     # unavailable state must be honest, with a reason
     assert 'data-testid="dhl-tracking-unavailable"' in src
+    # professional status-card fields (carrier authority, not clearance)
+    for label in ("AWB", "Carrier", "Current status", "Latest event", "Location", "Event time"):
+        assert ('label="' + label + '"') in src or ('>' + label + '<') in src, (
+            "tracking card must surface field %r" % (label,)
+        )
+    assert "Carrier movement only" in src
+    assert "independent of clearance" in src or "not clearance workflow" in src
 
 
 def test_actions_call_existing_backend_wrappers():
@@ -106,6 +114,9 @@ def test_action_buttons_are_state_aware():
     # the five-state vocabulary is present in the derivation
     for token in ("'available'", "'completed'", "'blocked'", "'running'"):
         assert token in src, f"state token {token} missing from DhlActionButton wiring"
+    # blocked/unavailable reasons are visible (not title-only)
+    assert 'testid={testid + \'-reason\'}' in src or "testid + '-reason'" in src
+    assert 'data-testid="dhl-clearance-actions"' in src
 
 
 def test_send_reply_is_confirmation_gated():
@@ -124,6 +135,16 @@ def test_all_six_dhl_action_testids_preserved():
     for tid in ("scan-dhl-inbox", "mark-email-received", "generate-polish-desc",
                 "generate-dsk", "build-reply-package", "send-reply"):
         assert f'testid="{tid}"' in src, f"DHL action testid '{tid}' lost"
+
+
+def test_detail_is_write_surface_console_is_observer():
+    """Authority copy: Detail owns per-batch writes; Console is observer-only."""
+    src = _detail()
+    assert "Clearance actions below write through the shared DHL backend" in src
+    assert "cross-shipment status observer" in src
+    assert "All DHL clearance actions (inbox scan, reply send, approvals) run on the DHL Console page" not in src
+    assert 'data-testid="dhl-open-console-link"' in src
+    assert 'data-testid="dhl-authority-copy"' in src
 
 
 def test_no_duplicate_dhl_engine_in_frontend():

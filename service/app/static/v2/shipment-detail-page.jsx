@@ -1078,6 +1078,18 @@ function _dhlActionError(res) {
 // limiting; the browser never calls DHL directly. Carrier state is a SEPARATE
 // concept from clearance state — this card never infers one from the other, and
 // never presents cached data as live (it labels last_update + source).
+function _trackingStatusTone(label) {
+  const s = String(label || '').toLowerCase();
+  if (!s) return { bg: 'var(--badge-neutral-bg)', fg: 'var(--text-2)', bd: 'var(--border-subtle)' };
+  if (/deliver|ok|success|cleared|warehouse/.test(s))
+    return { bg: 'var(--badge-green-bg)', fg: 'var(--badge-green-text)', bd: 'var(--badge-green-border)' };
+  if (/transit|depart|customs|process|scan|pick/.test(s))
+    return { bg: 'var(--badge-blue-bg)', fg: 'var(--badge-blue-text)', bd: 'var(--badge-blue-border)' };
+  if (/delay|hold|exception|fail|error|undeliver/.test(s))
+    return { bg: 'var(--badge-amber-bg)', fg: 'var(--badge-amber-text)', bd: 'var(--badge-amber-border)' };
+  return { bg: 'var(--badge-neutral-bg)', fg: 'var(--text)', bd: 'var(--border-subtle)' };
+}
+
 function DhlTrackingCard({ batchId, awb, reloadNonce }) {
   const [tracking, setTracking] = React.useState(null);
   const [loading, setLoading]   = React.useState(true);
@@ -1093,33 +1105,22 @@ function DhlTrackingCard({ batchId, awb, reloadNonce }) {
 
   React.useEffect(() => { let c = false; setLoading(true); load(false); return () => { c = true; }; }, [load, reloadNonce]);
 
-  const Row = ({ label, value, mono }) => (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, padding: '4px 0', fontSize: 12 }}>
-      <span style={{ color: 'var(--text-3)' }}>{label}</span>
-      <span style={{ color: 'var(--text)', fontWeight: 500, fontFamily: mono ? 'monospace' : 'inherit', textAlign: 'right' }}>{value}</span>
-    </div>
-  );
-
-  const header = (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>DHL Live Tracking</div>
-      <Btn variant="outline" small disabled={!awb || refreshing || loading}
-        onClick={() => load(true)} data-testid="dhl-tracking-refresh"
-        title="Refresh carrier tracking from the backend (no page reload)">
-        {refreshing ? '… Refreshing' : '↻ Refresh'}
-      </Btn>
+  const Field = ({ label, value, mono, span }) => (
+    <div style={{ gridColumn: span ? '1 / -1' : undefined, minWidth: 0 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: mono ? 'ui-monospace, monospace' : 'inherit', lineHeight: 1.35, wordBreak: 'break-word' }}>{value}</div>
     </div>
   );
 
   let body;
   if (!awb) {
-    body = <div style={{ fontSize: 12, color: 'var(--text-2)' }}>No AWB on this shipment — carrier tracking unavailable.</div>;
+    body = <div style={{ fontSize: 13, color: 'var(--text-2)' }}>No AWB on this shipment — carrier tracking unavailable.</div>;
   } else if (loading) {
-    body = <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Loading carrier tracking…</div>;
+    body = <div style={{ fontSize: 13, color: 'var(--text-2)' }}>Loading carrier tracking…</div>;
   } else if (!tracking || tracking.available === false) {
     const reason = (tracking && (tracking.message || tracking.status)) || 'no data returned';
     body = (
-      <div data-testid="dhl-tracking-unavailable" style={{ fontSize: 12, color: 'var(--badge-amber-text)' }}>
+      <div data-testid="dhl-tracking-unavailable" style={{ fontSize: 13, color: 'var(--badge-amber-text)', lineHeight: 1.45 }}>
         Tracking unavailable — {reason}.
         {tracking && tracking.last_update && (
           <span style={{ color: 'var(--text-3)' }}> Last cached: {_fmtDate(tracking.last_update, true)}.</span>
@@ -1127,31 +1128,59 @@ function DhlTrackingCard({ batchId, awb, reloadNonce }) {
       </div>
     );
   } else {
+    const statusLabel = tracking.status_label || tracking.status || '—';
+    const tone = _trackingStatusTone(statusLabel);
     body = (
       <div>
-        <Row label="AWB" value={_dash(tracking.tracking_no || awb)} mono />
-        <Row label="Carrier" value={_dash(tracking.carrier)} />
-        <Row label="Status" value={_dash(tracking.status_label || tracking.status)} />
-        <Row label="Latest event" value={_dash(_eventText(tracking.last_event))} />
-        <Row label="Location" value={_dash(tracking.last_location)} />
-        <Row label="Event time" value={tracking.last_update ? _fmtDate(tracking.last_update, true) : '—'} mono />
-        {tracking.arrived_warehouse != null && <Row label="At warehouse" value={tracking.arrived_warehouse ? 'Yes' : 'No'} />}
-        {tracking.tracking_url && (
-          <div style={{ paddingTop: 6 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <span data-testid="dhl-tracking-status-badge" style={{
+            display: 'inline-flex', alignItems: 'center', padding: '5px 12px', borderRadius: 999,
+            background: tone.bg, color: tone.fg, border: '1px solid ' + tone.bd,
+            fontSize: 12, fontWeight: 700, letterSpacing: '0.02em',
+          }}>{statusLabel}</span>
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Carrier tracking · independent of clearance</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '14px 20px' }}>
+          <Field label="AWB" value={_dash(tracking.tracking_no || awb)} mono />
+          <Field label="Carrier" value={_dash(tracking.carrier)} />
+          <Field label="Current status" value={_dash(statusLabel)} />
+          <Field label="Event time" value={tracking.last_update ? _fmtDate(tracking.last_update, true) : '—'} mono />
+          <Field label="Location" value={_dash(tracking.last_location)} />
+          <Field label="Latest event" value={_dash(_eventText(tracking.last_event))} span />
+          {tracking.arrived_warehouse != null && (
+            <Field label="At warehouse" value={tracking.arrived_warehouse ? 'Yes' : 'No'} />
+          )}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--border-subtle)' }}>
+          {tracking.tracking_url && (
             <a href={tracking.tracking_url} target="_blank" rel="noopener noreferrer" data-testid="dhl-tracking-url"
-              style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>Open carrier tracking ↗</a>
-          </div>
-        )}
-        <div style={{ fontSize: 10, color: 'var(--text-3)', borderTop: '1px solid var(--border-subtle)', paddingTop: 5, marginTop: 6 }}>
-          Source: {_dash(tracking.source)} · GET /api/v1/tracking/&#123;awb&#125; · carrier state is independent of clearance state
+              style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 700 }}>Open carrier tracking ↗</a>
+          )}
+          <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+            Source: {_dash(tracking.source)} · GET /api/v1/tracking/&#123;awb&#125;
+          </span>
         </div>
       </div>
     );
   }
 
   return (
-    <div data-testid="dhl-tracking-card" style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)' }}>
-      {header}
+    <div data-testid="dhl-tracking-card" style={{
+      margin: '0 0 12px', padding: '16px 18px', borderRadius: 10,
+      background: 'var(--card)', border: '1px solid var(--border)',
+      boxShadow: '0 1px 2px var(--shadow)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>DHL Live Tracking</div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>Carrier movement only — not clearance workflow state</div>
+        </div>
+        <Btn variant="outline" small disabled={!awb || refreshing || loading}
+          onClick={() => load(true)} data-testid="dhl-tracking-refresh"
+          title="Refresh carrier tracking from the backend (no page reload)">
+          {refreshing ? '… Refreshing' : '↻ Refresh'}
+        </Btn>
+      </div>
       {body}
     </div>
   );
@@ -1173,20 +1202,33 @@ function DhlActionButton({ label, icon, testid, route, state, reason, ts, onClic
     state === 'running' ? '… '
     : state === 'completed' ? '✓ '
     : (icon ? icon + ' ' : '');
+  const showReason = (state === 'blocked' || state === 'unavailable') && reason;
   return (
-    <Btn
-      variant={variant || (state === 'available' ? 'primary' : 'outline')}
-      small
-      disabled={disabled}
-      onClick={disabled ? undefined : onClick}
-      data-testid={testid}
-      data-action-state={state}
-      data-backend-route={route}
-      title={title}
-      aria-label={`${label}. ${state === 'blocked' ? 'Blocked: ' + reason : 'State: ' + state}. Backend route ${route}.`}
-    >
-      {glyph}{label}
-    </Btn>
+    <div data-testid={testid + '-wrap'} style={{ display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 220 }}>
+      <Btn
+        variant={variant || (state === 'available' ? 'primary' : 'outline')}
+        small
+        disabled={disabled}
+        onClick={disabled ? undefined : onClick}
+        data-testid={testid}
+        data-action-state={state}
+        data-backend-route={route}
+        title={title}
+        aria-label={`${label}. ${state === 'blocked' ? 'Blocked: ' + reason : 'State: ' + state}. Backend route ${route}.`}
+      >
+        {glyph}{label}
+      </Btn>
+      {showReason && (
+        <div data-testid={testid + '-reason'} style={{ fontSize: 11, lineHeight: 1.35, color: 'var(--badge-amber-text)' }}>
+          {reason}
+        </div>
+      )}
+      {state === 'completed' && (
+        <div data-testid={testid + '-done'} style={{ fontSize: 11, color: 'var(--badge-green-text)', fontWeight: 600 }}>
+          Completed{ts ? ' · ' + _fmtDate(ts, true) : ''}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1238,8 +1280,11 @@ function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReloa
   const B = (props) => <DhlActionButton {...props} />;
 
   return (
-    <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+    <div data-testid="dhl-clearance-actions" style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>
+        Clearance actions · this shipment
+      </div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
         <B label="Scan DHL Inbox" icon="⌕" testid="scan-dhl-inbox"
            route={'GET /api/v1/dhl/scan-inbox'}
            state={busy === 'scan' ? 'running' : 'available'}
@@ -1302,43 +1347,19 @@ function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReloa
 
 function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId, reloadNonce, onReload }) {
   const bid = batchId || '{batch_id}';
-  // R-Q1: DHL is a standalone page authority. This sub-tab provides a status summary
-  // and an entry point only. All DHL write actions live on the standalone /dhl page.
+  // Authority split (single backend, two views):
+  //   • Shipment Detail DHL tab = per-batch clearance WRITE surface (actions below).
+  //   • /v2/dhl Console = cross-shipment READ observer (Sprint 31 — no write buttons).
+  // Carrier tracking (DhlTrackingCard) is a separate authority from clearance actions.
   const dhlConsoleUrl = batchId ? ('/v2/dhl?batch_id=' + encodeURIComponent(batchId)) : '/v2/dhl';
   return (
     <>
-      {/* R-Q1 entry-point — prominent navigation to standalone DHL Console */}
-      <div data-testid="dhl-console-entry" style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-        padding: '14px 20px', borderRadius: 10, marginBottom: 4,
-        background: 'var(--badge-blue-bg)',
-        border: '1px solid var(--badge-blue-border)',
-      }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--badge-blue-text)', marginBottom: 2 }}>DHL Console (standalone authority)</div>
-          <div style={{ fontSize: 12, color: 'var(--badge-blue-text)', lineHeight: 1.4 }}>
-            All DHL clearance actions (inbox scan, reply send, approvals) run on the DHL Console page.
-            This sub-tab shows the current clearance status only.
-          </div>
-        </div>
-        <a
-          href={dhlConsoleUrl}
-          data-testid="dhl-open-console-link"
-          aria-label="Open DHL Console standalone page"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '8px 18px', borderRadius: 7, fontSize: 12, fontWeight: 700,
-            background: 'var(--badge-blue-text)', color: 'var(--card)', textDecoration: 'none',
-            border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap',
-          }}
-        >Open DHL Console ↗</a>
-      </div>
       <DhlTrackingCard batchId={batchId} awb={shipment && shipment.awb} reloadNonce={reloadNonce} />
       <DhlReadinessCard batchId={batchId} reloadNonce={reloadNonce} />
       <SectionLabel>Step 1 · DHL clearance email & reply</SectionLabel>
       <PanelCard
         title="DHL Clearance"
-        subtitle="Pre-check, email correspondence, and reply package"
+        subtitle="Per-shipment write surface — same backend as the DHL Console observer"
         status={replySent ? 'Reply Sent' : (dhlEmailReceived ? 'DHL Email Received' : 'Awaiting Email')}
         accent={replySent ? '#22A06B' : 'var(--accent)'}
       >
@@ -1362,22 +1383,34 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
             <InfoRow label="Reply Sent"          value={replySent ? 'Sent ✓ — see Timeline for exact time' : 'Not sent'} />
           </div>
         </div>
-        {/* Operational status note — the DHL Console remains ANOTHER view of the
-            same backend authority, but these actions now run here too. Not a
-            capability-suppression banner (Lesson M): the controls below are wired. */}
+        {/* Authority note — Detail owns per-batch writes; Console is observer-only.
+            Lesson M: actions stay visible; blocked states show reasons (never hide). */}
         <div role="note" data-testid="dhl-actions-console-note" style={{
-          display: 'flex', alignItems: 'flex-start', gap: 10,
+          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
           margin: '0 20px 4px', padding: '12px 14px', borderRadius: 8,
-          background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)',
-          color: 'var(--badge-blue-text)', fontSize: 12, lineHeight: 1.5,
+          background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)',
+          color: 'var(--text-2)', fontSize: 12, lineHeight: 1.5,
         }}>
-          <span aria-hidden="true" style={{ fontWeight: 800, flexShrink: 0 }}>ℹ</span>
-          <span>
-            DHL correspondence runs against the same backend authority as the standalone
-            <strong> DHL Console</strong>. You can run the proven follow-up workflow here, or
-            open the Console for the cross-shipment view. Each action below shows its real
-            state; sending a reply is confirmation-gated.
-          </span>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, minWidth: 0 }}>
+            <span aria-hidden="true" style={{ fontWeight: 800, flexShrink: 0, color: 'var(--text-3)' }}>ℹ</span>
+            <span data-testid="dhl-authority-copy">
+              Clearance actions below write through the shared DHL backend for <strong>this shipment</strong>.
+              The DHL Console is a cross-shipment status observer (read-only) — not a second write engine.
+              Completed steps show as done; blocked steps stay visible with the prerequisite reason.
+              Send Reply stays confirmation-gated.
+            </span>
+          </div>
+          <a
+            href={dhlConsoleUrl}
+            data-testid="dhl-open-console-link"
+            aria-label="Open DHL Console observer"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0,
+              padding: '6px 12px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+              background: 'var(--card)', color: 'var(--accent)', textDecoration: 'none',
+              border: '1px solid var(--border)', whiteSpace: 'nowrap',
+            }}
+          >Fleet view ↗</a>
         </div>
         <DhlActionsPanel
           d={d} dhlEmailReceived={dhlEmailReceived} replySent={replySent}

@@ -122,10 +122,14 @@ def test_sad_verification_read_from_decision_engine():
     assert "Upload on the V1 page" not in src, "stale SAD 'use V1' wording must be removed"
 
 
-def test_dhl_correspondence_writes_not_in_v2():
+def test_dhl_correspondence_uses_canonical_wrappers_only():
+    """Shipment Detail is the per-batch DHL write surface (Slice 2B+). It must
+    call the canonical PzApi DHL wrappers — not invent alternate write names.
+    Legacy short names (sendReply, markEmailReceived, …) stay absent."""
     src = _read(DETAIL)
-    # V2 must not call the DHL correspondence WRITE wrappers (they stay on the
-    # standalone DHL Console). None of these should be invoked from the detail page.
-    for write in ("sendReply", "matchAndHandle", "generateDescription",
-                  "generateCustomsPackage", "markEmailReceived", "proactiveDispatch"):
-        assert f"PzApi.{write}(" not in src, f"DHL correspondence write {write} must not be wired into V2"
+    for legacy in ("sendReply", "matchAndHandle", "generateDescription",
+                   "generateCustomsPackage", "markEmailReceived", "proactiveDispatch"):
+        assert f"PzApi.{legacy}(" not in src, f"legacy wrapper PzApi.{legacy} must not appear"
+    for canonical in ("scanDhlInbox", "markDhlEmailReceived", "generatePolishDescription",
+                      "generateDsk", "buildDhlReplyPackage", "sendDhlReply"):
+        assert f"PzApi.{canonical}" in src, f"canonical DHL write PzApi.{canonical} must be wired"
