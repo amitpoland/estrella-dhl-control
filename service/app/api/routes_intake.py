@@ -263,6 +263,27 @@ def _auto_create_draft_for_client(
             # never writes wFirma). Visibility only — does not block creation.
             product_mapping_lookup = _wfdb.get_product,
         )
+        # Parity with packing-sync: enrich after birth AND when an existing
+        # editable draft still has blank name_pl (idempotent intake used to
+        # return the stale row unchanged after product_descriptions filled).
+        try:
+            _need_enrich = was_created
+            if not _need_enrich and (draft.draft_state or "") in pildb.EDITABLE_STATES:
+                import json as _json_en
+                _elines = _json_en.loads(draft.editable_lines_json or "[]") or []
+                _need_enrich = any(
+                    not str(ln.get("name_pl") or "").strip() for ln in _elines
+                )
+            if _need_enrich and (draft.draft_state or "") in pildb.EDITABLE_STATES:
+                draft = pildb.enrich_draft_lines(
+                    _proforma_db_path(), draft.id, operator or "intake",
+                    draft.updated_at, ddb.get_product_description,
+                )
+        except Exception as _en_exc:
+            log.debug(
+                "[%s] post-birth draft enrich skipped for %r: %s",
+                batch_id, client, _en_exc,
+            )
         log.info(
             "[%s] proforma draft %s for client=%r (id=%s, state=%s, lines=%d)",
             batch_id,

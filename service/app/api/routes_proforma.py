@@ -7124,7 +7124,10 @@ def _preflight_approve(db_path, draft_id: int):
         first_five = blank_desc[:5]
         return (
             f"Approval blocked: {len(blank_desc)} line(s) have blank commercial "
-            f"description (name_pl). Import sales prices first. "
+            f"description (name_pl). Promote PZ/audit bilingual descriptions "
+            f"into product_descriptions and enrich the draft "
+            f"(POST /api/v1/proforma/draft/{{id}}/enrich-from-product-descriptions "
+            f"or re-run packing sync / PZ process). "
             f"First affected: {first_five}"
         )
 
@@ -7137,7 +7140,8 @@ def _preflight_approve(db_path, draft_id: int):
         first_five = zero_price[:5]
         return (
             f"Approval blocked: {len(zero_price)} line(s) have zero/missing unit_price. "
-            f"Import sales prices first. First affected: {first_five}"
+            f"Import sales prices from the sales packing list first. "
+            f"First affected: {first_five}"
         )
 
     # #529 — margin-mask guard. A priced line that still carries a cost-basis
@@ -7212,9 +7216,10 @@ def _repair_hint_for_blocker(reason: str) -> str:
                 "POST /api/v1/proforma/draft/{draft_id}/resolve-ambiguity "
                 "(or the 'Resolve product' action on the draft page).")
     if "wfirma_product" in r or "wfirma_products" in r:
-        return ("Register the listed products in wFirma and add the "
-                "wfirma_product_id mapping to wfirma_products, then re-check "
-                "readiness.")
+        return ("Register the missing product_codes in wFirma via "
+                "POST /api/v1/wfirma/goods/auto-register/{batch_id} "
+                "(write=true when WFIRMA_CREATE_PRODUCT_ALLOWED), then "
+                "re-check readiness. Do not invent wfirma_product_id.")
     if "vat_mode" in r:
         return "Correct customer_master.vat_mode (unknown integer mapping)."
     if "eu vat" in r or "vat_eu" in r or "vies" in r or "vat decision" in r \
@@ -7225,11 +7230,23 @@ def _repair_hint_for_blocker(reason: str) -> str:
     if "customer" in r or "kontrahent" in r or "contractor" in r:
         return ("Fix the customer mapping in wfirma_customers / Customer "
                 "Master for this client, then re-check readiness.")
-    if "unit_price" in r or "sales price" in r or "name_pl" in r \
-            or "packing" in r or "authority" in r:
+    if "name_pl" in r or "commercial description" in r or "product_descriptions" in r:
+        return ("Promote PZ/audit bilingual descriptions into "
+                "product_descriptions and enrich the draft "
+                "(packing sync / PZ process / "
+                "enrich-from-product-descriptions). Not a sales-price issue.")
+    if "unmapped" in r or "no product code" in r or "carry no product" in r:
+        return ("Re-run sales packing matcher against purchase packing "
+                "(invoice-scoped lot resolution), then reset the draft from "
+                "sales packing so dropped designs re-enter editable lines.")
+    if "unit_price" in r or "sales price" in r or "sales-packing authority" in r \
+            or "authority" in r:
         return ("Import/refresh sales prices from the sales packing list so "
-                "every line has name_pl + unit_price and totals match the "
+                "every line has unit_price and totals match the "
                 "sales-packing authority.")
+    if "packing" in r:
+        return ("Refresh sales packing / rematch product_codes from purchase "
+                "packing, then reset the draft from sales packing.")
     if "stock" in r or "reservation" in r or "warehouse" in r:
         return "Resolve warehouse stock/reservation state for the affected lines."
     if "pz" in r or "export" in r or "customs" in r:
@@ -7487,9 +7504,11 @@ def _derive_draft_readiness(
             f"{len(_uniq)} product(s) not matched in wfirma_products "
             f"(missing wfirma_product_id): {', '.join(_uniq[:10])}"
             + ("…" if len(_uniq) > 10 else ""),
-            "Register the listed products in wFirma and add the "
-            "wfirma_product_id mapping to wfirma_products, then re-check "
-            "readiness.",
+            "Register the missing product_codes in wFirma via "
+            f"POST /api/v1/wfirma/goods/auto-register/{draft.batch_id} "
+            "(write=true when WFIRMA_CREATE_PRODUCT_ALLOWED), then re-check "
+            "readiness. Do not invent wfirma_product_id.",
+            authority="PRODUCT",
         )
 
     # ── 3b. Warehouse / stock state, scoped to the draft's billed codes ───
