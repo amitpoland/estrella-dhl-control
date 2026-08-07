@@ -5333,10 +5333,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       const itemType = ln.item_type || pk.item_type || 'other';
       const key = String(itemType).toUpperCase();
       if (!groups[key]) {
-        // Origin authority = Product Master via per-line ln.origin (GET enrich).
-        // Honest null when the authority has none. Never invent / never seller country.
+        // Origin authority = shared Product Master via per-line ln.origin (GET enrich).
+        // Honest null when the authority has none. Never invent / never purchase-packing /
+        // never seller country. Same ISO code consumed by Proforma + Packing List.
         groups[key] = { item_type: _cmrItemLabel(itemType), qty: 0, net_weight: null,
-                        origin: (ln.origin || pk.origin || '').trim() || null };
+                        origin: (ln.origin || '').trim() || null };
       }
       const q = Number(ln.qty) || 0;                       // DRAFT billed qty (authority)
       groups[key].qty += q;
@@ -5530,7 +5531,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     // CMR lines: aggregated by item_type ONLY — transport summary, not commercial detail
     // Each entry: { item_type, qty, net_weight, origin } — 3-6 rows max
     // Fallback to proforma lines when packing data not yet loaded.
-    // Origin authority = Product Master chain (ln.origin → draft origin_country);
+    // Origin authority = shared Product Master ISO on ln.origin (GET enrich);
     // honest null when the authority has none — never a hardcoded country.
     // Per-line origin is mapped through _cmrCountryName (the single CMR country-name
     // authority, ISO-2 → full name e.g. "IN" → "India") so the Modern CMR line
@@ -5567,24 +5568,22 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   };
   // ──────────────────────────────────────────────────────────────────────────
 
-  // Packing List PDF data — full design-level detail (146 lines for AWB 9938632830)
-  // Price authority: liveDraft.editable_lines[i].unit_price (proforma sales price, EUR)
-  //   Matched by INDEX — both editable_lines and sortedPackingLines are in pack_sr order.
-  //   editable_lines are created from packing lines at packing-sync time, preserving that order.
-  //   Do NOT match by product_code (= invoice no, same for all lines in one invoice)
-  //   or by design_no alone (design_no can repeat across different bags/colours).
-  //   Index match is O(1) and robust for single-invoice batches.
+  // Packing List PDF data — ONE commercial-document contract with Proforma/CMR.
   //
-  //   Fallback chain: editable_lines[i].unit_price → unit_price_eur → unit_price (supplier rate)
+  // Authority split (2026-08-08):
+  //   Sales Packing → draft editable_lines (wireframe slice-1 passthrough):
+  //     client_po, karat/metal_color/quality, size, dia/col weights, qty, unit_price
+  //   Product descriptions → product_descriptions via shared `lines` view-model
+  //   Product Code → purchase-lot / draft product_code (pk fallback identity only)
+  //   Gross/net g → Purchase Packing physical extract (pk)
+  //   Origin → shared Product Master ISO via ln.origin (same as Proforma/CMR)
+  //   HSN → NOT printed on commercial packing list (removed from renderer)
+  //
+  // Never fall back commercial price/quality/PO to Purchase Packing.
   // Currency: from draft (can vary per client — not hardcoded to EUR)
   const packingListData = (() => {
     const currency      = liveDraft.currency || 'EUR';
     // ONE row per BILLED draft line (never the full-shipment batch packing).
-    // qty + sales price come from the draft editable line (the billing authority);
-    // physical fields (kt/colour/quality/weights/size/HSN/origin) are ENRICHED
-    // from the matched batch packing row by design_no/product_code. Packing List
-    // total === draft total.
-    //
     // Iterates `lines` — the SAME line view-model the Proforma display and the
     // Proforma document consume — so descriptions are selected in exactly one
     // place (line.desc_en / line.desc_pl above). `line._raw` is that row's own
@@ -5593,11 +5592,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     // off product_code alone.
     const rows = lines.map((line, i) => {
       const ln        = line._raw;
-      const pk        = _enrichPacking(ln);
+      const pk        = _enrichPacking(ln); // purchase packing — physical/identity only
       const qty       = Number(ln.qty) || 0;
-      const unitPrice = Number(ln.unit_price) > 0
-        ? Number(ln.unit_price)
-        : (Number(pk.unit_price_eur) || Number(pk.unit_price) || 0);
+      // Commercial unit price = draft/Sales Packing only. Missing → 0 (honest),
+      // never supplier purchase packing unit_price_eur.
+      const unitPrice = Number(ln.unit_price) || 0;
+      const _kt = (ln.karat || (ln.metal || '').split('/')[0] || '').trim();
+      const _col = (ln.metal_color || (ln.metal || '').split('/')[1] || '').trim();
+      const _dia = Number(ln.diamond_weight);
+      const _cwt = Number(ln.color_weight);
       return {
         // SR is the packing-list's own sequential line number (1..N). Do NOT use
         // the matched packing row's pack_sr — several billed lines can map to the
@@ -5606,12 +5609,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // authority; number them sequentially.
         sr:           line.seq,
         ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
-        // client_po is the CLIENT's purchase-order reference (persisted since
-        // 494c4665). It must NEVER fall back to pk.invoice_no — that is the
-        // SUPPLIER purchase-invoice number, a different authority; mixing them
-        // put the purchase invoice into the Client PO column (2026-07-16 repair).
-        // Missing → '' (renderer shows '—'), never a cross-authority value.
-        client_po:    pk.client_po || '',
+        // Client PO = Sales Packing field on the draft line (slice-1 passthrough).
+        // Never Purchase Packing (no client_po column) and never pk.invoice_no
+        // (supplier purchase invoice — IMPORT_PZ). Missing → '' → renderer '—'.
+        client_po:    (ln.client_po || '').trim(),
         // Supplier purchase-invoice number — its OWN typed field, kept separate
         // from client_po above so the two identities never merge. This is a
         // typed-SEPARATION GUARD, not a display field: it is INTENTIONALLY NOT
@@ -5625,6 +5626,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // decision recorded: PROJECT_STATE.md DECISIONS 2026-07-18. Do not surface
         // it without a new DECISIONS entry (Lesson M).
         purchase_invoice_no: pk.invoice_no || '',
+        // Product Code = purchase-lot / draft identity; pk fallback for enrich only.
         product_code: ln.product_code || pk.product_code || '—',
         design:       ln.design_no    || pk.design_no    || '—',
         // PASS-THROUGH of the ONE resolved view-model description (see `lines`
@@ -5634,24 +5636,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // ln._warnings for that and the document renders the neutral '—'.
         description_en: line.desc_en,
         description_pl: line.desc_pl,
-        kt:           (pk.metal || '').split('/')[0] || '', // "14KT"
-        col:          (pk.metal || '').split('/')[1] || '', // "W", "P", "Y"
-        quality:      pk.quality_string || '',
-        // diamond_weight / color_weight stored since 2026-06-09 schema migration.
-        // Existing rows show null (—) until packing is re-uploaded or force_reextract=True.
-        dia_wt:       Number(pk.diamond_weight) > 0 ? Number(pk.diamond_weight) : null,
-        col_wt:       Number(pk.color_weight)   > 0 ? Number(pk.color_weight)   : null,
+        // KT / colour / quality / size / stone weights = Sales Packing on ln.
+        kt:           _kt,
+        col:          _col,
+        quality:      (ln.quality_string || '').trim(),
+        dia_wt:       _dia > 0 ? _dia : null,
+        col_wt:       _cwt > 0 ? _cwt : null,
+        // Gross / net grams = Purchase Packing physical extract only.
         gross_wt:     Number(pk.gross_weight)   > 0 ? Number(pk.gross_weight)   : null,
         net_wt:       Number(pk.net_weight)     > 0 ? Number(pk.net_weight)     : null,
         qty,
         unit_price:   unitPrice,
         total_value:  unitPrice * qty,
-        // size: stored from packing XLSX "Size" column since 2026-06-09.
-        size:         pk.size || '',
-        // HSN intentionally shown outside Europe only (operator decision 2026-06-09):
-        // EU/WDT shipments render "—". packing_lines has no hs_code column.
-        hsn:          ln.hs_code || pk.hs_code || '',
-        // Origin authority = Product Master via ln.origin (GET enrich). Honest '—'.
+        size:         (ln.size || '').trim(),
+        // Origin = shared Product Master ISO via ln.origin (GET enrich). Honest '—'.
         origin:       (ln.origin || '').trim() || '—',
       };
     });

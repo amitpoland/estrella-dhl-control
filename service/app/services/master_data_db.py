@@ -1271,6 +1271,43 @@ def upsert_product_local(db_path: Path, data: Dict[str, Any]) -> ProductLocal:
     return get_product_local(db_path, payload["product_code"])
 
 
+# Common long-form country names → ISO 3166-1 alpha-2 for commercial documents.
+# Only names that already appear in Estrella product/customer footprint.
+_ORIGIN_NAME_TO_ISO = {
+    "india": "IN",
+    "poland": "PL",
+    "italy": "IT",
+    "france": "FR",
+    "germany": "DE",
+    "spain": "ES",
+    "united states": "US",
+    "usa": "US",
+    "united kingdom": "GB",
+    "uk": "GB",
+}
+
+
+def normalize_origin_country(value: Optional[str]) -> Optional[str]:
+    """Normalize product-origin authority to a document ISO code.
+
+    Returns uppercase ISO alpha-2 when the authority supplies a usable value
+    (including the name "India" → ``IN``). Returns ``None`` when blank —
+    callers must NOT invent a country for SKUs absent from Product Master.
+    """
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if len(raw) == 2 and raw.isalpha():
+        return raw.upper()
+    mapped = _ORIGIN_NAME_TO_ISO.get(raw.casefold())
+    if mapped:
+        return mapped
+    # Unknown long form — pass through trimmed (honest), not invented.
+    return raw
+
+
 def get_product_local(db_path: Path, product_code: str) -> Optional[ProductLocal]:
     db_path = Path(db_path)
     if not db_path.exists():
