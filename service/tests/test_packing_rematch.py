@@ -168,6 +168,84 @@ def test_an_unmatched_row_becoming_matched_does_not_block():
     assert ch["new"]["product_code"] == f"{INV}-2"
 
 
+def test_preexisting_over_line_the_plan_never_touches_is_advisory_not_blocker():
+    """One bad line must not hold every unrelated correction hostage.
+
+    Line 1 (authority 1) already carries two operator-confirmed rows — over
+    authority BEFORE the plan, and only an operator ruling can release them.
+    The plan itself proposes exactly one unrelated correction: the orphaned
+    row-3 acquires line 2.  The write adds nothing to line 1 (before == after),
+    so the violation is surfaced as an advisory and the plan is NOT blocking.
+    """
+    stored = [
+        _row(1, 1, status="confirmed"),
+        _row(2, 1, status="confirmed"),
+        _row(3, None, code=None, strategy=None, conf=0.0, review=True),
+    ]
+    # Machine disagrees with row-2's pin (wants it on line 2's twin position);
+    # both confirmed rows are preserved either way.  Row-3's fix is the only
+    # write.
+    proposed = [_row(1, 1), _row(2, 2), _row(3, 2, strategy="type+qty+rate+metal", conf=0.95)]
+    plan = build_rematch_plan(
+        stored, proposed, [_line(1, 1, 10.0), _line(2, 2, 10.0)])
+
+    assert plan["blocking"] is False
+    assert plan["blockers"] == []
+    adv = [a for a in plan["advisories"]
+           if a["code"] == "line_over_authority_preexisting"]
+    assert len(adv) == 1
+    assert adv[0]["product_code"] == f"{INV}-1"
+    assert adv[0]["authority_qty"] == 1.0
+    assert adv[0]["assigned_qty_before"] == 2.0
+    assert adv[0]["assigned_qty_after"] == 2.0
+    assert plan["counts"]["advisories"] == 1
+    # The unrelated correction is still in the write set.
+    ch = [c for c in plan["row_changes"] if c["row_id"] == "row-3"]
+    assert ch and ch[0]["new"]["invoice_line_position"] == 2
+
+
+def test_plan_that_adds_to_an_already_over_line_still_blocks():
+    """Pre-existing over-ness is no licence: RAISING the line stays refused.
+
+    Line 1 (authority 1) is already over with two stored rows; the proposal
+    moves row-3 onto it as well (after 3 > before 2).  The write itself now
+    increases the violation, so the blocker fires exactly as before.
+    """
+    stored = [_row(1, 1), _row(2, 1), _row(3, 2)]
+    proposed = [_row(1, 1), _row(2, 1), _row(3, 1)]
+    plan = build_rematch_plan(
+        stored, proposed, [_line(1, 1, 10.0), _line(2, 1, 10.0)])
+
+    assert plan["blocking"] is True
+    over = [b for b in plan["blockers"] if b["code"] == "line_over_authority_after"]
+    assert over and over[0]["product_code"] == f"{INV}-1"
+    assert over[0]["before_qty"] == 2.0 and over[0]["proposed_qty"] == 3.0
+    # And it is not double-reported as an advisory.
+    assert all(a["product_code"] != f"{INV}-1" for a in plan["advisories"])
+
+
+def test_plan_that_only_drains_an_over_line_is_advisory_and_proceeds():
+    """Partial repair of an over line is an improvement, not a new violation.
+
+    Line 1 (authority 1) holds three rows; the plan moves one away (3 → 2).
+    Still over after, but strictly better — advisory, never a refusal of the
+    very correction that reduces it.
+    """
+    stored = [_row(1, 1), _row(2, 1), _row(3, 1)]
+    proposed = [_row(1, 1), _row(2, 1), _row(3, 3, strategy="type+qty+rate+metal", conf=0.95)]
+    plan = build_rematch_plan(
+        stored, proposed,
+        [_line(1, 1, 10.0), _line(2, 1, 10.0), _line(3, 1, 10.0)])
+
+    assert plan["blocking"] is False
+    adv = [a for a in plan["advisories"]
+           if a["code"] == "line_over_authority_preexisting"]
+    assert len(adv) == 1
+    assert adv[0]["assigned_qty_before"] == 3.0
+    assert adv[0]["assigned_qty_after"] == 2.0
+    assert {c["row_id"] for c in plan["row_changes"]} == {"row-3"}
+
+
 # ── operator-confirmed rows ──────────────────────────────────────────────────
 
 def test_operator_confirmed_row_is_preserved_not_rewritten():

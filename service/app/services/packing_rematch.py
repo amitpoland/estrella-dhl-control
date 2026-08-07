@@ -19,10 +19,10 @@ and on the preflight/resolve/apply discipline already proven by
 
 Authority note (Lesson R): the purchase invoice line is the authority for how
 many pieces exist.  A packing row is a consumer of that identity and can never
-create availability.  Accordingly a plan that would leave *any* invoice line
-carrying more assigned quantity than the invoice authorises is refused outright
-— that is the machine-checkable form of "a remediation may remove a blocker only
-by restoring correct underlying authority, never by increasing availability
+create availability.  Accordingly a plan whose write would RAISE any invoice
+line above the quantity the invoice authorises is refused outright — that is
+the machine-checkable form of "a remediation may remove a blocker only by
+restoring correct underlying authority, never by increasing availability
 synthetically".
 
 Blocker scope (invoice attribution): every blocker carries ``scope_invoices`` —
@@ -34,6 +34,16 @@ blocked invoice must not hold every other invoice in the batch hostage.
 Attribution is deliberately conservative: a blocker spanning two invoices names
 both, and anything ambiguous names none (= global).  The scoping DECISION lives
 in the route; this module only supplies honest attribution.
+
+A line that is already over authority BEFORE the plan, and to which the plan
+adds nothing (it only leaves it alone or drains it), is a different case: the
+violation is real, but it is not this write's doing.  Refusing the whole batch
+for it would let one bad line — typically wrongly operator-confirmed rows,
+which only an operator ruling can release — hold every unrelated invoice's
+correction hostage while the write changes nothing on that line.  Such lines
+are surfaced as ``advisories`` (code ``line_over_authority_preexisting``)
+rather than blockers, per Lesson N: a hard gate must name the fiscal risk the
+WRITE creates, and a write that never touches the line creates none.
 """
 
 from __future__ import annotations
@@ -176,7 +186,10 @@ def build_rematch_plan(
 
     Returns a plan.  ``blocking`` is True iff the plan must not be applied; the
     caller is required to check it.  A blocking plan is still fully populated so
-    the operator can see *why*.
+    the operator can see *why*.  ``advisories`` carries real conditions the
+    write is not responsible for and therefore must not be gated on — today the
+    one advisory code is ``line_over_authority_preexisting``: a line already
+    over authority that this plan does not add to.
     """
     sales_rows = sales_rows or []
 
@@ -198,6 +211,7 @@ def build_rematch_plan(
             authority_by_code[code] = authority_by_code.get(code, 0.0) + qty
 
     blockers: List[Dict[str, Any]] = []
+    advisories: List[Dict[str, Any]] = []
 
     # ── Pair stored rows to proposed rows on the canonical identity ───────
     stored_by_id: Dict[Tuple[Any, Any], Dict[str, Any]] = {}
@@ -362,18 +376,37 @@ def build_rematch_plan(
         before = _snapshot(before_tally.get(key, {}), a["authority_qty"], a["authority_value"])
         after = _snapshot(after_tally.get(key, {}), a["authority_qty"], a["authority_value"])
         if after["qty_status"] == "over":
-            # The matcher must never propose more pieces on a line than the
-            # invoice authorises.  If it does, the matcher is wrong and the plan
-            # is refused — this is the machine-checkable form of "never increase
-            # availability synthetically".
-            blockers.append({
-                "code": "line_over_authority_after",
-                "invoice_no": a["invoice_no"], "line_position": a["line_position"],
-                "product_code": a["product_code"],
-                "authority_qty": a["authority_qty"],
-                "proposed_qty": after["assigned_qty"],
-                "scope_invoices": _scope(a["invoice_no"]),
-            })
+            if after["assigned_qty"] > before["assigned_qty"] + _QTY_EPSILON:
+                # The write RAISES this line while it ends over authority — the
+                # matcher is wrong and the plan is refused.  This is the
+                # machine-checkable form of "never increase availability
+                # synthetically", and it covers both creating an over line
+                # (before ok) and worsening one (before already over).
+                blockers.append({
+                    "code": "line_over_authority_after",
+                    "invoice_no": a["invoice_no"], "line_position": a["line_position"],
+                    "product_code": a["product_code"],
+                    "authority_qty": a["authority_qty"],
+                    "proposed_qty": after["assigned_qty"],
+                    "before_qty": before["assigned_qty"],
+                    "scope_invoices": _scope(a["invoice_no"]),
+                })
+            else:
+                # Over before, and the plan adds not one piece to it — the
+                # tally is what is guarded, so "adds nothing" means the line's
+                # quantity does not rise (untouched, drained, or an equal-qty
+                # composition swap).  The violation predates this write and
+                # only an operator ruling (e.g. un-confirming the rows that
+                # pin it) can resolve it — so it must not veto the unrelated
+                # corrections in this plan.  Advisory, never a gate (Lesson N).
+                advisories.append({
+                    "code": "line_over_authority_preexisting",
+                    "invoice_no": a["invoice_no"], "line_position": a["line_position"],
+                    "product_code": a["product_code"],
+                    "authority_qty": a["authority_qty"],
+                    "assigned_qty_before": before["assigned_qty"],
+                    "assigned_qty_after": after["assigned_qty"],
+                })
         line_reconciliation.append({**a, "before": before, "after": after})
 
     # A line the authority does not know about receiving rows is a defect in the
@@ -450,6 +483,7 @@ def build_rematch_plan(
         "line_reconciliation":          line_reconciliation,
         "sales_impact":                 sales_impact,
         "blockers":                     blockers,
+        "advisories":                   advisories,
         "blocking":                     bool(blockers),
         "counts": {
             "stored_rows":        len(stored_rows),
@@ -463,5 +497,6 @@ def build_rematch_plan(
             "lines_short_after":  sum(1 for l in line_reconciliation if l["after"]["qty_status"] == "short"),
             "over_bills_resolved": sum(1 for s in sales_impact if s["verdict"] == "over_bill_resolved"),
             "over_bills_revealed": sum(1 for s in sales_impact if s["verdict"] == "over_bill_revealed"),
+            "advisories":          len(advisories),
         },
     }

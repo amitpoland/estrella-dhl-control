@@ -990,6 +990,11 @@ def _run_rematch(
             "invoice_scope":          scope,
             "scoped_proposed_changes": len(selected_changes),
             "batch_proposed_changes":  len(plan["row_changes"]),
+            # An apply may legitimately land while pre-existing over-authority
+            # advisories remain (they are not this write's doing) — the audit
+            # trail must say so, or the unresolved condition becomes invisible
+            # the moment the response JSON is gone.
+            "advisories":       len(plan.get("advisories", [])),
         },
     )
 
