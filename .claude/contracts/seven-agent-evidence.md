@@ -237,7 +237,18 @@ Every rule fails **closed** — refusal, never a warning. In order:
   that clamp, evidence created at T and valid to T+24h, minted against at T+23h59m with
   `--ttl 1440`, would deploy at T+47h58m — double what this paragraph promises, and
   invisible to the use-time check, which re-hashes the evidence without re-validating it.
-  The whole chain is therefore bounded at 24 hours from the moment the round concluded.
+  The whole chain is therefore bounded at 24 hours from the asserted `created_at`, plus
+  the 5 minutes of permitted clock skew.
+  > **WITHDRAWN (2026-08-07, round-9 follow-up):** this sentence previously read
+  > "bounded at 24 hours from the moment the round concluded." That was the exact claim
+  > `sign_deploy_authorization.py` records as wrong in the comment above its clamp: the
+  > bound is measured from the `created_at` the evidence **asserts** — an
+  > operator-supplied field nothing ties to when the round actually ran — and
+  > `CLOCK_SKEW` permits that assertion to sit up to 5 minutes ahead. §Transcription
+  > (lines 141–146 above) stated the correct version all along; this line contradicted
+  > it, in the optimistic direction, and survived six CLEAR/PASS verdicts plus a lead
+  > GO in round 9 (scorecard D-5). Corrected by marking, not deleting, per Lesson Q
+  > rule 5.
 - **Write it in UTF-8 without a BOM**, and prefer writing it with Python rather than a
   PowerShell redirect. On Windows PowerShell 5.1: `Out-File` and `>` default to
   **UTF-16LE** (refused: `not valid UTF-8`), and `Out-File -Encoding utf8` emits a

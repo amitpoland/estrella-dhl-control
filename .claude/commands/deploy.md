@@ -31,7 +31,7 @@ authorization so it cannot outlive the gate evidence that justified it.
 
 ```
 # 1. plan only - writes nothing, needs no authorization
-Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
+.\.claude\deploy\Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
 
 # 2. run the 7-agent gate against that SHA, out of band, and record the result as
 #    strict-JSON evidence (schema: .claude/contracts/seven-agent-evidence.md)
@@ -47,14 +47,22 @@ Deploy-PZ.ps1 -WhatIf -ReviewedSHA <40-char-sha>
 python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --gate-evidence C:\PZ-secrets\gate-evidence\<40-char-sha>.json --ttl 60
 
 # 4. deploy
-Deploy-PZ.ps1 -ReviewedSHA <40-char-sha>
+.\.claude\deploy\Deploy-PZ.ps1 -ReviewedSHA <40-char-sha>
 
 # 5. validate (read-only)
-Test-PZDeployClose.ps1 -ExpectedSHA <40-char-sha>
+.\.claude\deploy\Test-PZDeployClose.ps1 -ExpectedSHA <40-char-sha>
 ```
 
 Options: `-Scope App|Engine|Both`, `-Bootstrap` (first-ever deploy, no rollback
 target), `-ForceUnlock` (clear a lock whose process is provably gone).
+
+**The authorization is consumed before the identity gate runs.** The single-use
+artifact is spent at the authorization step, which precedes the deploy lock and the
+production identity gate. If the run then stops — `IDENTITY_GATE_BLOCKED`, lock
+contention — nothing on production was touched, but the artifact is already burned:
+re-mint before retrying, and note the re-mint needs the gate evidence still unexpired,
+or a fresh seven-agent round. Tracked as issue #1097 (reordering is a gated change to
+the deploy script, not a docs fix).
 
 **Gate evidence is required, digest-bound, and re-checked at deploy time.** Between
 minting the authorization and running the deploy, do not edit, reformat, move, rename,
@@ -82,17 +90,21 @@ the SHA being converged *to*, not the identity production currently holds:
 
 ```
 python .claude/hooks/sign_deploy_authorization.py <to-sha> reconcile Both --from-sha <proved-current-sha> --gate-evidence C:\PZ-secrets\gate-evidence\<to-sha>.json --ttl 60
-Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
+.\.claude\deploy\Deploy-PZ.ps1 -Reconcile -FromSha <proved-current-sha> -ToSha <to-sha>
 ```
 
 **Rollback needs its own authorization.** Mint it *before* you need it - doing so
 mid-incident costs time you will not have. Note the ceiling: `--ttl` may not exceed
 **1440 minutes (24h)**, so a standby rollback artifact expires within a day of minting
 and must be re-minted regularly. A longer value exits 2 rather than silently shortening.
+Make it a cadence, not an intention: **re-mint the standby rollback artifact daily** —
+add it to whatever end-of-day or post-deploy routine actually runs, because a standby
+that expired yesterday is discovered mid-incident, which is the one time minting is
+expensive.
 
 ```
 python .claude/hooks/sign_deploy_authorization.py <sha> rollback Both --ttl 1440
-Deploy-PZ.ps1 -Rollback -Unit <unit>
+.\.claude\deploy\Deploy-PZ.ps1 -Rollback -Unit <unit>
 ```
 
 A rollback carries **two** SHAs. The *deployment* SHA authorizes it — that is the `<sha>`
@@ -114,6 +126,19 @@ intended fail-closed default, not a fault. Provisioning instructions - key gener
 the two environment variables, and the artifact store location - are at the top of
 `.claude/hooks/sign_deploy_authorization.py`. The key must live outside this
 repository.
+
+Two caveats the provisioning block does not state:
+
+- **`setx` writes user scope (HKCU).** Same-user elevation inherits it, which is why
+  the documented flow works on this host — but elevating under a *different* admin
+  account resolves neither variable and every mint fails "no signing key / exit 2".
+  Provision under the account that will run the deploy.
+- **The repository binding is inert unless armed.** `PZ_DEPLOY_AUTH_REPO` is a signed
+  field checked only `if` the verifier's environment sets it, and the provisioning
+  block sets only the key file and the store — so following it verbatim leaves the
+  check switched off on both sides. That is a documented gap, not a false claim (no
+  property list asserts repo-binding); set the third variable in both environments if
+  you want it enforced.
 
 ## Why the agent cannot deploy
 
