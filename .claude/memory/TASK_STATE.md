@@ -349,6 +349,83 @@ gate_reconfirmed_at: 2026-07-31T (this session; READY-TO-DEPLOY, LOW)
 
 ## History (most recent first)
 
+- 2026-08-06 — **PR #1094 CLOSED (merged)** — `feat(deploy): make seven-agent gate evidence a
+  machine-checked, tamper-bound precondition of signing`. **Merged SHA
+  `77ded8e23e8d92e627e2d77c7f032a9144cfc8b7`**, merged by `amitpoland` 2026-08-06T06:38:34Z,
+  now `origin/main` tip (parent `6e1de8b1`, single-parent — a squash merge). **Ruled head
+  `9be5970055e481bef6df0b6c226730e4fd3d3adf`** — round 9's frozen head. Ancestry check
+  `git merge-base --is-ancestor 9be59700 origin/main` returns **NO** (exit 1) because the
+  merge was a squash: the squash commit records none of the branch's commits as parents, so
+  `9be59700` is unreachable from `origin/main` by any path, not merely off the first-parent
+  chain (`--is-ancestor` walks all parents, so this is a genuine absence) — **but**
+  `git rev-parse 77ded8e2^{tree}` and `git rev-parse 9be59700^{tree}` are **both
+  `dc892ead813e8a316166895fbf102f4700293ca0`**: byte-identical trees. Record both halves —
+  ancestry alone would wrongly read as "the ruled head never shipped"; tree equality is what
+  proves it did. Diff: 11 files, 12 commits on the branch, +3305/−45, touching only
+  `.claude/commands/deploy.md`, `.claude/contracts/{seven-agent-evidence.md,test-baseline.md}`,
+  `.claude/hooks/{deploy_authorization.py,gate_evidence.py,sign_deploy_authorization.py}`,
+  `.claude/memory/TASK_STATE.md`, `docs/ops/release-mode-implementation-plan.md`,
+  `service/docs/production_deployment_rule.md`,
+  `service/tests/{test_deploy_reconcile_signing.py,test_gate_evidence.py}` — zero files under
+  `service/app`, `.claude/deploy`, or any root engine module.
+
+  **Round 9 outcome**: six specialists CLEAR/PASS + `deploy_lead_coordinator` **GO** ("READY
+  FOR OPERATOR MERGE"). Operator merged. **What shipped**: seven-agent gate evidence is now
+  strict JSON, validated by `.claude/hooks/gate_evidence.py`, digest-bound into the signed
+  authorization body by `.claude/hooks/sign_deploy_authorization.py`, and re-checked at
+  use-time by `.claude/hooks/deploy_authorization.py` for the `deploy` and `reconcile` actions
+  (NOT `rollback`). Evidence gates SIGNING; the HMAC artifact gates the DEPLOY.
+
+  **Corrected numbering (Lesson Q rule 5 — marked, not silently replaced):** an earlier
+  in-session narration said the tolerant Markdown parser was abandoned after round 7. That was
+  **wrong**; corrected from the commit log — `ed62ed59` ("the tolerant parser was the defect")
+  lands after three fix commits, so the parser was abandoned after **round 3**. Rounds 4–8
+  reviewed the strict-JSON rewrite; round 9 was the narrowed final round.
+
+  **PRODUCTION STATUS — unverified and unchanged.** No deployment was performed, no Windows
+  service touched, no signed authorization minted. The merge changed the repository only.
+  Production's actual running SHA is **unknown to this session** and must not be inferred from
+  merge history; treat production identity as unestablished until measured on the host.
+
+  **Scorecards on disk (RULE 6 citation)**:
+  `.claude/memory/scorecards/2026-08-06-pr1094-gate-evidence-nine-rounds.md` (65 KB) and
+  `.claude/memory/scorecards/self-eval-2026-08-06.md` (18 KB, verdict **SELF-DEGRADATION
+  DETECTED**, 28/35 down from 31).
+
+  **GATE-4 dispositions carried forward** (from the campaign scorecard, verified against
+  `2026-08-06-pr1094-gate-evidence-nine-rounds.md` §D-1..D-5): **D-1 ISSUE** — make Lesson Q
+  rule 6's `reviewer-challenge` second pass mandatory rather than advisory (it was never run
+  in nine rounds); **D-2 ISSUE** — `deploy_lead_coordinator` needs a recurrence-aware exit
+  criterion; **D-3 ISSUE** — `deploy_git_diff_reviewer` needs an absence-claim protocol;
+  **D-4 SCHEDULED** — charter gap: no agent in the registry is chartered to challenge a
+  *design* rather than a diff; **D-5 SCHEDULED** — a live contradiction shipped in the merged
+  tree: `.claude/contracts/seven-agent-evidence.md:240` claims the chain is "bounded at 24
+  hours from the moment the round concluded", while `.claude/hooks/sign_deploy_authorization.py:248`
+  states of that exact claim "It is not. It is bounded at 24h from the `created_at` the
+  evidence ASSERTS, and nothing ties that field to when the round actually ran" — and the
+  contract also contradicts itself at line 240 vs. lines 141–144. This is an optimistic
+  (permitting) safety claim, Lesson Q rule 6's higher-scrutiny class, and it passed six
+  CLEAR/PASS verdicts plus a lead GO undetected.
+
+  **Four follow-up buckets — NOT executed, recorded only:**
+  1. Re-mint pre-existing `deploy` / `reconcile` authorization artifacts on the Windows host —
+     including artifacts that "look fine." An artifact digest-bound to a Markdown-era evidence
+     file still *passes* the use-time check (it re-hashes bytes, does not re-validate against
+     the new schema), so a stale artifact can deploy citing evidence that would no longer pass
+     the gate which produced it. `rollback` artifacts are unaffected — incident capability
+     survives.
+  2. File two GATE-4 ISSUEs: (a) `Deploy-PZ.ps1:1308` consumes the single-use `jti` *before*
+     the identity gate at `:1321` — inherited from `main`, explicitly NOT fixed inside #1094;
+     (b) the unpinned 5-argument reconcile CLI shape.
+  3. One docs-only PR carrying the ~26 enumerated round-9 prose follow-ups, per the lead
+     coordinator's condition that each item be transcribed verbatim from the six round-9
+     reports — fold D-5 (instance #14) into this PR.
+  4. (folded into #3 above) D-5 instance #14 contradiction fix.
+
+  Written by `flow-context-keeper` in an ephemeral remote container; `.claude/memory/PROJECT_STATE.md`
+  is gitignored and absent here — see the companion `PROJECT_STATE.md` initialized this session
+  for the disclaimer. No git commit/push performed by this agent.
+
 - 2026-08-01 — **PR #1062 AMENDED** (base `main`, head `fix/deploy-production-identity-gate`,
   tip **`70e1e883`**) after the operator ruling *"#1062 must not merge in its present form —
   the missing reconciliation authority is a genuine blocker."* Closure-2 is now **in** this PR
