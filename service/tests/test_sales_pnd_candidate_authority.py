@@ -49,7 +49,11 @@ def _sale(price, qty=1.0):
 # ── Candidate construction: authority, not packing ───────────────────────────
 
 def test_candidates_come_from_invoice_lines_not_packing_assignment():
-    """A wrong or NULL packing assignment must not corrupt the candidate set."""
+    """A wrong or NULL packing assignment must not corrupt the candidate set.
+
+    Studded pendant lines are excluded from plain-PND candidates; only the
+    plain pendant invoice line remains (ring never was a candidate).
+    """
     lines = [
         _il(1, "PCS, SL925 SILVER Plain Jewellery PENDANT", rate=5.0),
         _il(2, "PCS, 14KT Gold Studded PENDANT", rate=106.0),
@@ -64,11 +68,28 @@ def test_candidates_come_from_invoice_lines_not_packing_assignment():
     cands = build_supplier_candidates(lines, packing, invoice_no=INV)
 
     codes = sorted(c["product_code"] for c in cands)
-    assert codes == [f"{INV}-1", f"{INV}-2"]          # both pendant LINES, no ring
-    by_code = {c["product_code"]: c for c in cands}
-    assert by_code[f"{INV}-1"]["unit_price"] == 5.0    # price from the line itself
-    assert by_code[f"{INV}-2"]["unit_price"] == 106.0
-    assert all(c["authority_qty"] == 1.0 for c in cands)
+    assert codes == [f"{INV}-1"]                      # plain only — studded excluded
+    assert cands[0]["unit_price"] == 5.0              # price from the line itself
+    assert cands[0]["authority_qty"] == 1.0
+
+
+def test_studded_pendant_invoice_lines_excluded_from_plain_pnd_candidates():
+    """Failure shape: studded pendant authority must not enter the plain PND
+    candidate set (inflates count and breaks the count gate)."""
+    lines = [
+        _il(1, "PCS, SL925 SILVER Plain Jewellery PENDANT", rate=5.0),
+        _il(2, "PCS, 14KT Gold,Plain Jewellery PENDANT", rate=86.0),
+        _il(3, "PCS, 14KT Gold,LGD Gold Stud Jewell PENDANT", rate=120.0),
+        _il(4, "PCS, 14KT Gold Stud With Diam Jewel PENDANT", rate=200.0),
+    ]
+    cands = build_supplier_candidates(lines, [], invoice_no=INV)
+    codes = sorted(c["product_code"] for c in cands)
+    assert codes == [f"{INV}-1", f"{INV}-2"]
+    sales = [_sale(6.0), _sale(92.0)]
+    out, summary = disambiguate_pnd(sales, cands, invoice_no=INV)
+    assert summary["applied"] is True
+    assert out[0]["product_code"] == f"{INV}-1"
+    assert out[1]["product_code"] == f"{INV}-2"
 
 
 def test_aggregate_packing_rows_do_not_inflate_the_candidate_count():
