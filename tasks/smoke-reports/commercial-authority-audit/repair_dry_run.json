@@ -1,0 +1,440 @@
+{
+  "mode": "dry-run",
+  "storage_root": "C:\\PZ\\storage",
+  "sales_backfill": [
+    {
+      "batch_id": "SHIPMENT_1196338404_2026-05_48f86046",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_4218922912_2026-05_9040dd39",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_4218922912_2026-05_bd18ec98",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_9938632830_2026-06_1a80f9c5",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_1201561616_2026-07_bcd042b4",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_4183498255_2026-05_33ece822",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_9198333502_2026-05_87257361",
+      "planned": true
+    },
+    {
+      "batch_id": "SHIPMENT_9807058483_2026-06_c600949a",
+      "planned": true
+    }
+  ],
+  "draft_resets": [
+    {
+      "draft_id": 5,
+      "planned": true
+    },
+    {
+      "draft_id": 6,
+      "planned": true
+    },
+    {
+      "draft_id": 7,
+      "planned": true
+    },
+    {
+      "draft_id": 8,
+      "planned": true
+    },
+    {
+      "draft_id": 9,
+      "planned": true
+    },
+    {
+      "draft_id": 10,
+      "planned": true
+    },
+    {
+      "draft_id": 11,
+      "planned": true
+    },
+    {
+      "draft_id": 13,
+      "planned": true
+    },
+    {
+      "draft_id": 14,
+      "planned": true
+    },
+    {
+      "draft_id": 15,
+      "planned": true
+    },
+    {
+      "draft_id": 16,
+      "planned": true
+    },
+    {
+      "draft_id": 17,
+      "planned": true
+    },
+    {
+      "draft_id": 18,
+      "planned": true
+    },
+    {
+      "draft_id": 19,
+      "planned": true
+    },
+    {
+      "draft_id": 33,
+      "planned": true
+    },
+    {
+      "draft_id": 34,
+      "planned": true
+    },
+    {
+      "draft_id": 37,
+      "planned": true
+    },
+    {
+      "draft_id": 56,
+      "planned": true
+    },
+    {
+      "draft_id": 58,
+      "planned": true
+    },
+    {
+      "draft_id": 59,
+      "planned": true
+    },
+    {
+      "draft_id": 62,
+      "planned": true
+    },
+    {
+      "draft_id": 76,
+      "planned": true
+    },
+    {
+      "draft_id": 79,
+      "planned": true
+    }
+  ],
+  "locked_stale_drafts": [
+    {
+      "draft_id": 27,
+      "state": "posted",
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "client": "Goto Jewellery and diamonds",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 28,
+      "state": "posted",
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "client": "SUOKKO",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 29,
+      "state": "posted",
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "client": "Diamond Point",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 30,
+      "state": "posted",
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "client": "Verhoeven Joaillier",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 31,
+      "state": "posted",
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "client": "DiamondGroup GmbH",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 55,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9807058483_2026-06_c600949a",
+      "client": "MDS",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 57,
+      "state": "posted",
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "client": "Diamond Point B.V.",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 60,
+      "state": "posted",
+      "batch_id": "SHIPMENT_8341809162_2026-07_3d940f75",
+      "client": "Magdalena Kumar Firma Handlowa ”Railing 2”",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 61,
+      "state": "posted",
+      "batch_id": "SHIPMENT_8341809162_2026-07_3d940f75",
+      "client": "MICHAEL KENNY LLP",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 66,
+      "state": "converted",
+      "batch_id": "SHIPMENT_1003835895_2026-07_523c9281",
+      "client": "Clear-Diamonds",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 24,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9938632830_2026-06_1a80f9c5",
+      "client": "UAB",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 35,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "client": "OMARA s.r.o",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 36,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "client": "Dream Rings, s.r.o.",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 38,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "client": "Diamond Point",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 39,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "client": "SAGAR SHAH",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 40,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "client": "SAS MAYURI C/O Giraphes Services",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 41,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "client": "Magdalena Kumar Firma Handlowa ”Railing 2”",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 42,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "client": "MB Adagia",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 43,
+      "state": "posted",
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "client": "Longvé ApS",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 44,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "MB Adagia",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 45,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "UAB Monodija Ir Ko",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 46,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "DiamondGroup GmbH",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 47,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "Verhoeven Joaillier",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 48,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "Guldteknik i Köping AB",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 49,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "SAGAR SHAH",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 50,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "ORKNIS UAB",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 51,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "UAB",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 52,
+      "state": "converted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "OMARA s.r.o",
+      "reason": "locked — operator rematch/amend required"
+    },
+    {
+      "draft_id": 53,
+      "state": "posted",
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "client": "Clear-Diamonds",
+      "reason": "locked — operator rematch/amend required"
+    }
+  ],
+  "origin_skus_need_master": {
+    "count": 157,
+    "sample": [
+      "EJL/26-27/148-1",
+      "EJL/26-27/148-2",
+      "EJL/26-27/148-3",
+      "EJL/26-27/148-5",
+      "EJL/26-27/148-6",
+      "EJL/26-27/149-1",
+      "EJL/26-27/149-2",
+      "EJL/26-27/149-3",
+      "EJL/26-27/150-1",
+      "EJL/26-27/150-2",
+      "EJL/26-27/150-3",
+      "EJL/26-27/150-6",
+      "EJL/26-27/151-1",
+      "EJL/26-27/151-3",
+      "EJL/26-27/151-4",
+      "EJL/26-27/151-5",
+      "EJL/26-27/152-1",
+      "EJL/26-27/153-1",
+      "EJL/26-27/177-1",
+      "EJL/26-27/177-2",
+      "EJL/26-27/177-3",
+      "EJL/26-27/177-5",
+      "EJL/26-27/178-1",
+      "EJL/26-27/179-1",
+      "EJL/26-27/179-2",
+      "EJL/26-27/180-1",
+      "EJL/26-27/180-2",
+      "EJL/26-27/180-3",
+      "EJL/26-27/180-4",
+      "EJL/26-27/244-1",
+      "EJL/26-27/244-3",
+      "EJL/26-27/244-4",
+      "EJL/26-27/254-1",
+      "EJL/26-27/254-2",
+      "EJL/26-27/254-3",
+      "EJL/26-27/255-1",
+      "EJL/26-27/256-1",
+      "EJL/26-27/256-2",
+      "EJL/26-27/256-3",
+      "EJL/26-27/257-1",
+      "EJL/26-27/257-2",
+      "EJL/26-27/257-3",
+      "EJL/26-27/257-4",
+      "EJL/26-27/258-1",
+      "EJL/26-27/258-2",
+      "EJL/26-27/258-3",
+      "EJL/26-27/258-5",
+      "EJL/26-27/258-6",
+      "EJL/26-27/259-1",
+      "EJL/26-27/260-1",
+      "EJL/26-27/290-1",
+      "EJL/26-27/290-2",
+      "EJL/26-27/291-1",
+      "EJL/26-27/291-2",
+      "EJL/26-27/291-3",
+      "EJL/26-27/291-4",
+      "EJL/26-27/291-5",
+      "EJL/26-27/292-1",
+      "EJL/26-27/292-2",
+      "EJL/26-27/293-1",
+      "EJL/26-27/294-1",
+      "EJL/26-27/296-1",
+      "EJL/26-27/297-1",
+      "EJL/26-27/297-2",
+      "EJL/26-27/298-3",
+      "EJL/26-27/299-1",
+      "EJL/26-27/299-10",
+      "EJL/26-27/299-11",
+      "EJL/26-27/299-2",
+      "EJL/26-27/299-4",
+      "EJL/26-27/299-5",
+      "EJL/26-27/299-6",
+      "EJL/26-27/299-8",
+      "EJL/26-27/299-9",
+      "EJL/26-27/300-1",
+      "EJL/26-27/327-1",
+      "EJL/26-27/328-1",
+      "EJL/26-27/328-2",
+      "EJL/26-27/329-1",
+      "EJL/26-27/329-2"
+    ]
+  },
+  "pre_repair_cohort_counts": {
+    "EMPTY_EDITABLE_LINES": 7,
+    "ORIGIN_PRODUCT_MASTER_MISSING": 14,
+    "SALES_PACKING_LACKS_VARIANTS": 35,
+    "STALE_DRAFT_SALES_VARIANTS_AVAILABLE": 17
+  }
+}

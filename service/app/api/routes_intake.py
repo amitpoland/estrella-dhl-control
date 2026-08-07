@@ -227,42 +227,17 @@ def _auto_create_draft_for_client(
     if not line_records:
         return
     try:
-        # Reshape line_records (sales_packing_lines schema) into the
-        # auto-create's `lines` shape. Keep client_ref alongside each
-        # line so per-line client refs aren't lost.
+        # ONE reshape: sales_packing_lines → draft birth input (commercial
+        # authority module). Keeps client_ref + full variant identity.
+        from ..services.commercial_authority import sales_row_to_draft_input
         editable_input = []
         for r in line_records:
-            editable_input.append({
-                "product_code": r.get("product_code") or "",
-                "design_no":    r.get("design_no") or "",
-                "qty":          r.get("quantity") or 0,
-                "unit_price":   r.get("unit_price") or 0,
-                "currency":     (r.get("currency") or currency or "").upper(),
-                "price_source": r.get("price_source") or "",
-                "client_ref":   r.get("client_ref") or client_ref or "",
-                # Carry sales-packing attributes through for the generated
-                # name_pl fallback (used only on a product_descriptions miss).
-                # Generally absent on sales_packing_lines rows; passed through
-                # defensively so the fallback fires when they ARE present.
-                "ctg":            r.get("ctg") or r.get("category") or "",
-                "kt":             r.get("kt") or r.get("karat") or "",
-                "col":            r.get("col") or r.get("metal_color") or "",
-                "quality":        r.get("quality") or r.get("quality_string") or "",
-                # Variant-identity passthrough (wireframe Slice 1): canonical
-                # sales_packing column names so the DB layer's
-                # _sales_variant_fields carries them into editable_lines.
-                # Intake is the DOMINANT draft-birth path — without these the
-                # variant fields are born blank. Display only.
-                "client_po":      r.get("client_po") or "",
-                "karat":          r.get("karat") or "",
-                "metal":          r.get("metal") or "",
-                "metal_color":    r.get("metal_color") or "",
-                "quality_string": r.get("quality_string") or "",
-                "stone_type":     r.get("stone_type") or "",
-                "size":           r.get("size") or "",
-                "diamond_weight": r.get("diamond_weight") or 0,
-                "color_weight":   r.get("color_weight") or 0,
-            })
+            row = dict(r)
+            if not (row.get("client_ref") or "").strip() and client_ref:
+                row["client_ref"] = client_ref
+            editable_input.append(
+                sales_row_to_draft_input(row, currency=currency or "")
+            )
         # Governance check — no-op when proforma_draft_governance_enabled=False
         check_creation_lines(editable_input)
         # Lazy imports to avoid import cycles (service layer stays free of

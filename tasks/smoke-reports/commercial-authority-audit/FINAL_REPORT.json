@@ -1,0 +1,96 @@
+{
+  "title": "Commercial document authority audit & convergence",
+  "date": "2026-08-08",
+  "pipeline": [
+    "Purchase Packing",
+    "Sales Packing",
+    "Draft",
+    "Proforma",
+    "Commercial Packing List",
+    "Invoice",
+    "CMR"
+  ],
+  "authority_model": {
+    "client_po_quality_kt_colour_size_stone_weights_price_qty": "Sales Packing → draft editable_lines → Proforma / Packing List / CMR",
+    "gross_net_product_code_fallback": "Purchase Packing",
+    "descriptions": "product_descriptions (shared lines VM)",
+    "origin": "Product Master product_local.origin_country → ISO (never invent)",
+    "blank_fill_rule": "Purchase may fill blank Sales variant fields only; never Client PO; never overwrite Sales"
+  },
+  "root_cause_gaps_discovered": [
+    {
+      "id": "MANUAL_ALLOCATION_DROPPED_VARIANTS",
+      "severity": "POST manual-sales-allocation wrote identity/qty/price only — permanent commercial gaps on sync"
+    },
+    {
+      "id": "LINK_AS_SALES_DROPPED_VARIANTS",
+      "severity": "_build_matched_sales_lines omitted karat/quality/size/weights when promoting purchase→sales"
+    },
+    {
+      "id": "DUPLICATE_DRAFT_RESHAPE",
+      "severity": "Intake birth and reset-from-sales each hand-mapped sales→draft; drift risk"
+    },
+    {
+      "id": "ADD_DRAFT_LINE_OMITTED_VARIANTS",
+      "severity": "Manual add_draft_line dropped variant passthrough"
+    },
+    {
+      "id": "HISTORICAL_THIN_SALES",
+      "severity": "Legacy sales rows lacked variants even when purchase packing had them"
+    },
+    {
+      "id": "ORIGIN_PRODUCT_MASTER_GAPS",
+      "severity": "157 SKUs with no usable product_local.origin_country — honest dash, never invent IN"
+    }
+  ],
+  "duplicate_authorities_removed_or_consolidated": [
+    "sales_row_to_draft_input is now the single birth/reset reshape (intake + reset endpoint + repair)",
+    "purchase_variant_fields shared by link_as_sales + manual allocation + backfill",
+    "sync_draft_from_packing_upload blank-fills sales from purchase before draft sync"
+  ],
+  "data_repair_applied": {
+    "storage": "C:\\PZ\\storage",
+    "sales_rows_blank_filled_from_purchase": 913,
+    "batches_backfilled": 11,
+    "editable_drafts_reset_from_sales": 23,
+    "locked_stale_drafts_not_mutated": 29,
+    "evidence": "tasks/smoke-reports/commercial-authority-audit/repair_apply.json"
+  },
+  "post_repair_cohorts": {
+    "repairable_via_reset": 0,
+    "EMPTY_EDITABLE_LINES": 7,
+    "INCOMPLETE_UPSTREAM_VARIANTS": 18,
+    "ORIGIN_PRODUCT_MASTER_MISSING_drafts": 20,
+    "STALE_LOCKED_posted_or_converted": 28,
+    "pm_origin_missing_skus": 157
+  },
+  "master_data_required": {
+    "action": "Populate product_local.origin_country for 157 SKUs (sample in gap_report.json)",
+    "do_not": "Invent IN or any origin in document renderers"
+  },
+  "code_changes": [
+    "service/app/services/commercial_authority.py (new)",
+    "service/app/api/routes_packing.py (manual allocation + link_as_sales variants)",
+    "service/app/api/routes_intake.py (shared reshape)",
+    "service/app/api/routes_proforma.py (shared reshape)",
+    "service/app/services/proforma_invoice_link_db.py (add_draft_line variants)",
+    "service/app/services/proforma_draft_sync.py (auto blank-fill before sync)",
+    "service/scripts/audit_commercial_authority_gaps.py",
+    "service/scripts/repair_commercial_authority_gaps.py",
+    "service/tests/test_commercial_authority_propagation.py"
+  ],
+  "tests": {
+    "test_commercial_authority_propagation.py": "5 passed",
+    "test_cpa_manual_sales_allocation.py": "included in 15-pass suite with propagation",
+    "related_proforma_authority": "passed"
+  },
+  "deployment_status": "pending_code_deploy",
+  "remaining_technical_debt": [
+    "28 locked (posted/converted) drafts still thin — require operator rematch/amend, not silent reset",
+    "18 drafts with incomplete upstream Sales/Purchase variants — cannot invent quality/size/PO",
+    "7 empty editable_lines drafts — legacy shells",
+    "157 SKUs need Product Master origin_country",
+    "CN23 carrier package still hardcodes origin PL (separate customs surface)",
+    "Posted Proforma/Invoice still prefer wFirma goods name vs V2 product_descriptions (intentional fiscal split today)"
+  ]
+}

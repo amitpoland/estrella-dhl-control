@@ -8872,36 +8872,10 @@ def reset_proforma_draft_from_sales_packing(
     matched = [r for r in all_rows
                 if (r.get("client_name") or "").strip().upper() == target]
 
-    # Reshape sales_packing_lines columns into the helper's input shape.
+    # ONE reshape: sales_packing_lines → reset input (commercial authority).
+    from ..services.commercial_authority import sales_row_to_draft_input
     sales_lines = [
-        {
-            "product_code": r.get("product_code") or "",
-            "design_no":    r.get("design_no") or "",
-            "qty":          r.get("quantity") or 0,
-            "unit_price":   r.get("unit_price") or 0,
-            "currency":     (r.get("currency") or d.currency or "").upper(),
-            "price_source": r.get("price_source") or "",
-            "client_ref":   r.get("client_ref") or "",
-            # Attribute passthrough for the generated name_pl fallback
-            # (used only on a product_descriptions miss; declines when the
-            # category is unrecognised). Generally absent on these rows.
-            "ctg":          r.get("ctg") or r.get("category") or "",
-            "kt":           r.get("kt") or r.get("karat") or "",
-            "col":          r.get("col") or r.get("metal_color") or "",
-            "quality":      r.get("quality") or r.get("quality_string") or "",
-            # Variant-identity passthrough (sales_packing columns) so the
-            # DB layer's _sales_variant_fields carries them into
-            # editable_lines — display only, never pricing/readiness.
-            "client_po":      r.get("client_po") or "",
-            "karat":          r.get("karat") or "",
-            "metal":          r.get("metal") or "",
-            "metal_color":    r.get("metal_color") or "",
-            "quality_string": r.get("quality_string") or "",
-            "stone_type":     r.get("stone_type") or "",
-            "size":           r.get("size") or "",
-            "diamond_weight": r.get("diamond_weight") or 0,
-            "color_weight":   r.get("color_weight") or 0,
-        }
+        sales_row_to_draft_input(r, currency=d.currency or "")
         for r in matched
     ]
 

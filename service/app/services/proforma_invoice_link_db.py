@@ -4946,9 +4946,14 @@ def add_draft_line(
         "currency":     ccy,
         "price_source": str(line.get("price_source") or "manual"),
         "client_ref":   str(line.get("client_ref") or ""),
+        # Commercial variant passthrough when the operator/API supplies them
+        # (or when a caller blank-fills from purchase). Never invents.
+        **_sales_variant_fields(line),
     }
     if "remarks" in line:
         new_line["remarks"] = str(line["remarks"] or "")
+    if "name_pl" in line and str(line.get("name_pl") or "").strip():
+        new_line["name_pl"] = str(line["name_pl"]).strip()
     lines.append(new_line)
 
     refreshed = _commit_draft_update(
