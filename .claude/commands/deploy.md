@@ -87,13 +87,19 @@ python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --ga
 Options: `-Scope App|Engine|Both`, `-Bootstrap` (first-ever deploy, no rollback
 target), `-ForceUnlock` (clear a lock whose process is provably gone).
 
-**The authorization is consumed before the identity gate runs.** The single-use
-artifact is spent at the authorization step, which precedes the deploy lock and the
-production identity gate. If the run then stops — `IDENTITY_GATE_BLOCKED`, lock
-contention — nothing on production was touched, but the artifact is already burned:
-re-mint before retrying, and note the re-mint needs the gate evidence still unexpired,
-or a fresh seven-agent round. Tracked as issue #1097 (reordering is a gated change to
-the deploy script, not a docs fix).
+**A blocked run does not burn the authorization** (issue #1097, fixed). The single-use
+artifact is consumed only after every refusal that writes nothing *to production* has
+had its chance — for a deploy, after the lock and the production identity gate; for a
+reconcile, after PROOF 1; for a rollback, after all unit-provenance checks. "Writes
+nothing to production" is the precise claim: the pre-authorization region does fetch
+and fast-forward the *source* checkout and does write the lock file, none of which
+touch the runtime. An `IDENTITY_GATE_BLOCKED` or failed-proof stop therefore leaves
+the artifact spendable — retry after repairing what blocked, provided the artifact's
+own `expires_at` has not passed (expired artifacts are denied as expired, not burned).
+What *does* consume: any run that proceeds past those checks, including a runtime
+no-op (its marker advance is an authorized production write) and a reconcile whose
+PROOF 2 fails after the service stop. The ordering is index-pinned in
+`test_deploy_authority.py` in both mutant directions.
 
 **Gate evidence is required, digest-bound, and re-checked at deploy time.** Between
 minting the authorization and running the deploy, do not edit, reformat, move, rename,
@@ -186,13 +192,16 @@ here still cannot mint one. The guard blocks the agent; the script also blocks i
 
 ## Order of operations
 
-Preflight (source identity, clean, no local-only commits) -> validate `-ReviewedSHA`
+Preflight (source identity, clean, no local-only commits) -> validate the target
 (format, exists, descends from HEAD, equals `origin/main`, refuse if origin advanced
-beyond it) -> fast-forward to it -> **authorization** -> take the lock -> **stop the
-service** -> stage the immutable artifact -> back up application + engine as one
-restorable unit -> inventory destination-only paths -> converge production to the
-artifact -> engine sync (Lesson J) -> verify against the manifest -> write the version
-file -> start the service -> validate.
+beyond it) -> fast-forward to it -> take the lock -> **production identity gate** ->
+**authorization** (consumed here — after every refusal that can stop the run without
+writing, immediately before the first write on whichever path runs: the no-op's
+marker advance, or the service stop) -> **stop the service** -> stage the immutable
+artifact -> back up application + engine as one restorable unit -> inventory
+destination-only paths -> converge production to the artifact -> engine sync
+(Lesson J) -> verify against the manifest -> write the version file -> start the
+service -> validate.
 
 The service stops **before** staging and backup, so the backup is a consistent
 snapshot of a quiescent tree. That widens the downtime window compared with backing up
