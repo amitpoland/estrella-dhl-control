@@ -1028,18 +1028,31 @@ def test_deploy_authorization_is_consumed_after_the_gate_and_before_the_noop_wri
         no-op path's Write-VersionFile — a production write — runs with NO
         authorization consumed at all, which is the worse direction.
 
-    lock < gate < auth < no-op < stop. The lock and gate bounds also pin that a
-    denied authorization throws inside the lock's try (released by the finally) and
-    never reaches the service stop."""
+    lock < gate < auth < no-op < stop. These are POSITION pins: they prove where the
+    call sits in the source text, which is what both mutants change; try-block
+    membership and lock release are properties of the surrounding structure, read in
+    review, not proven here.
+
+    The bootstrap bound exists because flat order alone has a third mutant: nest the
+    auth call inside the non-bootstrap gate branch and lock < gate < auth < no-op
+    still holds, yet a -Bootstrap deploy would run the full write path with no
+    authorization consumed. Pinning auth AFTER the bootstrap else-branch marker
+    proves the call sits downstream of the whole if/else, on the shared path."""
     body = _read(DEPLOY_SCRIPT)
     i_lock = body.index("Enter-DeployLock -Cfg $cfg")
     i_gate = body.index("Assert-ProductionMatchesRecordedSha -Cfg $cfg")
+    i_boot = body.index("Production identity gate skipped (-Bootstrap")
     i_auth = body.index('Assert-Authorization -Cfg $cfg -Sha $ReviewedSHA -Action "deploy"')
     i_noop = body.index("Test-RuntimeUnchanged -Cfg $cfg")
     i_stop = body.index("Set-ServiceState -Cfg $cfg -Target Stopped")
     assert i_lock < i_gate < i_auth, (
         "deploy must consume the authorization only AFTER the lock is held and the identity "
         "gate has had its chance to refuse — a zero-write refusal must not burn the artifact"
+    )
+    assert i_boot < i_auth, (
+        "the authorization must sit AFTER the bootstrap else-branch (the gate-skipped "
+        "message), i.e. on the path shared by both branches — nested inside the "
+        "non-bootstrap branch, a -Bootstrap deploy would write with no authorization at all"
     )
     assert i_auth < i_noop < i_stop, (
         "the authorization must be consumed BEFORE the runtime no-op short-circuit: that path "

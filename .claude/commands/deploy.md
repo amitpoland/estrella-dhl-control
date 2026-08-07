@@ -64,7 +64,9 @@ gate; for a reconcile, after PROOF 1; for a rollback, after all unit-provenance 
 the pre-authorization region does fetch and fast-forward the *source* checkout and
 does write the lock file, none of which touch the runtime. An `IDENTITY_GATE_BLOCKED`
 or failed-proof stop therefore leaves the artifact spendable — retry after repairing
-what blocked, without re-minting. What *does* consume it: any run that proceeds past
+what blocked, without re-minting, provided the artifact's own `expires_at` has not
+passed in the meantime (an expired artifact is denied as expired, not burned; the
+repair itself can outlive a short TTL). What *does* consume it: any run that proceeds past
 those checks, including a **runtime no-op** (the marker advance is an authorized
 production write), a reconcile whose PROOF 2 fails after the service stop, and the
 defect-only case of a no-op whose confirming re-gate fails. This ordering was fixed

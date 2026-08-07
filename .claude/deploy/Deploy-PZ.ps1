@@ -1231,14 +1231,16 @@ function Invoke-Reconcile {
             Write-Host "RECOVERY STATE: RECONCILE_BLOCKED_NO_WRITE"
             Write-Host "  Preparation failed BEFORE production content was modified: $($_.Exception.Message)"
             Write-Host "  Position when it failed: $stage"
-            Write-Host "  NOTE: the reconcile authorization WAS already consumed (it is asserted after"
-            Write-Host "  PROOF 1, which passed). A retry needs a fresh artifact - re-mint while the gate"
-            Write-Host "  evidence is still unexpired."
             Write-Host "  Production files and the version marker are unchanged. The marker still reads"
             Write-Host "  its previous value, which is correct: nothing was converged."
             Write-Host "  If the identity proof is what failed, -FromSha does not describe this runtime."
             Write-Host "  Establish what production actually is before retrying - do NOT reach for -Bootstrap,"
             Write-Host "  which would skip the proof and mint a mislabelled backup."
+            if (-not $script:PlanOnly) {
+                Write-Host "  NOTE: the reconcile authorization WAS already consumed (it is asserted after"
+                Write-Host "  PROOF 1, which passed). A retry needs a fresh artifact - re-mint while the gate"
+                Write-Host "  evidence is still unexpired."
+            }
             Write-Host "  Safe restart:  sc.exe start $($Cfg.service)"
             throw
         }
@@ -1334,8 +1336,9 @@ function Invoke-Deploy {
                 Write-Host "RECOVERY STATE: IDENTITY_GATE_BLOCKED"
                 Write-Host "  Production was NOT modified and the service is still Running: $($_.Exception.Message)"
                 Write-Host "  Nothing was stopped, staged, or backed up, and no rollback unit was minted (correctly)."
-                Write-Host "  Your authorization was NOT consumed (it is asserted after this gate); once the"
-                Write-Host "  identity is repaired, retry with the same artifact - no re-mint needed."
+                Write-Host "  Your authorization was NOT consumed (it is asserted after this gate). If the"
+                Write-Host "  artifact is still within its expires_at when the identity is repaired, retry"
+                Write-Host "  with it as-is; past expiry a re-mint is needed (denied as 'expired', not burned)."
                 Write-Host "  Reconcile production to a known SHA (operator-authorised) before retrying the deploy."
                 throw
             }
@@ -1422,6 +1425,11 @@ function Invoke-Deploy {
             Write-Host "RECOVERY STATE: SERVICE_STOPPED_NO_DEPLOY"
             Write-Host "  Preparation failed BEFORE production was modified: $($_.Exception.Message)"
             Write-Host "  Production files are unchanged. Safe restart:  sc.exe start $($cfg.service)"
+            if (-not $script:PlanOnly) {
+                Write-Host "  NOTE: the deploy authorization WAS already consumed (asserted before the"
+                Write-Host "  service stop). A retry needs a fresh artifact - re-mint while the gate"
+                Write-Host "  evidence is still unexpired."
+            }
             if ($unit) { Write-Host "  Or roll back:  Deploy-PZ.ps1 -Rollback -Unit $($unit.Unit)" }
             throw
         }
