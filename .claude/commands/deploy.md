@@ -57,16 +57,21 @@ Options: `-Scope App|Engine|Both`, `-Bootstrap` (first-ever deploy, no rollback
 target), `-ForceUnlock` (clear a lock whose process is provably gone).
 
 **A blocked run does not burn the authorization.** The single-use artifact is consumed
-only after every read-only refusal has had its chance: for a deploy, after preflight,
-target validation, the lock, and the production identity gate; for a reconcile, after
-PROOF 1; for a rollback, after all unit-provenance checks (which always had this
-shape). An `IDENTITY_GATE_BLOCKED` or failed-proof stop therefore leaves the artifact
-spendable — retry after repairing what blocked, without re-minting. What *does*
-consume it: any run that proceeds past those checks, including a **runtime no-op**
-(the marker advance is an authorized production write) and a reconcile whose PROOF 2
-fails after the service stop. This ordering was fixed under issue #1097; before it,
-the artifact was spent at the top of the run and a zero-write refusal cost a re-mint
-mid-incident.
+only after every refusal that writes nothing *to production* has had its chance: for a
+deploy, after preflight, target validation, the lock, and the production identity
+gate; for a reconcile, after PROOF 1; for a rollback, after all unit-provenance checks
+(which always had this shape). "Writes nothing to production" is the precise claim —
+the pre-authorization region does fetch and fast-forward the *source* checkout and
+does write the lock file, none of which touch the runtime. An `IDENTITY_GATE_BLOCKED`
+or failed-proof stop therefore leaves the artifact spendable — retry after repairing
+what blocked, without re-minting. What *does* consume it: any run that proceeds past
+those checks, including a **runtime no-op** (the marker advance is an authorized
+production write), a reconcile whose PROOF 2 fails after the service stop, and the
+defect-only case of a no-op whose confirming re-gate fails. This ordering was fixed
+under issue #1097; before it, the artifact was spent at the top of the run and a
+zero-write refusal cost a re-mint mid-incident. The ordering is pinned by index in
+`test_deploy_authority.py`, in both directions — a revert re-burns artifacts on
+refusal, and a further-down drift would let the no-op's marker write run unconsumed.
 
 **Gate evidence is required, digest-bound, and re-checked at deploy time.** Between
 minting the authorization and running the deploy, do not edit, reformat, move, rename,
@@ -161,11 +166,13 @@ here still cannot mint one. The guard blocks the agent; the script also blocks i
 
 Preflight (source identity, clean, no local-only commits) -> validate `-ReviewedSHA`
 (format, exists, descends from HEAD, equals `origin/main`, refuse if origin advanced
-beyond it) -> fast-forward to it -> **authorization** -> take the lock -> **stop the
-service** -> stage the immutable artifact -> back up application + engine as one
-restorable unit -> inventory destination-only paths -> converge production to the
-artifact -> engine sync (Lesson J) -> verify against the manifest -> write the version
-file -> start the service -> validate.
+beyond it) -> fast-forward to it -> take the lock -> **production identity gate** ->
+**authorization** (the single-use artifact is consumed here — after every refusal
+that can stop the run without writing, before anything that writes) -> runtime no-op
+check -> **stop the service** -> stage the immutable artifact -> back up application +
+engine as one restorable unit -> inventory destination-only paths -> converge
+production to the artifact -> engine sync (Lesson J) -> verify against the manifest ->
+write the version file -> start the service -> validate.
 
 The service stops **before** staging and backup, so the backup is a consistent
 snapshot of a quiescent tree. That widens the downtime window compared with backing up

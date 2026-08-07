@@ -1017,6 +1017,37 @@ def test_identity_gate_runs_after_lock_and_before_service_stop():
     assert i_gate < i_bak, "the identity gate must run BEFORE any backup is minted"
 
 
+def test_deploy_authorization_is_consumed_after_the_gate_and_before_the_noop_write():
+    """Issue #1097 ordering, pinned by index because both of its mutants pass every
+    presence pin. The helper burns the single-use jti the moment it allows, so the
+    call's POSITION is the property:
+
+      * moved back above the identity gate (the revert mutant), an
+        IDENTITY_GATE_BLOCKED refusal silently burns the operator's artifact again;
+      * moved below the runtime no-op short-circuit (the forward-drift mutant), the
+        no-op path's Write-VersionFile — a production write — runs with NO
+        authorization consumed at all, which is the worse direction.
+
+    lock < gate < auth < no-op < stop. The lock and gate bounds also pin that a
+    denied authorization throws inside the lock's try (released by the finally) and
+    never reaches the service stop."""
+    body = _read(DEPLOY_SCRIPT)
+    i_lock = body.index("Enter-DeployLock -Cfg $cfg")
+    i_gate = body.index("Assert-ProductionMatchesRecordedSha -Cfg $cfg")
+    i_auth = body.index('Assert-Authorization -Cfg $cfg -Sha $ReviewedSHA -Action "deploy"')
+    i_noop = body.index("Test-RuntimeUnchanged -Cfg $cfg")
+    i_stop = body.index("Set-ServiceState -Cfg $cfg -Target Stopped")
+    assert i_lock < i_gate < i_auth, (
+        "deploy must consume the authorization only AFTER the lock is held and the identity "
+        "gate has had its chance to refuse — a zero-write refusal must not burn the artifact"
+    )
+    assert i_auth < i_noop < i_stop, (
+        "the authorization must be consumed BEFORE the runtime no-op short-circuit: that path "
+        "advances the version marker, a production write, and an unconsumed jti there would be "
+        "an unauthorized write"
+    )
+
+
 def test_identity_gate_is_skipped_only_for_bootstrap():
     """A first-ever deploy has no prior tree to verify; every other deploy must run the gate.
     The call is guarded by exactly `if (-not $Bootstrap)` (the gate itself is wrapped in a
@@ -1303,6 +1334,31 @@ def test_reconcile_proves_identity_before_and_again_at_backup_time():
     assert i_stop < proofs[1] < i_backup, (
         "the second proof must sit between the stop and the backup, closing the window in which "
         "the runtime could change after being proved"
+    )
+
+
+def test_reconcile_authorization_is_consumed_after_proof1_and_before_the_stop():
+    """Issue #1097 ordering for reconcile, pinned by index. PROOF 1 failing is this
+    mode's most likely refusal — it exists because production identity is in doubt —
+    and under the pre-#1097 ordering that refusal burned the single-use artifact,
+    forcing a re-mint that the evidence clamp only permits while the gate evidence is
+    unexpired. The auth call must sit after PROOF 1 (a failed proof leaves the
+    artifact spendable) and before the service stop (the first operational mutation,
+    which authorization gates). PROOF 2 stays after the stop by design — its
+    post-consumption failure is a stopped-and-restarted service, never a wrong
+    write — so the pin deliberately does NOT constrain auth against PROOF 2."""
+    seg = _reconcile_segment(_read(DEPLOY_SCRIPT))
+    proofs = [m.start() for m in re.finditer(
+        re.escape("Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $From"), seg)]
+    i_auth = seg.index('Assert-Authorization -Cfg $Cfg -Sha $To -Action "reconcile"')
+    i_stop = seg.index("Set-ServiceState -Cfg $Cfg -Target Stopped")
+    assert proofs[0] < i_auth, (
+        "reconcile must prove the runtime is -FromSha BEFORE consuming the authorization — "
+        "a failed proof must not cost the operator the artifact"
+    )
+    assert i_auth < i_stop, (
+        "the authorization must be consumed BEFORE the service is stopped; stopping the "
+        "service is the first operational mutation and every mutation is authorization-gated"
     )
 
 
