@@ -1079,6 +1079,83 @@ def confirm_product_review(
     }
 
 
+def release_product_confirmation(
+    batch_id: str,
+    row_ids: List[str],
+    operator: str,
+) -> Dict[str, Any]:
+    """Release (revoke) operator confirmations on EXACTLY the named rows.
+
+    The inverse of :func:`confirm_product_review`, and deliberately narrower:
+    it takes explicit ``row_ids``, never a product_code or a filter, so a release
+    can only ever touch rows an operator has individually named. It exists for
+    exactly one situation — a confirmation recorded under an earlier, defective
+    matcher has become the authority that blocks the corrected matcher (the
+    rematch endpoint preserves confirmed rows by design, so a stale confirmation
+    is otherwise permanent).
+
+    ALL-OR-NOTHING: every named row must exist, belong to *batch_id*, and
+    currently be ``operator_review_status='confirmed'``. Any offender refuses the
+    whole call before a single row is touched — a partial release would leave the
+    operator unsure which of the approved rows are actually open.
+
+    It clears ONLY the confirmation fields (status, at, by, source_revision).
+    ``product_code`` and every other stored value are untouched: releasing a row
+    reopens it for the matcher, it does not reassign it.
+    """
+    bid = str(batch_id or "").strip()
+    op = str(operator or "").strip()
+    ids = [str(r).strip() for r in (row_ids or []) if str(r or "").strip()]
+    if not bid or not op:
+        raise ValueError("batch_id and operator are required")
+    if not ids:
+        raise ValueError("row_ids is empty — a release names exact rows, never a filter")
+    if len(set(ids)) != len(ids):
+        raise ValueError("row_ids contains duplicates")
+    now = _now_iso()
+    with _lock:
+        with _connect() as con:
+            placeholders = ",".join("?" for _ in ids)
+            rows = con.execute(
+                f"SELECT id, batch_id, operator_review_status, design_no, product_code "
+                f"FROM packing_lines WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            found = {str(r["id"]): dict(r) for r in rows}
+            offenders = []
+            for rid in ids:
+                r = found.get(rid)
+                if r is None:
+                    offenders.append(f"{rid}: not found")
+                elif r["batch_id"] != bid:
+                    offenders.append(f"{rid}: belongs to a different batch")
+                elif str(r["operator_review_status"] or "").strip().lower() != "confirmed":
+                    offenders.append(f"{rid}: not confirmed (status={r['operator_review_status']!r})")
+            if offenders:
+                raise ValueError(
+                    "release refused — nothing was changed. Offending row_ids: "
+                    + "; ".join(offenders)
+                )
+            released = []
+            for rid in ids:
+                con.execute(
+                    """UPDATE packing_lines SET
+                           operator_review_status=NULL,
+                           operator_confirmed_at=NULL,
+                           operator_confirmed_by=NULL,
+                           operator_source_revision=NULL,
+                           updated_at=?
+                       WHERE id=?""",
+                    (now, rid),
+                )
+                released.append({
+                    "row_id":       rid,
+                    "design_no":    found[rid]["design_no"],
+                    "product_code": found[rid]["product_code"],
+                })
+    return {"released": len(released), "rows": released, "operator": op}
+
+
 def get_line_counts_for_batch(batch_id: str) -> Dict[str, int]:
     """
     Return ``{packing_document_id: line_count}`` for all documents in *batch_id*.

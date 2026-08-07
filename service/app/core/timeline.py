@@ -101,6 +101,7 @@ EV_AI_BRIDGE_RESULT_RECEIVED = "ai_bridge_result_received"       # result import
 EV_PACKING_LIST_EXTRACTED     = "packing_list_extracted"       # packing PDF/XLSX parsed + rows stored
 EV_PACKING_MATCHED_TO_INVOICE = "packing_matched_to_invoice"   # packing rows matched to invoice lines
 EV_PACKING_REMATCH_APPLIED    = "packing_rematch_applied"      # confirm-gated rematch rewrote assignments
+EV_PACKING_CONFIRMATION_RELEASED = "packing_confirmation_released"  # operator released legacy row confirmations
 
 # ── AI advisory diagnostics events ────────────────────────────────────────────
 # These events record operator-triggered AI advisory actions.

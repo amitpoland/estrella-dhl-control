@@ -1096,6 +1096,56 @@ def rematch_packing_lines(
                         invoice_scope=invoice_no)
 
 
+class ReleaseConfirmationRequest(BaseModel):
+    row_ids: List[str]
+    reason: str = ""
+
+
+@router.post("/{batch_id}/release-confirmation")
+def release_packing_confirmations(
+    batch_id: str,
+    body: ReleaseConfirmationRequest,
+    user: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Release operator confirmations on EXACTLY the named packing rows.
+
+    A confirmation recorded under an earlier, defective matcher is otherwise
+    permanent: the rematch endpoint preserves confirmed rows by design, and the
+    re-upload path never reopens them (#1102). This is the deliberate,
+    admin-only, audited exit — it names exact ``row_ids`` (never a filter, never
+    a bulk operation), refuses all-or-nothing if any named row is missing, in
+    another batch, or not currently confirmed, and clears only the confirmation
+    fields. ``product_code`` and all stored values are untouched: a released row
+    is REOPENED for the matcher, not reassigned. The intended sequence is
+    release → rematch dry-run → operator reviews the plan → confirm-gated apply.
+
+    This endpoint does not call wFirma and does not touch invoices, sales,
+    inventory, or accounting.
+    """
+    output_dir = _validate_batch(batch_id)
+    actor = user.get("email") or "operator"
+    try:
+        result = pdb.release_product_confirmation(batch_id, body.row_ids, actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    log.info("[%s] confirmation RELEASED on %d row(s) by %s",
+             batch_id, result["released"], actor)
+    tl.log_event(
+        output_dir / "audit.json",
+        tl.EV_PACKING_CONFIRMATION_RELEASED,
+        "packing_release_confirmation",
+        actor=actor,
+        detail={
+            "batch_id": batch_id,
+            "released": result["released"],
+            "row_ids":  [r["row_id"] for r in result["rows"]],
+            "designs":  [r["design_no"] for r in result["rows"]],
+            "reason":   body.reason,
+        },
+    )
+    return {"ok": True, "batch_id": batch_id, **result}
+
+
 # ── GET /api/v1/packing/{batch_id} ────────────────────────────────────────────
 
 @router.get("/{batch_id}", dependencies=[_auth])
