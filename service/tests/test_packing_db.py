@@ -279,6 +279,16 @@ class TestPackingLines:
         assert len(lines) == 1
         assert lines[0]["product_code"] == "EJL/26-27/100-1"
         assert lines[0]["invoice_line_position"] == 1
+        # EXPLICIT AND INTENTIONAL: pinning the position means a position-ONLY
+        # re-extraction leaves the stored row's source_revision equal to the
+        # confirmed snapshot, so review does NOT reopen. The governed channel
+        # for structural position corrections is the rematch path (which
+        # excludes confirmed rows at plan level and surfaces them to the
+        # operator), not a silent force_reextract drift.
+        assert (
+            pdb.compute_source_revision(dict(lines[0]))
+            == lines[0]["operator_source_revision"]
+        )
 
     def test_force_reextract_unconfirmed_row_moves_invoice_line_position(self, db):
         """Placement is what a re-extraction exists to correct: an UNCONFIRMED
