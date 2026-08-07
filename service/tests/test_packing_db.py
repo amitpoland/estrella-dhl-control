@@ -258,6 +258,46 @@ class TestPackingLines:
         assert lines[0]["quantity"] == pytest.approx(7.0)
         assert lines[0]["packing_document_id"] == "DOC002"
 
+    def test_force_reextract_confirmed_row_keeps_invoice_line_position(self, db):
+        """A confirmed row's product_code and invoice_line_position name ONE
+        invoice line together. force_reextract preserves the operator's
+        product_code — so it must preserve the position too, or the two columns
+        end up naming different invoice lines. pack_sr-keyed, bag_id empty:
+        the one lookup path that can match a row at a different position."""
+        from app.services import packing_db as pdb
+        pdb.upsert_packing_lines(
+            [_make_line(pack_sr=14, bag_id="", invoice_line_position=1,
+                        product_code="EJL/26-27/100-1")])
+        pdb.confirm_product_review("BATCH001", "EJL/26-27/100-1", "op-test")
+        count = pdb.upsert_packing_lines(
+            [_make_line(pack_sr=14, bag_id="", invoice_line_position=5,
+                        product_code="EJL/26-27/100-9")],
+            force_reextract=True,
+        )
+        assert count == 1
+        lines = pdb.get_packing_lines_for_batch("BATCH001")
+        assert len(lines) == 1
+        assert lines[0]["product_code"] == "EJL/26-27/100-1"
+        assert lines[0]["invoice_line_position"] == 1
+
+    def test_force_reextract_unconfirmed_row_moves_invoice_line_position(self, db):
+        """Placement is what a re-extraction exists to correct: an UNCONFIRMED
+        row takes the new extraction's position (and code) on force_reextract."""
+        from app.services import packing_db as pdb
+        pdb.upsert_packing_lines(
+            [_make_line(pack_sr=14, bag_id="", invoice_line_position=1,
+                        product_code="EJL/26-27/100-1")])
+        count = pdb.upsert_packing_lines(
+            [_make_line(pack_sr=14, bag_id="", invoice_line_position=5,
+                        product_code="EJL/26-27/100-9")],
+            force_reextract=True,
+        )
+        assert count == 1
+        lines = pdb.get_packing_lines_for_batch("BATCH001")
+        assert len(lines) == 1
+        assert lines[0]["product_code"] == "EJL/26-27/100-9"
+        assert lines[0]["invoice_line_position"] == 5
+
     def test_get_lines_for_batch_isolated(self, db):
         from app.services import packing_db as pdb
         pdb.upsert_packing_lines([_make_line(batch_id="B1")])
