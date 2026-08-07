@@ -72,158 +72,26 @@ Production: `C:\PZ` | Service: `PZService` (NSSM, port 47213) | Public: `https:/
 
 ---
 
-## PRODUCTION DELIVERY AUTHORITY — CI IS NOT A GATE (PERMANENT, operator-ratified 2026-08-07, VERBATIM)
+## Working-tree registry (Windows host layout)
 
-> The block below is the operator's exact reset instruction (2026-08-07) — verbatim, not
-> paraphrased. This section is the **SOLE normative definition of production delivery
-> authority**. Every other document (`service/docs/production_deployment_rule.md`,
-> `.claude/contracts/governance-precedence.md`, `.claude/contracts/seven-agent-evidence.md`,
-> `service/docs/ops/ci-sharded-suite.md`, `.claude/contracts/pr-merge-verification-contract.md`)
-> summarizes and references this section; none may restate or independently redefine it.
+| Path | Role |
+|---|---|
+| `C:\PZ` | Production — NSSM AppDirectory (`PZService`, port 47213). Never `reset --hard`, never robocopy'd INTO. |
+| `C:\PZ-main` | Deploy source — pinned to `main`, ff-only pulls. |
+| `C:\PZ-verify` | Verification clone (primary git tree for file-hash checks). |
+| `C:\PZ-active` | Current implementation campaign (one at a time). |
+| `C:\PZ-archive` | Cold storage, read-only. |
 
-**RESET OPERATING MODEL.**
+**Commit-scoped reads (Lesson Q rule 7):** before any deploy-gate / PR-review read,
+confirm the tree's `HEAD` equals the SHA under review; if not, read `C:\PZ-main` at
+that SHA or a clean `git archive` export, and say in the verdict which tree and HEAD
+the finding came from. A verdict from the wrong revision is a false verdict.
 
-**Production delivery authority is:**
+One Claude session at a time operates against `C:\PZ-verify`; a second session is
+read-only or uses its own worktree. Campaign-branch writes are guarded by
+`.claude/hooks/campaign-branch-guard.py` (registry: `.campaigns/`); an
+`expected_head` mismatch is an operator incident, never auto-corrected.
 
-**Fix → targeted tests → ONE seven-agent gate → merge → deploy → smoke test → close.**
-
-**GitHub Actions CI is diagnostic only and MUST NOT gate production. Never wait for
-aggregate-green when main carries inherited failures. Do not classify historical CI
-failures unless a changed file is implicated.**
-
-**After seven-agent GO, production deployment becomes Priority 1. No test-only PR, docs
-PR, GATE-4 task, observer, scorecard, memory update, queue arithmetic, CI run, or
-unrelated finding may delay it.**
-
-**Only a new HIGH/CRITICAL executable defect in the pending runtime change may stop
-deployment.**
-
-**LOW/MEDIUM findings go to backlog and are not implemented during the active release.**
-
-**Test-only changes do not invalidate a prior production-code gate when production bytes
-are unchanged.**
-
-**Seven-agent review runs once per runtime payload, not once per subsequent bookkeeping
-commit.**
-
-**After deployment and smoke verification, resume backlog work.**
-
-### Binding rules
-
-**B1 — What "diagnostic" means (positive definition).** CI exists to: detect regressions
-introduced by a changed file, detect platform-specific (Windows / py3.9) failures, and
-provide evidence for later cleanup. It never authorizes and never blocks a merge or a
-deployment. The only CI question ever asked of a PR is: *"did this PR introduce a NEW
-failure?"* If no, proceed. For test-only and docs-only PRs, CI is ignored for production
-purposes. Node-ID set-difference classification remains a **test-PR merge tool** only —
-it is never deployment ceremony.
-
-**B2 — No configuration may elevate CI.** No repository configuration — branch
-protection, required status checks, merge queues, auto-merge, or any future platform
-mechanism — may elevate CI to deployment or merge authority without an explicit operator
-governance decision recorded in PROJECT_STATE.md DECISIONS. The check-name note inside
-`.github/workflows/ci.yml` (naming `Service pytest (aggregate)`) is a hypothetical
-technical fact, not an intent.
-
-**B3 — Runtime payload (formal definition + measurable gate-validity criterion).**
-*Runtime payload* = every file copied to production by the governed deployment procedure:
-the `service/app` tree plus the governed engine files enumerated by the deploy config
-(`engine_files` in `.claude/deploy/windows_prod_v2.json`; 16 entries at ratification).
-Documentation, tests, CI workflows, GitHub metadata, review notes, and memory/state files
-are explicitly excluded. **A previous seven-agent GO remains valid only when a
-byte-for-byte comparison between the previously approved runtime payload and the pending
-runtime payload is empty.** Any non-empty payload diff requires a fresh seven-agent
-round; an empty diff means the prior GO stands and is never re-run for bookkeeping
-commits. (Precedent: the PR #1100 gate — "payload diff vs gated head verified EMPTY".)
-
-**B4 — Post-GO freeze (rollback preserved).** Between seven-agent GO and completed smoke
-verification, only these activities are permitted: the deployment itself, smoke
-verification, rollback, and rollback preparation. Deferred — not cancelled — until after
-successful smoke verification or rollback completion: OBSERVATION LAYER RULE 2/3
-auto-fires, GATE-4 dispositions, scorecards, memory/state updates, new PRs of any class,
-CI runs and CI analysis, and unrelated findings. A newly discovered issue interrupts the
-window only if it is a HIGH/CRITICAL executable defect in the pending runtime payload
-itself.
-
-**B5 — What may stop a release.** An identity, auth, copy, or health failure during the
-deploy itself, or a HIGH/CRITICAL finding on the pending runtime payload. Nothing else.
-LOW/MEDIUM findings go to backlog and are handled after the deploy closes.
-
-**B6 — Precedence (narrow, time-boxed).** For the post-GO deployment window only, this
-section temporarily supersedes the scheduling requirements of the MANDATORY OBSERVATION
-LAYER and GATE-4 disposition timing. All deferred obligations resume immediately after
-successful smoke verification or rollback completion. Outside that window, GATES 1–6 and
-the Observation Layer apply unchanged. GATE-2 open-PR arithmetic never delays a
-deployment.
-
-**Reference**: operator reset instruction + same-day deploy-first churn-freeze ruling
-(both 2026-08-07). This section completes the authority model already expressed in
-`service/docs/production_deployment_rule.md` §"CI is not consulted" and
-`.claude/contracts/seven-agent-evidence.md`; precedence interactions are recorded in
-`.claude/contracts/governance-precedence.md`. All of those documents point here — this
-section is the single normative text.
-
----
-
-## Canonical working-tree registry (PATH GUARD — permanent, consolidated 2026-07-17)
-
-All subagent file reads, hash verification, and git operations must target exactly one of these paths.
-Reading from any path not listed below is a source-drift risk.
-
-**Permanent folders (exactly these — no other permanent tree may be created):**
-
-| Path | Role | Status |
-|---|---|---|
-| `C:\PZ` | Production — NSSM AppDirectory (`PZService`, port 47213) | LIVE — never `reset --hard`, never robocopy'd INTO |
-| `C:\PZ-main` | Integration — pinned to `main`, ff-only pulls, no feature work | PERMANENT |
-| `C:\PZ-verify` | Verification clone (primary git tree) | SOURCE OF TRUTH for all git/file-hash checks |
-| `C:\PZ-active` | Current implementation campaign (one at a time) | PERMANENT (role); physical folder rotates per campaign |
-| `C:\PZ-archive` | Cold storage — zips + salvaged evidence, not a git tree | PERMANENT, read-only |
-
-`C:\Users\Super Fashion\PZ APP` (former scratch clone, RETIRED 2026-06-04) was **DECOMMISSIONED
-2026-07-17**: all 21 of its worktrees removed, full clone (incl. `.git`, 270 branches) preserved at
-`C:\PZ-archive\PZ-APP-retired.zip`, folder deleted. Any reference to that path is stale.
-
-**WORKTREE DISCIPLINE (enforced — Repository Consolidation ruling, operator-ratified 2026-07-17):**
-
-1. **Before any task that needs a working tree**: run `git worktree list` and reuse a suitable
-   existing tree. If one exists, DO NOT create another.
-2. **New worktrees require explicit operator approval** — never create one by default.
-3. **Location**: approved temporary worktrees live under `C:\PZ-wt\<campaign-slug>` — never at
-   `C:\` root, never in Temp/scratchpad directories.
-4. **Lifecycle**: a temporary worktree is deleted when its campaign closes (PR merged or
-   abandoned-with-archive-tag). Campaign end = `git worktree remove` in the same session.
-5. **Before deleting any tree**: salvage dirty files to `C:\PZ-archive\evidence-<date>\<tree>\`
-   and archive-tag unique commits (`archive/<name>-<date>`) — GATE 3 applies.
-6. A worktree that outlives its campaign is governance debt; the next session that finds one
-   must disposition it (reuse / salvage+delete), not ignore it.
-
-**Campaign-branch write rule (enforced):** Before any reset/force-move/cherry-pick on a campaign
-branch, read the OPERATIONAL registry `C:\PZ-main\.claude\state\active-campaigns.json`
-(gitignored — mutable campaign state is never tracked). Policy + schema + guard spec:
-`.campaigns/`. Enforcement: `.claude/hooks/campaign-branch-guard.py` (PreToolUse, fail closed)
-denies campaign-branch writes on owner/worktree/branch mismatch, unexpected HEAD, or a
-concurrent writer; `expected_head`≠actual tip is an INCIDENT requiring an operator ruling —
-never auto-correct.
-
-**Subagent reading rule (enforced):** All verification reads and git operations must use `C:\PZ-verify`
-— **except when the read is scoped to a specific commit** (a deploy gate, a PR review, any "what does
-this SHA contain" question). `C:\PZ-verify` is a working tree, not a SHA: it is routinely parked on a
-feature branch and may sit many commits behind `main`. For a commit-scoped read, first confirm
-`git -C C:\PZ-verify rev-parse HEAD` **equals the SHA under review**; if it does not, read the deploy
-source `C:\PZ-main` at that SHA (or a clean `git archive` export of it) instead, and say in the verdict
-which tree and HEAD the finding came from. A verdict derived from the wrong revision is a false
-verdict, not a finding — see Lesson Q, binding rule 7.
-
-**One-session rule (enforced):** Only one Claude Code session may operate against
-`C:\PZ-verify` at a time. A second concurrent session on the same tree races branch
-state and produces duplicate commits (incident 2026-06-04: two sessions on VERIFY_DIR
-produced `0c22cfb` direct-to-main and `6ad62a6` on a competing branch). A second
-session must be read-only or must use a separate git worktree.
-
-Elaboration: `service/docs/ops/working-tree-convention.md` (rule 6).
-
----
 
 ## EJ Dashboard Phase-C Constitution (Final) — standing Phase-C preamble (operator-ratified 2026-07-03, VERBATIM R4)
 
@@ -358,118 +226,72 @@ violations fail immediately).
 
 ---
 
-## MANDATORY GOVERNANCE GATES
+## OPERATING MODEL — governance reset (operator-ratified 2026-08-07)
 
-These gates apply to ALL implementation work in this repository.
-They are not optional and not negotiable per-task. The cost of a
-broken gate is real production damage; the cost of honoring a gate
-is a few minutes of disciplined waiting.
+This section REPLACES the former GATES 1-6 ratchet. The reset removed ceremony, not
+safety: every incident-derived control that protects production bytes survives; every
+control that merely sequenced paperwork is gone. Historical references resolve as
+follows: "GATE 1" -> the one seven-agent gate below; "GATE 2" -> retired (open-PR
+count is never a deploy blocker); "GATE 3" -> retired; "GATE 4" -> findings go to the
+issue backlog (see the gate rules below); "GATE 5" -> the substitution-disclosure line
+below; "GATE 6" -> browser verification for UI changes (unchanged in substance,
+listed under mode 1).
 
-These gates **supersede** any older governance language elsewhere in
-this file. Where prior language survives below as operational
-guidance (workflow steps, posting formats, etc.), it is subordinate
-to GATES 1–6.
+### Two permanent rules (operator's words, verbatim)
 
-### GATE 1 — PR OPEN DISCIPLINE
-A PR may not be opened until ALL of the following are true:
-- Every named subagent has returned a verdict block (or explicitly
-  failed dispatch with disclosure)
-- Every HIGH or CRITICAL finding has been resolved inline OR
-  explicitly escalated to operator
-- Required browser verification (if UI changes) completed with
-  console + network logs reviewed
-- Regression tests have run with verdict (make verify or pytest -k
-  targeted suite)
-- Forbidden-files check confirms no out-of-scope edits
+> Production runtime fix that has passed one seven-agent gate must proceed directly
+> to merge and deploy. Unrelated test, documentation, governance, queue, memory, or
+> inherited-CI work must not delay deployment.
 
-If any of these is incomplete at PR-open time, BLOCK and report
-instead of opening.
+> Do not create a new governance PR while a validated production fix is waiting to
+> deploy, unless the new finding proves that deployment itself is unsafe.
 
-**Docs-only exception (mirrors GATE 2).** A docs-only / governance-only
-PR — one that touches only Markdown/documentation, with no code, no
-schema, no config, and no production surface — is exempt from the
-"Every named subagent has returned a verdict block" precondition above.
-Such PRs are zero blast radius (the same basis on which GATE 2 lets them
-stack one beyond the open-PR limit), so reviewer-subagent verdicts are
-not required to open them. The forbidden-files / out-of-scope-edits check
-still applies and is precisely what confirms the docs-only
-classification: if any changed file is code, schema, config, or a
-production surface, the PR is not docs-only and the full precondition set
-above applies without exception.
+### Three operating modes — there are no others
 
-### GATE 2 — MAXIMUM OPEN PR COUNT
-Hard limit: 3 simultaneous open PRs from this repository.
-- If 3 PRs are already open when a new implementation task begins,
-  switch to merge-and-review mode: clear at least 1 PR from the
-  queue before opening another.
-- This applies across sessions. A future session inheriting 3 open
-  PRs must close at least 1 before opening a 4th.
-- Exception: governance-only / docs-only PRs may stack 1 additional
-  beyond the limit (so 3 implementation + 1 docs = 4 max), since
-  docs PRs are zero blast radius.
+**1. Normal bug / feature (runtime change):**
+fix -> targeted tests -> **seven-agent gate, once** -> merge -> deploy -> smoke test
+-> done. UI changes additionally get browser verification (flow, console, network,
+full click->API->DB->UI chain) before the gate. The gate reviews one frozen head; a
+subsequent **test-only or docs-only commit does not invalidate the verdict** and does
+not restart the gate — the gate binds to the production bytes it reviewed, not to the
+commit SHA.
 
-### GATE 3 — BRANCH STATUS DESIGNATION
-Every branch must carry one of three explicit status labels:
-- ACTIVE: work in progress, may merge to main
-- REFERENCE_ONLY: preserved for design history, never merges
-- ARCHIVED: frozen, may merge nothing, may delete after retention
-  period
+**2. Test-only / docs-only:**
+fix -> targeted tests -> merge. **No seven-agent gate. No deploy.** (On the
+production host these merges surface as the runtime no-op.)
 
-Branches that pass salvage audit with "FULL ABANDON" verdict MUST
-receive an archive tag of form:
-`git tag archive/<branch-name>-<YYYY-MM-DD>`
-before being marked ARCHIVED.
+**3. Sensitive change** — extended review applies ONLY to: destructive DB migration,
+accounting writes, inventory mutation, customs submission, auth/security authority
+change. Everything else is mode 1 or 2.
 
-A branch with no status designation is treated as ACTIVE by default
-and assumed merge-eligible — this is unsafe and must be corrected on
-first contact.
+### The seven-agent gate (the one gate)
 
-### GATE 4 — SALVAGE FINDING DISPOSITION
-Every salvage opportunity surfaced by an audit must receive exactly
-one of:
-- SCHEDULED: filed as a task with a specific target session
-- ISSUE: filed as a GitHub issue with appropriate labels
-- REJECTED: explicit operator rejection with reasoning logged in
-  the audit report
+Runs ONCE per runtime change, on a frozen head, all seven `deploy_*` agents. The
+reviewers' job is to **classify risk, not to stop deploys**:
 
-"Recommendation noted" is not a valid disposition. A salvage finding
-without disposition becomes lost governance debt.
+- Only a **HIGH/CRITICAL executable defect** blocks the current task.
+- LOW/MEDIUM findings are recorded as **backlog issues** — never a fix-batch, never
+  a re-run of the gate, never a new PR in the same campaign.
+- Same production bytes are never re-gated. A re-run happens only when the runtime
+  content under review actually changed.
+- A named subagent that cannot be dispatched is disclosed and substituted openly,
+  never silently.
 
-### GATE 5 — AGENT SUBSTITUTION DISCLOSURE
-If a named subagent is not in the current registry, the substituting
-agent must:
-- Be named explicitly in Section 2 of the final report
-- Have capability equivalence stated ("X-detection covers the gap
-  identification scope of gap-hunter; X-review covers ADR conformance
-  scope of adr-historian")
-- Have the registry mismatch logged for follow-up registry repair
+### What is never a deploy blocker
 
-Silent substitution is forbidden. A missing agent surfaces as a
-disclosure, not as a reduced report.
+Inherited CI red (the aggregate carries a tracked red set; only the metered floors in
+`.claude/contracts/test-baseline.md` gate) - open-PR count - docs/test PRs -
+observer, scorecard, or memory updates - reviewer LOW/MEDIUM findings - queue
+arithmetic or historical sequential deploy ordering. **When a fix is
+production-ready, deploying it is priority #1; cleanup comes after.**
 
-### GATE 6 — BROWSER VERIFICATION COMPLETENESS
-Implementation is not complete until:
-- Browser flow tested end-to-end through every modified path
-- Console errors checked (no new red entries)
-- Network requests verified (no 4xx/5xx on happy path; expected
-  errors confirmed on error paths)
-- Execution path verified (button click → API call → DB change →
-  UI update — full chain)
+### Safety kept in full (the non-negotiables)
 
-Code that compiles + passes unit tests is not the same as code that
-works in the browser. The latter is the bar for "shipped."
+Seven-agent review (once) - forbidden-path check - production backup - rollback -
+production identity proof - app + engine sync (Lesson J) - service stop/start health
+verification. One deployment authority: `Deploy-PZ.ps1` behind one gate. Financial,
+customs, inventory and accounting writes remain hard-gated and operator-approved.
 
-For backend-only changes (no UI surface), this gate is N/A. For
-admin endpoints (curl-able but no UI), curl + audit-log verification
-substitutes.
-
-### Subordinate-language note
-
-Rule hierarchy and all resolved conflicts: `.claude/contracts/governance-precedence.md`.
-
-Summary: GATES 1–6 supersede operating guidance. The 7-agent deploy gate specialises GATE 1 for
-production syncs. Engineering Lessons bind at the specific gate named in each lesson header.
-Operating rules and workflow sequences are subordinate to all gates.
 
 ### Engineering OS (canonical version pointer)
 
@@ -485,171 +307,43 @@ Standard** (seven requirements) — the OS points to it and never redefines it.
 
 ---
 
-## MANDATORY OBSERVATION LAYER
+## OBSERVATION LAYER (post-merge, never a release condition)
 
-These rules govern the meta-agent layer that observes and improves
-the rest of the agent system. They are non-negotiable and apply to
-every session — including new sessions resuming from cold start.
+Read `.claude/memory/PROJECT_STATE.md` at session start when present — it is the
+source of truth for current project state; do not re-derive state from lossy chat
+history. After a merge to main, `agent-performance-observer` (scorecard) and
+`flow-context-keeper` (state update) run **in the background**. They are memory and
+telemetry, NOT gates: **no deploy, merge, or task waits on an observer, scorecard, or
+memory update.** Scorecards live in `.claude/memory/scorecards/` and are cited by
+path. `/observe` and `/update-state` invoke them manually.
 
-### RULE 1 — Read PROJECT_STATE.md first
 
-Every new session, **before any task work begins**, must read
-`.claude/memory/PROJECT_STATE.md` to load current project state.
-This is the source of truth for "where are we in the project right
-now." Do not re-derive state from chat history; chat history is
-lossy across sessions.
+## AUTONOMY AND STOPPING
 
-The four mandatory sections (FACTS / DECISIONS / ASSUMPTIONS /
-OPEN QUESTIONS) are owned by `flow-context-keeper`. Read all four
-before opening a task; the OPEN QUESTIONS section in particular
-flags items that the operator may want resolved before new work
-fires.
+Continuing autonomous work is the default; stopping is the exception. A session may
+stop and hand back to the operator ONLY on one of four HOLD conditions, named
+explicitly when stopping:
 
-### RULE 2 — `agent-performance-observer` auto-fires
+1. **Destructive production action** — the next step would delete, overwrite, or
+   irreversibly mutate production data, a live service, or a booked external record
+   (wFirma posted PZ, sent email, production robocopy/reset, DB drop). Confirm first.
+2. **Missing credentials / access** the session cannot safely obtain.
+3. **Legal / financial approval** (value corrections, customs declarations, money).
+4. **Unclear business decision** where a wrong guess has real cost — a merely
+   technical ambiguity with a sensible default is NOT this; pick the default and note it.
 
-After any task report containing a `FINAL REPORT` section header,
-OR any report showing ≥3 distinct subagents in Section 2 "Agents
-activated", fire `agent-performance-observer` to produce a
-scorecard. Output is stored at
-`.claude/memory/scorecards/<YYYY-MM-DD>-<campaign-slug>.md`.
+Code inspection, tests, local verification, docs/state updates, non-destructive
+refactors, and opening a PR are never HOLD reasons. Record a one-line HOLD reason in
+`.claude/memory/TASK_STATE.md` when stopping (lifecycle states:
+`.claude/TASK_EXECUTION_PROTOCOL.md`). **A production-ready fix deploys before any
+cleanup, backlog, or governance work begins** — see the two permanent rules above.
 
-The observer is mandatory regardless of campaign outcome — even
-BLOCKED campaigns produce quality signals worth scoring. Silent
-observation is no observation.
-
-### RULE 3 — `flow-context-keeper` auto-fires
-
-After `agent-performance-observer` completes, OR after any PR
-merges to main, OR after any GitHub issue closes, fire
-`flow-context-keeper` to update `.claude/memory/PROJECT_STATE.md`.
-
-The four-section structure (FACTS / DECISIONS / ASSUMPTIONS /
-OPEN QUESTIONS) is the load-bearing invariant. FACTS are
-append-only — never demoted to ASSUMPTIONS. See
-`.claude/agents/flow-context-keeper.md` for the full movement-rule
-matrix.
-
-### RULE 4 — Observer can be invoked manually
-
-The operator may invoke `/observe` to force
-`agent-performance-observer` to run against the most recent report.
-The operator may invoke `/update-state` to force
-`flow-context-keeper` to refresh `PROJECT_STATE.md`.
-
-### RULE 5 — Self-evaluation cadence (calendar-driven)
-
-`agent-performance-observer` must self-evaluate on a calendar-driven
-cadence. Trigger self-evaluation if:
-- The most recent self-eval file (`.claude/memory/scorecards/self-eval-*.md`) is older than 7 calendar days, OR
-- The most recent self-eval flagged `SELF-DEGRADATION DETECTED` and this is the 3rd campaign scorecard run since it.
-
-When triggered: read the previous 5 campaign scorecards, score self on the same 6 dimensions, report degradation if any. Output goes to `.claude/memory/scorecards/self-eval-<YYYY-MM-DD>.md`. Self-blind agents degrade silently; the calendar-driven cadence is the system's anti-blind-spot.
-
-### RULE 6 — Observer outputs must be visible
-
-Scorecards must be referenced in subsequent task reports (cite the
-file path). `PROJECT_STATE.md` must be readable at the start of
-every session. Hidden observation = no observation.
-
-If a task report cites a scorecard, the citation must include the
-scorecard's file path so an operator can audit it directly.
-
-Enforcement mechanism: `flow-context-keeper` must record every
-scorecard file produced by `agent-performance-observer` in the
-FACTS section of `PROJECT_STATE.md`, with date and file path. If
-a scorecard exists in `.claude/memory/scorecards/` but is not
-cited in PROJECT_STATE.md, that scorecard is invisible to future
-operators — RULE 6 has failed.
-
-**NEEDS-TUNING / UNRELIABLE verdicts are GATE 4 salvage findings.**
-When `agent-performance-observer` produces a scorecard with any
-NEEDS-TUNING or UNRELIABLE verdict, that verdict is structurally
-analogous to a salvage finding and MUST receive exactly one
-disposition per GATE 4: SCHEDULED, ISSUE, or REJECTED. "Recommendation
-noted" is not a valid disposition for an observer verdict either.
-
----
-
-## ANTI-HOLD AND WORKFLOW COMPLETION
-
-These rules govern when a session may stop and what "done" means. They
-exist to prevent two opposite failures: (a) stopping prematurely on work
-that should have continued autonomously, and (b) drifting onto a second
-task before the first is complete. Full checklist, decision table, and
-worked examples: `docs/governance/anti-hold-and-completion.md`. In-flight
-single-task tracking: `.claude/memory/TASK_STATE.md`.
-
-These rules are **subordinate to GATES 1–6** and to the existing
-regression stop-gate (`.claude/hooks/pz-stop-gate.py`): a gate block or a
-RED regression is always a valid stop, never overridden by Anti-HOLD.
-
-### The Anti-HOLD principle
-
-Continuing autonomous work is the default. Stopping is the exception and
-must be justified by a named HOLD condition. "I could ask the operator"
-is not a reason to stop; only the four HOLD conditions below are.
-
-### Claude MAY stop (valid HOLD conditions)
-
-A session may stop and hand back to the operator ONLY when at least one of
-these is true. Name the condition explicitly when you stop.
-
-1. **Destructive production action** — the next step would delete,
-   overwrite, or irreversibly mutate production data, a live service, or a
-   booked external record (wFirma posted PZ, sent email, `C:\PZ`
-   robocopy/`reset --hard`, DB drop). Confirm first.
-2. **Missing credentials / access** — the task genuinely cannot proceed
-   without a secret, token, or access the session does not have and cannot
-   safely obtain.
-3. **Legal / financial approval** — the action has legal or financial
-   consequence requiring human sign-off (booking a value correction,
-   sending a customs declaration, money movement).
-4. **Unclear business decision** — the task depends on a business choice
-   the code, repo, and PROJECT_STATE cannot resolve, where a wrong guess
-   has real cost. (A merely technical ambiguity with a sensible default is
-   NOT this — pick the default and proceed, noting it.)
-
-### Claude MUST continue (never a valid HOLD)
-
-These are normal autonomous work. Do not stop to ask permission for them:
-
-- **Code inspection / repo search** — reading files, grepping, tracing.
-- **Test execution** — running `make verify`, pytest, smoke suites.
-- **Local verification** — running the app locally, curling endpoints,
-  inspecting on-disk artifacts.
-- **Documentation / state updates** — editing docs, PROJECT_STATE.md,
-  TASK_STATE.md, scorecards.
-- **Non-destructive refactor** — renames, extractions, and edits inside a
-  branch that do not touch production or external systems.
-- **Opening a PR / committing to a feature branch** — provided GATE 1 is
-  satisfied; a draft PR is non-destructive.
-
-### Workflow completion discipline
-
-A task is not done until its completion checklist
-(`docs/governance/anti-hold-and-completion.md` §Completion Checklist)
-passes. Do not begin a second task while a first is in an active lifecycle state (any state
-other than `COMPLETE`) in `.claude/memory/TASK_STATE.md` unless the operator explicitly
-redirects.
-Record a one-line HOLD reason in TASK_STATE.md whenever you stop on a
-valid HOLD condition, so the next session can resume without re-deriving
-context.
-
-### Resumable stops — EXECUTION_BLOCKED (resume, don't restart)
-
-A stop on an external dependency that preserves a verified checkpoint is
-`EXECUTION_BLOCKED` — the resumable refinement of a HOLD (it still requires one of the
-four conditions above, primarily #2). **It is resumable, not restartable:** on return,
-run the bounded checkpoint validation (branch / HEAD / diff / authority / dependency /
-no-competing-writer) and, if all pass, execute the single recorded resume command
-directly — do NOT relaunch a broad context pass, re-plan, or re-implement work that is
-still valid. If any check fails, resume from the earliest invalid checkpoint only, take
-an operator ruling on unexpected HEAD movement / authority conflict / concurrent
-ownership, and never silently rebase/reset/cherry-pick/discard the preserved diff.
-Lifecycle-state authority: `.claude/TASK_EXECUTION_PROTOCOL.md`. Full Resume Rule:
+**Resumable stops:** a stop on an external dependency that preserves a verified
+checkpoint is `EXECUTION_BLOCKED` — **resumable, not restartable**: on return,
+validate the checkpoint (branch / HEAD / diff) and execute the single recorded resume
+command; do not re-plan or re-implement work that is still valid. Full rule:
 `docs/governance/anti-hold-and-completion.md` §7.
 
----
 
 ## Business Feature Completeness Standard (permanent)
 

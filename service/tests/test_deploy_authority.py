@@ -1017,6 +1017,56 @@ def test_identity_gate_runs_after_lock_and_before_service_stop():
     assert i_gate < i_bak, "the identity gate must run BEFORE any backup is minted"
 
 
+def test_deploy_authorization_is_consumed_after_the_gate_and_before_each_write():
+    """Issue #1097 ordering, pinned by index (position pins — structure is a review
+    property). The helper burns the single-use jti the moment it allows, so the call's
+    POSITION decides what a refusal costs: consumed at the top of the run, an
+    IDENTITY_GATE_BLOCKED or lock refusal burns the operator's artifact; consumed after
+    a write, that write would be unauthorized.
+
+    The deploy flow has TWO consumption sites by design — one inside the runtime no-op
+    branch immediately before its marker advance (the only write on that path), one on
+    the main path immediately before the service stop. Both must sit after the lock and
+    the identity gate; the no-op site must precede the marker write."""
+    body = _read(DEPLOY_SCRIPT)
+    i_lock = body.index("Enter-DeployLock -Cfg $cfg")
+    i_gate = body.index("Assert-ProductionMatchesRecordedSha -Cfg $cfg")
+    auth_needle = 'Assert-Authorization -Cfg $cfg -Sha $TargetSha -Action "deploy"'
+    i_auth_noop = body.index(auth_needle)
+    i_auth_main = body.index(auth_needle, i_auth_noop + 1)
+    i_marker = body.index("Write-VersionFile -Cfg $cfg -Sha $TargetSha")
+    i_stop = body.index("Set-ServiceState -Cfg $cfg -Target Stopped")
+    assert i_lock < i_gate < i_auth_noop, (
+        "authorization must be consumed only AFTER the lock is held and the identity gate "
+        "has had its chance to refuse — a zero-write refusal must not burn the artifact"
+    )
+    assert i_auth_noop < i_marker, (
+        "the no-op branch's consumption must precede its marker advance — that advance is "
+        "a production write and must never run unauthorized"
+    )
+    assert i_marker < i_auth_main < i_stop, (
+        "the main path's consumption must sit after the no-op branch and immediately "
+        "before the service stop, the first mutation of the ordinary deploy"
+    )
+
+
+def test_reconcile_authorization_is_consumed_after_proof1_and_before_the_stop():
+    """Issue #1097 ordering for reconcile. PROOF 1 failing is this mode's most likely
+    refusal — it exists because production identity is in doubt — and under the old
+    ordering that refusal burned the artifact. Auth must sit after PROOF 1 and before
+    the service stop; PROOF 2 stays post-stop by design (TOCTOU closure at backup-mint
+    time), so this pin deliberately does not constrain auth against PROOF 2."""
+    seg = _reconcile_segment(_read(DEPLOY_SCRIPT))
+    proofs = [m.start() for m in re.finditer(
+        re.escape("Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $From"), seg)]
+    i_auth = seg.index('Assert-Authorization -Cfg $Cfg -Sha $To -Action "reconcile"')
+    i_stop = seg.index("Set-ServiceState -Cfg $Cfg -Target Stopped")
+    assert proofs[0] < i_auth < i_stop, (
+        "reconcile must prove the runtime is -FromSha BEFORE consuming the authorization, "
+        "and consume BEFORE the service stop — the first operational mutation"
+    )
+
+
 def test_identity_gate_is_skipped_only_for_bootstrap():
     """A first-ever deploy has no prior tree to verify; every other deploy must run the gate.
     The call is guarded by exactly `if (-not $Bootstrap)` (the gate itself is wrapped in a
