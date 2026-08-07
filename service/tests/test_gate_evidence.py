@@ -1728,13 +1728,33 @@ def test_the_verifier_cli_accepts_the_5_argument_reconcile_shape(tmp_path, monke
     assert "ALLOW" in out.upper()
 
 
-def test_the_verifier_cli_reads_from_sha_positionally_from_argv4(tmp_path, monkeypatch, capsys):
+def test_the_verifier_cli_denies_a_wrong_argv4_without_consuming_the_artifact(
+        tmp_path, monkeypatch, capsys):
     """Arity alone is a weak pin: `main()` could accept 5 arguments and ignore the fifth.
 
-    The direction must be decoded from `argv[4]` specifically. A wrong from_sha there
-    has to DENY -- if it were dropped or read from the wrong index, this call would be
-    indistinguishable from the correct one and the deploy script would authorize a
-    reconcile whose proved starting identity was never checked.
+    Two properties, both about `argv[4]`:
+
+    (a) The direction is decoded from `argv[4]` specifically. A wrong from_sha there
+        has to DENY -- if it were dropped or read from the wrong index, this call would
+        be indistinguishable from the correct one and the deploy script would authorize
+        a reconcile whose proved starting identity was never checked.
+
+    (b) That denial does NOT spend the artifact: `evaluate()` returns long before
+        `_consume()` (`deploy_authorization.py:302`), so a mistyped from_sha must not
+        burn an operator's single-use token -- a typo during an incident should cost a
+        retry, not a re-mint that needs the signing key.
+
+    Which guard fires matters, so the deny REASON is asserted rather than the exit code
+    alone. A wrong argv[4] is caught at the FILENAME layer: `artifact_name()` embeds
+    from_sha, so a different direction resolves to a different path and denies with "no
+    authorization artifact". It never reaches the equality check at `:249` -- that layer
+    is only reachable by editing a stored artifact, which is what
+    test_deploy_reconcile_signing.py covers (see its three-layer note at `:155-158`).
+
+    Two other reconcile guards also deny with rc 1 -- "reconcile requires from_sha"
+    (`:200-201`) and the self-reconcile "nothing to reconcile" (`:202-203`). Asserting
+    only "DENY" would let this test silently drift onto either one and keep passing
+    while no longer testing argv[4] decoding at all.
 
     Issue #1098.
     """
@@ -1744,13 +1764,19 @@ def test_the_verifier_cli_reads_from_sha_positionally_from_argv4(tmp_path, monke
     assert _sign_reconcile(ev) == 0, "precondition: a reconcile artifact was minted"
 
     wrong_from = "f" * 40
+    # Must differ from BOTH the signed direction and the target: colliding with _SHA
+    # would trip the `:202-203` self-reconcile guard instead of the mismatch guard.
     assert wrong_from != _OTHER_SHA, "the negative case must differ from the signed direction"
+    assert wrong_from != _SHA, "the negative case must differ from the reconcile TARGET"
+
     rc = deploy_authorization.main(["prog", _SHA, "reconcile", "Both", wrong_from])
     out = capsys.readouterr().out
     assert rc == 1, (
         f"a reconcile with the WRONG from_sha in argv[4] was not denied (out={out!r}); "
         "argv[4] is being ignored or read from the wrong position")
-    assert "DENY" in out.upper()
+    assert "no authorization artifact" in out.lower(), (
+        f"denied, but not by the direction-binding filename layer (out={out!r}) -- this "
+        "test is no longer exercising argv[4] decoding")
 
     # The artifact must survive the denial: a refused direction is not a use, so the
     # operator's single-use token is still spendable on the correct call.
@@ -1760,6 +1786,32 @@ def test_the_verifier_cli_reads_from_sha_positionally_from_argv4(tmp_path, monke
         f"the correct direction failed after a denied one (out={out!r}) -- a rejected "
         "from_sha consumed the artifact, which would burn an operator's authorization "
         "on a typo")
+
+
+def test_the_verifier_cli_denies_a_reconcile_with_argv4_missing(tmp_path, monkeypatch, capsys):
+    """The adjacent CLI shape: reconcile requested, but `argv[4]` absent entirely.
+
+    `Deploy-PZ.ps1:129` picks its call shape on `if ($SourceSha)`, so a falsy
+    `$SourceSha` routes into the `else` branch and drops the 4th token -- producing a
+    4-element argv with action "reconcile". `evaluate()`'s "reconcile requires from_sha"
+    guard (`deploy_authorization.py:200-201`) is covered directly in
+    test_deploy_reconcile_signing.py, but through `evaluate()`, not through the argv
+    decoding this module's CLI performs. Pinning it here keeps the whole reconcile
+    branch of `main()`'s arity handling observable.
+
+    Issue #1098.
+    """
+    import deploy_authorization
+    _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign_reconcile(ev) == 0, "precondition: a reconcile artifact was minted"
+
+    rc = deploy_authorization.main(["prog", _SHA, "reconcile", "Both"])
+    out = capsys.readouterr().out
+    assert rc == 1, (
+        f"a reconcile with no from_sha in argv was not denied (out={out!r}); a missing "
+        "direction must never be treated as an unconstrained reconcile")
+    assert "from_sha" in out.lower(), f"denied for the wrong reason: {out!r}"
 
 
 def test_the_repository_binding_is_enforced(tmp_path, monkeypatch):
