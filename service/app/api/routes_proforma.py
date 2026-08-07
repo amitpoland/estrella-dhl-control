@@ -1679,16 +1679,48 @@ def _build_proforma_request(
     # bill_to_contractor_id in customer_master == wfirma_customer_id.
     _cm = get_customer_master(_customer_master_db_path(), contractor_id)
     cm_proforma_series = pick_proforma_series_id(_cm) if _cm else ""
+    # Payment / language: draft commercial terms are authority; Customer Master
+    # is advisory fallback only (never accidental German — see commercial_lookup).
     cm_payment_method = ((_cm.preferred_payment_method or "").strip().lower()
                          if _cm else "")
     cm_payment_terms_days = (_cm.payment_terms_days if _cm else None)
     cm_language_id = ((_cm.default_language_id or "").strip() if _cm else "")
+    _draft_pt: Dict[str, Any] = {}
+    try:
+        _batch_for_draft = str(preview.get("batch_id") or "").strip()
+        _existing_draft = (
+            pildb.get_draft(_proforma_db_path(), _batch_for_draft, client_name)
+            if _batch_for_draft else None
+        )
+        if _existing_draft is not None:
+            _draft_pt = json.loads(_existing_draft.payment_terms_json or "{}") or {}
+            if (_existing_draft.currency or "").strip():
+                preview.setdefault("currency", _existing_draft.currency)
+    except Exception:
+        _draft_pt = {}
+    if isinstance(_draft_pt, dict):
+        _d_method = str(_draft_pt.get("method") or "").strip().lower()
+        if _d_method:
+            cm_payment_method = _d_method
+        if _draft_pt.get("days") is not None and str(_draft_pt.get("days")).strip() != "":
+            try:
+                cm_payment_terms_days = int(_draft_pt["days"])
+            except (TypeError, ValueError):
+                pass
+    _lang_res = commercial_lookup.resolve_translation_language_id(
+        draft_language_id=(_draft_pt.get("invoice_language_id")
+                           if isinstance(_draft_pt, dict) else None),
+        cm_language_id=cm_language_id,
+    )
+    cm_language_id = _lang_res["language_id"]
 
     # ── D1/D2: VAT context from customer_master (ADR-027) ──────────────────
     # Priority 1: vat_mode operator override.
     # Priority 2: derived from country + vat_eu_number.
     # Last-resort: wfirma_customers mirror or live search_customer (read-only).
     _vat_warnings: List[str] = []
+    if _lang_res.get("warning"):
+        _vat_warnings.append(str(_lang_res["warning"]))
 
     if _cm is not None:
         try:
@@ -4880,6 +4912,8 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "fx_rate_source":        getattr(d, "fx_rate_source", None),   # NBP | manual | identity
         "fx_accounting_date":    getattr(d, "fx_accounting_date", None),
         "fx_table_date":         getattr(d, "fx_rate_date", None),     # returned NBP table date
+        "source_currency":       getattr(d, "source_currency", None),
+        "fx_cross_rate":         getattr(d, "fx_cross_rate", None),    # source→doc via PLN
         "incoterm":              getattr(d, "incoterm", None),
         # Wireframe rebuild Slice 1 — additive display fields. Stored on the
         # draft since Phase 7 but never surfaced; read-only projection.
@@ -9586,25 +9620,25 @@ def fetch_draft_nbp_rate(
     body:       Dict[str, Any],
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
-    """Fetch the NBP exchange rate for the draft's currency and persist it.
+    """Fetch/apply the canonical PLN-hub FX result and persist it on the draft.
 
-    Reuses the SOLE PZ NBP authority (``pz_import_processor.get_nbp_rate``) via the
-    server-safe ``nbp_rate_service`` adapter — no second NBP client, no rate
-    calculator here, and NEVER a 1.0 fallback for a USD/EUR failure.
+    Reuses the SOLE PZ NBP authority (``pz_import_processor.get_nbp_rate``) via
+    ``nbp_rate_service.convert`` — no second NBP client. Model::
 
-    Accounting-date basis: the proforma ISSUE date (``wfirma_issue_date``); today
-    only when the issue date is blank. The engine may return a prior working-day
-    table, so BOTH the requested accounting date and the returned NBP table date
-    are persisted and surfaced — they are not assumed equal.
+        source commercial currency → NBP/PLN → selected document currency
 
-    Currency scope: USD, EUR (fetched); PLN (identity 1.0, source 'identity').
-    Any other currency → 422.
+    Accounting-date basis: proforma ISSUE date (``wfirma_issue_date``), else
+    ``payment_terms.invoice_date``, else today. The engine selects the prior
+    business-day NBP table (weekend/holiday walk-back); requested vs table date
+    are both persisted.
 
-    Body:: ``{ "expected_updated_at": "..." }``
+    Body::
+        ``{ "expected_updated_at": "...", "currency": "EUR" }``
+        Optional ``currency`` changes the document currency and revalues
+        editable lines / service charges from the frozen source commercial
+        amounts without compounding.
 
-    Errors: 400 (bad input), 401/403 (auth), 404 (draft), 409 (stale lock /
-    non-editable), 422 (unsupported currency), 502 (NBP unavailable / malformed).
-    On any failure the draft is left unchanged.
+    Currency scope: PLN / USD / EUR / INR (``nbp_rate_service.DOCUMENT_CURRENCIES``).
     """
     if not isinstance(draft_id, int) or draft_id <= 0:
         raise HTTPException(status_code=400, detail="invalid draft_id")
@@ -9618,47 +9652,93 @@ def fetch_draft_nbp_rate(
     if draft is None:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
 
-    currency = (draft.currency or "").strip().upper()
-    if not currency:
+    try:
+        lines = json.loads(draft.editable_lines_json or "[]")
+    except Exception:
+        lines = []
+    try:
+        charges = json.loads(draft.service_charges_json or "[]")
+    except Exception:
+        charges = []
+
+    requested_doc = str(body.get("currency") or draft.currency or "").strip().upper()
+    if not requested_doc:
         raise HTTPException(
             status_code=422,
             detail="draft has no currency set — cannot fetch an NBP rate",
         )
+    if not nbp_rate_service.is_document_currency(requested_doc):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"currency {requested_doc!r} not supported; expected one of "
+                f"{nbp_rate_service.DOCUMENT_CURRENCIES}"
+            ),
+        )
 
-    # Accounting date: proforma issue date → today when blank. Stated explicitly
-    # in the response; never silently substituted with another draft/shipment date.
+    source_ccy = nbp_rate_service.resolve_source_currency(
+        draft_source_currency=getattr(draft, "source_currency", None),
+        draft_currency=draft.currency,
+        lines=lines if isinstance(lines, list) else [],
+    )
+
+    # Accounting date: issue date → payment_terms.invoice_date → today.
     from datetime import datetime as _dt, timezone as _tz
     issue_date = (getattr(draft, "wfirma_issue_date", None) or "").strip()
+    if not issue_date:
+        try:
+            pt = json.loads(draft.payment_terms_json or "{}")
+            issue_date = str(pt.get("invoice_date") or "").strip()
+        except Exception:
+            issue_date = ""
     accounting_date = issue_date or _dt.now(_tz.utc).strftime("%Y-%m-%d")
-    accounting_date_source = "issue_date" if issue_date else "today_fallback"
+    accounting_date_source = (
+        "issue_date" if (getattr(draft, "wfirma_issue_date", None) or "").strip()
+        else ("payment_terms.invoice_date" if issue_date else "today_fallback")
+    )
 
     try:
-        res = nbp_rate_service.fetch_rate(currency, accounting_date)
+        snap = nbp_rate_service.revalue_commercial_snapshot(
+            lines=lines if isinstance(lines, list) else [],
+            service_charges=charges if isinstance(charges, list) else [],
+            source_ccy=source_ccy,
+            doc_ccy=requested_doc,
+            issue_date=accounting_date,
+        )
     except nbp_rate_service.NbpRateError as exc:
         status = 422 if exc.kind == "unsupported_currency" else 502
         raise HTTPException(status_code=status, detail=exc.message)
 
+    currency_changed = requested_doc != (draft.currency or "").strip().upper()
     resp = _draft_edit_dispatch(draft_id, lambda: pildb.set_draft_nbp_rate(
         db, int(draft_id),
-        exchange_rate       = res["rate"],
+        exchange_rate       = snap["doc_to_pln_rate"],
         accounting_date     = accounting_date,
-        table_date          = res.get("table_date"),
-        table_number        = res.get("table_number"),
-        source              = res["source"],
+        table_date          = snap.get("nbp_date"),
+        table_number        = snap.get("nbp_table"),
+        source              = snap["source"],
         operator            = operator,
         expected_updated_at = expected,
+        source_currency     = source_ccy,
+        fx_cross_rate       = snap["rate_normalized"],
+        new_currency        = requested_doc if currency_changed else None,
+        new_editable_lines  = snap["lines"] if currency_changed or source_ccy != requested_doc else None,
+        new_service_charges = snap["service_charges"] if currency_changed or source_ccy != requested_doc else None,
     ))
-    # Attach explicit rate evidence next to the refreshed canonical draft so the
-    # UI updates totals from the response without a competing local calc.
     payload = json.loads(resp.body)
     payload["nbp"] = {
-        "currency":               currency,
-        "rate":                   res["rate"],
-        "source":                 res["source"],
-        "table_number":           res.get("table_number"),
-        "table_date":             res.get("table_date"),
+        "source_currency":        source_ccy,
+        "doc_currency":           requested_doc,
+        "rate":                   snap["doc_to_pln_rate"],       # doc→PLN (legacy key)
+        "rate_normalized":        snap["rate_normalized"],       # source→doc
+        "pln_equivalent":         snap.get("pln_equivalent"),
+        "source":                 snap["source"],
+        "table_number":           snap.get("nbp_table"),
+        "table_date":             snap.get("nbp_date"),
         "accounting_date":        accounting_date,
         "accounting_date_source": accounting_date_source,
+        "cross_leg":              snap.get("cross_leg"),
+        "lines_revalued":         bool(currency_changed or source_ccy != requested_doc),
     }
     return JSONResponse(payload)
 

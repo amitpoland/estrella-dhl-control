@@ -64,10 +64,16 @@ def test_validate_blocks_missing_operator():
     assert "operator is required" in validate(_pending(operator="  "))
 
 
-@pytest.mark.parametrize("bad", ["JPY", "GBP", "INR", ""])
+@pytest.mark.parametrize("bad", ["JPY", "GBP", "CHF", ""])
 def test_validate_blocks_unsupported_currency(bad):
     blockers = validate(_pending(currency=bad))
     assert any("currency" in b for b in blockers)
+
+
+@pytest.mark.parametrize("ok", ["PLN", "USD", "EUR", "INR"])
+def test_validate_allows_document_currencies(ok):
+    blockers = validate(_pending(currency=ok))
+    assert not any("currency" in b for b in blockers), blockers
 
 
 @pytest.mark.parametrize("bad", ["draft", "issuing", "cancelled", ""])

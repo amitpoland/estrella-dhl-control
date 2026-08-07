@@ -50,8 +50,11 @@ Guarantees (pinned by the replacement tests):
    separately — the engine may select a prior working-day table, and the two are
    not assumed equal.
 
-Currency scope: USD, EUR (fetched), PLN (identity). Any other currency returns a
-controlled 422; the PZ engine is not extended in this slice.
+Currency scope (extended 2026-08-08 — PLN-hub authority): PLN / USD / EUR / INR
+via ``nbp_rate_service.CURRENCY_REGISTRY``. Conversion model is always
+``source → NBP/PLN → document currency`` through ``nbp_rate_service.convert()``
+(never an invented cross-rate). INR HTML per-100 quotes are normalised to
+PLN-per-1. Any other currency returns a controlled 422.
 
 Backend: `POST /api/v1/proforma/draft/{id}/fetch-nbp-rate` →
 `pildb.set_draft_nbp_rate` (shared optimistic-lock + draft-edit writer), persisting

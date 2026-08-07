@@ -177,17 +177,23 @@ PAYMENT_METHODS: List[Dict[str, Any]] = [
 
 
 # ── Currencies ───────────────────────────────────────────────────────────────
-# Locally accepted commercial currencies. The PZ engine reads NBP live rates;
-# this dictionary is purely UI presentation.
+# Federated from nbp_rate_service.CURRENCY_REGISTRY (PLN-hub FX authority).
+# Do NOT maintain a parallel list here — append new document currencies on the
+# NBP registry only.
 
-CURRENCIES: List[Dict[str, Any]] = [
-    {"code": "EUR", "label": "EUR · Euro"},
-    {"code": "USD", "label": "USD · US Dollar"},
-    {"code": "PLN", "label": "PLN · Polish Złoty"},
-    {"code": "GBP", "label": "GBP · British Pound"},
-    {"code": "CHF", "label": "CHF · Swiss Franc"},
-    {"code": "JPY", "label": "JPY · Japanese Yen"},
-]
+def _currency_rows() -> List[Dict[str, Any]]:
+    from . import nbp_rate_service as _nbp
+    return _nbp.currencies()
+
+
+# Lazily resolved so importing this module never hard-fails on a circular import
+# during early bootstrap. Callers that need a concrete list should use
+# ``get_currencies()`` or ``commercial_lookup.currencies()``.
+CURRENCIES: List[Dict[str, Any]] = []  # populated by get_dictionaries()
+
+
+def get_currencies() -> List[Dict[str, Any]]:
+    return _currency_rows()
 
 
 # ── Languages ────────────────────────────────────────────────────────────────
@@ -238,7 +244,7 @@ def label_for_currency(code: Optional[str]) -> str:
     if not code:
         return "—"
     code = (code or "").upper()
-    for c in CURRENCIES:
+    for c in get_currencies():
         if c["code"] == code:
             return c["label"]
     return code
@@ -521,7 +527,7 @@ def get_dictionaries() -> Dict[str, Any]:
     return {
         "vat_modes":        list(VAT_MODES),
         "payment_methods":  list(PAYMENT_METHODS),
-        "currencies":       list(CURRENCIES),
+        "currencies":       get_currencies(),
         "languages":        list(LANGUAGES),
         "invoice_series":   invoice_series,
         "proforma_series":  proforma_series,

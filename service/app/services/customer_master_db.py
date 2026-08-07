@@ -178,8 +178,18 @@ def validate(c: CustomerMaster) -> List[str]:
         blockers.append("bill_to_name is required")
     if not c.country or len(c.country.strip()) != 2:
         blockers.append("country must be ISO-3166 alpha-2 (2 letters)")
-    if c.default_currency and c.default_currency not in ("PLN", "USD", "EUR"):
-        blockers.append(f"default_currency must be one of PLN/USD/EUR, got {c.default_currency!r}")
+    from .nbp_rate_service import DOCUMENT_CURRENCIES as _DOC_CCY
+    from . import commercial_lookup as _clook
+    if c.default_currency and c.default_currency not in _DOC_CCY:
+        blockers.append(
+            f"default_currency must be one of {_DOC_CCY}, got {c.default_currency!r}"
+        )
+    if c.default_language_id is not None and str(c.default_language_id).strip() != "":
+        if not _clook.validate_invoice_language(c.default_language_id):
+            blockers.append(
+                f"default_language_id must be a known wFirma language id, "
+                f"got {c.default_language_id!r}"
+            )
     if c.ship_to_use_alternate and c.ship_to_contractor_id:
         blockers.append(
             "ship_to_use_alternate AND ship_to_contractor_id are both set — "
@@ -223,8 +233,10 @@ def validate(c: CustomerMaster) -> List[str]:
             f"pep_check_result must be one of {sorted(_PEP_RESULT)}, got {c.pep_check_result!r}")
     if c.vat_mode is not None and c.vat_mode not in (222, 228, 229):
         blockers.append(f"vat_mode must be one of 222/228/229, got {c.vat_mode!r}")
-    if c.freight_currency and c.freight_currency not in ("PLN", "USD", "EUR"):
-        blockers.append(f"freight_currency must be PLN/USD/EUR, got {c.freight_currency!r}")
+    if c.freight_currency and c.freight_currency not in _DOC_CCY:
+        blockers.append(
+            f"freight_currency must be one of {_DOC_CCY}, got {c.freight_currency!r}"
+        )
     if c.freight_mode and c.freight_mode not in ("fixed", "variable", "manual", "no_data"):
         blockers.append(f"freight_mode must be fixed/variable/manual/no_data, got {c.freight_mode!r}")
     if c.insurance_mode and c.insurance_mode not in ("fixed", "formula", "manual", "no_data"):
