@@ -1280,6 +1280,9 @@ _PZ_ROWS_SOURCE = "pz_rows"
 _OVERWRITEABLE_SOURCES = frozenset({
     "auto", "pz_rows_backfill", "pz_rows", "rejected_generic", "",
 })
+# Known historical / intentional sources that must NEVER be overwritten by
+# promote. Anything else is ``skipped_protected`` (not silently labelled manual).
+_PROTECTED_SOURCES = frozenset({"manual", "operator", "approved"})
 
 
 def promote_pz_rows_to_product_descriptions(
@@ -1294,36 +1297,51 @@ def promote_pz_rows_to_product_descriptions(
     authority for each ``product_code``. This function:
 
       * reads ``batch_dir/pz_rows.json``
+      * collapses duplicate ``product_code`` rows; equal PL/EN is OK,
+        conflicting bilingual text is an error (no silent last-wins)
       * rejects generic / empty PL text (never fabricates)
-      * overwrites ``source ∈ {auto, pz_rows_backfill, pz_rows}`` rows
-      * never touches ``source='manual'`` rows
+      * overwrites ``source ∈ {auto, pz_rows_backfill, pz_rows, …}`` rows
+      * never touches ``manual`` / other protected sources
       * writes ``source='pz_rows'`` with ``description_pl = nazwa_pl``,
         ``description_en = nazwa_en``, ``name_pl = nazwa_pl``
 
-    Returns a summary dict ``{scanned, written, skipped_manual, skipped_generic,
-    skipped_blank, errors, dry_run, sample}``.
+    Returns a summary including machine-readable ``status``::
+
+      ok         — converged (or only protected skips)
+      incomplete — per-row errors / conflicts / generics left unresolved
+      failed     — structural failure (missing/unreadable pz_rows)
     """
     import json as _json
+    try:
+        from .product_identity_engine import is_generic_description as _is_generic
+    except Exception:  # pragma: no cover
+        def _is_generic(text: str) -> bool:  # type: ignore
+            return bool(_contains_forbidden_desc_token(text or ""))
 
     out: Dict[str, Any] = {
         "scanned": 0,
         "written": 0,
         "skipped_manual": 0,
+        "skipped_protected": 0,
         "skipped_generic": 0,
         "skipped_blank": 0,
+        "conflicts": 0,
         "errors": [],
         "dry_run": bool(dry_run),
         "sample": [],
+        "status": "ok",
     }
     path = Path(batch_dir) / "pz_rows.json"
     if not path.exists():
         out["errors"].append(f"pz_rows.json not found at {path}")
+        out["status"] = "failed"
         return out
 
     try:
         raw = _json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         out["errors"].append(f"pz_rows.json parse failed: {exc}")
+        out["status"] = "failed"
         return out
 
     rows = raw if isinstance(raw, list) else (
@@ -1331,8 +1349,11 @@ def promote_pz_rows_to_product_descriptions(
     )
     if not isinstance(rows, list):
         out["errors"].append("pz_rows.json has unexpected shape")
+        out["status"] = "failed"
         return out
 
+    # Collapse by product_code — one canonical PL/EN per code.
+    by_pc: Dict[str, Dict[str, str]] = {}
     for r in rows:
         if not isinstance(r, dict):
             continue
@@ -1344,20 +1365,53 @@ def promote_pz_rows_to_product_descriptions(
         pl = str(r.get("nazwa_pl") or r.get("pl_desc") or "").strip()
         en = str(r.get("nazwa_en") or r.get("description_en") or "").strip()
         item_type = str(r.get("item_type") or "").strip().upper()
-
         if not pl:
             out["skipped_blank"] += 1
             continue
-        if _contains_forbidden_desc_token(pl):
+        if _contains_forbidden_desc_token(pl) or _is_generic(pl):
             out["skipped_generic"] += 1
             continue
+        prev = by_pc.get(pc)
+        if prev is not None:
+            if prev["pl"] != pl or prev["en"] != en:
+                out["conflicts"] += 1
+                out["errors"].append({
+                    "product_code": pc,
+                    "error": (
+                        "conflicting bilingual descriptions for same product_code "
+                        f"(kept first: pl={prev['pl'][:60]!r} en={prev['en'][:60]!r}; "
+                        f"rejected: pl={pl[:60]!r} en={en[:60]!r})"
+                    ),
+                })
+            continue
+        by_pc[pc] = {"pl": pl, "en": en, "item_type": item_type}
+
+    for pc, vals in by_pc.items():
+        pl = vals["pl"]
+        en = vals["en"]
+        item_type = vals["item_type"]
 
         existing = ddb.get_product_description(pc)
-        if existing is not None and str(existing.get("source") or "") == "manual":
-            out["skipped_manual"] += 1
+        src = str((existing or {}).get("source") or "").strip()
+        if existing is not None and src in _PROTECTED_SOURCES:
+            if src == "manual":
+                out["skipped_manual"] += 1
+            else:
+                out["skipped_protected"] += 1
+                out["errors"].append({
+                    "product_code": pc,
+                    "error": f"protected source={src!r} — not overwritten by pz_rows",
+                })
             continue
-        if existing is not None and str(existing.get("source") or "") not in _OVERWRITEABLE_SOURCES:
-            out["skipped_manual"] += 1
+        if existing is not None and src not in _OVERWRITEABLE_SOURCES:
+            out["skipped_protected"] += 1
+            out["errors"].append({
+                "product_code": pc,
+                "error": (
+                    f"unknown source={src!r} — not overwritten "
+                    "(intentional ruling: unknown ≠ auto-overwrite)"
+                ),
+            })
             continue
 
         block = build_description_block(
@@ -1397,4 +1451,56 @@ def promote_pz_rows_to_product_descriptions(
         except Exception as exc:
             out["errors"].append({"product_code": pc, "error": str(exc)[:200]})
 
+    if out["status"] != "failed":
+        if out["conflicts"] or out["errors"] or (
+            out["scanned"] > 0
+            and out["written"] == 0
+            and out["skipped_manual"] == 0
+            and out["skipped_protected"] == 0
+        ):
+            out["status"] = "incomplete"
+        else:
+            out["status"] = "ok"
     return out
+
+
+def patch_audit_pz_description_promote(
+    batch_dir: Path,
+    promote_summary: Dict[str, Any],
+) -> None:
+    """Persist machine-readable description-convergence state into audit.json.
+
+    Deterministic and idempotent — safe to call after promote or a retry.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    audit_path = Path(batch_dir) / "audit.json"
+    try:
+        audit = _json.loads(audit_path.read_text(encoding="utf-8")) if audit_path.exists() else {}
+    except Exception:
+        audit = {}
+    payload = {
+        k: promote_summary.get(k)
+        for k in (
+            "status", "scanned", "written", "skipped_manual", "skipped_protected",
+            "skipped_generic", "skipped_blank", "conflicts", "errors",
+            "drafts_enriched", "drafts_failed", "dry_run",
+        )
+        if k in promote_summary or k in ("status", "errors", "drafts_failed", "drafts_enriched")
+    }
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    audit["pz_description_promote"] = payload
+    write_json_atomic = None
+    try:
+        from ..utils.io import write_json_atomic as _wja
+        write_json_atomic = _wja
+    except Exception:
+        pass
+    if write_json_atomic is not None:
+        write_json_atomic(audit_path, audit)
+    else:
+        audit_path.write_text(
+            _json.dumps(audit, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )

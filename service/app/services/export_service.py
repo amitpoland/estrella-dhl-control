@@ -158,29 +158,46 @@ def process_shipment(
 
     # ── Promote PZ bilingual descriptions → product_descriptions (canonical) ─
     # nazwa_pl / nazwa_en from pz_rows.json are the single commercial authority.
-    # Non-fatal: a promote failure must never block PDF/XLSX delivery.
+    # PDF/XLSX delivery stays non-blocking, but convergence status is ALWAYS
+    # persisted (audit.json + result) so a silent split-authority state cannot
+    # pretend to be ready.
+    _promo_summary: Dict[str, Any] = {
+        "status": "failed",
+        "scanned": 0,
+        "written": 0,
+        "errors": [],
+        "drafts_enriched": 0,
+        "drafts_failed": [],
+    }
     try:
-        from .description_engine import promote_pz_rows_to_product_descriptions
+        from .description_engine import (
+            promote_pz_rows_to_product_descriptions,
+            patch_audit_pz_description_promote,
+        )
         from . import document_db as _ddb
         from . import proforma_invoice_link_db as _pildb
         _promo = promote_pz_rows_to_product_descriptions(output_dir, dry_run=False)
-        log.info(
-            "pz_rows → product_descriptions promote: written=%s skipped_generic=%s "
-            "skipped_manual=%s errors=%s",
-            _promo.get("written"), _promo.get("skipped_generic"),
-            _promo.get("skipped_manual"), len(_promo.get("errors") or []),
-        )
-        result["pz_description_promote"] = {
+        _promo_summary.update({
             k: _promo[k] for k in (
-                "written", "skipped_generic", "skipped_manual",
-                "skipped_blank", "scanned", "errors",
+                "status", "written", "skipped_generic", "skipped_manual",
+                "skipped_protected", "skipped_blank", "scanned", "conflicts",
+                "errors",
             ) if k in _promo
-        }
+        })
+        log.info(
+            "pz_rows → product_descriptions promote: status=%s written=%s "
+            "skipped_generic=%s skipped_manual=%s errors=%s",
+            _promo_summary.get("status"), _promo_summary.get("written"),
+            _promo_summary.get("skipped_generic"),
+            _promo_summary.get("skipped_manual"),
+            len(_promo_summary.get("errors") or []),
+        )
         # Propagate into editable drafts for this batch so name_pl blockers
         # clear without a separate operator enrich step.
         _pf = Path(settings.storage_root) / "proforma_links.db"
         _enriched_drafts = 0
-        if _pf.exists() and int(_promo.get("written") or 0) > 0:
+        _failed_drafts: list = []
+        if _pf.exists() and int(_promo_summary.get("written") or 0) > 0:
             for _d in _pildb.list_drafts_for_batch(_pf, batch_id):
                 if _d.draft_state not in _pildb.EDITABLE_STATES:
                     continue
@@ -195,9 +212,42 @@ def process_shipment(
                         "post-promote draft enrich failed draft_id=%s: %s",
                         _d.id, _ee,
                     )
-        result["pz_description_promote"]["drafts_enriched"] = _enriched_drafts
+                    _failed_drafts.append({
+                        "draft_id": _d.id,
+                        "error": str(_ee)[:200],
+                    })
+        _promo_summary["drafts_enriched"] = _enriched_drafts
+        _promo_summary["drafts_failed"] = _failed_drafts
+        if _failed_drafts and _promo_summary.get("status") == "ok":
+            _promo_summary["status"] = "incomplete"
     except Exception as exc:
         log.warning("pz_rows → product_descriptions promote failed (non-fatal): %s", exc)
+        _promo_summary = {
+            "status": "failed",
+            "scanned": 0,
+            "written": 0,
+            "errors": [{"error": f"promote exception: {exc}"}],
+            "drafts_enriched": 0,
+            "drafts_failed": [],
+        }
+    result["pz_description_promote"] = _promo_summary
+    try:
+        from .description_engine import patch_audit_pz_description_promote
+        patch_audit_pz_description_promote(output_dir, _promo_summary)
+    except Exception as _ape:
+        log.warning("audit.json pz_description_promote patch failed: %s", _ape)
+        # Without durable audit status, readiness cannot see Outcome B —
+        # escalate so callers do not treat API-only success as converged.
+        _promo_summary = dict(_promo_summary)
+        _errs = list(_promo_summary.get("errors") or [])
+        _errs.append({"error": f"audit patch failed: {_ape}"})
+        _promo_summary["errors"] = _errs
+        if _promo_summary.get("status") == "ok":
+            _promo_summary["status"] = "incomplete"
+        _promo_summary["audit_persisted"] = False
+        result["pz_description_promote"] = _promo_summary
+    else:
+        result["pz_description_promote"]["audit_persisted"] = True
 
     # ── Compliance audit report (bilingual EN + PL) + PDF memo + risk score ──
     result["audit_generation_status"] = "pending"

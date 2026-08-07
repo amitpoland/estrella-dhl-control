@@ -266,6 +266,38 @@ def test_filled_name_pl_no_spurious_blocker(client):
     )
 
 
+def test_failed_pz_description_convergence_blocks_even_with_filled_name_pl(client):
+    """Outcome B: promote failed but draft has stale non-blank name_pl → still blocked."""
+    c, storage = client
+    _seed_batch_data(storage)
+
+    lines = [
+        {"line_id": "1", "product_code": PRODUCT_CODE,
+         "name_pl": "Pierścionek złoty", "unit_price": 100.0},
+    ]
+    _seed_draft(storage, lines)
+
+    audit_path = storage / "outputs" / BATCH / "audit.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["pz_description_promote"] = {
+        "status": "failed",
+        "scanned": 3,
+        "written": 0,
+        "errors": [{"error": "promote exception: boom"}],
+        "drafts_enriched": 0,
+        "drafts_failed": [],
+    }
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+
+    r = c.post(f"/api/v1/proforma/preview/{BATCH}/{CLIENT}", headers=_auth())
+    assert r.status_code == 200, r.text
+    blocking = r.json().get("blocking_reasons", [])
+    assert any("description authority convergence" in br for br in blocking), (
+        f"Expected convergence blocker with filled name_pl, got: {blocking}"
+    )
+    assert not any("blank commercial description" in br for br in blocking), blocking
+
+
 # ── 5. No draft → no spurious blocker ────────────────────────────────────────
 
 def test_no_draft_no_spurious_pre_approve_blocker(client):

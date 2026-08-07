@@ -323,14 +323,252 @@ def test_export_service_promotes_pz_rows_after_write():
         / "app" / "services" / "export_service.py"
     ).read_text(encoding="utf-8")
     assert "promote_pz_rows_to_product_descriptions" in src
+    assert "patch_audit_pz_description_promote" in src
     assert "_write_pz_rows_json(output_dir, result)" in src
     # promote must follow the pz_rows write in source order
     write_i = src.index("_write_pz_rows_json(output_dir, result)")
     promo_i = src.index("promote_pz_rows_to_product_descriptions")
     assert promo_i > write_i
+    # Outer failure must still stamp result + audit (no silent split).
+    assert 'result["pz_description_promote"]' in src
+    assert '"status": "failed"' in src or "'status': 'failed'" in src
 
 
 def test_name_pl_generator_is_disabled():
     from app.api.sales_packing_parser import generate_name_pl_if_sufficient
     assert generate_name_pl_if_sufficient("RNG", "14KT", "YG", "LGD") is None
     assert generate_name_pl_if_sufficient("RING") is None
+
+
+def test_promote_missing_pz_rows_is_failed_status(docs_db, tmp_path):
+    batch = tmp_path / "no_rows"
+    batch.mkdir()
+    result = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+    assert result["status"] == "failed"
+    assert result["errors"]
+
+
+def test_promote_conflict_same_product_code_no_last_wins(docs_db, tmp_path):
+    """Duplicate product_code with different bilingual text → conflict, keep first."""
+    pc = "EJL/26-27/DUP-1"
+    batch = _write_pz_rows(tmp_path / "dup", [
+        {
+            "product_code": pc, "item_type": "RING",
+            "nazwa_pl": "pierścionek ze złota próby 14 karatów",
+            "nazwa_en": "14KT Gold RING",
+        },
+        {
+            "product_code": pc, "item_type": "RING",
+            "nazwa_pl": "bransoletka srebrna próby 925",
+            "nazwa_en": "Silver BRACELET",
+        },
+    ])
+    result = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+    assert result["conflicts"] == 1
+    assert result["status"] == "incomplete"
+    row = ddb.get_product_description(pc)
+    assert row is not None
+    assert row["description_pl"] == "pierścionek ze złota próby 14 karatów"
+    assert row["description_en"] == "14KT Gold RING"
+
+
+def test_promote_duplicate_equal_product_code_is_ok(docs_db, tmp_path):
+    pc = "EJL/26-27/SAME-1"
+    pl = "pierścionek ze złota próby 14 karatów z diamentami hodowanymi laboratoryjnie"
+    en = "Lab Grown Diamond Studded 14KT Gold Jewellery RING"
+    batch = _write_pz_rows(tmp_path / "same", [
+        {"product_code": pc, "nazwa_pl": pl, "nazwa_en": en, "item_type": "RING"},
+        {"product_code": pc, "nazwa_pl": pl, "nazwa_en": en, "item_type": "RING"},
+    ])
+    result = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+    assert result["conflicts"] == 0
+    assert result["status"] == "ok"
+    assert result["written"] == 1
+    row = ddb.get_product_description(pc)
+    assert row["description_pl"] == pl
+    assert row["description_en"] == en
+
+
+def test_promote_rejects_bizuteria_generic(docs_db, tmp_path):
+    batch = _write_pz_rows(tmp_path / "gen", [{
+        "product_code": "EJL/GEN-1",
+        "nazwa_pl": "Biżuteria",
+        "nazwa_en": "Jewellery",
+        "item_type": "RING",
+    }])
+    result = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+    assert result["skipped_generic"] >= 1
+    assert ddb.get_product_description("EJL/GEN-1") is None
+
+
+def test_promote_unknown_source_is_protected_not_silent_manual(docs_db, tmp_path):
+    pc = "EJL/26-27/PROT-1"
+    ddb.upsert_product_description(
+        product_code=pc, item_type="RNG",
+        name_pl="legacy name", description_pl="legacy pl text that is specific",
+        description_en="legacy en", material_pl="", purpose_pl="",
+        description_block="x", description_line="x", source="legacy_import",
+    )
+    batch = _write_pz_rows(tmp_path / "prot", [{
+        "product_code": pc,
+        "nazwa_pl": "pierścionek ze złota próby 14 karatów",
+        "nazwa_en": "14KT Gold RING",
+        "item_type": "RING",
+    }])
+    result = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+    assert result["skipped_protected"] == 1
+    assert result["skipped_manual"] == 0
+    assert ddb.get_product_description(pc)["description_pl"] == "legacy pl text that is specific"
+    assert result["status"] == "incomplete"
+
+
+def test_patch_audit_persists_convergence_diagnostic(docs_db, tmp_path):
+    from app.services.description_engine import patch_audit_pz_description_promote
+    batch = tmp_path / "aud"
+    batch.mkdir()
+    (batch / "audit.json").write_text("{}", encoding="utf-8")
+    summary = {
+        "status": "failed",
+        "scanned": 3,
+        "written": 0,
+        "errors": [{"error": "boom"}],
+        "drafts_enriched": 0,
+        "drafts_failed": [{"draft_id": 81, "error": "enrich boom"}],
+    }
+    patch_audit_pz_description_promote(batch, summary)
+    audit = json.loads((batch / "audit.json").read_text(encoding="utf-8"))
+    assert audit["pz_description_promote"]["status"] == "failed"
+    assert audit["pz_description_promote"]["drafts_failed"][0]["draft_id"] == 81
+
+
+def test_preview_surfaces_failed_convergence_blocker():
+    """Source-grep: readiness must gate on audit pz_description_promote status."""
+    src = (
+        Path(__file__).resolve().parent.parent
+        / "app" / "api" / "routes_proforma.py"
+    ).read_text(encoding="utf-8")
+    assert "pz_description_promote" in src
+    assert "description authority convergence" in src
+
+
+def test_upsert_pz_rows_cannot_clobber_manual(docs_db):
+    pc = "EJL/26-27/MAN-LOCK"
+    ddb.upsert_product_description(
+        product_code=pc, item_type="RNG",
+        name_pl="Operator PL", description_pl="Operator PL full",
+        description_en="Operator EN", material_pl="", purpose_pl="",
+        description_block="x", description_line="x", source="manual",
+    )
+    ddb.upsert_product_description(
+        product_code=pc, item_type="RNG",
+        name_pl="PZ PL", description_pl="PZ PL full",
+        description_en="PZ EN", material_pl="", purpose_pl="",
+        description_block="y", description_line="y", source="pz_rows",
+    )
+    row = ddb.get_product_description(pc)
+    assert row["source"] == "manual"
+    assert row["description_pl"] == "Operator PL full"
+
+
+def test_editable_only_states_listed_for_auto_enrich():
+    assert set(pildb.EDITABLE_STATES) == {"draft", "editing", "post_failed"}
+    src = (
+        Path(__file__).resolve().parent.parent
+        / "app" / "services" / "export_service.py"
+    ).read_text(encoding="utf-8")
+    assert "EDITABLE_STATES" in src
+    assert "enrich_draft_lines" in src
+
+
+def test_post_promote_enrich_skips_posted_draft(docs_db, proc_db, tmp_path):
+    """Behavioral: posted drafts are not EDITABLE; enrich must refuse them."""
+    pc = "EJL/26-27/EDIT-1"
+    pl = "pierścionek ze złota próby 14 karatów z diamentami hodowanymi laboratoryjnie"
+    en = "Lab Grown Diamond Studded 14KT Gold Jewellery RING"
+    promote_pz_rows_to_product_descriptions(
+        _write_pz_rows(tmp_path / "ed", [{
+            "product_code": pc, "nazwa_pl": pl, "nazwa_en": en, "item_type": "RING",
+        }]),
+        dry_run=False,
+    )
+    editable, _ = pildb.auto_create_draft_from_sales_packing(
+        proc_db, batch_id="BATCH_EDIT", client_name="Editable Client",
+        currency="USD",
+        lines=[{"product_code": pc, "name_pl": "", "unit_price": 10.0}],
+        operator="test",
+        name_pl_lookup=ddb.get_product_description, desc_generate=None,
+    )
+    assert editable.draft_state in pildb.EDITABLE_STATES
+
+    posted_draft, _ = pildb.auto_create_draft_from_sales_packing(
+        proc_db, batch_id="BATCH_EDIT", client_name="Posted Client",
+        currency="USD",
+        lines=[{"product_code": pc, "name_pl": "STALE_POSTED", "unit_price": 10.0}],
+        operator="test",
+        name_pl_lookup=None, desc_generate=None,
+    )
+    import sqlite3
+    with sqlite3.connect(str(proc_db)) as con:
+        # status='issued' maps to draft_state='posted' in the read shim;
+        # keep both aligned so _row_to_draft does not override.
+        con.execute(
+            "UPDATE proforma_drafts SET draft_state='posted', status='issued', "
+            "editable_lines_json=? WHERE id=?",
+            (json.dumps([{"product_code": pc, "name_pl": "STALE_POSTED",
+                          "unit_price": 10.0}]),
+             posted_draft.id),
+        )
+        con.commit()
+
+    posted = pildb.get_draft_by_id(proc_db, posted_draft.id)
+    assert posted.draft_state == "posted"
+    assert posted.draft_state not in pildb.EDITABLE_STATES
+
+    enriched_ids = []
+    for d in pildb.list_drafts_for_batch(proc_db, "BATCH_EDIT"):
+        if d.draft_state not in pildb.EDITABLE_STATES:
+            continue
+        pildb.enrich_draft_lines(
+            proc_db, d.id, "pz-process-promote",
+            d.updated_at, ddb.get_product_description,
+        )
+        enriched_ids.append(d.id)
+    assert editable.id in enriched_ids
+    assert posted.id not in enriched_ids
+
+    with pytest.raises(Exception):
+        pildb.enrich_draft_lines(
+            proc_db, posted.id, "pz-process-promote",
+            posted.updated_at, ddb.get_product_description,
+        )
+
+    posted_after = pildb.get_draft_by_id(proc_db, posted.id)
+    assert json.loads(posted_after.editable_lines_json)[0]["name_pl"] == "STALE_POSTED"
+    editable_after = pildb.get_draft_by_id(proc_db, editable.id)
+    assert json.loads(editable_after.editable_lines_json)[0]["name_pl"] == pl
+
+
+def test_promote_then_patch_audit_end_to_end(docs_db, tmp_path):
+    """Missing pz_rows → failed status persisted in audit.json (retry surface)."""
+    from app.services.description_engine import patch_audit_pz_description_promote
+    batch = tmp_path / "e2e_fail"
+    batch.mkdir()
+    (batch / "audit.json").write_text('{"batch_id":"X"}', encoding="utf-8")
+    summary = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+    assert summary["status"] == "failed"
+    patch_audit_pz_description_promote(batch, summary)
+    audit = json.loads((batch / "audit.json").read_text(encoding="utf-8"))
+    assert audit["pz_description_promote"]["status"] == "failed"
+    # Deterministic retry after writing valid rows.
+    _write_pz_rows(batch, [{
+        "product_code": "EJL/26-27/RETRY-1",
+        "nazwa_pl": "pierścionek ze złota próby 14 karatów",
+        "nazwa_en": "14KT Gold RING",
+        "item_type": "RING",
+    }])
+    summary2 = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+    assert summary2["status"] == "ok"
+    assert summary2["written"] == 1
+    patch_audit_pz_description_promote(batch, summary2)
+    audit2 = json.loads((batch / "audit.json").read_text(encoding="utf-8"))
+    assert audit2["pz_description_promote"]["status"] == "ok"
