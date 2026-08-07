@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from ..auth.dependencies import get_current_user
+from ..auth.dependencies import get_current_user, require_admin
 from ..core.config import settings
 from ..core import timeline as tl
 from ..core.logging import get_logger
@@ -40,6 +40,7 @@ from ..services import packing_db as pdb
 from ..services import document_db as ddb
 from ..services import inventory_state_engine as ise
 from ..services.invoice_packing_extractor import process_packing_upload, _safe_float, file_sha256
+from ..services.packing_rematch import build_rematch_plan
 
 
 def _pdf_text_preview(path: Path) -> str:
@@ -737,6 +738,251 @@ async def reprocess_packing_prices(batch_id: str) -> Dict[str, Any]:
                        "total_packing_rows":    len(all_lines_after)},
         "files": file_results,
     }
+
+
+# ── POST /api/v1/packing/{batch_id}/rematch ──────────────────────────────────
+
+def _run_rematch(
+    batch_id: str,
+    *,
+    apply: bool,
+    confirm: str,
+) -> Dict[str, Any]:
+    """The ONE routine behind both the dry-run and the apply.
+
+    Dry-run and apply must not be two implementations, or the diff an operator
+    approves stops being the change that lands. This computes the plan, and only
+    then — if and only if the caller supplied the confirmation token and the plan
+    is not blocking — writes it through the canonical persistence path.
+    """
+    output_dir = _validate_batch(batch_id)
+
+    packing_dir = output_dir / "source" / "packing"
+    src_files = sorted(
+        list(packing_dir.glob("*.xlsx")) + list(packing_dir.glob("*.xls"))
+        + list(packing_dir.glob("*.pdf"))
+    ) if packing_dir.exists() else []
+    if not src_files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No stored packing source files for batch {batch_id!r}; "
+                   "nothing to re-extract.",
+        )
+
+    stored_rows = pdb.get_packing_lines_for_batch(batch_id)
+    if not stored_rows:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No persisted packing rows for batch {batch_id!r}; "
+                   "use the upload endpoint instead.",
+        )
+
+    # The purchase authority comes straight from invoice_lines (active rows) —
+    # NOT from the extractor's normalized view of them, which renames the
+    # columns the plan reconciles on.
+    invoice_lines = ddb.get_invoice_lines_for_batch(batch_id)
+
+    # ── Re-parse every stored source file. Read-only: process_packing_upload
+    #    performs no DB write of its own.
+    proposed_rows: List[Dict[str, Any]] = []
+    file_results: List[Dict[str, Any]] = []
+    resolution_blockers: List[Dict[str, Any]] = []
+
+    for pf in src_files:
+        entry: Dict[str, Any] = {"file": pf.name, "rows_extracted": 0, "error": None}
+        try:
+            fhash = file_sha256(pf)
+            doc_ids = pdb.resolve_document_id_by_hash(batch_id, fhash)
+            if len(doc_ids) != 1:
+                # 0 → this file was never registered (or was edited since);
+                # >1 → the same content is registered twice. Either way there is
+                # no single document to attribute a rewrite to, so refuse rather
+                # than pick. Content hash is the authority, never the filename.
+                resolution_blockers.append({
+                    "code": "no_unique_document_for_file" if not doc_ids
+                            else "multiply_registered_document",
+                    "file": pf.name, "document_matches": len(doc_ids),
+                })
+                entry["error"] = "document_hash_unresolved"
+                file_results.append(entry)
+                continue
+
+            result = process_packing_upload(
+                batch_id         = batch_id,
+                batch_output_dir = output_dir,
+                packing_file_path= pf,
+                force_reextract  = False,   # extraction only; no DB write here
+            )
+            rows = result.get("packing_rows", []) or []
+            for r in rows:
+                # Stamp the resolved document + the canonical serial so the plan
+                # can pair each proposed row to exactly one stored row.
+                r = dict(r)
+                r["packing_document_id"] = doc_ids[0]
+                if r.get("pack_sr") is None:
+                    r["pack_sr"] = r.get("line_position")
+                proposed_rows.append(r)
+            entry["rows_extracted"] = len(rows)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.warning("[%s] rematch re-parse failed for %s: %s", batch_id, pf.name, exc)
+            entry["error"] = str(exc)[:300]
+            resolution_blockers.append({
+                "code": "reparse_failed", "file": pf.name, "detail": str(exc)[:300],
+            })
+        file_results.append(entry)
+
+    try:
+        sales_rows = ddb.get_sales_packing_lines(batch_id)
+    except Exception:
+        sales_rows = []
+
+    plan = build_rematch_plan(stored_rows, proposed_rows, invoice_lines, sales_rows)
+    # File-level resolution failures are plan blockers too: a file that could not
+    # be attributed leaves stored rows unaccounted for.
+    plan["blockers"] = resolution_blockers + plan["blockers"]
+    plan["blocking"] = bool(plan["blockers"])
+    plan["files"] = file_results
+
+    response: Dict[str, Any] = {
+        "ok":       True,
+        "batch_id": batch_id,
+        "applied":  False,
+        "plan":     plan,
+    }
+
+    if not apply:
+        response["dry_run"] = True
+        response["note"] = (
+            "Dry run — nothing was written. To apply, repeat with apply=true and "
+            "confirm=<batch_id>."
+        )
+        return response
+
+    # ── Apply path. Every refusal below returns 200 with applied=false so the
+    #    operator still receives the full plan they were reasoning about.
+    if confirm != batch_id:
+        response["ok"] = False
+        response["refused"] = "confirmation_token_missing_or_mismatched"
+        response["note"] = (
+            "apply=true requires confirm=<batch_id>. Nothing was written."
+        )
+        return response
+
+    if plan["blocking"]:
+        response["ok"] = False
+        response["refused"] = "plan_is_blocking"
+        response["note"] = (
+            "The plan has blockers, so no row was rewritten. Resolve them and "
+            "re-run the dry run."
+        )
+        return response
+
+    if not plan["row_changes"]:
+        response["note"] = "No row assignment would change; nothing written."
+        return response
+
+    # Persist through the canonical write path. force_reextract=True is what
+    # makes upsert_packing_lines update instead of skipping the existing row;
+    # its own review-state guard still refuses to silently overwrite an
+    # operator-confirmed product_code, which is why the plan surfaces those rows
+    # as preserved rather than as changes that will land.
+    changed_ids = {c["row_id"] for c in plan["row_changes"]}
+    line_records = [
+        r for r in _build_rematch_line_records(batch_id, stored_rows, proposed_rows)
+        if r.get("_row_id") in changed_ids
+    ]
+    for r in line_records:
+        r.pop("_row_id", None)
+
+    written = pdb.upsert_packing_lines(line_records, force_reextract=True)
+    log.info("[%s] rematch APPLIED: %d rows rewritten (%d proposed changes)",
+             batch_id, written, len(plan["row_changes"]))
+
+    response["applied"] = True
+    response["rows_written"] = written
+    response["plan_after"] = build_rematch_plan(
+        pdb.get_packing_lines_for_batch(batch_id), proposed_rows, invoice_lines, sales_rows,
+    )["counts"]
+    return response
+
+
+def _build_rematch_line_records(
+    batch_id:      str,
+    stored_rows:   List[Dict[str, Any]],
+    proposed_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Stored rows carrying the proposed assignment — nothing else changes.
+
+    Only the assignment fields (product_code, invoice_line_position, invoice_no,
+    match_strategy, extracted_confidence, requires_manual_review) are taken from
+    the proposal. Every physical fact — quantity, weights, prices, bag, design —
+    is carried over from the stored row, because a re-match decides *placement*,
+    not what the piece is. Rewriting physical facts here would quietly turn a
+    placement repair into a re-import.
+    """
+    by_ident = {}
+    for p in proposed_rows:
+        sr = p.get("pack_sr") if p.get("pack_sr") is not None else p.get("line_position")
+        by_ident[(p.get("packing_document_id"), sr)] = p
+
+    out: List[Dict[str, Any]] = []
+    for s in stored_rows:
+        sr = s.get("pack_sr") if s.get("pack_sr") is not None else s.get("line_position")
+        p = by_ident.get((s.get("packing_document_id"), sr))
+        if p is None:
+            continue
+        rec = dict(s)
+        rec.pop("id", None)
+        rec.pop("created_at", None)
+        rec["batch_id"]               = batch_id
+        rec["product_code"]           = p.get("product_code")
+        rec["invoice_line_position"]  = p.get("invoice_line_position")
+        # invoice_no stays the STORED value: it is part of the dedup key the
+        # write resolves on, and a row that changed invoice is refused by the
+        # plan (blocker "row_changed_invoice") rather than rewritten here.
+        rec["invoice_no"]             = str(s.get("invoice_no", "") or "")
+        rec["match_strategy"]         = p.get("match_strategy") or None
+        rec["extracted_confidence"]   = _safe_float(p.get("extracted_confidence"))
+        rec["requires_manual_review"] = bool(p.get("requires_manual_review", False))
+        rec["_row_id"]                = s.get("id")
+        out.append(rec)
+    return out
+
+
+@router.post("/{batch_id}/rematch", dependencies=[Depends(require_admin)])
+def rematch_packing_lines(
+    batch_id: str,
+    apply:    bool = Query(default=False),
+    confirm:  str  = Query(default=""),
+) -> Dict[str, Any]:
+    """Recompute the packing→invoice assignment for rows already persisted.
+
+    Rows are normally written once: ``upsert_packing_lines`` skips a row that
+    already exists unless ``force_reextract=True``. That is correct for a
+    re-upload — it protects stored state from an accidental second file — but it
+    also means a matcher correction can never reach rows that were persisted
+    under the old logic. This endpoint is the deliberate, operator-authorised
+    exception.
+
+    **Dry run is the default and writes nothing.** It returns, per row: the
+    stored assignment, the proposed assignment, both strategies and confidences;
+    per invoice line: authorised vs assigned quantity and value, before and
+    after; and per product_code: the downstream sales position, including
+    whether the correction resolves an over-bill or reveals one that a wrong
+    assignment had been concealing.
+
+    Applying requires ``apply=true`` **and** ``confirm=<batch_id>``, and is
+    refused outright if the plan has any blocker. An operator-confirmed
+    product_code is never silently overwritten; such rows are reported as
+    preserved.
+
+    This endpoint does not call wFirma, does not convert or post any document,
+    does not touch inventory or accounting, and cannot raise any line above the
+    quantity its purchase invoice authorises.
+    """
+    return _run_rematch(batch_id, apply=apply, confirm=confirm)
 
 
 # ── GET /api/v1/packing/{batch_id} ────────────────────────────────────────────
