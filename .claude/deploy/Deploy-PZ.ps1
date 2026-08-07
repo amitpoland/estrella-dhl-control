@@ -1190,9 +1190,6 @@ function Invoke-Reconcile {
     }
     Write-Host "  source verified: $SRC is clean at $To, which is contained in origin/main"
 
-    # ---- authorization: the ordered pair, before the lock and before any write ----
-    if (-not $script:PlanOnly) { Assert-Authorization -Cfg $Cfg -Sha $To -Action "reconcile" -UnitScope $Scope -SourceSha $From }
-
     Enter-DeployLock -Cfg $Cfg
     # Position tracker, set immediately before each transition so a throw is attributed to the
     # step it happened in - the operator must never be told "nothing was written" about a tree
@@ -1203,6 +1200,17 @@ function Invoke-Reconcile {
         # the marker precisely because the marker is the artefact being repaired.
         Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $From
         $stage = "runtime PROVED to be $From; nothing stopped, staged or written"
+        # ---- authorization: the ordered pair - after PROOF 1, before the first write ----
+        # Moved below the proof (issue #1097): the helper consumes the single-use jti when
+        # it allows, and PROOF 1 failing is this mode's most likely refusal - it is invoked
+        # precisely because production identity is in doubt. Under the old ordering a
+        # failed proof burned the artifact, and the reordering's own clamp makes that
+        # expensive: a re-mint is possible only while the gate evidence is unexpired.
+        # Still ahead of Set-ServiceState below - stopping the service is the first
+        # operational mutation, and authorization gates every one of them. PROOF 2 runs
+        # after the stop by design (TOCTOU closure at backup time); a PROOF-2 failure
+        # after consumption is a service-stopped-and-restarted cost, not a wrong write.
+        if (-not $script:PlanOnly) { Assert-Authorization -Cfg $Cfg -Sha $To -Action "reconcile" -UnitScope $Scope -SourceSha $From }
         Set-ServiceState -Cfg $Cfg -Target Stopped
         $stage = "service stopped; production content untouched"
         $unit = $null
@@ -1305,7 +1313,6 @@ function Invoke-Deploy {
     }
     Invoke-Preflight -Cfg $cfg
     Assert-ReviewedTarget -Cfg $cfg -Sha $ReviewedSHA
-    if (-not $script:PlanOnly) { Assert-Authorization -Cfg $cfg -Sha $ReviewedSHA -Action "deploy" -UnitScope $Scope }
 
     # Lock BEFORE any mutable preparation so two operators cannot both stage or back up.
     Enter-DeployLock -Cfg $cfg
@@ -1345,6 +1352,19 @@ function Invoke-Deploy {
             }
             Write-Host "== Production identity gate skipped (-Bootstrap: no prior tree) =="
         }
+
+        # AUTHORIZATION - consumed here, not at the top of the run (issue #1097). The
+        # helper burns the single-use jti the moment it allows, so it must run only after
+        # every refusal that writes nothing has had its chance: preflight, target
+        # validation, the lock, and the identity gate above. Under the old ordering an
+        # IDENTITY_GATE_BLOCKED refusal cost the operator the artifact - a re-mint
+        # needing the signing key and still-unexpired gate evidence, demanded at the
+        # exact moment production identity was already in question. It must still run
+        # BEFORE the no-op short-circuit below, because that path advances the version
+        # marker - a production write, and an authorized no-op consuming its artifact is
+        # a use, not a waste. Rollback has always had this shape (every unit refusal
+        # precedes its Assert-Authorization); this brings deploy in line with it.
+        if (-not $script:PlanOnly) { Assert-Authorization -Cfg $cfg -Sha $ReviewedSHA -Action "deploy" -UnitScope $Scope }
 
         # Runtime no-op short-circuit. A merge that changed only tests, docs or CI cannot
         # alter the staged bytes -- the artifact is built from source_app plus engine_files

@@ -56,13 +56,17 @@ python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --ga
 Options: `-Scope App|Engine|Both`, `-Bootstrap` (first-ever deploy, no rollback
 target), `-ForceUnlock` (clear a lock whose process is provably gone).
 
-**The authorization is consumed before the identity gate runs.** The single-use
-artifact is spent at the authorization step, which precedes the deploy lock and the
-production identity gate. If the run then stops — `IDENTITY_GATE_BLOCKED`, lock
-contention — nothing on production was touched, but the artifact is already burned:
-re-mint before retrying, and note the re-mint needs the gate evidence still unexpired,
-or a fresh seven-agent round. Tracked as issue #1097 (reordering is a gated change to
-the deploy script, not a docs fix).
+**A blocked run does not burn the authorization.** The single-use artifact is consumed
+only after every read-only refusal has had its chance: for a deploy, after preflight,
+target validation, the lock, and the production identity gate; for a reconcile, after
+PROOF 1; for a rollback, after all unit-provenance checks (which always had this
+shape). An `IDENTITY_GATE_BLOCKED` or failed-proof stop therefore leaves the artifact
+spendable — retry after repairing what blocked, without re-minting. What *does*
+consume it: any run that proceeds past those checks, including a **runtime no-op**
+(the marker advance is an authorized production write) and a reconcile whose PROOF 2
+fails after the service stop. This ordering was fixed under issue #1097; before it,
+the artifact was spent at the top of the run and a zero-write refusal cost a re-mint
+mid-incident.
 
 **Gate evidence is required, digest-bound, and re-checked at deploy time.** Between
 minting the authorization and running the deploy, do not edit, reformat, move, rename,
