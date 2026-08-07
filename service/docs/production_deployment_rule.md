@@ -353,13 +353,13 @@ Revert carrier status to pending via `.env` and restart.
 
 ### Level 2 — Revert last commit
 ```bash
-Deploy-PZ.ps1 -Rollback -Unit <unit>
+.\.claude\deploy\Deploy-PZ.ps1 -Rollback -Unit <unit>
 # then re-run deploy procedure from Step 5
 ```
 
 ### Level 3 — Revert a named merge
 ```bash
-Deploy-PZ.ps1 -Rollback -Unit <unit>   # restores a manifest-validated backup; never mutates git
+.\.claude\deploy\Deploy-PZ.ps1 -Rollback -Unit <unit>   # restores a manifest-validated backup; never mutates git
 # then re-run deploy procedure from Step 5
 ```
 
