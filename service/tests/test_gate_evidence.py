@@ -1692,6 +1692,76 @@ def test_the_evidence_clamp_applies_to_reconcile_too(tmp_path, monkeypatch):
         "a reconcile authorization outlived the evidence that justified it")
 
 
+def test_the_verifier_cli_accepts_the_5_argument_reconcile_shape(tmp_path, monkeypatch, capsys):
+    """The reconcile argv form the deploy script actually uses had no CLI-level test.
+
+    `main()` is sys.argv-shaped: it accepts `len(argv) in (4, 5)` and reads `argv[4]`
+    as `from_sha`. The 5-element form is reconcile, and it is what the deploy script
+    invokes -- `& python $helper $Sha $Action $UnitScope $SourceSha`.
+
+    What the suite pinned before this test: the REJECTED arities on both sides of the
+    accepted range (3 and 6 -> exit 2, `test_the_verifier_cli_usage_contract`), and the
+    4-element DEPLOY form (`test_the_verifier_cli_maps_allow_and_deny_to_exit_codes`).
+    The 5-element form in between was never exercised through the CLI. The reconcile
+    tests above reach `evaluate()` directly with `from_sha=` as a KEYWORD, so none of
+    them cross the positional-decoding boundary.
+
+    That mattered because the mapping is load-bearing and invisible: reordering the
+    trailing positionals, or narrowing the accepted arity to `== 4`, left every test
+    green while breaking reconcile authorization on the only path production uses --
+    surfacing first on a Windows host, mid-incident, since reconcile is the mode
+    reached for when the identity gate has already refused the runtime.
+
+    Issue #1098.
+    """
+    import deploy_authorization
+    _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign_reconcile(ev) == 0, "precondition: a reconcile artifact was minted"
+
+    rc = deploy_authorization.main(["prog", _SHA, "reconcile", "Both", _OTHER_SHA])
+    out = capsys.readouterr().out
+    assert rc == 0, (
+        f"the 5-argument reconcile CLI shape did not exit 0 (out={out!r}). This is the "
+        "exact argv the deploy script builds for reconcile; a non-zero exit is BLOCKED "
+        "at the PowerShell caller.")
+    assert "ALLOW" in out.upper()
+
+
+def test_the_verifier_cli_reads_from_sha_positionally_from_argv4(tmp_path, monkeypatch, capsys):
+    """Arity alone is a weak pin: `main()` could accept 5 arguments and ignore the fifth.
+
+    The direction must be decoded from `argv[4]` specifically. A wrong from_sha there
+    has to DENY -- if it were dropped or read from the wrong index, this call would be
+    indistinguishable from the correct one and the deploy script would authorize a
+    reconcile whose proved starting identity was never checked.
+
+    Issue #1098.
+    """
+    import deploy_authorization
+    _signer_env(tmp_path, monkeypatch)
+    ev = _write(tmp_path, _doc())
+    assert _sign_reconcile(ev) == 0, "precondition: a reconcile artifact was minted"
+
+    wrong_from = "f" * 40
+    assert wrong_from != _OTHER_SHA, "the negative case must differ from the signed direction"
+    rc = deploy_authorization.main(["prog", _SHA, "reconcile", "Both", wrong_from])
+    out = capsys.readouterr().out
+    assert rc == 1, (
+        f"a reconcile with the WRONG from_sha in argv[4] was not denied (out={out!r}); "
+        "argv[4] is being ignored or read from the wrong position")
+    assert "DENY" in out.upper()
+
+    # The artifact must survive the denial: a refused direction is not a use, so the
+    # operator's single-use token is still spendable on the correct call.
+    rc = deploy_authorization.main(["prog", _SHA, "reconcile", "Both", _OTHER_SHA])
+    out = capsys.readouterr().out
+    assert rc == 0, (
+        f"the correct direction failed after a denied one (out={out!r}) -- a rejected "
+        "from_sha consumed the artifact, which would burn an operator's authorization "
+        "on a typo")
+
+
 def test_the_repository_binding_is_enforced(tmp_path, monkeypatch):
     """`repository` is a SIGNED field with a documented purpose — "an artifact minted for
     one repository would validate against another if the key were reused".
