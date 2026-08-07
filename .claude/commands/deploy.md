@@ -18,9 +18,40 @@ deployment scripts. Pinned by `service/tests/test_deploy_authority.py`.
 Every production path, engine filename, and robocopy flag lives in the configuration.
 Nothing is hardcoded anywhere else.
 
-## What the operator runs
+## What the operator runs — NORMAL flow (one command)
 
-`-ReviewedSHA` is **required** for a deploy. It is the exact SHA the 7-agent gate
+```
+.\.claude\deploy\Deploy-PZ.ps1 -Release
+```
+
+`-Release` resolves the current `origin/main` SHA, validates the seven-agent gate
+evidence at the standard path (`gate_evidence_file` in the configuration:
+`C:\PZ-secrets\deploy-gate\latest.json`), proves what production actually runs (the
+version marker is evidence, never authority), automatically chooses
+**no-op / deploy / reconcile**, mints and consumes the signed single-use
+authorization internally *after* the read-only identity checks pass, deploys,
+restarts, runs the closure validation, and prints exactly one final status:
+`ALREADY CURRENT`, `DEPLOYED`, `ROLLED BACK`, or `FAILED SAFE`.
+
+Only four conditions block a release; each is enforced, not advisory:
+
+1. the seven-agent verdict is not GO for the resolved target;
+2. production runtime identity cannot be proven;
+3. backup / copy / manifest verification fails;
+4. the service is not healthy after the deploy (closure validation).
+
+Test-only or docs-only merges surface as the runtime no-op, which advances the
+marker without stopping the service. A stale lock whose recording process is
+provably dead is auto-cleared with an audit line. The seven-agent GO evidence must
+be at the standard path (schema: `.claude/contracts/seven-agent-evidence.md`) and
+the signing key in the shell; the operator supplies no SHA and runs no separate
+signing command. Re-running after `FAILED SAFE` is safe: everything before the
+first write is read-only, and a write-phase failure has either rolled back
+automatically or left the exact recovery state on screen.
+
+## Advanced / debug modes (manual control)
+
+`-ReviewedSHA` is **required** for a manual deploy. It is the exact SHA the 7-agent gate
 approved. The target is never inferred from `origin/main`, so a commit pushed after
 the gate ran cannot ship.
 

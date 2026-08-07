@@ -423,3 +423,28 @@ def validate_evidence_full(path, target_sha, now=None):
                        f"not {_GO!r}", digest, None)
 
     return (True, f"seven-agent {_GO} for {declared[:12]}", digest, expires)
+
+
+def main(argv=None):
+    """Read-only CLI: validate a gate-evidence file against a target SHA.
+
+    Usage: python gate_evidence.py <evidence-path> <target-sha>
+    Exit 0 = valid seven-agent GO for that SHA; exit 1 = invalid (reason printed).
+
+    Used by the deployment authority's -Release preflight, so invalid or missing
+    evidence fails BEFORE any identity probing, minting, lock, or service action.
+    It validates only; it never writes, signs, or consumes anything.
+    """
+    import sys
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) != 2:
+        print("INVALID usage: gate_evidence.py <evidence-path> <target-sha>")
+        return 1
+    ok, reason, _digest = validate_evidence(argv[0], argv[1])
+    print(("VALID " if ok else "INVALID ") + reason)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

@@ -19,6 +19,24 @@
     nothing ships. Artifact, backup metadata, convergence, version file and validation
     are all bound to this value.
 
+.PARAMETER Release
+    ONE-COMMAND operator flow. Resolves the current origin/main SHA itself, validates
+    the seven-agent gate evidence at the configured standard path (gate_evidence_file),
+    proves what production actually runs (the marker is evidence, never authority),
+    automatically chooses NO-OP / DEPLOY / RECONCILE, mints and consumes the signed
+    authorization internally ONLY AFTER the read-only identity checks pass, deploys,
+    restarts, runs the closure validation, and prints exactly one final status:
+    ALREADY CURRENT, DEPLOYED, ROLLED BACK, or FAILED SAFE.
+
+    Only four conditions block a release: (1) the seven-agent verdict is not GO,
+    (2) production runtime identity cannot be proven, (3) backup/copy verification
+    fails, (4) the service is not healthy after the deploy. Everything else resolves
+    automatically. CI is not consulted; inherited-red CI never blocks. Requires the
+    operator signing key (PZ_DEPLOY_AUTH_KEY_FILE) in the shell - the internal mint
+    uses the same external key and the same single-use artifacts as the manual flow.
+    -ReviewedSHA / -Reconcile / -Rollback remain available as advanced/debug modes;
+    a normal operator should never need them.
+
 .PARAMETER WhatIf
     Zero-write plan. Requires no authorization, creates no lock, no artifact, no
     backup, and touches no service. Usable by reviewers and gate agents.
@@ -72,6 +90,7 @@
 [CmdletBinding()]
 param(
     [string]$ReviewedSHA,
+    [switch]$Release,
     [switch]$WhatIf,
     [switch]$Rollback,
     [string]$Unit,
@@ -100,7 +119,8 @@ function Get-DeployConfig {
         "runtime_engine", "artifact_root", "backup_root", "version_file", "lock_file",
         "engine_files", "protected_dirs", "protected_files", "protected_runtime_paths",
         "forbidden_flags", "robocopy_fatal_exit", "robocopy_suspect_exit",
-        "service_wait_seconds", "test_baseline_contract", "authorization_helper"
+        "service_wait_seconds", "test_baseline_contract", "authorization_helper",
+        "gate_evidence_file"
     )
     foreach ($k in $required) { if ($null -eq $cfg.$k) { throw "BLOCKED: config key missing: $k" } }
     if ($cfg.schema_version -ne 2) { throw "BLOCKED: unsupported config schema_version $($cfg.schema_version)" }
@@ -133,6 +153,29 @@ function Assert-Authorization {
     if ($code -ne 0) {
         $what = if ($SourceSha) { "$Action of $SourceSha -> $Sha" } else { "$Action of $Sha" }
         throw "BLOCKED: not authorized for $what (scope $UnitScope). Production writes require a signed, SHA-bound, single-use operator authorization. This step is operator-only."
+    }
+}
+
+function Invoke-ReleaseMint {
+    <#
+      -Release only: mint the signed single-use authorization INTERNALLY, using the same
+      operator-only signer, the same external key, and the same store as the manual flow.
+      This removes the separate copy/paste signing command, not the signature: the signer
+      still refuses without the key (which lives outside the repository, in the operator's
+      shell), still validates the gate evidence, and still binds action/scope/direction.
+      Called ONLY after the read-only identity checks have passed, so a failed identity
+      never wastes a single-use jti - the consumption-ordering guarantee of -Release.
+    #>
+    param($Cfg, [string]$Sha, [string]$Action, [string]$UnitScope, [string]$FromSha)
+    if ($script:PlanOnly) { Write-Host "  would mint $Action authorization for $Sha"; return }
+    $signer = Join-Path $PSScriptRoot "..\hooks\sign_deploy_authorization.py"
+    if (-not (Test-Path $signer)) { throw "BLOCKED: signer missing: $signer" }
+    $mintArgs = @($signer, $Sha, $Action, $UnitScope, "--ttl", "60")
+    if ($Action -ne "rollback") { $mintArgs += @("--gate-evidence", $Cfg.gate_evidence_file) }
+    if ($FromSha) { $mintArgs += @("--from-sha", $FromSha) }
+    & python @mintArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "BLOCKED: could not mint the $Action authorization (signer exit $LASTEXITCODE). The signing key (PZ_DEPLOY_AUTH_KEY_FILE) must be available in this shell and the gate evidence at $($Cfg.gate_evidence_file) must be a valid seven-agent GO for $Sha."
     }
 }
 
@@ -213,7 +256,12 @@ function Enter-DeployLock {
         if ($alive) {
             throw "BLOCKED: another deployment is running (pid $lockPid). Concurrent execution refused. Lock: $content"
         }
-        if (-not $ForceUnlock) {
+        # A LIVE lock always blocks. A stale lock (its pid provably gone) is cleared
+        # automatically under -Release - a dead process cannot be mid-write, and making
+        # the operator re-run with -ForceUnlock is ceremony, not safety. The clear is
+        # audited either way. Outside -Release the explicit -ForceUnlock is still
+        # required, preserving the deliberate two-step for manual/advanced modes.
+        if (-not $ForceUnlock -and -not $script:ReleaseMode) {
             throw "BLOCKED: a STALE lock exists - its process (pid $lockPid) is no longer running. Lock: $content`nIf no deploy is in progress, re-run with -ForceUnlock to clear it. If the service is stopped, roll back first: -Rollback -Unit <unit>."
         }
         Write-Host "  STALE LOCK CLEARED (audit): $content"
@@ -1190,9 +1238,11 @@ function Invoke-Reconcile {
     }
     Write-Host "  source verified: $SRC is clean at $To, which is contained in origin/main"
 
-    # ---- authorization: the ordered pair, before the lock and before any write ----
-    if (-not $script:PlanOnly) { Assert-Authorization -Cfg $Cfg -Sha $To -Action "reconcile" -UnitScope $Scope -SourceSha $From }
-
+    # ---- authorization: MOVED, not removed. The single Assert-Authorization call for
+    # ---- reconcile now sits INSIDE the lock, immediately after PROOF 1 (see below),
+    # ---- so a failed identity proof can no longer consume the single-use artifact.
+    # ---- Consuming it here - before the runtime was proven to be -FromSha - burned a
+    # ---- jti on every wrong guess and made the operator re-mint for nothing.
     Enter-DeployLock -Cfg $Cfg
     # Position tracker, set immediately before each transition so a throw is attributed to the
     # step it happened in - the operator must never be told "nothing was written" about a tree
@@ -1203,6 +1253,13 @@ function Invoke-Reconcile {
         # the marker precisely because the marker is the artefact being repaired.
         Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $From
         $stage = "runtime PROVED to be $From; nothing stopped, staged or written"
+        # ---- authorization: the ordered pair, consumed only AFTER the identity proof,
+        # ---- under the lock, immediately before the first mutation (the service stop).
+        # ---- A failed proof must never cost a single-use jti: the previous design
+        # ---- evaluated the artifact before proving the runtime, so a wrong -FromSha
+        # ---- consumed the token and THEN refused, leaving the operator to re-mint.
+        if ($script:ReleaseMode) { Invoke-ReleaseMint -Cfg $Cfg -Sha $To -Action "reconcile" -UnitScope $Scope -FromSha $From }
+        if (-not $script:PlanOnly) { Assert-Authorization -Cfg $Cfg -Sha $To -Action "reconcile" -UnitScope $Scope -SourceSha $From }
         Set-ServiceState -Cfg $Cfg -Target Stopped
         $stage = "service stopped; production content untouched"
         $unit = $null
@@ -1216,6 +1273,7 @@ function Invoke-Reconcile {
             Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $From
             $stage = "service stopped; runtime re-proved as $From immediately before backup"
             $unit = New-BackupUnit -Cfg $Cfg -Sha $To -UnitScope $Scope -RestoredSha $From
+            $script:LastUnit = $unit.Unit
             Get-DestinationInventory -Cfg $Cfg -ArtifactPath $art | Out-Null
         }
         catch {
@@ -1286,26 +1344,18 @@ function Invoke-Reconcile {
 }
 
 # ---------------------------------------------------------------- entry point
-function Invoke-Deploy {
-    param([switch]$PlanOnly)
-    $script:PlanOnly = [bool]$PlanOnly
-    $cfg = Get-DeployConfig
-    if ($script:PlanOnly) { Write-Host "*** -WhatIf: PLAN ONLY - no writes, no lock, no service change, no authorization required ***" }
+function Invoke-DeployMain {
+    <#
+      The ordinary deploy body, shared by -ReviewedSHA (operator supplies the target) and
+      -Release (the target is the resolved origin/main tip, bound to the gate evidence).
 
-    if ($Rollback) { Invoke-Rollback -Cfg $cfg -UnitId $Unit; return }
-    if ($Reconcile) { Invoke-Reconcile -Cfg $cfg -From $FromSha -To $ToSha; return }
-    # -FromSha / -ToSha are meaningless outside reconcile, and silently ignoring them is how an
-    # operator ends up believing a direction was enforced when the run was an ordinary deploy.
-    if ($FromSha -or $ToSha) {
-        throw "BLOCKED: -FromSha / -ToSha are only valid with -Reconcile. An ordinary deploy converges to -ReviewedSHA and makes no claim about the identity it started from; accepting these here would advertise a proof that never ran."
-    }
-
-    if (-not $ReviewedSHA) {
-        throw "BLOCKED: -ReviewedSHA is required. Supply the exact SHA approved by the 7-agent gate; the deployed target is never inferred from origin/main."
-    }
-    Invoke-Preflight -Cfg $cfg
-    Assert-ReviewedTarget -Cfg $cfg -Sha $ReviewedSHA
-    if (-not $script:PlanOnly) { Assert-Authorization -Cfg $cfg -Sha $ReviewedSHA -Action "deploy" -UnitScope $Scope }
+      AUTHORIZATION ORDERING: the single-use authorization is consumed INSIDE the lock,
+      AFTER the production identity gate has passed and after the no-op decision is made -
+      immediately before the first production write of whichever branch runs. The previous
+      design evaluated (and consumed) it before the identity proof, so a failed identity
+      check burned a minted jti for nothing. A read-only failure must never cost a token.
+    #>
+    param($cfg, [string]$TargetSha)
 
     # Lock BEFORE any mutable preparation so two operators cannot both stage or back up.
     Enter-DeployLock -Cfg $cfg
@@ -1358,7 +1408,7 @@ function Invoke-Deploy {
         # takes this path.
         if (-not $Bootstrap) {
             $recordedSha = Read-VersionMarker -Path $cfg.version_file
-            if (Test-RuntimeUnchanged -Cfg $cfg -FromSha $recordedSha -ToSha $ReviewedSHA -UnitScope $Scope) {
+            if (Test-RuntimeUnchanged -Cfg $cfg -FromSha $recordedSha -ToSha $TargetSha -UnitScope $Scope) {
                 Write-Host ""
                 Write-Host "== RUNTIME NO-OP: the reviewed target changes nothing this deploy would copy =="
                 # The marker advances only if production bytes ARE the target tree. The diff
@@ -1367,29 +1417,38 @@ function Invoke-Deploy {
                 # drift into a "verified" identity and the next deploy would gate against a
                 # lie -- the one failure this optimisation could plausibly cause. So the
                 # existing gate is re-run against the target instead of trusting the shortcut.
-                Assert-ProductionMatchesRecordedSha -Cfg $cfg -ExpectSha $ReviewedSHA
-                Write-VersionFile -Cfg $cfg -Sha $ReviewedSHA
+                Assert-ProductionMatchesRecordedSha -Cfg $cfg -ExpectSha $TargetSha
+                # Marker advance is a production write: authorization is consumed HERE,
+                # after both proofs, immediately before the only write this branch makes.
+                if ($script:ReleaseMode) { Invoke-ReleaseMint -Cfg $cfg -Sha $TargetSha -Action "deploy" -UnitScope $Scope }
+                if (-not $script:PlanOnly) { Assert-Authorization -Cfg $cfg -Sha $TargetSha -Action "deploy" -UnitScope $Scope }
+                Write-VersionFile -Cfg $cfg -Sha $TargetSha
                 Write-Host ""
                 if ($script:PlanOnly) {
                     Write-Host "PLAN COMPLETE - runtime no-op. Nothing was written; no unit exists."
                 }
                 else {
-                    Write-Host "RUNTIME NO-OP COMPLETE  from=$recordedSha  to=$ReviewedSHA  scope=$Scope"
+                    Write-Host "RUNTIME NO-OP COMPLETE  from=$recordedSha  to=$TargetSha  scope=$Scope"
                     Write-Host "  Service NOT stopped. No artifact staged. No files copied. Service NOT restarted."
                     Write-Host "  No backup unit was created: no application byte changed, so there is nothing to restore"
                     Write-Host "  and no rollback identifier is implied. The version marker moved and nothing else did."
                     Write-Host "  Previous marker was $recordedSha; reverting it is an operator-authorised reconciliation."
-                    Write-Host "  Validate:  Test-PZDeployClose.ps1 -ExpectedSHA $ReviewedSHA"
+                    Write-Host "  Validate:  Test-PZDeployClose.ps1 -ExpectedSHA $TargetSha"
                 }
                 return
             }
         }
 
+        # Real deploy: authorization is consumed HERE - after the identity gate, after the
+        # no-op decision, immediately before the first mutation (the service stop).
+        if ($script:ReleaseMode) { Invoke-ReleaseMint -Cfg $cfg -Sha $TargetSha -Action "deploy" -UnitScope $Scope }
+        if (-not $script:PlanOnly) { Assert-Authorization -Cfg $cfg -Sha $TargetSha -Action "deploy" -UnitScope $Scope }
         Set-ServiceState -Cfg $cfg -Target Stopped
         $unit = $null
         try {
-            $art = New-ReleaseArtifact -Cfg $cfg -Sha $ReviewedSHA
-            $unit = New-BackupUnit -Cfg $cfg -Sha $ReviewedSHA -UnitScope $Scope
+            $art = New-ReleaseArtifact -Cfg $cfg -Sha $TargetSha
+            $unit = New-BackupUnit -Cfg $cfg -Sha $TargetSha -UnitScope $Scope
+            $script:LastUnit = $unit.Unit
             Get-DestinationInventory -Cfg $cfg -ArtifactPath $art | Out-Null
         }
         catch {
@@ -1410,7 +1469,7 @@ function Invoke-Deploy {
             if ($Scope -ne "Engine") {
                 [void](Test-AgainstManifest -ManifestFile "$art.manifest.csv" -Root $cfg.runtime_app -What "deployed application")
             }
-            Write-VersionFile -Cfg $cfg -Sha $ReviewedSHA
+            Write-VersionFile -Cfg $cfg -Sha $TargetSha
             Set-ServiceState -Cfg $cfg -Target Running
         }
         catch {
@@ -1420,7 +1479,7 @@ function Invoke-Deploy {
             Write-Host "  The service is STOPPED and the application tree may be partially converged."
             Write-Host "  DO NOT start the service on a partial tree. Roll back:"
             Write-Host "      Deploy-PZ.ps1 -Rollback -Unit $($unit.Unit)"
-            Write-Host "  (a rollback authorization artifact for $ReviewedSHA is required)"
+            Write-Host "  (a rollback authorization artifact for $TargetSha is required)"
             throw
         }
     }
@@ -1428,14 +1487,227 @@ function Invoke-Deploy {
 
     if (-not $script:PlanOnly) {
         Write-Host ""
-        Write-Host "DEPLOY COMPLETE  sha=$ReviewedSHA  unit=$($unit.Unit)  scope=$Scope"
-        Write-Host "Validate:  Test-PZDeployClose.ps1 -ExpectedSHA $ReviewedSHA"
+        Write-Host "DEPLOY COMPLETE  sha=$TargetSha  unit=$($unit.Unit)  scope=$Scope"
+        Write-Host "Validate:  Test-PZDeployClose.ps1 -ExpectedSHA $TargetSha"
         Write-Host "Rollback:  Deploy-PZ.ps1 -Rollback -Unit $($unit.Unit)"
     }
     else {
         Write-Host ""
         Write-Host "PLAN COMPLETE - nothing was written. No unit exists; no rollback identifier is implied."
     }
+}
+
+function Invoke-ReleaseFlow {
+    <#
+      ONE-COMMAND RELEASE. The operator's whole workflow is `-Release`.
+
+      Exactly four hard blockers, each named in the output when it fires:
+        1. The seven-agent verdict is not GO (gate evidence at the configured path).
+        2. Production runtime identity cannot be proven against origin/main history.
+        3. Backup / copy / manifest verification fails (enforced by the inner paths).
+        4. The service is not healthy after the deploy (closure validation fails).
+      Everything else - stale markers, reconcile-vs-deploy selection, SHA choreography,
+      signing ceremony, no-op detection, stale dead-process locks - resolves internally.
+      CI is deliberately not consulted; an inherited-red CI is not a production risk.
+
+      Prints exactly ONE final status: ALREADY CURRENT / DEPLOYED / ROLLED BACK /
+      FAILED SAFE. FAILED SAFE always means production is either untouched or left
+      stopped-and-described by the inner recovery states; nothing is silently half-done.
+    #>
+    param($Cfg)
+    $script:ReleaseMode = $true
+    $script:LastUnit = $null
+    $SRC = $Cfg.source_root
+    $status = $null
+    $failReason = ""
+    try {
+        # ---- read-only phase: no lock, no mint, no writes -------------------------
+        Invoke-Preflight -Cfg $Cfg
+        $target = (& git -C $SRC rev-parse origin/main).Trim().ToLower()
+        if ($LASTEXITCODE -ne 0 -or $target -notmatch $script:SHA_RX) {
+            throw "BLOCKED: could not resolve origin/main to a commit SHA in $SRC."
+        }
+        Write-Host "== RELEASE target: origin/main = $target =="
+
+        # HARD BLOCKER 1 - the seven-agent gate evidence must be a GO for exactly this
+        # target. Validated read-only FIRST, so missing or stale evidence costs nothing:
+        # no probe, no mint, no lock. The signer re-validates the same file at mint time
+        # and binds its digest into the signature, so this early check can never
+        # substitute for the signed one - it only fails faster.
+        $evidence = Join-Path $PSScriptRoot "..\hooks\gate_evidence.py"
+        if (-not (Test-Path $evidence)) { throw "BLOCKED: gate evidence validator missing: $evidence" }
+        & python $evidence $Cfg.gate_evidence_file $target
+        if ($LASTEXITCODE -ne 0) {
+            throw "BLOCKED (hard blocker 1/4): the gate evidence at $($Cfg.gate_evidence_file) is not a valid seven-agent GO for $target. Run the seven-agent gate against this SHA and write its evidence there; nothing was probed, minted, locked, or written."
+        }
+
+        # Bind the certified source to the resolved target. Reuses the exact reviewed-
+        # target discipline of the manual flow (including the 'advanced BEYOND' refusal,
+        # which cannot fire here because the target IS the origin/main tip just read).
+        Assert-ReviewedTarget -Cfg $Cfg -Sha $target
+
+        # HARD BLOCKER 2 - prove what production actually runs. The marker is EVIDENCE
+        # (a candidate probed after the target), never authority: the proof is the byte
+        # comparison, and a wrong marker just means the next candidate is tried. The
+        # candidate list is bounded, explicit, and comes from origin/main history that
+        # touched the bytes this deploy copies.
+        $marker = Read-VersionMarker -Path $Cfg.version_file
+        $appRel = Get-SourceRelativePath -Cfg $Cfg -Absolute $Cfg.source_app
+        $recent = @(& git -C $SRC rev-list -n 30 origin/main -- $appRel @($Cfg.engine_files))
+        if ($LASTEXITCODE -ne 0) { throw "BLOCKED: git rev-list failed while enumerating identity candidates." }
+        $candidates = @(@($target) + @($marker) + $recent |
+            Where-Object { $_ -and "$_" -match $script:SHA_RX } | Select-Object -Unique)
+        $actualSha = $null
+        foreach ($cand in $candidates) {
+            try {
+                Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $cand
+                $actualSha = $cand
+                break
+            }
+            catch {
+                Write-Host "  identity probe: runtime is NOT $($cand.Substring(0, 12)) - trying the next candidate"
+            }
+        }
+        if (-not $actualSha) {
+            throw "BLOCKED (hard blocker 2/4): production runtime identity could not be proven. The application tree at $($Cfg.runtime_app) matches neither the target, the version marker, nor any of the last $($recent.Count) origin/main commits that touched the deployed paths. -Release refuses to write over an unproven tree. Establish the true identity and repair with the advanced -Reconcile mode."
+        }
+        Write-Host "  production identity PROVEN: runtime is $actualSha"
+
+        # ---- decide, then act. Authorization is minted and consumed by the inner path,
+        # ---- always after its own re-proof and always before its first write. --------
+        if ($actualSha -eq $target) {
+            if (Test-RuntimeUnchanged -Cfg $Cfg -FromSha $target -ToSha $target -UnitScope $Scope) {
+                if ($marker -eq $target) {
+                    Write-Host "  runtime bytes, engine files and version marker all already match $target"
+                    $status = "ALREADY CURRENT"
+                    return
+                }
+                # Bytes are the target; only the marker lies. Repair it under the full
+                # discipline: lock, re-proof, signed single-use authorization, stamp,
+                # read-back. No service restart - no runtime byte changed.
+                Write-Host "  runtime bytes already match $target; correcting the stale version marker (service untouched)"
+                Enter-DeployLock -Cfg $Cfg
+                try {
+                    Assert-ProductionMatchesRecordedSha -Cfg $Cfg -ExpectSha $target
+                    if ($script:ReleaseMode) { Invoke-ReleaseMint -Cfg $Cfg -Sha $target -Action "deploy" -UnitScope $Scope }
+                    if (-not $script:PlanOnly) { Assert-Authorization -Cfg $Cfg -Sha $target -Action "deploy" -UnitScope $Scope }
+                    Write-VersionFile -Cfg $Cfg -Sha $target
+                    if (-not $script:PlanOnly) {
+                        $onDisk = Read-VersionMarker -Path $Cfg.version_file
+                        if ($onDisk -ne $target) { throw "BLOCKED: marker read-back '$onDisk' != '$target' after the stamp." }
+                    }
+                }
+                finally { Exit-DeployLock -Cfg $Cfg }
+                $status = "ALREADY CURRENT"
+                return
+            }
+            # Bytes match but an engine file drifted: fall through to the ordinary
+            # deploy, whose engine sync repairs drift and whose no-op check will not fire.
+        }
+
+        # Pre-mint the ROLLBACK authorization while everything is still healthy: minting
+        # one mid-incident costs time, and rollback is deliberately evidence-exempt.
+        if (-not $script:PlanOnly) { Invoke-ReleaseMint -Cfg $Cfg -Sha $target -Action "rollback" -UnitScope $Scope }
+
+        if ($actualSha -eq $marker -or $actualSha -eq $target) {
+            # Marker agrees with the proven bytes (or bytes are already the target with
+            # engine drift): the ordinary deploy path handles it, including the no-op
+            # shortcut, with authorization consumed after its own identity gate.
+            Invoke-DeployMain -cfg $Cfg -TargetSha $target
+        }
+        else {
+            # Proven bytes disagree with the marker: production is a HYBRID. This is the
+            # reconcile case, selected and DIRECTED automatically from the PROVEN
+            # identity - the operator no longer chooses a mode or supplies a direction.
+            Write-Host "== auto-selected RECONCILE: marker says '$marker' but runtime is proven $actualSha =="
+            Invoke-Reconcile -Cfg $Cfg -From $actualSha -To $target
+        }
+
+        # HARD BLOCKER 4 - the release is not done until the closure validation passes:
+        # version marker, artifact manifest, engine hashes, protected paths, service
+        # Running, authenticated health endpoints, rollback unit present.
+        if (-not $script:PlanOnly) {
+            Write-Host "== Closure validation (automatic) =="
+            $closure = Join-Path $PSScriptRoot "Test-PZDeployClose.ps1"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $closure -ExpectedSHA $target
+            if ($LASTEXITCODE -ne 0) {
+                throw "BLOCKED (hard blocker 4/4): closure validation failed after the deploy - the service or a close-condition is not healthy. See the FAIL lines above; the release is NOT closed."
+            }
+        }
+        $status = "DEPLOYED"
+    }
+    catch {
+        $failReason = $_.Exception.Message
+        # If a production write had begun, a backup unit exists - attempt the automatic
+        # rollback with the pre-minted artifact. The inner recovery states have already
+        # described the exact position; this is the remedy, not the diagnosis.
+        if ($script:LastUnit -and -not $script:PlanOnly) {
+            Write-Host ""
+            Write-Host "== RELEASE: write phase failed; attempting automatic rollback to unit $($script:LastUnit) =="
+            try {
+                Invoke-Rollback -Cfg $Cfg -UnitId $script:LastUnit
+                $status = "ROLLED BACK"
+            }
+            catch {
+                Write-Host "  automatic rollback ALSO failed: $($_.Exception.Message)"
+                $status = "FAILED SAFE"
+            }
+        }
+        else {
+            $status = "FAILED SAFE"
+        }
+    }
+    finally {
+        Write-Host ""
+        Write-Host "================================================================"
+        Write-Host "RELEASE RESULT: $status"
+        if ($status -eq "FAILED SAFE") {
+            Write-Host "  reason: $failReason"
+            Write-Host "  Nothing is silently half-done: production is either untouched (read-only phase"
+            Write-Host "  failures write nothing) or left in the exact described recovery state above."
+        }
+        if ($status -eq "ROLLED BACK") {
+            Write-Host "  the deploy failed and production was restored from unit $($script:LastUnit)."
+            Write-Host "  original failure: $failReason"
+        }
+        Write-Host "================================================================"
+    }
+    if ($status -ne "DEPLOYED" -and $status -ne "ALREADY CURRENT") {
+        throw "RELEASE did not complete: $status - $failReason"
+    }
+}
+
+function Invoke-Deploy {
+    param([switch]$PlanOnly)
+    $script:PlanOnly = [bool]$PlanOnly
+    $cfg = Get-DeployConfig
+    if ($script:PlanOnly) { Write-Host "*** -WhatIf: PLAN ONLY - no writes, no lock, no service change, no authorization required ***" }
+
+    if ($Release) {
+        # One-command mode is deliberately incompatible with every manual override: a
+        # release that also accepted a hand-picked SHA or direction would be the manual
+        # flow wearing the automatic flow's name.
+        if ($ReviewedSHA -or $Reconcile -or $Rollback -or $Bootstrap -or $FromSha -or $ToSha -or $Unit) {
+            throw "BLOCKED: -Release takes no target, mode, or direction parameters. It resolves origin/main, proves the runtime identity, and selects NO-OP / DEPLOY / RECONCILE itself. Use the advanced modes directly if you need manual control."
+        }
+        Invoke-ReleaseFlow -Cfg $cfg
+        return
+    }
+
+    if ($Rollback) { Invoke-Rollback -Cfg $cfg -UnitId $Unit; return }
+    if ($Reconcile) { Invoke-Reconcile -Cfg $cfg -From $FromSha -To $ToSha; return }
+    # -FromSha / -ToSha are meaningless outside reconcile, and silently ignoring them is how an
+    # operator ends up believing a direction was enforced when the run was an ordinary deploy.
+    if ($FromSha -or $ToSha) {
+        throw "BLOCKED: -FromSha / -ToSha are only valid with -Reconcile. An ordinary deploy converges to -ReviewedSHA and makes no claim about the identity it started from; accepting these here would advertise a proof that never ran."
+    }
+
+    if (-not $ReviewedSHA) {
+        throw "BLOCKED: -ReviewedSHA is required. Supply the exact SHA approved by the 7-agent gate, or use -Release for the one-command flow; the deployed target of a manual deploy is never inferred from origin/main."
+    }
+    Invoke-Preflight -Cfg $cfg
+    Assert-ReviewedTarget -Cfg $cfg -Sha $ReviewedSHA
+    Invoke-DeployMain -cfg $cfg -TargetSha $ReviewedSHA
 }
 
 if (-not $NoRun) { Invoke-Deploy -PlanOnly:$WhatIf }
