@@ -117,6 +117,7 @@ function New-SyntheticConfig([string]$root, [string]$marker) {
         forbidden_flags = @('/XO'); robocopy_fatal_exit = 8; robocopy_suspect_exit = 4
         service_wait_seconds = 60; test_baseline_contract = 'n/a'
         authorization_helper = 'hooks\deploy_authorization.py'
+        gate_evidence_file = (Join-Path $root 'gate-evidence-absent.json')
     }
     [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
     return (Get-DeployConfig -ConfigPath $cfgPath)
@@ -203,6 +204,7 @@ function New-GateRepo([string]$root, [string]$markerOverride) {
         forbidden_flags = @('/XO'); robocopy_fatal_exit = 8; robocopy_suspect_exit = 4
         service_wait_seconds = 60; test_baseline_contract = 'n/a'
         authorization_helper = 'hooks\deploy_authorization.py'
+        gate_evidence_file = (Join-Path $root 'gate-evidence-absent.json')
     }
     [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
     return [pscustomobject]@{ Cfg = (Get-DeployConfig -ConfigPath $cfgPath); Sha = $sha; RuntimeApp = $rtApp }
