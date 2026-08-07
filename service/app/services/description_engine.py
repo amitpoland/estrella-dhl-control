@@ -1285,31 +1285,76 @@ _OVERWRITEABLE_SOURCES = frozenset({
 _PROTECTED_SOURCES = frozenset({"manual", "operator", "approved"})
 
 
+def _description_rows_from_pz_rows(raw: Any) -> List[Dict[str, Any]]:
+    rows = raw if isinstance(raw, list) else (
+        (raw or {}).get("rows") or (raw or {}).get("items") or []
+    )
+    return rows if isinstance(rows, list) else []
+
+
+def _description_rows_from_audit(batch_dir: Path) -> List[Dict[str, Any]]:
+    """Fallback commercial-description candidates from audit.json.
+
+    When full ``process_batch`` has not yet written ``pz_rows.json``, the
+    invoice/customs resolver may already have stamped authoritative
+    ``_resolved_description_pl`` (+ invoice English) onto ``audit["rows"]``.
+    Those stamps are real authority — promote them so drafts are not born
+    blank behind poisoned ``source='auto'`` generics. Full PZ ``pz_rows``
+    still wins when present (caller prefers that file first).
+    """
+    import json as _json
+    path = Path(batch_dir) / "audit.json"
+    if not path.exists():
+        return []
+    try:
+        audit = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for r in (audit.get("rows") or []):
+        if not isinstance(r, dict):
+            continue
+        if not r.get("_desc_authoritative"):
+            continue
+        pl = str(r.get("_resolved_description_pl") or r.get("_resolved_name_pl") or "").strip()
+        if not pl:
+            continue
+        en = str(
+            r.get("_resolved_description_en")
+            or r.get("description_en")
+            or r.get("description")
+            or ""
+        ).strip()
+        out.append({
+            "product_code": str(r.get("product_code") or "").strip(),
+            "nazwa_pl": pl,
+            "nazwa_en": en,
+            "item_type": str(r.get("item_type") or "").strip(),
+            "_promote_source": "audit_resolved",
+        })
+    return out
+
+
 def promote_pz_rows_to_product_descriptions(
     batch_dir: Path,
     *,
     dry_run: bool = True,
 ) -> Dict[str, Any]:
-    """Promote bilingual descriptions from ``pz_rows.json`` into product_descriptions.
+    """Promote bilingual descriptions into product_descriptions.
 
-    The PZ calculation output (``nazwa_pl`` / ``nazwa_en`` / ``pl_desc`` /
-    ``description_en``) is the permanent commercial + customs description
-    authority for each ``product_code``. This function:
+    Authority order (first usable wins per product_code):
+      1. ``batch_dir/pz_rows.json`` — full PZ ``nazwa_pl`` / ``nazwa_en``
+      2. ``batch_dir/audit.json`` rows with ``_desc_authoritative`` stamps
+         (invoice/customs resolver) when pz_rows is absent or empty
 
-      * reads ``batch_dir/pz_rows.json``
-      * collapses duplicate ``product_code`` rows; equal PL/EN is OK,
-        conflicting bilingual text is an error (no silent last-wins)
-      * rejects generic / empty PL text (never fabricates)
-      * overwrites ``source ∈ {auto, pz_rows_backfill, pz_rows, …}`` rows
-      * never touches ``manual`` / other protected sources
-      * writes ``source='pz_rows'`` with ``description_pl = nazwa_pl``,
-        ``description_en = nazwa_en``, ``name_pl = nazwa_pl``
+    Never fabricates. Overwrites ``source ∈ {auto, pz_rows_backfill, pz_rows, …}``.
+    Never touches ``manual`` / other protected sources.
 
     Returns a summary including machine-readable ``status``::
 
       ok         — converged (or only protected skips)
       incomplete — per-row errors / conflicts / generics left unresolved
-      failed     — structural failure (missing/unreadable pz_rows)
+      failed     — structural failure (no usable description source)
     """
     import json as _json
     try:
@@ -1330,25 +1375,29 @@ def promote_pz_rows_to_product_descriptions(
         "dry_run": bool(dry_run),
         "sample": [],
         "status": "ok",
+        "source_file": "",
     }
-    path = Path(batch_dir) / "pz_rows.json"
-    if not path.exists():
-        out["errors"].append(f"pz_rows.json not found at {path}")
-        out["status"] = "failed"
-        return out
-
-    try:
-        raw = _json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        out["errors"].append(f"pz_rows.json parse failed: {exc}")
-        out["status"] = "failed"
-        return out
-
-    rows = raw if isinstance(raw, list) else (
-        raw.get("rows") or raw.get("items") or []
-    )
-    if not isinstance(rows, list):
-        out["errors"].append("pz_rows.json has unexpected shape")
+    batch_dir = Path(batch_dir)
+    pz_path = batch_dir / "pz_rows.json"
+    rows: List[Dict[str, Any]] = []
+    if pz_path.exists():
+        try:
+            raw = _json.loads(pz_path.read_text(encoding="utf-8"))
+            rows = _description_rows_from_pz_rows(raw)
+            out["source_file"] = "pz_rows.json"
+        except Exception as exc:
+            out["errors"].append(f"pz_rows.json parse failed: {exc}")
+            out["status"] = "failed"
+            return out
+    if not rows:
+        rows = _description_rows_from_audit(batch_dir)
+        if rows:
+            out["source_file"] = "audit.json"
+    if not rows:
+        out["errors"].append(
+            f"no usable description source under {batch_dir} "
+            "(need pz_rows.json or authoritative audit.rows stamps)"
+        )
         out["status"] = "failed"
         return out
 

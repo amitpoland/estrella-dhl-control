@@ -289,3 +289,143 @@ def repair_editable_draft_from_sales(
         "lines": len(sales_lines),
         "new_updated_at": getattr(updated, "updated_at", None),
     }
+
+
+def persist_matched_sales_product_codes(batch_id: str) -> Dict[str, Any]:
+    """Re-run invoice-scoped sales matcher and persist newly resolved codes.
+
+    Purchase packing arriving after sales intake left empty product_codes
+    (JR00819 class). Sync/reset previously used a weaker resolver and never
+    wrote resolved codes back — this closes that gap without inventing codes.
+    """
+    from . import document_db as ddb
+    from .sales_packing_matcher import match_sales_lines_to_packing
+
+    if not (batch_id or "").strip():
+        return {"ok": False, "error": "batch_id required", "updated": 0}
+    rows = ddb.get_sales_packing_lines(batch_id) or []
+    if not rows:
+        return {"ok": True, "batch_id": batch_id, "updated": 0, "reason": "no_sales"}
+
+    matched, summary = match_sales_lines_to_packing(batch_id, rows)
+    updated = 0
+    for before, after in zip(rows, matched):
+        old_pc = str(before.get("product_code") or "").strip()
+        new_pc = str(after.get("product_code") or "").strip()
+        rid = str(before.get("id") or "").strip()
+        if old_pc or not new_pc or not rid:
+            continue
+        if ddb.update_sales_packing_line_product_code(batch_id, rid, new_pc):
+            updated += 1
+    log.info(
+        "[%s] commercial_authority: persisted %d sales product_codes "
+        "(matcher resolved=%s ambiguous=%s)",
+        batch_id, updated,
+        len(summary.get("designs_resolved") or {}),
+        len(summary.get("designs_ambiguous") or {}),
+    )
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "updated": updated,
+        "matcher": summary,
+    }
+
+
+def promote_and_enrich_batch_drafts(
+    batch_id: str,
+    *,
+    proforma_db: Path,
+    batch_dir: Optional[Path] = None,
+    operator: str = "commercial_authority",
+) -> Dict[str, Any]:
+    """Promote batch descriptions → product_descriptions, enrich editable drafts.
+
+    Uses pz_rows.json when present, else authoritative audit.rows stamps.
+    Never invents descriptions. Locked drafts are skipped.
+    """
+    from ..core.config import settings
+    from . import document_db as ddb
+    from . import proforma_invoice_link_db as pildb
+    from .description_engine import promote_pz_rows_to_product_descriptions
+
+    if batch_dir is None:
+        batch_dir = Path(settings.storage_root) / "outputs" / batch_id
+    promo = promote_pz_rows_to_product_descriptions(Path(batch_dir), dry_run=False)
+    enriched = 0
+    failed: List[Dict[str, Any]] = []
+    skipped_locked = 0
+    # Always enrich editable drafts after promote — even when written==0
+    # (descriptions already in product_descriptions, drafts still blank).
+    if Path(proforma_db).exists():
+        for d in pildb.list_drafts_for_batch(Path(proforma_db), batch_id):
+            if (d.draft_state or "") not in getattr(
+                pildb, "EDITABLE_STATES", ("draft", "editing", "post_failed")
+            ):
+                skipped_locked += 1
+                continue
+            try:
+                pildb.enrich_draft_lines(
+                    Path(proforma_db), d.id, operator,
+                    d.updated_at, ddb.get_product_description,
+                )
+                enriched += 1
+            except Exception as exc:
+                failed.append({"draft_id": d.id, "error": str(exc)[:200]})
+    return {
+        "ok": promo.get("status") in ("ok", "incomplete"),
+        "batch_id": batch_id,
+        "promote": promo,
+        "drafts_enriched": enriched,
+        "drafts_failed": failed,
+        "drafts_locked_skipped": skipped_locked,
+    }
+
+
+def converge_batch_draft_authority(
+    batch_id: str,
+    *,
+    proforma_db: Path,
+    operator: str = "commercial_authority",
+    reset_editable: bool = True,
+) -> Dict[str, Any]:
+    """ONE convergence pass for a batch's commercial draft authority.
+
+    1. Blank-fill thin sales variants from purchase
+    2. Rematch + persist sales product_codes (invoice-scoped matcher)
+    3. Promote descriptions (pz_rows or audit stamps) + enrich drafts
+    4. Optionally reset editable drafts from refreshed sales rows
+    """
+    from . import document_db as ddb
+    from . import proforma_invoice_link_db as pildb
+
+    out: Dict[str, Any] = {"batch_id": batch_id, "ok": True}
+    out["variants"] = backfill_sales_variants_from_purchase(batch_id)
+    out["product_codes"] = persist_matched_sales_product_codes(batch_id)
+    out["descriptions"] = promote_and_enrich_batch_drafts(
+        batch_id, proforma_db=proforma_db, operator=operator,
+    )
+    resets: List[Dict[str, Any]] = []
+    if reset_editable and Path(proforma_db).exists():
+        # Re-reset after product_code persist so dropped JR00819-class lines
+        # re-enter editable_lines. Enrich already ran; reset re-resolves name_pl.
+        for d in pildb.list_drafts_for_batch(Path(proforma_db), batch_id):
+            if (d.draft_state or "") not in ("draft", "editing", "post_failed", ""):
+                continue
+            resets.append(
+                repair_editable_draft_from_sales(
+                    Path(proforma_db), int(d.id), operator,
+                )
+            )
+            # Enrich again after reset (reset may clear name_pl then refill).
+            try:
+                d2 = pildb.get_draft_by_id(Path(proforma_db), int(d.id))
+                if d2 is not None:
+                    pildb.enrich_draft_lines(
+                        Path(proforma_db), d2.id, operator,
+                        d2.updated_at, ddb.get_product_description,
+                    )
+            except Exception as exc:
+                resets[-1]["enrich_error"] = str(exc)[:200]
+    out["draft_resets"] = resets
+    return out

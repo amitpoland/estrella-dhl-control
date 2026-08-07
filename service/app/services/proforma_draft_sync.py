@@ -761,26 +761,35 @@ def sync_draft_from_packing_upload(
             "designs_scored_pending": {},
         }
 
-    # ── 1.25 Blank-fill thin sales variants from purchase packing ───────────
+    # ── 1.25 Commercial authority convergence (variants + product_codes) ───
     # Manual allocation / legacy link_as_sales historically dropped KT/quality.
-    # Fill blanks only (never Client PO, never overwrite Sales values) before
-    # draft birth/sync so new drafts inherit commercial identity automatically.
+    # Purchase packing arriving after sales intake left empty product_codes
+    # (JR00819 class) because sync used a weaker resolver and never persisted
+    # matcher results. Converge both before draft birth/reset.
     sales_backfill: Dict[str, Any] = {}
+    sales_pc_persist: Dict[str, Any] = {}
     try:
-        from .commercial_authority import backfill_sales_variants_from_purchase
+        from .commercial_authority import (
+            backfill_sales_variants_from_purchase,
+            persist_matched_sales_product_codes,
+        )
         sales_backfill = backfill_sales_variants_from_purchase(batch_id) or {}
-        if int(sales_backfill.get("updated") or 0) > 0:
+        sales_pc_persist = persist_matched_sales_product_codes(batch_id) or {}
+        if (int(sales_backfill.get("updated") or 0) > 0
+                or int(sales_pc_persist.get("updated") or 0) > 0):
             sales_lines = ddb.get_sales_packing_lines(batch_id) or sales_lines
             log.info(
-                "[%s] proforma_draft_sync: sales variant backfill updated=%s",
-                batch_id, sales_backfill.get("updated"),
+                "[%s] proforma_draft_sync: variants=%s product_codes=%s",
+                batch_id,
+                sales_backfill.get("updated"),
+                sales_pc_persist.get("updated"),
             )
     except Exception as exc:
         log.warning(
-            "[%s] proforma_draft_sync: sales variant backfill failed (non-fatal): %s",
-            batch_id, exc,
+            "[%s] proforma_draft_sync: sales authority converge failed "
+            "(non-fatal): %s", batch_id, exc,
         )
-        sales_backfill = {"ok": False, "error": str(exc)}
+        sales_backfill = sales_backfill or {"ok": False, "error": str(exc)}
 
     # ── 1.5 Resolve missing product_code via batch-scoped lookup ─────────────
     resolved_lines, resolution_summary = resolve_sales_lines_for_batch(
@@ -1189,4 +1198,21 @@ def sync_draft_from_packing_upload(
         )
 
     result["sales_variant_backfill"] = sales_backfill
+    result["sales_product_code_persist"] = sales_pc_persist
+
+    # ── 4. Promote descriptions + enrich editable drafts (non-fatal) ───────
+    # Closes the intake-only birth gap: drafts created before usable
+    # product_descriptions existed stay blank until this pass. Uses pz_rows
+    # or authoritative audit.rows stamps — never invents text.
+    try:
+        from .commercial_authority import promote_and_enrich_batch_drafts
+        result["description_promote"] = promote_and_enrich_batch_drafts(
+            batch_id, proforma_db=db_path, operator=operator or "packing_sync",
+        )
+    except Exception as exc:
+        log.warning(
+            "[%s] proforma_draft_sync: description promote/enrich failed "
+            "(non-fatal): %s", batch_id, exc,
+        )
+        result["description_promote"] = {"ok": False, "error": str(exc)}
     return result
