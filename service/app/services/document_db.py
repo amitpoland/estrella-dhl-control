@@ -2531,10 +2531,8 @@ def upsert_product_description(
     Insert or update a product description row.
 
     Idempotency rule: an existing row with source='manual' is NEVER
-    overwritten by source='auto' callers — protects operator overrides
-    from being clobbered by the default generator. Manual→manual updates
-    are allowed; auto→manual upgrades are allowed; auto→auto is a no-op
-    on second call (existing row returned by get_*).
+    overwritten by any non-manual caller (auto, pz_rows, …) — protects
+    operator overrides. Manual→manual updates are allowed.
     """
     if _db_path is None or not product_code:
         return
@@ -2544,8 +2542,8 @@ def upsert_product_description(
             "SELECT source FROM product_descriptions WHERE product_code=?",
             (str(product_code),),
         ).fetchone()
-        if existing is not None and existing["source"] == "manual" and source == "auto":
-            # Manual override — do not touch.
+        if existing is not None and existing["source"] == "manual" and source != "manual":
+            # Manual override — never clobbered by auto / pz_rows / other writers.
             return
         if existing is not None:
             con.execute(

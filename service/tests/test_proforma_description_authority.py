@@ -85,7 +85,7 @@ class TestBirthPathAuthority:
         return pildb
 
     def test_birth_uses_pd_authority_not_generator(self):
-        """Birth path reads name_pl from PD row; desc_generate=None must not fabricate."""
+        """Birth path prefers description_pl from PD; desc_generate must not fabricate."""
         pildb = self._get_pildb()
         pd_row = {"name_pl": "pierścionek złoty", "description_pl": "Pierścionek ze złota"}
 
@@ -98,8 +98,9 @@ class TestBirthPathAuthority:
 
         assert len(result) == 1
         ln = result[0]
-        assert ln["name_pl"], "name_pl must be non-blank when PD row has name_pl"
-        assert ln["name_pl"] == pd_row["name_pl"]
+        assert ln["name_pl"], "name_pl must be non-blank when PD row has description_pl"
+        # description_pl is the commercial / PZ authority half — preferred over name_pl.
+        assert ln["name_pl"] == pd_row["description_pl"]
         assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_PD
 
     def test_birth_falls_back_to_name_pl_when_description_pl_blank(self):

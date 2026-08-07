@@ -59,9 +59,10 @@ def db_path(tmp_path) -> Path:
 # document_db.get_product_description: a row dict (or None on a miss).
 _PD_AUTHORITY = {
     "RNG-100": {"name_pl": "Pierścionek złoty", "item_type": "ring",
-                "description_pl": "Pierścionek", "description_en": "Ring",
+                "description_pl": "Pierścionek złoty", "description_en": "Gold ring with diamonds",
                 "confidence": "high"},
-    "NCK-200": {"name_pl": "Naszyjnik srebrny", "item_type": "necklace"},
+    "NCK-200": {"name_pl": "Naszyjnik srebrny", "item_type": "necklace",
+                "description_pl": "Naszyjnik srebrny", "description_en": "Silver necklace"},
 }
 
 
@@ -360,11 +361,12 @@ def _reasons_for(detail, product_code) -> set:
     return set()
 
 
-# ── PR4-1. generated fallback fills name_pl when PD misses + attrs sufficient ─
+# ── PR4-1. generator is NO LONGER an authority (fail closed on PD miss) ───────
 
 def test_birth_generated_fallback_when_pd_misses(db_path):
-    # UNKNOWN-999 has NO product_descriptions authority, but the line carries a
-    # recognised category (RNG) ⇒ the generator supplies a real Polish name.
+    # UNKNOWN-999 has NO product_descriptions authority. Even with a recognised
+    # category and an injected desc_generate callable, birth must NOT fabricate
+    # — PZ / product_descriptions is the only commercial-description authority.
     draft, _ = pildb.auto_create_draft_from_sales_packing(
         db_path, batch_id="P1", client_name="ACME", currency="EUR",
         lines=[_attr_line("UNKNOWN-999", name_pl="", ctg="RNG",
@@ -373,19 +375,14 @@ def test_birth_generated_fallback_when_pd_misses(db_path):
         desc_generate=generate_name_pl_if_sufficient,
     )
     ln = _editable(draft)[0]
-    assert ln["name_pl"], "generator should have produced a non-blank name_pl"
-    assert "pierścionek" in ln["name_pl"].lower()
-    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_GENERATED
-    # transient attrs must not persist
+    assert ln["name_pl"] == ""
+    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_BLANK
     assert "_gen_attrs" not in ln
 
 
-# ── PR4-2. anti-fabrication: generator declines for an unknown category ──────
+# ── PR4-2. anti-fabrication: unknown category still blank ────────────────────
 
 def test_birth_generated_declines_for_unknown_category(db_path):
-    # ctg "ZZZ" is not a recognised category ⇒ generate_name_pl_if_sufficient
-    # returns None ⇒ name_pl stays blank, source=blank (never the generic
-    # "wyrób" placeholder).
     draft, _ = pildb.auto_create_draft_from_sales_packing(
         db_path, batch_id="P2", client_name="ACME", currency="EUR",
         lines=[_attr_line("UNKNOWN-999", name_pl="", ctg="ZZZ",
@@ -398,7 +395,7 @@ def test_birth_generated_declines_for_unknown_category(db_path):
     assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_BLANK
 
 
-# ── PR4-3. name_pl_source stamped correctly for all four provenance values ───
+# ── PR4-3. name_pl_source: operator / PD / blank (generated retired) ─────────
 
 def test_birth_name_pl_source_all_four_values(db_path):
     draft, _ = pildb.auto_create_draft_from_sales_packing(
@@ -406,7 +403,7 @@ def test_birth_name_pl_source_all_four_values(db_path):
         lines=[
             _attr_line("RNG-100",     name_pl="Operator Curated"),  # operator
             _attr_line("NCK-200",     name_pl=""),                  # product_descriptions
-            _attr_line("UNKNOWN-999", name_pl="", ctg="EAR"),       # generated
+            _attr_line("UNKNOWN-999", name_pl="", ctg="EAR"),       # PD miss → blank
             _attr_line("BLANK-000",   name_pl="", ctg=""),          # blank
         ],
         name_pl_lookup=_lookup,
@@ -417,8 +414,8 @@ def test_birth_name_pl_source_all_four_values(db_path):
     assert by_code["RNG-100"]["name_pl"]            == "Operator Curated"
     assert by_code["NCK-200"]["name_pl_source"]     == pildb.NAME_PL_SOURCE_PD
     assert by_code["NCK-200"]["name_pl"]            == "Naszyjnik srebrny"
-    assert by_code["UNKNOWN-999"]["name_pl_source"] == pildb.NAME_PL_SOURCE_GENERATED
-    assert by_code["UNKNOWN-999"]["name_pl"]
+    assert by_code["UNKNOWN-999"]["name_pl_source"] == pildb.NAME_PL_SOURCE_BLANK
+    assert by_code["UNKNOWN-999"]["name_pl"]        == ""
     assert by_code["BLANK-000"]["name_pl_source"]   == pildb.NAME_PL_SOURCE_BLANK
     assert by_code["BLANK-000"]["name_pl"]          == ""
 
@@ -480,9 +477,9 @@ def test_reset_generated_fallback_and_mapping_advisory(db_path):
         product_mapping_lookup=_mapping_lookup,
     )
     ln = _editable(refreshed)[0]
-    # generated fallback applied in reset path
-    assert ln["name_pl"], "reset generator produced no name_pl"
-    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_GENERATED
+    # Generator is retired — PD miss stays blank; mapping advisory still fires.
+    assert ln["name_pl"] == ""
+    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_BLANK
     assert "_gen_attrs" not in ln
     # mapping advisory applied in reset path
     detail = _reset_event_detail(db_path, draft.id)

@@ -174,26 +174,15 @@ def generate_name_pl_if_sufficient(
     col:     str = "",
     quality: str = "",
 ) -> Optional[str]:
-    """Birth-time fallback authority for a Polish commercial name (``name_pl``).
+    """DEPRECATED — always returns ``None``.
 
-    Returns a generated ``name_pl`` ONLY when the product category code is
-    recognised; otherwise returns ``None``. This is the anti-fabrication
-    guard: a blank or unknown ``ctg`` would make :func:`generate_description`
-    emit the generic placeholder noun "wyrób" ("article"), which is NOT a
-    real description — so we decline (``None``) instead. Karat / colour /
-    quality are optional refinements and never required.
-
-    Used by the proforma-draft birth/reset pipeline as the second-choice
-    name_pl source, AFTER the product_descriptions authority and only on a
-    miss there. The category WORDING lives here, next to
-    :func:`generate_description`, so the service layer stays free of this
-    module's import and the callers stay thin (they pass this reference); the
-    code→type RECOGNITION is delegated to description_grammar.
+    Category-template fabrication is not a commercial-description authority.
+    Callers must resolve ``name_pl`` from product_descriptions (promoted from
+    PZ ``nazwa_pl`` / ``nazwa_en``). Signature retained so legacy call sites
+    and tests that inject this callable keep importing without fabricating.
     """
-    if canonical_item_type(ctg) not in _CATEGORY_PL:
-        return None
-    pl, _en = generate_description(ctg, kt, col, quality)
-    return (pl or "").strip() or None
+    _ = (ctg, kt, col, quality)
+    return None
 
 
 # ── Header normalisation ──────────────────────────────────────────────────────

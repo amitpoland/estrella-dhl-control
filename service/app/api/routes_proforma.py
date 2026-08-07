@@ -1293,7 +1293,8 @@ def _build_preview(batch_id: str, client_name: str,
                     if _blank_name_pl:
                         blocking_reasons.append(
                             f"{_blank_name_pl} line(s) have blank commercial description (name_pl) "
-                            "— import sales prices before approving"
+                            "— promote PZ bilingual descriptions into product_descriptions "
+                            "and enrich the draft (never fabricate placeholders)"
                         )
                     _zero_unit_price = sum(
                         1 for ln in _edit_lines
@@ -1306,6 +1307,41 @@ def _build_preview(batch_id: str, client_name: str,
                         )
     except Exception:
         pass  # non-fatal — preview still works without editable-lines pre-approve check
+
+    # ── PZ description-authority convergence diagnostic ──────────────────────
+    # Outcome B: PZ may exist while promote/enrich failed. Never let Approve
+    # pretend canonical authority converged — surface audit status explicitly.
+    try:
+        _audit_p = settings.storage_root / "outputs" / batch_id / "audit.json"
+        if _audit_p.exists():
+            import json as _aj
+            _audit = _aj.loads(_audit_p.read_text(encoding="utf-8"))
+            _conv = _audit.get("pz_description_promote") or {}
+            _st = str(_conv.get("status") or "").strip().lower()
+            _failed_ids = {
+                int(x.get("draft_id"))
+                for x in (_conv.get("drafts_failed") or [])
+                if isinstance(x, dict) and x.get("draft_id") is not None
+            }
+            _this_draft_failed = False
+            try:
+                _pf_db2 = settings.storage_root / "proforma_links.db"
+                if _pf_db2.exists():
+                    _d2 = pildb.get_draft(_pf_db2, batch_id, client_name)
+                    if _d2 is not None and int(_d2.id) in _failed_ids:
+                        _this_draft_failed = True
+            except Exception:
+                _this_draft_failed = False
+            if _st in ("failed", "incomplete") or _this_draft_failed:
+                _err_n = len(_conv.get("errors") or [])
+                blocking_reasons.append(
+                    f"PZ description authority convergence {_st or 'unknown'} "
+                    f"(errors={_err_n}, drafts_failed={len(_failed_ids)}) — "
+                    "re-run promote_pz_rows_to_product_descriptions on this batch "
+                    "before Approve/Post/Convert; do not use stale competing descriptions"
+                )
+    except Exception:
+        pass
 
     # can_preview: True when sales rows exist and lines can be shown.
     # Does NOT require wFirma PZ — that's an export gate, not a preview gate.
