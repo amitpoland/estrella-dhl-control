@@ -464,7 +464,8 @@ def _seed_packing_with_metal(tmp: Path, batch_id: str,
     for i, row in enumerate(rows):
         lines.append({
             "packing_document_id": doc_id, "batch_id": batch_id,
-            "invoice_no": "INV2", "invoice_line_position": i,
+            "invoice_no": row.get("invoice_no", "INV2"),
+            "invoice_line_position": i,
             "product_code":  row.get("product_code", ""),
             "design_no":     row.get("design_no", ""),
             "metal":         row.get("metal", ""),
@@ -472,10 +473,13 @@ def _seed_packing_with_metal(tmp: Path, batch_id: str,
             "quality_string": row.get("quality_string", ""),
             "batch_no": "", "bag_id": "", "tray_id": "",
             "item_type": "", "uom": "PCS",
-            "quantity": 1.0, "gross_weight": 0, "net_weight": 0,
+            "quantity": float(row.get("quantity", 1.0) or 1.0),
+            "gross_weight": 0, "net_weight": 0,
             "karat": "", "stone_type": "", "remarks": "",
             "extracted_confidence": 1.0, "requires_manual_review": False,
-            "pack_sr": i, "unit_price": 0.0, "total_value": 0.0,
+            "pack_sr": i,
+            "unit_price": float(row.get("unit_price", 0.0) or 0.0),
+            "total_value": 0.0,
         })
     pdb.upsert_packing_lines(lines)
 
@@ -646,3 +650,217 @@ def test_existing_pc_not_overwritten_and_no_reason(fresh):
     assert matched[0]["product_code"] == "PC-RIGHT"
     assert summary["rows_kept_pc"] == 1
     assert "D-K" not in summary["unresolved_reasons"]
+
+
+# ── 22. metal-color aliases (YW ↔ Y) before rejecting ─────────────────────────
+
+def test_metal_color_alias_yw_matches_y(fresh):
+    """Failure shape: purchase stores color Y; sales Col=YW.  Alias-normalise
+    before rejecting — both must fold to the same metal-key."""
+    tmp = fresh
+    bid = "B-ALIAS-YW"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "SYN-PND", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-GOLD", "unit_price": 86.0},
+        {"design_no": "SYN-PND", "metal": "SL925/-", "metal_color": "",
+         "product_code": "LOT-SILVER", "unit_price": 5.0},
+    ])
+    from app.services.sales_packing_matcher import (
+        _metal_key, match_sales_lines_to_packing,
+    )
+
+    assert _metal_key("14KT", "YW") == _metal_key("14KT/Y", "")
+    assert _metal_key("14KT/YW", "") == "14KT/Y"
+
+    sales = [
+        {"product_code": "", "design_no": "SYN-PND",
+         "metal": "14KT", "metal_color": "YW", "quantity": 1, "unit_price": 92.0},
+        {"product_code": "", "design_no": "SYN-PND",
+         "metal": "SL925", "metal_color": "-", "quantity": 1, "unit_price": 6.0},
+    ]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert matched[0]["product_code"] == "LOT-GOLD"
+    assert matched[0]["resolution_source"] == "batch_packing_lines_metal"
+    assert matched[1]["product_code"] == "LOT-SILVER"
+    assert summary["rows_resolved"] == 2
+    assert summary["rows_skipped"] == 0
+
+
+# ── 23. multi-lot same design → per-row invoice-scoped price pairing ──────────
+
+def test_multi_lot_same_design_resolves_per_row_by_invoice_scoped_price(fresh):
+    """Failure shape: one design, two purchase lots (same metal), two sales
+    rows with distinct prices on the same invoice — pair by ascending price
+    using packing lot identity.  No first-wins; no global bridge."""
+    tmp = fresh
+    bid = "B-MULTI-LOT"
+    inv = "SYN-INV-88"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "SYN-DESIGN-A", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-LOW", "unit_price": 71.0, "quantity": 1,
+         "invoice_no": inv},
+        {"design_no": "SYN-DESIGN-A", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-HIGH", "unit_price": 459.0, "quantity": 1,
+         "invoice_no": inv},
+        # Decoy lot on a different invoice — must not steal the pairing.
+        {"design_no": "SYN-DESIGN-A", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-OTHER-INV", "unit_price": 200.0, "quantity": 1,
+         "invoice_no": "SYN-INV-99"},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [
+        {"product_code": "", "design_no": "SYN-DESIGN-A",
+         "metal": "14KT", "metal_color": "Y", "quantity": 1,
+         "unit_price": 85.0, "invoice_no": inv},
+        {"product_code": "", "design_no": "SYN-DESIGN-A",
+         "metal": "14KT", "metal_color": "Y", "quantity": 1,
+         "unit_price": 520.0, "invoice_no": inv},
+    ]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert matched[0]["product_code"] == "LOT-LOW"
+    assert matched[1]["product_code"] == "LOT-HIGH"
+    assert matched[0]["resolution_source"] == "batch_packing_lines_price"
+    assert matched[1]["resolution_source"] == "batch_packing_lines_price"
+    assert "SYN-DESIGN-A" not in summary["designs_ambiguous"]
+    assert summary["rows_resolved"] == 2
+
+
+def test_multi_lot_same_design_stays_ambiguous_when_single_sales_row(fresh):
+    """One sales row vs two same-metal lots — still AMBIGUOUS_MATCH (no guess)."""
+    tmp = fresh
+    bid = "B-MULTI-ONE"
+    inv = "SYN-INV-77"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "SYN-DESIGN-B", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-A", "unit_price": 71.0, "invoice_no": inv},
+        {"design_no": "SYN-DESIGN-B", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-B", "unit_price": 459.0, "invoice_no": inv},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [{"product_code": "", "design_no": "SYN-DESIGN-B",
+              "metal": "14KT", "metal_color": "Y", "quantity": 1,
+              "unit_price": 85.0, "invoice_no": inv}]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert matched[0].get("product_code", "") == ""
+    assert summary["unresolved_reasons"]["SYN-DESIGN-B"] == "AMBIGUOUS_MATCH"
+
+
+def test_multi_lot_does_not_cross_invoice_boundary(fresh):
+    """Sales scoped to invoice A must not pair against lots on invoice B."""
+    tmp = fresh
+    bid = "B-MULTI-SCOPE"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "SYN-DESIGN-C", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-A1", "unit_price": 71.0, "invoice_no": "INV-A"},
+        {"design_no": "SYN-DESIGN-C", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-B1", "unit_price": 459.0, "invoice_no": "INV-B"},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [
+        {"product_code": "", "design_no": "SYN-DESIGN-C",
+         "metal": "14KT", "metal_color": "Y", "quantity": 1,
+         "unit_price": 85.0, "invoice_no": "INV-A"},
+        {"product_code": "", "design_no": "SYN-DESIGN-C",
+         "metal": "14KT", "metal_color": "Y", "quantity": 1,
+         "unit_price": 520.0, "invoice_no": "INV-A"},
+    ]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert all(not str(r.get("product_code") or "").strip() for r in matched)
+    assert summary["unresolved_reasons"]["SYN-DESIGN-C"] == "AMBIGUOUS_MATCH"
+
+
+def test_multi_lot_identical_prices_remain_blocked(fresh):
+    """Two identical sales prices on the same invoice must not be matched
+    arbitrarily — distinct-price gate refuses."""
+    tmp = fresh
+    bid = "B-MULTI-TIE"
+    inv = "SYN-INV-55"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "SYN-DESIGN-D", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-1", "unit_price": 71.0, "invoice_no": inv},
+        {"design_no": "SYN-DESIGN-D", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-2", "unit_price": 459.0, "invoice_no": inv},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [
+        {"product_code": "", "design_no": "SYN-DESIGN-D",
+         "metal": "14KT", "metal_color": "Y", "quantity": 1,
+         "unit_price": 100.0, "invoice_no": inv},
+        {"product_code": "", "design_no": "SYN-DESIGN-D",
+         "metal": "14KT", "metal_color": "Y", "quantity": 1,
+         "unit_price": 100.0, "invoice_no": inv},
+    ]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert all(not str(r.get("product_code") or "").strip() for r in matched)
+    assert summary["unresolved_reasons"]["SYN-DESIGN-D"] == "AMBIGUOUS_MATCH"
+
+
+def test_price_pass_does_not_cross_metal_families(fresh):
+    """Price must not assign a yellow lot to a white sales row (or vice
+    versa) when metal-key resolution already failed."""
+    tmp = fresh
+    bid = "B-MULTI-METAL"
+    inv = "SYN-INV-66"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "SYN-DESIGN-E", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-Y", "unit_price": 71.0, "invoice_no": inv},
+        {"design_no": "SYN-DESIGN-E", "metal": "14KT/W", "metal_color": "",
+         "product_code": "LOT-W", "unit_price": 459.0, "invoice_no": inv},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    # Sales metals empty → metal pass fails; price must also refuse rather
+    # than pairing across Y/W by price alone.
+    sales = [
+        {"product_code": "", "design_no": "SYN-DESIGN-E",
+         "metal": "", "metal_color": "", "quantity": 1,
+         "unit_price": 85.0, "invoice_no": inv},
+        {"product_code": "", "design_no": "SYN-DESIGN-E",
+         "metal": "", "metal_color": "", "quantity": 1,
+         "unit_price": 520.0, "invoice_no": inv},
+    ]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert all(not str(r.get("product_code") or "").strip() for r in matched)
+    assert summary["unresolved_reasons"]["SYN-DESIGN-E"] == "AMBIGUOUS_MATCH"
+
+
+def test_price_pass_respects_lot_quantity_authority(fresh):
+    """Sales qty exceeding the packing-lot authority qty must refuse."""
+    tmp = fresh
+    bid = "B-MULTI-QTY"
+    inv = "SYN-INV-44"
+    _seed_packing_with_metal(tmp, bid, [
+        {"design_no": "SYN-DESIGN-F", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-LOW", "unit_price": 71.0, "quantity": 1,
+         "invoice_no": inv},
+        {"design_no": "SYN-DESIGN-F", "metal": "14KT/Y", "metal_color": "",
+         "product_code": "LOT-HIGH", "unit_price": 459.0, "quantity": 1,
+         "invoice_no": inv},
+    ])
+    from app.services.sales_packing_matcher import match_sales_lines_to_packing
+
+    sales = [
+        {"product_code": "", "design_no": "SYN-DESIGN-F",
+         "metal": "14KT", "metal_color": "Y", "quantity": 2,  # > lot auth 1
+         "unit_price": 85.0, "invoice_no": inv},
+        {"product_code": "", "design_no": "SYN-DESIGN-F",
+         "metal": "14KT", "metal_color": "Y", "quantity": 1,
+         "unit_price": 520.0, "invoice_no": inv},
+    ]
+    matched, summary = match_sales_lines_to_packing(bid, sales)
+    assert all(not str(r.get("product_code") or "").strip() for r in matched)
+    assert summary["unresolved_reasons"]["SYN-DESIGN-F"] == "AMBIGUOUS_MATCH"
+
+
+def test_metal_alias_does_not_merge_distinct_color_families(fresh):
+    """YW→Y must not collapse white (W) into yellow (Y)."""
+    from app.services.sales_packing_matcher import _metal_key
+    assert _metal_key("14KT", "YW") == "14KT/Y"
+    assert _metal_key("14KT", "W") == "14KT/W"
+    assert _metal_key("14KT", "YW") != _metal_key("14KT", "W")
+    assert _metal_key("14KT", "WY") == "14KT/WY"  # bi-color stays distinct
+    assert _metal_key("14KT", "RG") == _metal_key("14KT", "R")

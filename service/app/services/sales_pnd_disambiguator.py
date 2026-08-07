@@ -23,8 +23,9 @@ AWB 6049349806:
 Strict gates — disambiguation only fires when all hold:
   1. Sales rows share the same client_ref/invoice_no.
   2. Each sales row's design_no is exactly "PND" (case-insensitive).
-  3. Supplier candidates are plain pendants from the same invoice
-     (item_type starts with "PEND" — covers PENDANT/PEND/PND).
+  3. Supplier candidates are *plain* pendants from the same invoice
+     (item_type starts with "PEND" — covers PENDANT/PEND/PND — AND the
+     invoice description is not studded / diamond / LGD jewellery).
   4. Candidate count equals sales PND row count.
   5. All sales prices are pairwise distinct AND all supplier prices
      are pairwise distinct.
@@ -35,7 +36,21 @@ correction registry) remains the fallback.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
+
+# Non-plain pendant signals in supplier invoice descriptions.  Plain PND
+# sales rows must not be paired against studded / stone-set pendant lines;
+# those belong to designed (non-PND) sales rows.
+_NON_PLAIN_PENDANT_RE = re.compile(
+    r"(?i)\bSTUD(?:DED|ED)?\b|\bWITH\s+DIAM|\bDIAMOND|\bLGD\b|\bLAB[\s-]?GROWN\b"
+)
+
+
+def _is_plain_pendant_description(description: Any) -> bool:
+    """True when a pendant invoice description is plain (not studded/set)."""
+    text = str(description or "")
+    return not bool(_NON_PLAIN_PENDANT_RE.search(text))
 
 
 def build_supplier_candidates(
@@ -55,6 +70,10 @@ def build_supplier_candidates(
     code poisons the whole candidate set). One invoice line = one candidate,
     regardless of how many packing rows were assigned to it — an aggregate
     N:1 assignment must not inflate the candidate count.
+
+    Studded / stone-set pendant invoice lines are excluded: plain PND sales
+    rows resolve only against plain pendant authority.  This is description-
+    evidence filtering, not a design-specific hardcode.
 
     ``packing_rows`` are corroborating evidence only: they may attach a
     ``design_no`` to a candidate (useful in warnings and operator review),
@@ -76,10 +95,13 @@ def build_supplier_candidates(
     for il in invoice_lines or []:
         if invoice_no and str(il.get("invoice_no") or "").strip() != invoice_no:
             continue
+        desc = str(il.get("description") or il.get("item_type") or "")
         item_type = _canonical_item_type(
-            str(il.get("item_type") or il.get("description") or "")
+            str(il.get("item_type") or desc)
         ).upper()
         if not (item_type.startswith("PEND") or item_type == "PND"):
+            continue
+        if not _is_plain_pendant_description(desc):
             continue
         pc = str(il.get("product_code") or "").strip()
         out.append({
