@@ -801,6 +801,7 @@ def _run_rematch(
 
     for pf in src_files:
         entry: Dict[str, Any] = {"file": pf.name, "rows_extracted": 0, "error": None}
+        doc_ids: List[str] = []   # bound before try: the except block reads it
         try:
             fhash = file_sha256(pf)
             doc_ids = pdb.resolve_document_id_by_hash(batch_id, fhash)
@@ -843,15 +844,16 @@ def _run_rematch(
         except Exception as exc:
             log.warning("[%s] rematch re-parse failed for %s: %s", batch_id, pf.name, exc)
             entry["error"] = str(exc)[:300]
-            # The document DID resolve (the hash check sits above the parse), so
-            # the file maps to exactly one registered document; its stored rows
-            # give the honest invoice attribution. No stored rows → global.
+            # When the document resolved (the hash check sits above the parse),
+            # its stored rows give the honest invoice attribution. If the
+            # failure struck BEFORE resolution (file_sha256 itself raised),
+            # there is no document — no honest attribution — so global.
             _file_invs = sorted({
                 str(s.get("invoice_no", "") or "").strip()
                 for s in stored_rows
                 if s.get("packing_document_id") == doc_ids[0]
                 and str(s.get("invoice_no", "") or "").strip()
-            })
+            }) if len(doc_ids) == 1 else []
             resolution_blockers.append({
                 "code": "reparse_failed", "file": pf.name, "detail": str(exc)[:300],
                 "scope_invoices": _file_invs,

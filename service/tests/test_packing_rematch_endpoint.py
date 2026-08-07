@@ -857,6 +857,29 @@ def test_unknown_invoice_scope_refuses(env):
     assert _rows_full(pdb) == before
 
 
+def test_hash_failure_before_document_resolution_is_a_graceful_global_blocker(env, monkeypatch):
+    """If file_sha256 itself raises, no document ever resolved — the route must
+    still answer 200 with a reparse_failed blocker whose scope is GLOBAL (empty),
+    not crash on an unbound doc_ids. Gate finding from the #1118 backend review."""
+    cli, tmp, ddb, pdb = env
+    _seed_two_invoices(tmp, ddb, pdb, b_confirmed_over=False)
+
+    from app.api import routes_packing
+
+    def _boom(_pf):
+        raise OSError("synthetic: file vanished before hashing")
+
+    monkeypatch.setattr(routes_packing, "file_sha256", _boom)
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID, "invoice_no": INV})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"] is False
+    assert body["refused"] == "scope_is_blocking"
+    assert any(b["code"] == "reparse_failed" and b["scope_invoices"] == []
+               for b in body["scope_blockers"])
+
+
 def test_second_scoped_apply_is_noop(env):
     cli, tmp, ddb, pdb = env
     _seed_two_invoices(tmp, ddb, pdb)
