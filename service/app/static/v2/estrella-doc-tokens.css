@@ -30,19 +30,32 @@
   --ej-sans: "Inter", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-/* A4 page shell (794 × 1123 px = 210 × 297 mm @96dpi) */
+/* A4 page shell (794 × 1123 px = 210 × 297 mm @96dpi).
+   Screen preview uses min-height so long drafts (33+ lines) grow naturally
+   instead of clipping; print media still paginates via @media print rules. */
 .ej-a4 {
   width: 794px;
-  height: 1123px;
+  min-height: 1123px;
+  height: auto;
   background: var(--ej-paper);
   color: var(--ej-ink);
   font-family: var(--ej-sans);
   font-size: 10.5px;
   line-height: 1.45;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   font-feature-settings: "ss01","cv11","tnum";
   -webkit-font-smoothing: antialiased;
+}
+/* Soft page-break guide for long on-screen previews (not printed). */
+.ej-preview-sheet .ej-a4 {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(1123px - 1px),
+    rgba(148, 163, 184, 0.35) calc(1123px - 1px),
+    rgba(148, 163, 184, 0.35) 1123px
+  );
 }
 .ej-a4 * { box-sizing: border-box; }
 .ej-a4 .ej-pad { padding: 44px 48px; }
@@ -281,6 +294,10 @@
   /* Hide decorative watermark dot pattern — reduces ink and avoids artefacts */
   .ej-pattern {
     display: none !important;
+  }
+  /* Screen-only A4 page guides must not print */
+  .ej-preview-sheet .ej-a4 {
+    background-image: none !important;
   }
   /* Hide the logo tagline (removed per brand update; belt-and-suspenders) */
   .ej-logo-tag {

@@ -515,6 +515,7 @@ function EJProformaModern({ docData }) {
             <div className="ej-h1" style={{ fontSize: 36, color: "#0B3D2E" }}>{d.doc_no || "—"}</div>
             <div style={{ fontSize: 11, color: "#64748B" }}>
               Issued {d.date || "—"} · Due {d.due || "—"}
+              {d.payment && d.payment !== "—" ? ` · ${d.payment}` : ""}
             </div>
           </div>
           <div style={{ height: 2, width: 64, background: "#C9A24B", marginTop: 14 }}/>

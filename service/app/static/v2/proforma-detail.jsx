@@ -386,12 +386,236 @@ function ProformaPartyCard({ title, name, lines, footer, footerMuted, warn, warn
 // ── Print-preview modal ────────────────────────────────────────────────────────
 // READ-ONLY. Never mutates draft state. Uses real docData/cmrData from ProformaDetailPage.
 // Requires: estrella-doc-tokens.css + estrella-doc-proforma.jsx + estrella-doc-cmr.jsx loaded in index.html.
+// Load a script once (CDN presentation adapters for Download PDF — not a second layout engine).
+function _ejLoadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-ej-src="${src}"]`);
+    if (existing) {
+      if (existing.getAttribute('data-ej-ready') === '1') return resolve();
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('script load failed: ' + src)));
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.setAttribute('data-ej-src', src);
+    s.onload = () => { s.setAttribute('data-ej-ready', '1'); resolve(); };
+    s.onerror = () => reject(new Error('script load failed: ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+async function _ejEnsurePdfCaptureLibs() {
+  if (!(window.html2canvas)) {
+    await _ejLoadScript('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+  }
+  if (!(window.jspdf && window.jspdf.jsPDF) && !window.jsPDF) {
+    await _ejLoadScript('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js');
+  }
+}
+
+/**
+ * Download PDF of the already-rendered Estrella sheet.
+ * Presentation capture only — same DOM / docData as Print (no second business renderer).
+ *
+ * Pagination is EXPLICIT and row-aware:
+ *  - pack tbody rows into A4 page budgets (never bisect a tr)
+ *  - clone per page with thead retained (header repeat)
+ *  - pre-table chrome on page 1 only; totals/footer on the last page only
+ * Do NOT capture one oversized canvas and slice by negative Y (that splits rows
+ * and cannot repeat table headers).
+ */
+async function _ejDownloadRenderedSheetPdf(filenameBase, orientation) {
+  const sheet = document.querySelector('.ej-preview-sheet');
+  if (!sheet) throw new Error('Preview sheet not found');
+  const source = sheet.querySelector('.ej-a4, .ej-a4-landscape');
+  if (!source) throw new Error('A4 document root not found');
+  await _ejEnsurePdfCaptureLibs();
+  const html2canvas = window.html2canvas;
+  const JsPDF = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if (!html2canvas || !JsPDF) throw new Error('PDF capture libraries unavailable');
+
+  const landscape = orientation === 'landscape';
+  // CSS px budgets matching .ej-a4 / .ej-a4-landscape at 96dpi
+  const PAGE_W_PX = landscape ? 1123 : 794;
+  const PAGE_H_PX = landscape ? 794 : 1123;
+
+  const prevT = sheet.style.transform;
+  const prevO = sheet.style.transformOrigin;
+  sheet.style.transform = 'none';
+  sheet.style.transformOrigin = 'top left';
+
+  const host = document.createElement('div');
+  host.setAttribute('data-ej-pdf-capture-host', '1');
+  host.style.cssText = 'position:fixed;left:-10000px;top:0;width:' + PAGE_W_PX +
+    'px;background:#fff;pointer-events:none;z-index:-1;';
+  document.body.appendChild(host);
+
+  try {
+    const table = source.querySelector('table.ej-table');
+    const tbody = table ? table.querySelector('tbody') : null;
+    const rows = tbody ? Array.from(tbody.querySelectorAll(':scope > tr')) : [];
+    const rowHeights = rows.map(r => Math.ceil(r.getBoundingClientRect().height) || 22);
+
+    // Pre-table chrome = everything before the lines table; post = totals + closing stack
+    let preH = 0;
+    let postH = 0;
+    let theadH = 28;
+    if (table) {
+      const srcRect = source.getBoundingClientRect();
+      const tableRect = table.getBoundingClientRect();
+      preH = Math.max(0, Math.round(tableRect.top - srcRect.top));
+      const after = table.nextElementSibling;
+      if (after) {
+        const last = source.lastElementChild;
+        const bottom = (last || after).getBoundingClientRect().bottom;
+        postH = Math.max(0, Math.round(bottom - tableRect.bottom));
+      }
+      const thead = table.querySelector('thead');
+      if (thead) theadH = Math.ceil(thead.getBoundingClientRect().height) || 28;
+    } else {
+      preH = Math.ceil(source.getBoundingClientRect().height) || PAGE_H_PX;
+    }
+
+    // Pack rows into pages without splitting a row.
+    // Page 1 budget includes pre-table; later pages include thead only.
+    // Footer/post block reserved on the final page (spill to extra page if needed).
+    const pages = []; // each: { rowStart, rowEnd } half-open
+    let i = 0;
+    while (i < rows.length || pages.length === 0) {
+      const isFirst = pages.length === 0;
+      const budget = PAGE_H_PX - 8 - (isFirst ? preH : theadH);
+      let used = 0;
+      const start = i;
+      if (rows.length === 0) {
+        pages.push({ rowStart: 0, rowEnd: 0 });
+        break;
+      }
+      while (i < rows.length) {
+        const h = rowHeights[i] || 22;
+        if (used > 0 && used + h > budget) break;
+        used += h;
+        i += 1;
+        // Always take at least one row even if taller than budget (pathological)
+        if (used === h && h > budget) break;
+      }
+      pages.push({ rowStart: start, rowEnd: i });
+      if (i >= rows.length) break;
+    }
+
+    // Ensure post/footer fits on last page; else add a footer-only page (no rows).
+    if (pages.length && postH > 0) {
+      const last = pages[pages.length - 1];
+      const isFirst = pages.length === 1;
+      const rowsH = rowHeights.slice(last.rowStart, last.rowEnd)
+        .reduce((s, h) => s + h, 0);
+      const used = (isFirst ? preH : theadH) + rowsH + postH;
+      if (used > PAGE_H_PX - 8 && (last.rowEnd > last.rowStart)) {
+        pages.push({ rowStart: last.rowEnd, rowEnd: last.rowEnd, footerOnly: true });
+      }
+    }
+
+    const pdf = new JsPDF({
+      orientation: landscape ? 'landscape' : 'portrait',
+      unit: 'mm',
+      format: 'a4',
+    });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+
+    for (let p = 0; p < pages.length; p++) {
+      const spec = pages[p];
+      const isFirst = p === 0;
+      const isLast = p === pages.length - 1;
+      const clone = source.cloneNode(true);
+      clone.style.width = PAGE_W_PX + 'px';
+      clone.style.minHeight = PAGE_H_PX + 'px';
+      clone.style.height = 'auto';
+      clone.style.overflow = 'visible';
+      clone.style.boxShadow = 'none';
+      clone.style.transform = 'none';
+
+      // Drop screen-only decorations
+      clone.querySelectorAll('.ej-pattern, .ej-no-print').forEach(el => el.remove());
+
+      const cloneTable = clone.querySelector('table.ej-table');
+      if (cloneTable) {
+        const cloneRows = Array.from(
+          (cloneTable.querySelector('tbody') || cloneTable).querySelectorAll(':scope > tr')
+        );
+        cloneRows.forEach((tr, idx) => {
+          if (idx < spec.rowStart || idx >= spec.rowEnd) tr.remove();
+        });
+
+        // Pre-table chrome: page 1 only
+        if (!isFirst) {
+          let el = cloneTable.previousElementSibling;
+          while (el) {
+            const prev = el.previousElementSibling;
+            el.remove();
+            el = prev;
+          }
+          // Also remove non-element nodes' siblings above pad content before table —
+          // remove direct children of .ej-pad that precede the table.
+          const pad = cloneTable.closest('.ej-pad, .ej-pad-tight') || clone;
+          Array.from(pad.children).forEach(ch => {
+            if (ch === cloneTable) return;
+            if (cloneTable.compareDocumentPosition(ch) & Node.DOCUMENT_POSITION_FOLLOWING) return;
+            if (ch.contains && ch.contains(cloneTable)) return;
+            ch.remove();
+          });
+        }
+
+        // Post-table (totals / terms / signatures): last page only
+        if (!isLast) {
+          let el = cloneTable.nextElementSibling;
+          while (el) {
+            const next = el.nextElementSibling;
+            el.remove();
+            el = next;
+          }
+        }
+      }
+
+      host.innerHTML = '';
+      host.appendChild(clone);
+
+      const canvas = await html2canvas(clone, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        width: PAGE_W_PX,
+        windowWidth: PAGE_W_PX,
+      });
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      // Fit width; never stretch taller than one A4 page (clone is already page-budgeted)
+      const imgW = pageW;
+      let imgH = (canvas.height * imgW) / canvas.width;
+      if (imgH > pageH) imgH = pageH;
+      if (p > 0) pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', 0, 0, imgW, imgH);
+    }
+
+    const name = (filenameBase || 'proforma-preview').replace(/[^\w.\-]+/g, '_') + '.pdf';
+    pdf.save(name);
+  } finally {
+    host.remove();
+    sheet.style.transform = prevT;
+    sheet.style.transformOrigin = prevO;
+  }
+}
+
 function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose, onEditRequest }) {
   // Portrait A4 (794px) → 0.88 fits 900px wrap.
   // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
   // activeType MUST be declared before SCALE — SCALE depends on it.
   const activeType = docType || 'proforma';
   const SCALE = activeType === 'packing' ? 0.87 : 0.88;
+  const [pdfBusy, setPdfBusy] = React.useState(false);
+  const [pdfErr, setPdfErr] = React.useState(null);
 
   // Variant selection per document type
   const variantOptions = activeType === 'cmr'     ? ['classic', 'modern']
@@ -490,29 +714,58 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
               </button>
             ))}
             <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 4px' }}/>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-              <button
-                data-testid="preview-download"
-                onClick={() => {
-                  // Temporarily remove scale so print renders at true A4 size
-                  const sheet = document.querySelector('.ej-preview-sheet');
-                  const prevT = sheet ? sheet.style.transform : null;
-                  const prevO = sheet ? sheet.style.transformOrigin : null;
-                  if (sheet) { sheet.style.transform = 'none'; sheet.style.transformOrigin = 'top left'; }
-                  window.print();
-                  if (sheet) { sheet.style.transform = prevT; sheet.style.transformOrigin = prevO; }
-                }}
-                style={{
-                  padding: '4px 12px', borderRadius: 5, border: '1px solid #2A5A3A',
-                  background: '#0B3D2E20', color: '#4CAF82',
-                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                }}
-              >
-                ⎙ Print / Save as PDF
-              </button>
-              <span style={{ fontSize: 9, color: '#5A6A82', lineHeight: 1.3 }}>
-                Opens browser print dialog. Choose "Save as PDF" as destination.
-              </span>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  data-testid="preview-download"
+                  disabled={pdfBusy}
+                  onClick={() => {
+                    setPdfErr(null);
+                    setPdfBusy(true);
+                    const base = (activeType === 'cmr'
+                      ? ((cmrData && cmrData.cmr_no) || 'cmr')
+                      : ((docData && docData.doc_no) || 'proforma-preview'));
+                    _ejDownloadRenderedSheetPdf(
+                      String(base),
+                      activeType === 'packing' ? 'landscape' : 'portrait',
+                    )
+                      .catch(e => setPdfErr((e && e.message) || 'PDF download failed'))
+                      .finally(() => setPdfBusy(false));
+                  }}
+                  style={{
+                    padding: '4px 12px', borderRadius: 5, border: '1px solid #2A5A3A',
+                    background: '#0B3D2E20', color: '#4CAF82',
+                    fontSize: 12, fontWeight: 600, cursor: pdfBusy ? 'wait' : 'pointer',
+                    opacity: pdfBusy ? 0.7 : 1,
+                  }}
+                >
+                  {pdfBusy ? '↓ Preparing…' : '↓ Download PDF'}
+                </button>
+                <button
+                  data-testid="preview-print"
+                  onClick={() => {
+                    // Temporarily remove scale so print renders at true A4 size
+                    const sheet = document.querySelector('.ej-preview-sheet');
+                    const prevT = sheet ? sheet.style.transform : null;
+                    const prevO = sheet ? sheet.style.transformOrigin : null;
+                    if (sheet) { sheet.style.transform = 'none'; sheet.style.transformOrigin = 'top left'; }
+                    window.print();
+                    if (sheet) { sheet.style.transform = prevT; sheet.style.transformOrigin = prevO; }
+                  }}
+                  style={{
+                    padding: '4px 12px', borderRadius: 5, border: '1px solid #3A4A62',
+                    background: 'transparent', color: '#C8D4E8',
+                    fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  }}
+                >
+                  ⎙ Print
+                </button>
+              </div>
+              {pdfErr && (
+                <span data-testid="preview-download-error" style={{ fontSize: 9, color: '#F87171', lineHeight: 1.3, maxWidth: 220, textAlign: 'right' }}>
+                  {pdfErr}
+                </span>
+              )}
             </div>
             <button
               onClick={onClose}
@@ -4683,9 +4936,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     unitEur:  parseFloat(ln.unit_price || 0),
     netEur:   parseFloat(ln.unit_price || 0) * parseFloat(ln.qty || 0),
     hsCode:   ln.hs_code || '—',
-    // Origin = goods manufacturing/export country, NOT the seller's country.
-    // companyProfile.country = 'PL' (seller) must NOT be used as origin fallback.
-    origin:   ln.origin || liveDraft.origin_country || '—',
+    // Origin = goods manufacturing/export country from Product Master enrichment
+    // (ln.origin). Never invent; never use seller companyProfile.country.
+    origin:   (ln.origin || '').trim() || '—',
     purity:   ln.purity || '',
     currency: ln.currency || draftCurrency,
     // Ctg is derived display-only from enrichment item_type (no schema column).
@@ -4716,20 +4969,48 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // wFirma XML keys (paymentmethod, paymentdate, saledate) also accepted.
   // Fallback: wfirma_payment_method column (written by post-posting enrichment).
   const rawPt = liveDraft.payment_terms;
+  // Commercial issue date — ONE authority for warning + Issued header + Overview.
+  // payment_terms.invoice_date (operator) || API issue_date/invoice_date (wFirma).
+  // NEVER created_at (draft lifecycle timestamp is not a commercial issue date).
+  const commercialIssueDate = (() => {
+    const fromPt = (rawPt && typeof rawPt === 'object' && rawPt.invoice_date)
+      ? String(rawPt.invoice_date).trim() : '';
+    const fromApi = String(liveDraft.issue_date || liveDraft.invoice_date || '').trim();
+    const raw = fromPt || fromApi;
+    return raw ? raw.slice(0, 10) : '';
+  })();
+  const _PAYMENT_METHOD_LABELS = {
+    transfer: 'Bank transfer',
+    paymentmethod: 'Bank transfer',
+    przelew: 'Bank transfer',
+    cash: 'Cash',
+    card: 'Card',
+    kompensata: 'Compensation',
+  };
   const paymentTermsDisplay = (() => {
     if (!rawPt || (typeof rawPt === 'object' && Object.keys(rawPt).length === 0)) {
-      return liveDraft.wfirma_payment_method || '—';
+      const fb = (liveDraft.wfirma_payment_method || '').trim();
+      if (!fb) return '—';
+      const key = fb.toLowerCase();
+      return _PAYMENT_METHOD_LABELS[key] || fb;
     }
     if (typeof rawPt !== 'object') return String(rawPt);
     const parts = [];
-    if (rawPt.method)        parts.push(String(rawPt.method));
-    if (rawPt.paymentmethod) parts.push(String(rawPt.paymentmethod));
-    if (rawPt.days)          parts.push(`${rawPt.days} days`);
-    Object.entries(rawPt).forEach(([k, v]) => {
-      if (!['method', 'paymentmethod', 'days', 'saledate', 'paymentdate'].includes(k) && v)
-        parts.push(`${k}: ${v}`);
-    });
-    return parts.join(' · ') || liveDraft.wfirma_payment_method || '—';
+    const methodRaw = String(rawPt.method || rawPt.paymentmethod || '').trim();
+    if (methodRaw) {
+      const key = methodRaw.toLowerCase();
+      parts.push(_PAYMENT_METHOD_LABELS[key] || methodRaw);
+    }
+    if (rawPt.days != null && rawPt.days !== '') {
+      parts.push(`${rawPt.days} days`);
+    }
+    // Allowlist only — never dump internal keys (invoice_language_id, vat_mode, …).
+    return parts.join(' · ') || (() => {
+      const fb = (liveDraft.wfirma_payment_method || '').trim();
+      if (!fb) return '—';
+      const key = fb.toLowerCase();
+      return _PAYMENT_METHOD_LABELS[key] || fb;
+    })();
   })();
 
   // SELLER from company profile (GET /api/v1/settings/company-profile)
@@ -4818,16 +5099,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const _previewLabel = liveDraft.wfirma_proforma_fullnumber
     || (draft && draft.wfirma_proforma_fullnumber)
     || (draft && draft.id ? `Draft #${draft.id}` : 'Draft');
-  // Payment due: wfirma_payment_due (post-wFirma) -> due_date -> invoice_date + payment_terms_days
-  // payment_terms_days is a flat int field; rawPt.days is the same value from the JSON blob.
-  // Check both: the flat field may be absent from older drafts that only have the JSON blob.
+  // Payment due: wfirma_payment_due (post-wFirma) -> due_date -> commercialIssueDate + days.
+  // Base date uses the same commercial issue-date authority as the Issued header
+  // (never created_at).
   const _ptDays = Number(liveDraft.payment_terms_days)
     || (rawPt && typeof rawPt === 'object' ? Number(rawPt.days) : 0)
     || 0;
   const _dueFallback = (() => {
     if (liveDraft.wfirma_payment_due) return liveDraft.wfirma_payment_due.slice(0, 10);
     if (liveDraft.due_date)           return liveDraft.due_date.slice(0, 10);
-    const base = liveDraft.invoice_date || liveDraft.created_at;
+    const base = commercialIssueDate;
     if (base && _ptDays > 0) {
       // Date-only UTC arithmetic — parsing a local timestamp and round-tripping
       // through toISOString() can shift the calendar day for UTC+ timezones.
@@ -4872,8 +5153,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     // Authority-resolved same-currency subtotal (freight + insurance). The doc
     // renderer prefers this over re-summing the charge rows — one subtotal source.
     charges_total: Number(_cc.service_charge_subtotal) || 0,
-    date:     liveDraft.invoice_date || liveDraft.created_at
-              ? (liveDraft.invoice_date || liveDraft.created_at || '').slice(0, 10) : '—',
+    date:     commercialIssueDate || '—',
     due:      _dueFallback,
     payment:  paymentTermsDisplay,
     payment_terms_days: _ptDays,
@@ -4964,7 +5244,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     warnings: (() => {
       const w = [];
       if (!fxRate) w.push({ code: 'NO_FX_RATE', msg: 'Exchange rate (NBP) not set — PLN total cannot be computed. Set the exchange rate before printing.' });
-      if (!liveDraft.invoice_date) w.push({ code: 'NO_ISSUE_DATE', msg: 'Issue date not set on draft.' });
+      if (!commercialIssueDate) w.push({ code: 'NO_ISSUE_DATE', msg: 'Issue date not set on draft.' });
       const missingOrigin = lines.filter(l => !l.origin || l.origin === '—');
       if (missingOrigin.length > 0) w.push({ code: 'MISSING_ORIGIN', msg: `${missingOrigin.length} line(s) have no origin country — verify product authority.` });
       return w;
@@ -5053,12 +5333,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       const itemType = ln.item_type || pk.item_type || 'other';
       const key = String(itemType).toUpperCase();
       if (!groups[key]) {
-        // Origin authority = Product Master (per-line ln.origin → draft-level
-        // origin_country) — same chain as the Packing List; honest null when
-        // the authority has none. Never the hardcoded 'India' UI default
-        // (2026-07-16 independent-review Condition 1).
+        // Origin authority = shared Product Master via per-line ln.origin (GET enrich).
+        // Honest null when the authority has none. Never invent / never purchase-packing /
+        // never seller country. Same ISO code consumed by Proforma + Packing List.
         groups[key] = { item_type: _cmrItemLabel(itemType), qty: 0, net_weight: null,
-                        origin: ln.origin || pk.origin || liveDraft.origin_country || null };
+                        origin: (ln.origin || '').trim() || null };
       }
       const q = Number(ln.qty) || 0;                       // DRAFT billed qty (authority)
       groups[key].qty += q;
@@ -5252,7 +5531,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     // CMR lines: aggregated by item_type ONLY — transport summary, not commercial detail
     // Each entry: { item_type, qty, net_weight, origin } — 3-6 rows max
     // Fallback to proforma lines when packing data not yet loaded.
-    // Origin authority = Product Master chain (ln.origin → draft origin_country);
+    // Origin authority = shared Product Master ISO on ln.origin (GET enrich);
     // honest null when the authority has none — never a hardcoded country.
     // Per-line origin is mapped through _cmrCountryName (the single CMR country-name
     // authority, ISO-2 → full name e.g. "IN" → "India") so the Modern CMR line
@@ -5265,7 +5544,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     lines: (_cmrAggPackingLines.lines.length > 0
       ? _cmrAggPackingLines.lines
       : lines.map(l => ({ item_type: l.desc, qty: l.qty, net_weight: null,
-                          origin: l.origin || liveDraft.origin_country || null }))
+                          origin: (l.origin && l.origin !== '—') ? l.origin : null }))
     ).map(_l => ({ ..._l, origin: _cmrCountryName(_l.origin) || null })),
     // Typed goods-origin for the CMR goods block — distinct per-line origins from
     // the SAME lines the document renders (Product Master authority), honest null
@@ -5275,7 +5554,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     goods_origin_country: (() => {
       const src = _cmrAggPackingLines.lines.length > 0
         ? _cmrAggPackingLines.lines
-        : lines.map(l => ({ origin: l.origin || liveDraft.origin_country || null }));
+        : lines.map(l => ({ origin: (l.origin && l.origin !== '—') ? l.origin : null }));
       const s = new Set();
       for (const l of src) {
         const o = String(l.origin || '').trim();
@@ -5289,24 +5568,22 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   };
   // ──────────────────────────────────────────────────────────────────────────
 
-  // Packing List PDF data — full design-level detail (146 lines for AWB 9938632830)
-  // Price authority: liveDraft.editable_lines[i].unit_price (proforma sales price, EUR)
-  //   Matched by INDEX — both editable_lines and sortedPackingLines are in pack_sr order.
-  //   editable_lines are created from packing lines at packing-sync time, preserving that order.
-  //   Do NOT match by product_code (= invoice no, same for all lines in one invoice)
-  //   or by design_no alone (design_no can repeat across different bags/colours).
-  //   Index match is O(1) and robust for single-invoice batches.
+  // Packing List PDF data — ONE commercial-document contract with Proforma/CMR.
   //
-  //   Fallback chain: editable_lines[i].unit_price → unit_price_eur → unit_price (supplier rate)
+  // Authority split (2026-08-08):
+  //   Sales Packing → draft editable_lines (wireframe slice-1 passthrough):
+  //     client_po, karat/metal_color/quality, size, dia/col weights, qty, unit_price
+  //   Product descriptions → product_descriptions via shared `lines` view-model
+  //   Product Code → purchase-lot / draft product_code (pk fallback identity only)
+  //   Gross/net g → Purchase Packing physical extract (pk)
+  //   Origin → shared Product Master ISO via ln.origin (same as Proforma/CMR)
+  //   HSN → NOT printed on commercial packing list (removed from renderer)
+  //
+  // Never fall back commercial price/quality/PO to Purchase Packing.
   // Currency: from draft (can vary per client — not hardcoded to EUR)
   const packingListData = (() => {
     const currency      = liveDraft.currency || 'EUR';
     // ONE row per BILLED draft line (never the full-shipment batch packing).
-    // qty + sales price come from the draft editable line (the billing authority);
-    // physical fields (kt/colour/quality/weights/size/HSN/origin) are ENRICHED
-    // from the matched batch packing row by design_no/product_code. Packing List
-    // total === draft total.
-    //
     // Iterates `lines` — the SAME line view-model the Proforma display and the
     // Proforma document consume — so descriptions are selected in exactly one
     // place (line.desc_en / line.desc_pl above). `line._raw` is that row's own
@@ -5315,11 +5592,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     // off product_code alone.
     const rows = lines.map((line, i) => {
       const ln        = line._raw;
-      const pk        = _enrichPacking(ln);
+      const pk        = _enrichPacking(ln); // purchase packing — physical/identity only
       const qty       = Number(ln.qty) || 0;
-      const unitPrice = Number(ln.unit_price) > 0
-        ? Number(ln.unit_price)
-        : (Number(pk.unit_price_eur) || Number(pk.unit_price) || 0);
+      // Commercial unit price = draft/Sales Packing only. Missing → 0 (honest),
+      // never supplier purchase packing unit_price_eur.
+      const unitPrice = Number(ln.unit_price) || 0;
+      const _kt = (ln.karat || (ln.metal || '').split('/')[0] || '').trim();
+      const _col = (ln.metal_color || (ln.metal || '').split('/')[1] || '').trim();
+      const _dia = Number(ln.diamond_weight);
+      const _cwt = Number(ln.color_weight);
       return {
         // SR is the packing-list's own sequential line number (1..N). Do NOT use
         // the matched packing row's pack_sr — several billed lines can map to the
@@ -5328,12 +5609,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // authority; number them sequentially.
         sr:           line.seq,
         ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
-        // client_po is the CLIENT's purchase-order reference (persisted since
-        // 494c4665). It must NEVER fall back to pk.invoice_no — that is the
-        // SUPPLIER purchase-invoice number, a different authority; mixing them
-        // put the purchase invoice into the Client PO column (2026-07-16 repair).
-        // Missing → '' (renderer shows '—'), never a cross-authority value.
-        client_po:    pk.client_po || '',
+        // Client PO = Sales Packing field on the draft line (slice-1 passthrough).
+        // Never Purchase Packing (no client_po column) and never pk.invoice_no
+        // (supplier purchase invoice — IMPORT_PZ). Missing → '' → renderer '—'.
+        client_po:    (ln.client_po || '').trim(),
         // Supplier purchase-invoice number — its OWN typed field, kept separate
         // from client_po above so the two identities never merge. This is a
         // typed-SEPARATION GUARD, not a display field: it is INTENTIONALLY NOT
@@ -5347,6 +5626,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // decision recorded: PROJECT_STATE.md DECISIONS 2026-07-18. Do not surface
         // it without a new DECISIONS entry (Lesson M).
         purchase_invoice_no: pk.invoice_no || '',
+        // Product Code = purchase-lot / draft identity; pk fallback for enrich only.
         product_code: ln.product_code || pk.product_code || '—',
         design:       ln.design_no    || pk.design_no    || '—',
         // PASS-THROUGH of the ONE resolved view-model description (see `lines`
@@ -5356,29 +5636,21 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         // ln._warnings for that and the document renders the neutral '—'.
         description_en: line.desc_en,
         description_pl: line.desc_pl,
-        kt:           (pk.metal || '').split('/')[0] || '', // "14KT"
-        col:          (pk.metal || '').split('/')[1] || '', // "W", "P", "Y"
-        quality:      pk.quality_string || '',
-        // diamond_weight / color_weight stored since 2026-06-09 schema migration.
-        // Existing rows show null (—) until packing is re-uploaded or force_reextract=True.
-        dia_wt:       Number(pk.diamond_weight) > 0 ? Number(pk.diamond_weight) : null,
-        col_wt:       Number(pk.color_weight)   > 0 ? Number(pk.color_weight)   : null,
+        // KT / colour / quality / size / stone weights = Sales Packing on ln.
+        kt:           _kt,
+        col:          _col,
+        quality:      (ln.quality_string || '').trim(),
+        dia_wt:       _dia > 0 ? _dia : null,
+        col_wt:       _cwt > 0 ? _cwt : null,
+        // Gross / net grams = Purchase Packing physical extract only.
         gross_wt:     Number(pk.gross_weight)   > 0 ? Number(pk.gross_weight)   : null,
         net_wt:       Number(pk.net_weight)     > 0 ? Number(pk.net_weight)     : null,
         qty,
         unit_price:   unitPrice,
         total_value:  unitPrice * qty,
-        // size: stored from packing XLSX "Size" column since 2026-06-09.
-        size:         pk.size || '',
-        // HSN intentionally shown outside Europe only (operator decision 2026-06-09):
-        // EU/WDT shipments render "—". packing_lines has no hs_code column.
-        hsn:          ln.hs_code || pk.hs_code || '',
-        // Origin authority = Product Master (product_local.origin_country),
-        // surfaced per-line as ln.origin and at draft level as
-        // liveDraft.origin_country — the SAME chain the CMR goods block uses
-        // (line ~3849). Never the hardcoded 'India' UI default (2026-07-16
-        // repair); honest '—' when the authority has none.
-        origin:       ln.origin || liveDraft.origin_country || '—',
+        size:         (ln.size || '').trim(),
+        // Origin = shared Product Master ISO via ln.origin (GET enrich). Honest '—'.
+        origin:       (ln.origin || '').trim() || '—',
       };
     });
     const grand_total = rows.reduce((s, r) => s + r.total_value, 0);
@@ -5392,7 +5664,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       // falls back to the draft's wfirma_invoice_number. Honest-null when no issued
       // invoice number exists yet.
       invoice_ref: invoiceProjection.invoiceNumber || null,
-      issued_date: liveDraft.created_at ? (liveDraft.created_at || '').split('T')[0] : '',
+      issued_date: commercialIssueDate || '',
       seller:      cmrPreviewData.seller,
       shipto:      cmrPreviewData.shipto,
       buyer:       cmrPreviewData.buyer,
@@ -8321,7 +8593,11 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
                 </div>
               </PfFieldRow>
             ) : (
-              <InfoRow label="Issue date" value={detail.created_at ? detail.created_at.slice(0, 10) : '—'} mono />
+              <InfoRow label="Issue date" value={(() => {
+                const _pt = (detail.payment_terms && typeof detail.payment_terms === 'object') ? detail.payment_terms : {};
+                const raw = String(_pt.invoice_date || detail.issue_date || detail.invoice_date || '').trim();
+                return raw ? raw.slice(0, 10) : '—';
+              })()} mono />
             )}
             {editMode ? (
               <PfFieldRow label="Sale date">

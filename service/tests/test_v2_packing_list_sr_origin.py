@@ -1,20 +1,14 @@
 """
-test_v2_packing_list_sr_origin.py — Packing List SR numbering + Origin default.
+test_v2_packing_list_sr_origin.py — Packing List SR + commercial authority pins.
 
-Operator-reported (Draft #34): the Packing List showed duplicate/colliding SR
-numbers (e.g. JR04929 → SR 9 three times, JR05671 → SR 10 twice) with gaps and
-out-of-order rows, and an empty Origin column.
-
-Root causes:
-  - SR used the matched packing row's `pack_sr`, which collides when several
-    billed lines map to the same design (mixed lots). A packing list must number
-    its own rows sequentially (1..N from the draft's editable_lines).
-  - Origin had no source (packing_lines has no origin column) → "—". Default to
-    India (the goods' manufacturing origin) — the same default the CMR uses.
-
-HSN stays "—" for EU shipments by design (operator decision 2026-06-09: HS codes
-shown outside Europe only). Weights/quality/size stay "—" when the packing source
-lacks them (re-upload needed) — never fabricated.
+Authority (2026-08-08, extends PR #1128 commercial-document contract):
+  - SR = sequential draft row number (never colliding pack_sr)
+  - Origin = shared Product Master ISO on ln.origin (never hardcoded India,
+    never purchase-packing origin, never phantom liveDraft.origin_country)
+  - Commercial fields (client_po, quality, kt/col, size, dia/col wt, price)
+    = Sales Packing via draft editable_lines
+  - Gross/net g = Purchase Packing physical only
+  - HSN removed from the printed commercial packing list
 """
 from __future__ import annotations
 
@@ -24,6 +18,8 @@ import pytest
 
 _DETAIL = (Path(__file__).resolve().parents[1] / "app" / "static" / "v2"
            / "proforma-detail.jsx")
+_PACKING = (Path(__file__).resolve().parents[1] / "app" / "static" / "v2"
+            / "estrella-doc-packing.jsx")
 
 
 @pytest.fixture(scope="module")
@@ -31,12 +27,12 @@ def detail():
     return _DETAIL.read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def packing_doc():
+    return _PACKING.read_text(encoding="utf-8")
+
+
 def test_packing_list_sr_is_sequential_not_pack_sr(detail):
-    # SR is the sequential draft-row number, NOT the colliding packing serial.
-    # Two parts, both required:
-    #   1. the shared `lines` view-model numbers the draft's rows 1..N (seq: i + 1),
-    #   2. the packing list takes its SR from that number (line.seq).
-    # Pinning only one half would let the other silently regress.
     assert "const lines = (liveDraft.editable_lines || []).map((ln, i) => ({" in detail
     assert "seq:      i + 1," in detail
     assert "sr:           line.seq," in detail
@@ -45,7 +41,6 @@ def test_packing_list_sr_is_sequential_not_pack_sr(detail):
 
 
 def test_sr_collision_rationale_documented(detail):
-    # the comment explains why pack_sr is not used (prevents regression)
     i = detail.index("sr:           line.seq,")
     blk = detail[i - 400:i]
     assert "pack_sr collides" in blk or "collides" in blk
@@ -53,23 +48,43 @@ def test_sr_collision_rationale_documented(detail):
 
 
 def test_origin_from_product_master_authority_not_hardcoded(detail):
-    # 2026-07-16 authority repair: origin comes from the Product Master authority
-    # (per-line ln.origin → draft-level liveDraft.origin_country, the same chain
-    # the CMR goods block uses), with honest '—' when the authority has none.
-    # The hardcoded UI default 'India' is removed.
-    assert "origin:       ln.origin || liveDraft.origin_country || '—'," in detail
+    # Shared Product Master ISO on ln.origin — same as Proforma/CMR.
+    assert "origin:       (ln.origin || '').trim() || '—'," in detail
+    assert "liveDraft.origin_country" not in detail
     assert "|| pk.origin || 'India'," not in detail
+    assert "pk.origin" not in detail.split("const packingListData")[1][:3500]
 
 
-def test_hsn_not_fabricated_for_eu(detail):
-    # HSN keeps the no-fabricate fallback ('' → renders "—"); the operator's
-    # outside-Europe-only decision is documented next to it.
-    assert "hsn:          ln.hs_code || pk.hs_code || ''," in detail
-    hi = detail.index("hsn:          ln.hs_code")
-    assert "outside Europe only" in detail[hi - 200:hi]
+def test_hsn_removed_from_commercial_packing_list(detail, packing_doc):
+    # Builder must not emit hsn; renderer must not print HSN column.
+    pack_builder = detail.split("const packingListData")[1].split(
+        "const draftState"
+    )[0]
+    assert "hsn:" not in pack_builder
+    assert ">HSN<" not in packing_doc
+    assert "r.hsn" not in packing_doc
+    assert "colSpan={18}" in packing_doc
 
 
-def test_weights_still_render_dash_when_absent(detail):
-    # the >0 guards keep "—" for absent weights (no fabrication) — unchanged
-    assert "Number(pk.diamond_weight) > 0 ? Number(pk.diamond_weight) : null" in detail
-    assert "Number(pk.net_weight)     > 0 ? Number(pk.net_weight)     : null" in detail
+def test_commercial_fields_from_sales_packing_draft_line(detail):
+    pack_builder = detail.split("const packingListData")[1].split(
+        "const draftState"
+    )[0]
+    assert "ln.quality_string" in pack_builder
+    assert "ln.karat" in pack_builder
+    assert "ln.metal_color" in pack_builder
+    assert "ln.diamond_weight" in pack_builder
+    assert "ln.color_weight" in pack_builder
+    assert "ln.size" in pack_builder
+    assert "client_po:    (ln.client_po || '').trim()," in pack_builder
+    # No purchase-packing commercial price fallback
+    assert "pk.unit_price_eur" not in pack_builder
+    assert "pk.quality_string" not in pack_builder
+
+
+def test_physical_weights_still_from_purchase_packing(detail):
+    pack_builder = detail.split("const packingListData")[1].split(
+        "const draftState"
+    )[0]
+    assert "Number(pk.gross_weight)" in pack_builder
+    assert "Number(pk.net_weight)" in pack_builder

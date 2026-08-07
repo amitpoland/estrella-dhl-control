@@ -48,10 +48,19 @@ def test_get_draft_enriches_description_and_origin():
 
 def test_origin_fallback_excludes_seller_country():
     """PL (seller) must not leak into goods origin — companyProfile.country
-    removed from the origin fallback chain."""
+    removed from the origin fallback chain.
+
+    2026-08-07: also dropped the never-populated liveDraft.origin_country
+    phantom; Product Master enrichment writes ln.origin on GET only.
+    """
     src = _src(PROFORMA_DETAIL)
-    assert "origin:   ln.origin || liveDraft.origin_country || '—'" in src, \
-        "origin fallback must not include companyProfile.country (a0a36a6)"
+    assert "companyProfile.country" not in src or "Never invent; never use seller companyProfile.country" in src
+    # Goods origin view-model must not fall back to seller/company country
+    assert "origin:   (ln.origin || '').trim() || '—'" in src or \
+           "origin:       (ln.origin || '').trim() || '—'" in src, \
+        "origin must come from ln.origin only (no seller-country fallback)"
+    assert "liveDraft.origin_country" not in src, \
+        "phantom liveDraft.origin_country fallback must stay removed"
 
 
 def test_awb_not_set_from_batch_id():

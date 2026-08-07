@@ -56,7 +56,7 @@ from ..services.customer_master import (
     pick_invoice_series_id_for_vat_context,
     resolve_final_invoice_series_id as _resolve_final_series,
 )
-from ..services.master_data_db import get_company_profile
+from ..services.master_data_db import get_company_profile, normalize_origin_country
 from ..services import name_normalization
 from .sales_packing_parser import (
     parse_ejl_sales_packing,
@@ -4910,6 +4910,11 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     # projection of the mapped Customer Master commercial defaults. Never
     # mutates the draft, the posting payload, or customer identity.
     full["customer_master_suggestions"] = _customer_master_suggestions(d, full)
+    # Commercial issue-date authority (read-only): operator payment_terms.invoice_date
+    # || wfirma_issue_date. Never created_at. Shared by preview warning + Issued header.
+    _pt_for_issue = full.get("payment_terms") if isinstance(full.get("payment_terms"), dict) else {}
+    _pt_issue = str(_pt_for_issue.get("invoice_date") or "").strip() or None
+    full["issue_date"] = _pt_issue or getattr(d, "wfirma_issue_date", None)
     return full
 
 
@@ -5588,10 +5593,13 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
         log.warning("draft %s product_master fallback unavailable "
                     "(non-fatal): %s", draft_id, exc)
     # Pre-load product_local origin_country index for read-time origin enrichment.
-    # Source: master_data.sqlite / product_local.origin_country (authority: IN default).
+    # Source: master_data.sqlite / product_local.origin_country (shared authority
+    # for Proforma / Packing List / CMR / visibility). Keys stripped + casefolded.
+    # Absent SKUs are NOT invented. Blank columns are NOT filled with a phantom IN —
+    # only an explicit Product Master value (incl. schema-default "IN" on the row)
+    # is indexed after ISO normalization (India → IN).
     _pl_origin_index: Dict[str, str] = {}
     try:
-        from ..services.master_data_db import get_product_local as _get_pl_local
         _mdb_path = _master_db_path()
         if _mdb_path.exists():
             import sqlite3 as _sl3
@@ -5602,8 +5610,13 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                     " WHERE active = 1 OR active IS NULL"
                 ).fetchall():
                     _pcode = ((_r["product_code"] or "").strip())
-                    if _pcode:
-                        _pl_origin_index[_pcode] = (_r["origin_country"] or "IN") or "IN"
+                    if not _pcode:
+                        continue
+                    _oc = normalize_origin_country(_r["origin_country"])
+                    if not _oc:
+                        continue
+                    _pl_origin_index[_pcode] = _oc
+                    _pl_origin_index[_pcode.casefold()] = _oc
     except Exception as exc:
         log.warning("draft %s product_local origin index unavailable "
                     "(non-fatal): %s", draft_id, exc)
@@ -5644,12 +5657,19 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                     v = (pm.get("item_type") or "").strip()
                     if v:
                         ln["item_type"] = v
-            # Origin enrichment — product_local authority.
+            # Origin enrichment — shared Product Master authority (ISO code).
             # Never overwrite an operator-supplied origin; only fill when blank.
+            # Never invent origin for SKUs absent from Product Master.
             if not (ln.get("origin") or "").strip():
-                oc = _pl_origin_index.get(pc)
+                oc = _pl_origin_index.get(pc) or _pl_origin_index.get(pc.casefold())
                 if oc:
                     ln["origin"] = oc
+            else:
+                # Normalize any pre-set long-form value (e.g. "India" → "IN")
+                # so Proforma / Packing / CMR all render the same ISO code.
+                _norm = normalize_origin_country(ln.get("origin"))
+                if _norm and _norm != ln.get("origin"):
+                    ln["origin"] = _norm
     except Exception as exc:
         log.warning("draft %s read-time enrichment failed (non-fatal): %s",
                     draft_id, exc)
@@ -6342,12 +6362,34 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         )
         return f"<div class='addr'><div class='addr-h'>{label}</div>{items}</div>"
 
+    # Customer-facing payment terms only — never dump internal keys
+    # (invoice_language_id, vat_mode, invoice_date, …).
+    _PT_METHOD_LABELS = {
+        "transfer": "Bank transfer",
+        "paymentmethod": "Bank transfer",
+        "przelew": "Bank transfer",
+        "cash": "Cash",
+        "card": "Card",
+        "kompensata": "Compensation",
+    }
     terms_html = ""
-    if terms:
-        terms_html = "<dl class='terms'>" + "".join(
-            f"<dt>{_safe(k)}</dt><dd>{_safe(v)}</dd>"
-            for k, v in terms.items()
-        ) + "</dl>"
+    if terms and isinstance(terms, dict):
+        _parts = []
+        _method = str(terms.get("method") or terms.get("paymentmethod") or "").strip()
+        if _method:
+            _parts.append(
+                ("Payment method",
+                 _PT_METHOD_LABELS.get(_method.lower(), _method))
+            )
+        if terms.get("days") not in (None, ""):
+            _parts.append(("Payment days", f"{terms.get('days')} days"))
+        if _parts:
+            terms_html = "<dl class='terms'>" + "".join(
+                f"<dt>{_safe(k)}</dt><dd>{_safe(v)}</dd>"
+                for k, v in _parts
+            ) + "</dl>"
+        else:
+            terms_html = "<div class='terms-empty'>— default payment terms —</div>"
     else:
         terms_html = "<div class='terms-empty'>— default payment terms —</div>"
 
@@ -11463,16 +11505,19 @@ def _build_product_lines_panel(lines: List[Dict[str, Any]]) -> List[Dict[str, An
 
         hs         = str(ln.get("hs_code") or ln.get("hsn_code") or "").strip()
         hs_source  = "line" if hs else None
-        origin_country = "IN"
+        # Shared origin authority — same Product Master path as draft GET enrich.
+        # Start blank; never invent IN for SKUs without an active product_local row.
+        origin_country = normalize_origin_country(ln.get("origin")) or ""
 
         if pc and _mdb.exists():
             try:
                 pl_row = _get_pl(_mdb, pc)
                 # Phase 4B Wave 4: only apply the overlay when it is ACTIVE.
-                # An inactive overlay means "no overlay" → fall back to the
-                # line value / default origin.
+                # An inactive overlay means "no overlay" → leave blank / line value.
                 if pl_row and getattr(pl_row, "active", True):
-                    origin_country = pl_row.origin_country or "IN"
+                    _pl_oc = normalize_origin_country(pl_row.origin_country)
+                    if _pl_oc:
+                        origin_country = _pl_oc
                     if not hs and pl_row.hs_code_override:
                         hs        = pl_row.hs_code_override
                         hs_source = "product_local"

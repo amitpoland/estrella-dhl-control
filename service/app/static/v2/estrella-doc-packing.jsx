@@ -150,7 +150,7 @@ function EJPackingList({ packingData }) {
           ))}
         </div>
 
-        {/* ── 19-column packing table (full commercial detail) ── */}
+        {/* ── 18-column packing table (commercial detail; HSN removed) ── */}
         <table className="ej-table" style={{ fontSize: 7.5, marginBottom: 14, tableLayout: 'fixed', width: '100%' }}>
           <thead>
             <tr style={{ borderTop: '2px solid #0B3D2E' }}>
@@ -161,7 +161,7 @@ function EJPackingList({ packingData }) {
               <th style={{ width: 96, padding: '5px 3px' }}>Design</th>
               {/* Bilingual product description — EN over PL in one cell, wrapped
                   so the document stays A4-landscape wide. */}
-              <th style={{ width: 168, padding: '5px 3px' }}>Product Description (EN / PL)</th>
+              <th style={{ width: 180, padding: '5px 3px' }}>Product Description (EN / PL)</th>
               <th style={{ width: 30, textAlign: 'center',  padding: '5px 3px' }}>Kt</th>
               <th style={{ width: 24, textAlign: 'center',  padding: '5px 3px' }}>Col</th>
               <th style={{ width: 46, textAlign: 'center',  padding: '5px 3px' }}>Quality</th>
@@ -173,14 +173,13 @@ function EJPackingList({ packingData }) {
               <th style={{ width: 58, textAlign: 'right',   padding: '5px 3px' }}>Value&nbsp;({cur})</th>
               <th style={{ width: 68, textAlign: 'right',   padding: '5px 3px' }}>Total Value</th>
               <th style={{ width: 40, textAlign: 'center',  padding: '5px 3px' }}>Size</th>
-              <th style={{ width: 48, textAlign: 'center',  padding: '5px 3px' }}>HSN</th>
               <th style={{ width: 40, textAlign: 'center',  padding: '5px 3px' }}>Origin</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={19} style={{ textAlign: 'center', color: '#94A3B8', padding: '20px', fontSize: 11 }}>
+                <td colSpan={18} style={{ textAlign: 'center', color: '#94A3B8', padding: '20px', fontSize: 11 }}>
                   No packing lines loaded — open this batch from the proforma detail page.
                 </td>
               </tr>
@@ -214,7 +213,6 @@ function EJPackingList({ packingData }) {
                 <td className="ej-r ej-num"  style={{ padding: '3px 3px' }}>{_pkgFmtMoney(r.unit_price)}</td>
                 <td className="ej-r ej-num"  style={{ padding: '3px 3px', fontWeight: 600 }}>{_pkgFmtMoney(r.total_value)}</td>
                 <td className="ej-c ej-mono" style={{ padding: '3px 3px', fontSize: 7 }}>{r.size   || '—'}</td>
-                <td className="ej-c ej-mono" style={{ padding: '3px 3px', fontSize: 7 }}>{r.hsn    || '—'}</td>
                 <td className="ej-c ej-mono" style={{ padding: '3px 3px', fontSize: 7 }}>{r.origin || '—'}</td>
               </tr>
             ))}
@@ -230,7 +228,7 @@ function EJPackingList({ packingData }) {
               <td className="ej-r ej-num" style={{ padding: '5px 6px', fontSize: 8.5 }}>
                 {cur} {_pkgFmtMoney(grandTotal)}
               </td>
-              <td colSpan={3} style={{ padding: '5px 4px' }}/>
+              <td colSpan={2} style={{ padding: '5px 4px' }}/>
             </tr>
           </tfoot>
         </table>

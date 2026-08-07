@@ -145,13 +145,14 @@ def test_inventory_page_has_no_spread_rest_components():
 # ── B3: real client_po preferred, legacy fallback preserved ──────────────────
 
 def test_proforma_detail_client_po_never_bleeds_purchase_invoice():
-    """2026-07-16 authority repair: client_po is the CLIENT PO only. It must NEVER
-    fall back to pk.invoice_no (the SUPPLIER purchase invoice) — that mix put the
-    purchase invoice into the Client PO column. The purchase invoice is now its
-    own typed field (purchase_invoice_no)."""
+    """Client PO = Sales Packing field on the draft line. It must NEVER fall back
+    to pk.invoice_no (supplier purchase invoice) or purchase-packing client_po
+    (Purchase Packing has no such column). purchase_invoice_no stays typed-separate."""
     src = _read("proforma-detail.jsx")
-    assert "client_po:    pk.client_po || ''," in src, \
-        "client_po must resolve to pk.client_po only (honest-missing else)"
+    assert "client_po:    (ln.client_po || '').trim()," in src, \
+        "client_po must resolve from Sales Packing draft line (ln.client_po)"
+    assert "client_po:    pk.client_po" not in src, \
+        "client_po must not read Purchase Packing"
     assert "purchase_invoice_no: pk.invoice_no || ''," in src, \
         "supplier purchase invoice must be its own typed field, separate from client_po"
     # the old cross-authority fallback must be gone
