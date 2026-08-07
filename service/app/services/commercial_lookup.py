@@ -2,7 +2,7 @@
 
 The ONE authority for operator-selectable commercial enumerations used across
 the Proforma commercial surface: payment methods, invoice languages, VAT/WDT
-modes, and freight/insurance service products.
+modes, document currencies, and freight/insurance service products.
 
 Every route that lists or validates these values consumes THIS module instead of
 maintaining its own table, so the frontend dropdowns, Customer Master record
@@ -17,6 +17,7 @@ It FEDERATES existing sources of truth (it does not duplicate them):
     ``LANGUAGES`` / ``VAT_MODES``) — the same values ``get_dictionaries()``
     serves to the UI. No network in the validation path (these are baseline
     enum constants; only the series catalog has a live fetch).
+  * document currencies → ``nbp_rate_service.CURRENCY_REGISTRY`` (PLN hub FX).
   * freight / insurance service products → the proforma service-product
     registry (``proforma_invoice_link_db.get_all_service_product_meta``).
 
@@ -28,10 +29,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import nbp_rate_service as _nbp
 from . import wfirma_dictionary_cache as _wdc
 
 # Charge types that carry a wFirma service-product mapping.
 SERVICE_CHARGE_TYPES = ("freight", "insurance")
+
+# wFirma translation_language ids (account base language is Polish).
+# Commercial documents are intended as Polish + English — never accidental German.
+WFIRMA_LANG_POLISH = "1"
+WFIRMA_LANG_ENGLISH = "2"
+WFIRMA_LANG_GERMAN = "3"
+INTENDED_TRANSLATION_LANGUAGE_ID = WFIRMA_LANG_ENGLISH
 
 
 # ── List authorities (label + id) ─────────────────────────────────────────────
@@ -41,12 +50,75 @@ def payment_methods() -> List[Dict[str, Any]]:
 
 
 def invoice_languages() -> List[Dict[str, Any]]:
+    """Human-readable language list. Raw wFirma ids remain the stored value."""
     return [dict(x) for x in _wdc.LANGUAGES]
+
+
+def invoice_language_label(language_id: Any) -> str:
+    lid = str(language_id if language_id is not None else "").strip()
+    for row in _wdc.LANGUAGES:
+        if str(row.get("id", "")).strip() == lid:
+            return str(row.get("label") or lid)
+    return lid or "— Default (use account language)"
+
+
+def currencies() -> List[Dict[str, Any]]:
+    """Controlled document currencies (PLN / USD / EUR / INR)."""
+    return _nbp.currencies()
 
 
 def vat_modes() -> List[Dict[str, Any]]:
     return [dict(x) for x in _wdc.VAT_MODES]
 
+
+def resolve_translation_language_id(
+    draft_language_id: Any = None,
+    cm_language_id: Any = None,
+) -> Dict[str, Any]:
+    """Pick the translation language for Proforma/Invoice XML.
+
+    Authority order:
+      1. Saved draft ``invoice_language_id`` (operator commercial terms)
+      2. Customer Master default — but NEVER accidental German (id 3);
+         German from CM alone falls back to English with a warning
+      3. Intended commercial default: English (Polish is the account base)
+
+    Returns ``{"language_id", "label", "source", "warning"}``.
+    """
+    draft = str(draft_language_id if draft_language_id is not None else "").strip()
+    cm = str(cm_language_id if cm_language_id is not None else "").strip()
+    warning = None
+
+    if draft:
+        # Operator explicitly saved a draft value — honour it (incl. German).
+        return {
+            "language_id": draft,
+            "label": invoice_language_label(draft),
+            "source": "draft",
+            "warning": warning,
+        }
+
+    if cm and cm != WFIRMA_LANG_GERMAN:
+        return {
+            "language_id": cm,
+            "label": invoice_language_label(cm),
+            "source": "customer_master",
+            "warning": warning,
+        }
+
+    if cm == WFIRMA_LANG_GERMAN:
+        warning = (
+            "Customer Master default_language_id is German (3); "
+            "commercial documents default to English (2) unless the operator "
+            "explicitly saves German on the draft"
+        )
+
+    return {
+        "language_id": INTENDED_TRANSLATION_LANGUAGE_ID,
+        "label": invoice_language_label(INTENDED_TRANSLATION_LANGUAGE_ID),
+        "source": "intended_commercial_default",
+        "warning": warning,
+    }
 
 # ── Id sets (validation authorities) ──────────────────────────────────────────
 
@@ -75,6 +147,10 @@ def validate_invoice_language(value: Any) -> bool:
 
 def validate_vat_mode(value: Any) -> bool:
     return str(value if value is not None else "").strip() in vat_mode_ids()
+
+
+def validate_currency(value: Any) -> bool:
+    return _nbp.is_document_currency(value)
 
 
 def validate_charge_type(value: Any) -> bool:

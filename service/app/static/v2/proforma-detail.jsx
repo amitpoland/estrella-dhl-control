@@ -7668,7 +7668,11 @@ function ServiceProductRegistryPanel() {
       .catch(e => { setSaving(false); setSaveErr(e.message || String(e)); });
   };
 
+  // API shape: { ok, service_products: [...] }. Transport wraps as { ok, data }.
+  // Never look for a non-existent `.mappings` key — that made the registry
+  // appear empty even when freight/insurance were correctly mapped.
   const rows = Array.isArray(products) ? products
+    : (products && Array.isArray(products.service_products)) ? products.service_products
     : (products && Array.isArray(products.mappings)) ? products.mappings
     : [];
 
@@ -8068,7 +8072,8 @@ function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
   const curPayment = pt.method || '';
   const curDays    = (pt.days != null ? String(pt.days) : '');
   const curLang    = pt.invoice_language_id || '';
-  const curVat     = liveDraft.vat_code || '';
+  // VAT/WDT is display-only here — VatInsurancePanel + draft vat_code are the
+  // single VAT authority. No second editable VAT control on this page.
 
   // Payment methods come from the single dictionary authority (get_dictionaries
   // now serves payment_methods, federated by CommercialLookupService). Static
@@ -8081,15 +8086,19 @@ function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
         { id: 'card', label: 'Card' },
         { id: 'compensation', label: 'Compensation' },
       ];
-  const vatModes  = (dicts && dicts.vat_modes) || [];
   const languages = (dicts && dicts.languages) || [];
   const _label = (list, id) => {
     const m = (list || []).find(x => String(x.id) === String(id));
     return m ? m.label : null;
   };
   const payLabel  = (id) => (_label(PAY_METHODS, id) || (id || '—'));
-  const langLabel = (id) => (dicts ? (_label(languages, id) || (id === '' ? 'Default' : id)) : (id || '—'));
-  const vatLabel  = (id) => (dicts ? (_label(vatModes, id) || (id || '—')) : (id || '—'));
+  const langLabel = (id) => {
+    const lbl = _label(languages, id);
+    if (lbl) return lbl;
+    if (id === '' || id == null) return 'Default (account language)';
+    // Never show a bare numeric id without a label once dicts are loaded.
+    return dicts ? `Language #${id}` : String(id || '—');
+  };
 
   const loadDicts = () => {
     if (dicts) return;
@@ -8097,10 +8106,12 @@ function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
       .then(r => setDicts((r && r.data) || r || {}))
       .catch(() => setDicts({}));
   };
+  // Eager-load languages so the read-only view shows "English" not "2".
+  React.useEffect(() => { loadDicts(); }, []);
   const startEdit = () => {
     loadDicts();
     setForm({ payment_method: curPayment, payment_terms_days: curDays,
-              invoice_language_id: curLang, vat_mode: curVat });
+              invoice_language_id: curLang });
     setErr(null); setMsg(null); setOpen(true);
   };
   const setField = (k, v) => setForm(p => ({ ...(p || {}), [k]: v }));
@@ -8114,7 +8125,6 @@ function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
       if (!isNaN(d)) fields.payment_terms_days = d;
     }
     if (form.invoice_language_id !== curLang) fields.invoice_language_id = form.invoice_language_id;
-    if (form.vat_mode !== curVat && form.vat_mode) fields.vat_mode = form.vat_mode;
     if (Object.keys(fields).length === 0) { setOpen(false); return; }
     setBusy(true); setErr(null); setMsg(null);
     window.PzApi.setCommercialDefaults(draftId, fields, updatedAt)
@@ -8145,10 +8155,10 @@ function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
 
       {!open ? (
         <div style={{ fontSize: 12, color: 'var(--text)' }}>
-          <div style={row}><span style={lab}>Payment method</span><span data-testid="pf-ct-payment">{curPayment ? `${curPayment} · ${payLabel(curPayment)}` : '—'}</span></div>
+          <div style={row}><span style={lab}>Payment method</span><span data-testid="pf-ct-payment">{curPayment ? `${payLabel(curPayment)}` : '—'}</span></div>
           <div style={row}><span style={lab}>Payment terms</span><span data-testid="pf-ct-days">{curDays !== '' ? `${curDays} days` : '—'}</span></div>
-          <div style={row}><span style={lab}>Invoice language</span><span data-testid="pf-ct-lang">{curLang ? `${curLang} · ${langLabel(curLang)}` : '—'}</span></div>
-          <div style={row}><span style={lab}>VAT / WDT</span><span data-testid="pf-ct-vat">{curVat ? `${curVat}${vatLabel(curVat) && vatLabel(curVat) !== curVat ? ' · ' + vatLabel(curVat) : ''}` : '—'}</span></div>
+          <div style={row}><span style={lab}>Invoice language</span><span data-testid="pf-ct-lang">{langLabel(curLang)}{curLang ? <span style={{ color: 'var(--text-3)', marginLeft: 6 }}>(id {curLang})</span> : null}</span></div>
+          <div style={row}><span style={lab}>VAT / WDT</span><span data-testid="pf-ct-vat" style={{ color: 'var(--text-3)' }}>see VAT panel below · not edited here</span></div>
           {msg && <div data-testid="pf-ct-msg" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginTop: 4 }}>{msg}</div>}
         </div>
       ) : (
@@ -8167,14 +8177,11 @@ function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
           <div style={row}>
             <span style={lab}>Invoice language</span>
             <select data-testid="pf-ct-lang-select" value={form.invoice_language_id} onChange={e => setField('invoice_language_id', e.target.value)} style={sel}>
-              {(languages.length ? languages : [{ id: '', label: '— Default —' }]).map(o => <option key={o.id} value={o.id}>{o.id ? `${o.id} · ${o.label}` : o.label}</option>)}
-            </select>
-          </div>
-          <div style={row}>
-            <span style={lab}>VAT / WDT</span>
-            <select data-testid="pf-ct-vat-select" value={form.vat_mode} onChange={e => setField('vat_mode', e.target.value)} style={sel}>
-              <option value="">— select —</option>
-              {vatModes.map(o => <option key={o.id} value={String(o.id)}>{o.id} · {o.label}</option>)}
+              {(languages.length ? languages : [{ id: '', label: '— Default —' }, { id: '2', label: 'English' }, { id: '1', label: 'Polish (Polski)' }]).map(o => (
+                <option key={o.id === '' ? 'default' : o.id} value={o.id}>
+                  {o.label}{o.id === '3' ? ' — avoid accidental German' : ''}
+                </option>
+              ))}
             </select>
           </div>
           {err && <div data-testid="pf-ct-err" style={{ fontSize: 11, color: 'var(--badge-red-text)', margin: '4px 0' }}>{err}</div>}
@@ -8520,45 +8527,30 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
           <div style={{ padding: '8px 20px 12px' }}>
             <InfoRow label="Customer" value={detail.client_name || '—'} />
             {editMode ? (
-              <PfFieldRow label="Currency">
+              <PfFieldRow label="Document currency">
                 <div data-testid="edit-currency-container" style={{ width: '100%' }}>
-                  <EditableKvItem k="" value={editFields.currency || ''} onChange={v => onEditField('currency', v)} />
-                </div>
-              </PfFieldRow>
-            ) : (
-              <InfoRow label="Currency" value={currency} />
-            )}
-            {editMode ? (
-              <PfFieldRow label="Payment method">
-                <div data-testid="edit-pt-method-container" style={{ width: '100%' }}>
                   <select
-                    value={editFields.pt_method || ''}
-                    onChange={e => onEditField('pt_method', e.target.value)}
-                    data-testid="edit-pt-method"
+                    value={editFields.currency || currency || ''}
+                    onChange={e => onEditField('currency', e.target.value)}
+                    data-testid="edit-currency"
                     style={{ width: '100%', padding: '6px 9px', borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }}
                   >
-                    <option value="">— not set —</option>
-                    <option value="transfer">transfer</option>
-                    <option value="cash">cash</option>
-                    <option value="card">card</option>
-                    <option value="compensation">compensation</option>
+                    {['PLN', 'USD', 'EUR', 'INR'].map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
                   </select>
-                  <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 600, marginBottom: 2 }}>Payment days</div>
-                    <input
-                      type="number" min="0" max="365"
-                      value={editFields.pt_days || ''}
-                      onChange={e => onEditField('pt_days', e.target.value)}
-                      data-testid="edit-pt-days"
-                      placeholder="e.g. 30"
-                      style={{ width: '100%', padding: '6px 9px', borderRadius: 6, border: '1px solid var(--accent-border)', background: 'var(--card)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }}
-                    />
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4 }}>
+                    Source commercial currency stays frozen; changing document currency revalues via NBP/PLN.
                   </div>
                 </div>
               </PfFieldRow>
             ) : (
-              <InfoRow label="Payment method" value={detail.paymentTerms || '—'} />
+              <InfoRow label="Document currency" value={currency} />
             )}
+            <InfoRow label="Source currency" value={detail.source_currency || currency || '—'} mono />
+            {/* Payment method/days: single editable authority is CommercialTermsEditor below.
+                Customer & terms shows the saved draft value read-only to avoid duplicate writers. */}
+            <InfoRow label="Payment method" value={detail.paymentTerms || '—'} />
             <InfoRow label="Incoterm" value={detail.incoterm || '—'} />
             <InfoRow label="Status" value={(PF_STATUS_CHIP[detail.draft_state] || {}).label || detail.draft_state || '—'} />
           </div>
@@ -8624,6 +8616,7 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
             ) : (
               <InfoRow label={`${currency}/PLN rate`} value={fxRate ? fxRate.toFixed(4) : '—'} mono />
             )}
+            <InfoRow label="Source→doc rate" value={detail.fx_cross_rate != null ? Number(detail.fx_cross_rate).toFixed(6) : '—'} mono />
             <InfoRow label="Rate source" value={detail.fx_rate_source || '—'} />
             <InfoRow label="NBP table" value={detail.nbp_table_number || '—'} mono />
             <InfoRow label="NBP table date" value={detail.fx_table_date || detail.exchange_rate_date || '—'} mono />
@@ -8632,11 +8625,11 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
             {draftId && (
               <div style={{ marginTop: 8 }}>
                 <button data-testid="fetch-nbp-rate" onClick={fetchNbp} disabled={nbpBusy}
-                        title="Fetch the NBP rate for the draft currency, keyed to the proforma issue date"
+                        title="Fetch NBP via PLN hub for source→document currency, keyed to the proforma issue date"
                         style={{ fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 5, border: '1px solid var(--accent)', background: 'var(--bg)', color: 'var(--accent)', cursor: nbpBusy ? 'wait' : 'pointer', opacity: nbpBusy ? 0.6 : 1 }}>
                   {nbpBusy ? '↻ Fetching NBP…' : '↻ Fetch NBP rate'}
                 </button>
-                <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 8 }}>USD / EUR fetched · PLN identity · manual override above</span>
+                <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 8 }}>PLN hub · USD/EUR/INR · PLN identity · manual override above</span>
                 {nbpMsg && <div data-testid="fetch-nbp-msg" style={{ fontSize: 11, color: 'var(--badge-green-text)', marginTop: 4 }}>{nbpMsg}</div>}
                 {nbpErr && <div data-testid="fetch-nbp-err" style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: 4 }}>NBP fetch failed · {nbpErr}</div>}
               </div>

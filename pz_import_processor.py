@@ -363,10 +363,21 @@ def canonical_item_sort_key(item: dict, original_index: int) -> tuple:
 # ── NBP rate ──────────────────────────────────────────────────────────────────
 
 def get_nbp_rate(invoice_date_str: str, manual_rate: float = None) -> dict:
+    """Fetch NBP Table A for the business day preceding *invoice_date_str*.
+
+    Rate-date rule (locked): start at calendar day before the invoice/issue
+    date, skip weekends, then walk back up to 7 business days for holidays
+    (HTTP 404 = no table that day). Never silently substitutes "today".
+
+    Returns usd_rate / eur_rate / inr_rate for backward compatibility, plus a
+    ``rates`` dict of every Table A mid (JSON API already quotes per 1 unit of
+    foreign currency — including INR/JPY which the HTML table shows per 100).
+    """
     if manual_rate:
         print(f"  Using manual rate: 1 USD = {manual_rate} PLN")
         return {"table_no": "MANUAL", "table_date": "MANUAL",
-                "usd_rate": manual_rate, "eur_rate": None}
+                "usd_rate": manual_rate, "eur_rate": None, "inr_rate": None,
+                "rates": {"USD": float(manual_rate)}}
 
     try:
         inv_date = datetime.strptime(invoice_date_str, "%d-%m-%Y")
@@ -396,6 +407,8 @@ def get_nbp_rate(invoice_date_str: str, manual_rate: float = None) -> dict:
                     "table_date": data["effectiveDate"],
                     "usd_rate":   rates.get("USD", 0),
                     "eur_rate":   rates.get("EUR", 0),
+                    "inr_rate":   rates.get("INR", 0),
+                    "rates":      rates,
                 }
                 print(f"  NBP Table {result['table_no']} ({result['table_date']}): "
                       f"1 USD = {result['usd_rate']} PLN")
@@ -413,7 +426,8 @@ def get_nbp_rate(invoice_date_str: str, manual_rate: float = None) -> dict:
         )
     try:
         return {"table_no": "MANUAL", "table_date": "MANUAL",
-                "usd_rate": float(rate_str), "eur_rate": None}
+                "usd_rate": float(rate_str), "eur_rate": None, "inr_rate": None,
+                "rates": {"USD": float(rate_str)}}
     except ValueError:
         sys.exit("Invalid rate. Aborting.")
 

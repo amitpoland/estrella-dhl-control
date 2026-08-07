@@ -50,6 +50,11 @@ log = logging.getLogger(__name__)
 
 VALID_STATUSES = ("pending", "issued", "failed", "rolled_back")
 
+# Document currencies — single registry owned by nbp_rate_service (PLN hub).
+from .nbp_rate_service import DOCUMENT_CURRENCIES as _DOC_CCY  # noqa: E402
+ALLOWED_CURRENCIES = tuple(_DOC_CCY)
+LEGACY_READ_CURRENCIES = ("GBP", "CHF", "JPY")
+
 
 @dataclass(frozen=True)
 class ProformaInvoiceLink:
@@ -91,8 +96,10 @@ def validate(link: ProformaInvoiceLink) -> List[str]:
         blockers.append("operator is required")
     if not (link.currency or "").strip():
         blockers.append("currency is required")
-    if link.currency and link.currency not in ("PLN", "USD", "EUR"):
-        blockers.append(f"currency must be PLN/USD/EUR, got {link.currency!r}")
+    if link.currency and link.currency not in ALLOWED_CURRENCIES:
+        blockers.append(
+            f"currency must be one of {ALLOWED_CURRENCIES}, got {link.currency!r}"
+        )
     if link.status not in VALID_STATUSES:
         blockers.append(f"status must be one of {VALID_STATUSES}, got {link.status!r}")
     try:
@@ -570,6 +577,11 @@ class ProformaDraft:
     # working-day table — the two dates are not always the same.
     fx_accounting_date: Optional[str] = None  # requested accounting date (YYYY-MM-DD)
     fx_table_number:    Optional[str] = None  # NBP Table A number, e.g. "A/089/2026"
+    # PLN-hub FX authority — commercial source vs selected document currency.
+    # exchange_rate remains doc→PLN (wFirma accounting). fx_cross_rate is
+    # source→doc (doc units per 1 source unit), via NBP/PLN.
+    source_currency:    Optional[str] = None
+    fx_cross_rate:      Optional[float] = None
     incoterm:        Optional[str]   = None   # per-shipment incoterm (DAP/FCA/…)
     insurance_eur:   Optional[float] = None   # declared shipment insurance EUR
     # ── PR-5 transport-document weight override ──────────────────────
@@ -675,6 +687,8 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("fx_rate_source", "TEXT NOT NULL DEFAULT 'NBP'"),
         ("fx_accounting_date", "TEXT"),   # PR-4: requested accounting date
         ("fx_table_number",    "TEXT"),   # PR-4: NBP Table A number
+        ("source_currency",    "TEXT"),   # commercial source ccy (Sales Packing)
+        ("fx_cross_rate",      "REAL"),   # source→doc via PLN (doc per 1 source)
         ("incoterm",       "TEXT"),
         ("insurance_eur",  "REAL"),
         # ── PR-5 transport-document weight override (kg) ─────────────────
@@ -1290,6 +1304,11 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         fx_rate_source             = (_opt("fx_rate_source") or "NBP"),
         fx_accounting_date         = _opt("fx_accounting_date"),
         fx_table_number            = _opt("fx_table_number"),
+        source_currency            = _opt("source_currency"),
+        fx_cross_rate              = (
+            float(_opt("fx_cross_rate"))
+            if _opt("fx_cross_rate") not in (None, "") else None
+        ),
         incoterm                   = _opt("incoterm"),
         insurance_eur              = _opt("insurance_eur"),
         # ── PR-5 transport-document weight override ──────────────────────
@@ -2470,9 +2489,6 @@ EDITABLE_STATES = ("draft", "editing", "post_failed")
 # is NOT linkable, so a new lifecycle state can never accidentally become linkable.
 LINKABLE_STATES = ("posted",)
 
-# Currencies the project deals in. Mirrors the intake-route allowlist.
-ALLOWED_CURRENCIES = ("EUR", "USD", "PLN", "GBP", "CHF", "JPY")
-
 # Allowed top-level fields on PATCH /draft/{id}. Mutation is line-by-line
 # for editable_lines, so it is intentionally NOT in this set.
 EDITABLE_DRAFT_FIELDS = (
@@ -2705,6 +2721,8 @@ def _commit_draft_update(
     new_fx_rate_source:             Any                 = _UNCHANGED,
     new_fx_accounting_date:         Any                 = _UNCHANGED,
     new_fx_table_number:            Any                 = _UNCHANGED,
+    new_source_currency:            Any                 = _UNCHANGED,
+    new_fx_cross_rate:              Any                 = _UNCHANGED,
     # ── PR-5 transport-document weight override ──────────────────────
     new_manual_net_weight:          Any                 = _UNCHANGED,
     new_manual_gross_weight:        Any                 = _UNCHANGED,
@@ -2811,6 +2829,12 @@ def _commit_draft_update(
     if new_fx_table_number != _UNCHANGED:
         sets.append("fx_table_number=?")
         args.append(new_fx_table_number)
+    if new_source_currency != _UNCHANGED:
+        sets.append("source_currency=?")
+        args.append(new_source_currency)
+    if new_fx_cross_rate != _UNCHANGED:
+        sets.append("fx_cross_rate=?")
+        args.append(new_fx_cross_rate)
     # ── PR-5 transport-document weight override ──────────────────────
     if new_manual_net_weight != _UNCHANGED:
         sets.append("manual_net_weight=?")
@@ -2991,37 +3015,78 @@ def update_draft_fields(
         new_fx_rate_source  = "manual"
         new_fx_table_number = None
 
-    # Currency change must not contradict service-charge currencies that
-    # were locked in earlier.
-    if new_currency is not None:
+    # Currency change → revalue lines + charges through the PLN-hub convert()
+    # authority. Source commercial amounts are frozen on first revalue so
+    # repeated switches do not compound. Posted/locked drafts are already
+    # refused by _load_for_edit.
+    new_editable_lines = None
+    new_service_charges = None
+    new_source_currency = "__unchanged__"
+    new_fx_cross_rate = "__unchanged__"
+    new_fx_accounting_date = "__unchanged__"
+    if new_currency is not None and new_currency != (d.currency or "").strip().upper():
+        from . import nbp_rate_service as _nbp
+        try:
+            lines = json.loads(d.editable_lines_json or "[]")
+        except Exception:
+            lines = []
         try:
             charges = json.loads(d.service_charges_json or "[]")
         except Exception:
             charges = []
-        bad = [c for c in charges
-                if (c.get("currency") or "").upper() != new_currency
-                and c.get("currency")]
-        if bad:
-            raise ValueError(
-                f"cannot change draft currency to {new_currency} — "
-                f"existing service charges in {bad[0].get('currency')!r} "
-                "must be removed first"
+        src = _nbp.resolve_source_currency(
+            draft_source_currency=getattr(d, "source_currency", None),
+            draft_currency=d.currency,
+            lines=lines if isinstance(lines, list) else [],
+        )
+        issue = (getattr(d, "wfirma_issue_date", None) or "").strip()
+        if not issue:
+            try:
+                pt = json.loads(d.payment_terms_json or "{}")
+                issue = str(pt.get("invoice_date") or "").strip()
+            except Exception:
+                issue = ""
+        if not issue:
+            issue = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            snap = _nbp.revalue_commercial_snapshot(
+                lines=lines if isinstance(lines, list) else [],
+                service_charges=charges if isinstance(charges, list) else [],
+                source_ccy=src,
+                doc_ccy=new_currency,
+                issue_date=issue,
             )
+        except _nbp.NbpRateError as exc:
+            raise ValueError(f"currency revalue failed: {exc.message}") from exc
+        new_editable_lines = snap["lines"]
+        new_service_charges = snap["service_charges"]
+        new_source_currency = src
+        new_fx_cross_rate = snap["rate_normalized"]
+        new_exchange_rate = snap["doc_to_pln_rate"]
+        new_fx_rate_date = snap.get("nbp_date")
+        new_fx_rate_source = snap["source"]
+        new_fx_table_number = snap.get("nbp_table")
+        new_fx_accounting_date = issue
 
     refreshed = _commit_draft_update(
         db_path, d.id,
-        new_state            = _next_state_after_edit(d.draft_state),
-        new_remarks          = new_remarks,
-        new_currency         = new_currency,
-        new_exchange_rate    = new_exchange_rate,
-        new_buyer_override   = new_buyer_override,
-        new_ship_to_override = new_ship_to,
-        new_payment_terms    = new_payment,
-        new_incoterm         = new_incoterm,
-        new_insurance_eur    = new_insurance_eur,
-        new_fx_rate_date     = new_fx_rate_date,
-        new_fx_rate_source   = new_fx_rate_source,
-        new_fx_table_number  = new_fx_table_number,
+        new_state              = _next_state_after_edit(d.draft_state),
+        new_remarks            = new_remarks,
+        new_currency           = new_currency,
+        new_exchange_rate      = new_exchange_rate,
+        new_buyer_override     = new_buyer_override,
+        new_ship_to_override   = new_ship_to,
+        new_payment_terms      = new_payment,
+        new_editable_lines     = new_editable_lines,
+        new_service_charges    = new_service_charges,
+        new_incoterm           = new_incoterm,
+        new_insurance_eur      = new_insurance_eur,
+        new_fx_rate_date       = new_fx_rate_date,
+        new_fx_rate_source     = new_fx_rate_source,
+        new_fx_table_number    = new_fx_table_number,
+        new_fx_accounting_date = new_fx_accounting_date,
+        new_source_currency    = new_source_currency,
+        new_fx_cross_rate      = new_fx_cross_rate,
     )
     _fx_after = None
     if _fx_before is not None:
@@ -3055,6 +3120,11 @@ def set_draft_nbp_rate(
     source:              str,
     operator:            str,
     expected_updated_at: str,
+    source_currency:     Optional[str] = None,
+    fx_cross_rate:       Optional[float] = None,
+    new_currency:        Optional[str] = None,
+    new_editable_lines:  Optional[List[Dict[str, Any]]] = None,
+    new_service_charges: Optional[List[Dict[str, Any]]] = None,
 ) -> ProformaDraft:
     """Persist a fetched NBP (or PLN identity) rate atomically on the draft.
 
@@ -3064,10 +3134,10 @@ def set_draft_nbp_rate(
     raises :class:`DraftNotEditable`. The rate VALUE comes from the sole PZ NBP
     authority via ``nbp_rate_service`` — this writer never computes a rate.
 
-    Persists: exchange_rate, fx_accounting_date (the requested date), fx_rate_date
-    (the returned NBP table date — may differ), fx_table_number, fx_rate_source
-    ('NBP' | 'identity'), updated_at. Records a ``nbp_rate_fetched`` audit event
-    with before/after.
+    Persists: exchange_rate (doc→PLN), source_currency, fx_cross_rate
+    (source→doc via PLN), fx_accounting_date, fx_rate_date, fx_table_number,
+    fx_rate_source ('NBP' | 'identity'), and optionally revalued lines /
+    document currency. Records a ``nbp_rate_fetched`` audit event.
     """
     if not (operator or "").strip():
         raise ValueError("operator is required")
@@ -3080,31 +3150,47 @@ def set_draft_nbp_rate(
 
     d = _load_for_edit(db_path, draft_id, expected_updated_at)
     before = {
-        "exchange_rate":    d.exchange_rate,
-        "fx_rate_source":   d.fx_rate_source,
-        "fx_rate_date":     d.fx_rate_date,
+        "exchange_rate":      d.exchange_rate,
+        "fx_rate_source":     d.fx_rate_source,
+        "fx_rate_date":       d.fx_rate_date,
         "fx_accounting_date": getattr(d, "fx_accounting_date", None),
-        "fx_table_number":  getattr(d, "fx_table_number", None),
+        "fx_table_number":    getattr(d, "fx_table_number", None),
+        "source_currency":    getattr(d, "source_currency", None),
+        "fx_cross_rate":      getattr(d, "fx_cross_rate", None),
+        "currency":           d.currency,
     }
-    refreshed = _commit_draft_update(
-        db_path, d.id,
-        new_state           = _next_state_after_edit(d.draft_state),
-        new_exchange_rate   = rate,
-        new_fx_rate_date    = (table_date or None),
-        new_fx_rate_source  = source,
+    kwargs: Dict[str, Any] = dict(
+        new_state              = _next_state_after_edit(d.draft_state),
+        new_exchange_rate      = rate,
+        new_fx_rate_date       = (table_date or None),
+        new_fx_rate_source     = source,
         new_fx_accounting_date = accounting_date,
-        new_fx_table_number = (table_number or None),
+        new_fx_table_number    = (table_number or None),
     )
+    if source_currency is not None:
+        kwargs["new_source_currency"] = str(source_currency).strip().upper() or None
+    if fx_cross_rate is not None:
+        kwargs["new_fx_cross_rate"] = float(fx_cross_rate)
+    if new_currency is not None:
+        kwargs["new_currency"] = _validate_currency(new_currency)
+    if new_editable_lines is not None:
+        kwargs["new_editable_lines"] = new_editable_lines
+    if new_service_charges is not None:
+        kwargs["new_service_charges"] = new_service_charges
+    refreshed = _commit_draft_update(db_path, d.id, **kwargs)
     _record_draft_event(
         db_path, draft_id=d.id, event="nbp_rate_fetched",
         detail_json=json.dumps({
             "before":          before,
             "after": {
-                "exchange_rate":    refreshed.exchange_rate,
-                "fx_rate_source":   refreshed.fx_rate_source,
-                "fx_rate_date":     refreshed.fx_rate_date,
+                "exchange_rate":      refreshed.exchange_rate,
+                "fx_rate_source":     refreshed.fx_rate_source,
+                "fx_rate_date":       refreshed.fx_rate_date,
                 "fx_accounting_date": getattr(refreshed, "fx_accounting_date", None),
-                "fx_table_number":  getattr(refreshed, "fx_table_number", None),
+                "fx_table_number":    getattr(refreshed, "fx_table_number", None),
+                "source_currency":    getattr(refreshed, "source_currency", None),
+                "fx_cross_rate":      getattr(refreshed, "fx_cross_rate", None),
+                "currency":           refreshed.currency,
             },
             "from_state":      d.draft_state,
             "to_state":        refreshed.draft_state,
