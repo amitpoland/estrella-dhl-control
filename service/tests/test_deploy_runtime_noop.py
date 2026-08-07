@@ -88,8 +88,10 @@ def test_marker_advances_only_after_identity_is_reproved():
     end = body.index("Set-ServiceState -Cfg $cfg -Target Stopped", start)
     block = body[start:end]
 
-    reproof = block.index("Assert-ProductionMatchesRecordedSha -Cfg $cfg -ExpectSha $ReviewedSHA")
-    write = block.index("Write-VersionFile -Cfg $cfg -Sha $ReviewedSHA")
+    # The no-op body lives in Invoke-DeployMain, whose target parameter is $TargetSha
+    # (operator-supplied via -ReviewedSHA, or the resolved origin/main tip via -Release).
+    reproof = block.index("Assert-ProductionMatchesRecordedSha -Cfg $cfg -ExpectSha $TargetSha")
+    write = block.index("Write-VersionFile -Cfg $cfg -Sha $TargetSha")
     assert reproof < write, (
         "the no-op path writes the version marker without first re-proving that the "
         "runtime tree IS the reviewed target. A wrong no-op verdict would then be "

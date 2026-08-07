@@ -18,9 +18,40 @@ deployment scripts. Pinned by `service/tests/test_deploy_authority.py`.
 Every production path, engine filename, and robocopy flag lives in the configuration.
 Nothing is hardcoded anywhere else.
 
-## What the operator runs
+## What the operator runs — NORMAL flow (one command)
 
-`-ReviewedSHA` is **required** for a deploy. It is the exact SHA the 7-agent gate
+```
+.\.claude\deploy\Deploy-PZ.ps1 -Release
+```
+
+`-Release` resolves the current `origin/main` SHA, validates the seven-agent gate
+evidence at the standard path (`gate_evidence_file` in the configuration:
+`C:\PZ-secrets\deploy-gate\latest.json`), proves what production actually runs (the
+version marker is evidence, never authority), automatically chooses
+**no-op / deploy / reconcile**, mints and consumes the signed single-use
+authorization internally *after* the read-only identity checks pass, deploys,
+restarts, runs the closure validation, and prints exactly one final status:
+`ALREADY CURRENT`, `DEPLOYED`, `ROLLED BACK`, or `FAILED SAFE`.
+
+Only four conditions block a release; each is enforced, not advisory:
+
+1. the seven-agent verdict is not GO for the resolved target;
+2. production runtime identity cannot be proven;
+3. backup / copy / manifest verification fails;
+4. the service is not healthy after the deploy (closure validation).
+
+Test-only or docs-only merges surface as the runtime no-op, which advances the
+marker without stopping the service. A stale lock whose recording process is
+provably dead is auto-cleared with an audit line. The seven-agent GO evidence must
+be at the standard path (schema: `.claude/contracts/seven-agent-evidence.md`) and
+the signing key in the shell; the operator supplies no SHA and runs no separate
+signing command. Re-running after `FAILED SAFE` is safe: everything before the
+first write is read-only, and a write-phase failure has either rolled back
+automatically or left the exact recovery state on screen.
+
+## Advanced / debug modes (manual control)
+
+`-ReviewedSHA` is **required** for a manual deploy. It is the exact SHA the 7-agent gate
 approved. The target is never inferred from `origin/main`, so a commit pushed after
 the gate ran cannot ship.
 
@@ -56,13 +87,19 @@ python .claude/hooks/sign_deploy_authorization.py <40-char-sha> deploy Both --ga
 Options: `-Scope App|Engine|Both`, `-Bootstrap` (first-ever deploy, no rollback
 target), `-ForceUnlock` (clear a lock whose process is provably gone).
 
-**The authorization is consumed before the identity gate runs.** The single-use
-artifact is spent at the authorization step, which precedes the deploy lock and the
-production identity gate. If the run then stops — `IDENTITY_GATE_BLOCKED`, lock
-contention — nothing on production was touched, but the artifact is already burned:
-re-mint before retrying, and note the re-mint needs the gate evidence still unexpired,
-or a fresh seven-agent round. Tracked as issue #1097 (reordering is a gated change to
-the deploy script, not a docs fix).
+**A blocked run does not burn the authorization** (issue #1097, fixed). The single-use
+artifact is consumed only after every refusal that writes nothing *to production* has
+had its chance — for a deploy, after the lock and the production identity gate; for a
+reconcile, after PROOF 1; for a rollback, after all unit-provenance checks. "Writes
+nothing to production" is the precise claim: the pre-authorization region does fetch
+and fast-forward the *source* checkout and does write the lock file, none of which
+touch the runtime. An `IDENTITY_GATE_BLOCKED` or failed-proof stop therefore leaves
+the artifact spendable — retry after repairing what blocked, provided the artifact's
+own `expires_at` has not passed (expired artifacts are denied as expired, not burned).
+What *does* consume: any run that proceeds past those checks, including a runtime
+no-op (its marker advance is an authorized production write) and a reconcile whose
+PROOF 2 fails after the service stop. The ordering is index-pinned in
+`test_deploy_authority.py` in both mutant directions.
 
 **Gate evidence is required, digest-bound, and re-checked at deploy time.** Between
 minting the authorization and running the deploy, do not edit, reformat, move, rename,
@@ -155,13 +192,16 @@ here still cannot mint one. The guard blocks the agent; the script also blocks i
 
 ## Order of operations
 
-Preflight (source identity, clean, no local-only commits) -> validate `-ReviewedSHA`
+Preflight (source identity, clean, no local-only commits) -> validate the target
 (format, exists, descends from HEAD, equals `origin/main`, refuse if origin advanced
-beyond it) -> fast-forward to it -> **authorization** -> take the lock -> **stop the
-service** -> stage the immutable artifact -> back up application + engine as one
-restorable unit -> inventory destination-only paths -> converge production to the
-artifact -> engine sync (Lesson J) -> verify against the manifest -> write the version
-file -> start the service -> validate.
+beyond it) -> fast-forward to it -> take the lock -> **production identity gate** ->
+**authorization** (consumed here — after every refusal that can stop the run without
+writing, immediately before the first write on whichever path runs: the no-op's
+marker advance, or the service stop) -> **stop the service** -> stage the immutable
+artifact -> back up application + engine as one restorable unit -> inventory
+destination-only paths -> converge production to the artifact -> engine sync
+(Lesson J) -> verify against the manifest -> write the version file -> start the
+service -> validate.
 
 The service stops **before** staging and backup, so the backup is a consistent
 snapshot of a quiescent tree. That widens the downtime window compared with backing up

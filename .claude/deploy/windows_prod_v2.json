@@ -79,6 +79,7 @@
   ],
 
   "authorization_helper": "hooks\\deploy_authorization.py",
+  "gate_evidence_file": "C:\\PZ-secrets\\deploy-gate\\latest.json",
 
   "notes": [
     "schema_version 2 (2026-07-19): promoted from inert documentation to the single runtime configuration authority consumed by Deploy-PZ.ps1.",

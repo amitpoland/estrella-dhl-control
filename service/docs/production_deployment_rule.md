@@ -3,6 +3,15 @@
 **Date installed:** 2026-05-10  
 **Scope:** All Git-based updates to the Windows production PZ app
 
+> **Operating model (governance reset, 2026-08-07 — authority: CLAUDE.md
+> "OPERATING MODEL"):** the seven-agent gate runs **once** per runtime change on a
+> frozen head; test-only and docs-only merges need no gate and no deploy; the same
+> production bytes are never re-gated; inherited CI red, open-PR count, and
+> observer/scorecard work are never deploy blockers. The normal operator flow is one
+> command (`-Release`); the staged `-ReviewedSHA` ceremony below remains the manual /
+> debug path. Everything in this document about backup, rollback, identity proof,
+> engine sync, and service verification is unchanged and non-negotiable.
+
 ---
 
 ## Production identity
