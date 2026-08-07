@@ -287,6 +287,221 @@ def test_operator_confirmed_row_survives_an_apply(env):
     assert _rows_by_sr(pdb) == before
 
 
+# ── Re-parse failure (the reparse_failed blocker branch) ─────────────────────
+
+def test_reparse_failure_is_a_blocker_and_apply_refuses(env, monkeypatch):
+    """An exception inside the re-parse pipeline must block, never skip.
+
+    The extractor itself is fail-soft by design (a corrupt workbook returns
+    zero rows plus a diagnostic, it does not raise), so the only way an
+    exception reaches this branch is an unexpected pipeline failure. Simulate
+    one at the route's import boundary and verify the route converts it into a
+    ``reparse_failed`` blocker — not a silent skip that would leave the file's
+    stored rows unaccounted for — and that the apply path then refuses.
+    """
+    cli, tmp, ddb, pdb = env
+    pf = _seed(tmp, ddb, pdb)
+    before = _rows_by_sr(pdb)
+
+    from app.api import routes_packing
+
+    def _boom(**kwargs):
+        raise RuntimeError("synthetic: workbook exploded mid-parse")
+
+    monkeypatch.setattr(routes_packing, "process_packing_upload", _boom)
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch")
+    assert r.status_code == 200, r.text
+    plan = r.json()["plan"]
+    assert plan["blocking"] is True
+    blockers = {b["code"]: b for b in plan["blockers"]}
+    assert "reparse_failed" in blockers
+    assert blockers["reparse_failed"]["file"] == pf.name
+    assert "workbook exploded" in blockers["reparse_failed"]["detail"]
+    # The per-file report carries the error too, so the operator sees WHICH
+    # file failed, not just that something did.
+    files = {f["file"]: f for f in plan["files"]}
+    assert files[pf.name]["rows_extracted"] == 0
+    assert "workbook exploded" in files[pf.name]["error"]
+
+    # Even a fully-confirmed apply request must refuse against this plan.
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID})
+    body = r.json()
+    assert body["applied"] is False
+    assert body["refused"] == "plan_is_blocking"
+    assert _rows_by_sr(pdb) == before
+
+
+# ── Sales impact (advisory — reported end-to-end, never a gate) ──────────────
+
+def test_sales_impact_reports_over_bill_resolution_without_gating(env):
+    """With sales rows present, the endpoint response carries the downstream
+    position per product_code — and the over-bill it reports is advisory: it
+    must not block the purchase-side apply (Lesson N / Lesson R).
+
+    Seeded position: both packing rows sit on line 2, so code -1 has zero
+    packing backing while sales has sold one piece of it (over-billed), and
+    code -2 has two rows against authority one (capped, so sales of one piece
+    is still covered). The correction moves sr1 back to line 1, resolving the
+    code -1 over-bill.
+    """
+    cli, tmp, ddb, pdb = env
+    _seed(tmp, ddb, pdb)
+    ddb.store_sales_packing_lines("SD-REMATCH-1", BID, [
+        {"client_name": "SYNTH CLIENT", "product_code": f"{INV}-1",
+         "quantity": 1, "unit_price": 9.0, "total_value": 9.0},
+        {"client_name": "SYNTH CLIENT", "product_code": f"{INV}-2",
+         "quantity": 1, "unit_price": 150.0, "total_value": 150.0},
+    ])
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch")
+    assert r.status_code == 200, r.text
+    plan = r.json()["plan"]
+
+    impact = {s["product_code"]: s for s in plan["sales_impact"]}
+    starved = impact[f"{INV}-1"]
+    assert starved["sales_qty"] == 1
+    assert starved["available_before"] == 0
+    assert starved["available_after"] == 1
+    assert starved["over_billed_before"] is True
+    assert starved["over_billed_after"] is False
+    assert starved["verdict"] == "over_bill_resolved"
+    # Availability is bounded by invoice authority (1), not by the two packing
+    # rows that happened to carry the code.
+    covered = impact[f"{INV}-2"]
+    assert covered["available_before"] == 1
+    assert covered["verdict"] == "ok"
+    assert plan["counts"]["over_bills_resolved"] == 1
+
+    # The over-bill is advisory: the plan is NOT blocking and the apply lands.
+    assert plan["blocking"] is False
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID})
+    assert r.json()["applied"] is True
+
+
+# ── Partial apply: confirmed row preserved, the rest still lands ─────────────
+
+def _build_three_row_xlsx(path: Path) -> None:
+    """Three-row purchase packing list: one silver piece, two gold pieces."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["Invoice #", INV])
+    ws.append([])
+    ws.append(["PkSr", "Ctg", "DesignNo", "Kt/Color", "Quality",
+               "Dia Wt", "Col Wt", "Qty", "Value", "Total Value", "Size"])
+    ws.append([1, "PND", "SYN-001", "925/W", "PLAIN", 0, 0, 1, 5.0, 5.0, ""])
+    ws.append([2, "PND", "SYN-002", "14KT/Y", "G-VS", 0.5, 0, 1, 106.0, 106.0, ""])
+    ws.append([3, "PND", "SYN-003", "14KT/Y", "G-VS", 0.5, 0, 1, 106.0, 106.0, ""])
+    wb.save(str(path))
+
+
+def test_partial_apply_preserves_confirmed_row_and_lands_the_rest(env):
+    """A confirmed row must not veto the corrections around it.
+
+    The existing preserved-row test pins the confirmed row where preserving it
+    keeps a line over authority, so the whole plan blocks. Here the pinned
+    line has slack (authority qty 3), so preserving the human decision leaves
+    a NON-blocking plan — and the apply must land the machine's remaining
+    correction while leaving the confirmed row untouched. Partial repair,
+    not all-or-nothing.
+
+    Position: line 1 (925, qty 1) / line 2 (14KT, qty 3). Stored: sr1 (silver,
+    operator-confirmed) and sr2 (gold) on line 2, sr3 (gold) wrongly on
+    line 1. Matcher: sr1→line 1 (shown, preserved), sr3→line 2 (lands).
+    After: line 2 carries sr1+sr2+sr3 = 3 ≤ 3, so nothing is over.
+    """
+    cli, tmp, ddb, pdb = env
+    out = tmp / "outputs" / BID
+    (out / "source" / "packing").mkdir(parents=True, exist_ok=True)
+    (out / "audit.json").write_text(json.dumps(
+        {"batch_id": BID, "tracking_no": BID, "awb": BID,
+         "carrier": "DHL", "timeline": []}), encoding="utf-8")
+
+    inv_doc = ddb.register_document(
+        batch_id=BID, document_type="purchase_invoice",
+        file_name="invoice.pdf", file_path=str(out / "invoice.pdf"),
+        file_hash="synthetic-invoice-hash-3", source="intake") or ""
+    ddb.store_invoice_lines(inv_doc, BID, [
+        {"invoice_no": INV, "line_position": 1, "product_code": f"{INV}-1",
+         "description": "PCS, SL925 SILVER Plain Jewellery PENDANT",
+         "quantity": 1, "unit_price": 5.0, "total_value": 5.0,
+         "rate_usd": 5.0, "amount_usd": 5.0},
+        {"invoice_no": INV, "line_position": 2, "product_code": f"{INV}-2",
+         "description": "PCS, 14KT Gold Studded PENDANT",
+         "quantity": 3, "unit_price": 106.0, "total_value": 318.0,
+         "rate_usd": 106.0, "amount_usd": 318.0},
+    ])
+
+    pf = out / "source" / "packing" / "purchase_syn3.xlsx"
+    _build_three_row_xlsx(pf)
+    from app.services.invoice_packing_extractor import file_sha256
+    doc_id = pdb.upsert_packing_document(
+        batch_id=BID, invoice_no=INV,
+        source_file_path=str(pf), source_file_hash=file_sha256(pf),
+        parser_name="test", parser_version="1", extraction_status="complete")
+
+    common = {"batch_id": BID, "packing_document_id": doc_id, "invoice_no": INV,
+              "item_type": "PENDANT", "quantity": 1,
+              "requires_manual_review": False}
+    pdb.upsert_packing_lines([
+        # sr1: silver piece pinned (wrongly) to the gold line by the operator.
+        {**common, "pack_sr": 1, "invoice_line_position": 2,
+         "product_code": f"{INV}-2", "design_no": "SYN-001", "metal": "925",
+         "unit_price": 5.0, "total_value": 5.0,
+         "match_strategy": "operator", "extracted_confidence": 1.0},
+        {**common, "pack_sr": 2, "invoice_line_position": 2,
+         "product_code": f"{INV}-2", "design_no": "SYN-002", "metal": "14KT",
+         "unit_price": 106.0, "total_value": 106.0,
+         "match_strategy": "type+qty+rate+metal", "extracted_confidence": 0.95},
+        # sr3: gold piece persisted on the silver line — the historical bug.
+        {**common, "pack_sr": 3, "invoice_line_position": 1,
+         "product_code": f"{INV}-1", "design_no": "SYN-003", "metal": "14KT",
+         "unit_price": 106.0, "total_value": 106.0,
+         "match_strategy": "type+qty", "extracted_confidence": 0.70},
+    ])
+    rows = _rows_by_sr(pdb)
+    import sqlite3
+    with sqlite3.connect(tmp / "packing.db") as con:
+        con.execute(
+            "UPDATE packing_lines SET operator_review_status='confirmed' WHERE id=?",
+            (rows[1]["id"],))
+        con.commit()
+
+    dry = cli.post(f"/api/v1/packing/{BID}/rematch").json()["plan"]
+    # The machine disagrees with the confirmed row and SHOWS it — but as
+    # preserved, not as a change the write would make.
+    preserved = {e["pack_sr"]: e for e in dry["operator_confirmed_preserved"]}
+    assert set(preserved) == {1}
+    assert preserved[1]["new"]["invoice_line_position"] == 1
+    assert 1 not in {c["pack_sr"] for c in dry["row_changes"]}
+    # sr3's correction is in the plan, and preserving sr1 leaves line 2 at
+    # exactly its authority — so nothing blocks.
+    changes = {c["pack_sr"]: c for c in dry["row_changes"]}
+    assert changes[3]["new"]["invoice_line_position"] == 2
+    assert changes[3]["new"]["product_code"] == f"{INV}-2"
+    assert dry["blocking"] is False
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"] is True
+    assert body["rows_written"] == len(dry["row_changes"])
+
+    after = _rows_by_sr(pdb)
+    # The human decision survived, byte for byte.
+    assert after[1]["invoice_line_position"] == 2
+    assert after[1]["product_code"] == f"{INV}-2"
+    assert after[1]["operator_review_status"] == "confirmed"
+    # The machine's correction landed around it.
+    assert after[3]["invoice_line_position"] == 2
+    assert after[3]["product_code"] == f"{INV}-2"
+
+
 # ── Auth (Lesson O: session-guarded route, tests migrate with it) ────────────
 
 def test_rematch_requires_admin_not_just_a_session(env):
