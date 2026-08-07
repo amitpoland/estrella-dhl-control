@@ -305,3 +305,56 @@ def test_empty_inputs_produce_an_empty_non_blocking_plan():
     assert plan["row_changes"] == []
     assert plan["blocking"] is False
     assert plan["counts"]["rows_changed"] == 0
+
+
+# -- blocker scope attribution (invoice-scoped apply support) -----------------
+
+def test_every_blocker_carries_scope_invoices_and_authority_blocker_names_its_invoice():
+    """Scope attribution is what lets the route apply one invoice while another
+    is blocked; an over-authority blocker must name exactly its own invoice."""
+    stored = [_row(1, 1), _row(2, 1)]          # two pieces on a qty-1 line
+    proposed = [
+        {k: v for k, v in _row(1, 1).items() if k != "id"},
+        {k: v for k, v in _row(2, 1, conf=0.85).items() if k != "id"},
+    ]
+    plan = build_rematch_plan(stored, proposed, [_line(1, 1, 10.0)])
+    assert plan["blocking"] is True
+    assert all("scope_invoices" in b for b in plan["blockers"])
+    over = [b for b in plan["blockers"] if b["code"] == "line_over_authority_after"]
+    assert over and all(b["scope_invoices"] == [INV] for b in over)
+
+
+def test_row_changed_invoice_blocker_names_both_invoices():
+    """Selecting EITHER involved invoice for a scoped apply must keep the veto."""
+    other = "TEST/00-00/002"
+    stored = [_row(1, 1)]
+    moved = {k: v for k, v in _row(1, 1).items() if k != "id"}
+    moved["invoice_no"] = other
+    plan = build_rematch_plan(stored, [moved],
+                              [_line(1, 1, 10.0)])
+    blk = [b for b in plan["blockers"] if b["code"] == "row_changed_invoice"]
+    assert blk and blk[0]["scope_invoices"] == sorted([INV, other])
+
+
+def test_unattributable_blocker_scope_is_empty_meaning_global():
+    """A stored row with no invoice at all cannot be attributed; the empty
+    scope is the GLOBAL veto, never a silently narrowed one."""
+    r = _row(1, 1)
+    r["invoice_no"] = ""
+    r.pop("pack_sr"); r["pack_sr"] = None; r["invoice_line_position"] = None
+    r2 = dict(r); r2["line_position"] = None
+    plan = build_rematch_plan([r2], [], [_line(1, 1, 10.0)])
+    blk = [b for b in plan["blockers"] if b["code"] == "stored_row_without_identity"]
+    assert blk and blk[0]["scope_invoices"] == []
+
+
+def test_row_changes_carry_the_stored_invoice_no():
+    """The write filter scopes on the STORED invoice - the one the write keeps."""
+    stored = [_row(1, 2, price=5.0, code=f"{INV}-2")]
+    proposed = [{k: v for k, v in
+                 _row(1, 1, price=5.0, code=f"{INV}-1", strategy="type+qty+rate",
+                      conf=0.95).items() if k != "id"}]
+    plan = build_rematch_plan(stored, proposed,
+                              [_line(1, 1, 5.0), _line(2, 1, 106.0)])
+    assert plan["row_changes"] and all(
+        c["invoice_no"] == INV for c in plan["row_changes"])

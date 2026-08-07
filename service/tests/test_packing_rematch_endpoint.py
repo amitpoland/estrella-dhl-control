@@ -618,3 +618,256 @@ def test_rematch_rejects_unauthenticated(env):
             "id": "t", "email": "t@l", "role": "admin"}
         app.dependency_overrides[require_admin] = lambda: {
             "id": "t", "email": "t@l", "role": "admin"}
+
+
+# ── Invoice-scoped apply (one blocked invoice must not hold the batch hostage) ─
+
+INV_B = "TEST/00-00/002"
+
+
+def _build_invoice_xlsx(path, inv, rows):
+    """EJL-style packing list for one invoice; rows = (sr, design, ktcolor, val)."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["Invoice #", inv])
+    ws.append([])
+    ws.append(["PkSr", "Ctg", "DesignNo", "Kt/Color", "Quality",
+               "Dia Wt", "Col Wt", "Qty", "Value", "Total Value", "Size"])
+    for sr, design, ktcolor, val in rows:
+        ws.append([sr, "PND", design, ktcolor, "PLAIN", 0, 0, 1, val, val, ""])
+    wb.save(str(path))
+
+
+def _seed_two_invoices(tmp_path, ddb, pdb, *, b_confirmed_over=True):
+    """One batch, two invoices in separate source files — the prod layout.
+
+    Invoice A (TEST/00-00/001): the SAFE invoice — the standard wrong-assignment
+    scenario whose correction is clean (mirrors prod invoice 491).
+    Invoice B (TEST/00-00/002): when ``b_confirmed_over`` — two operator-CONFIRMED
+    rows on a qty-1 line, so preserving them keeps the line over authority and
+    the plan blocks on B alone (mirrors prod invoice 485).
+    """
+    out = tmp_path / "outputs" / BID
+    (out / "source" / "packing").mkdir(parents=True, exist_ok=True)
+    (out / "audit.json").write_text(json.dumps(
+        {"batch_id": BID, "tracking_no": BID, "awb": BID,
+         "carrier": "DHL", "timeline": []}), encoding="utf-8")
+
+    inv_doc = ddb.register_document(
+        batch_id=BID, document_type="purchase_invoice",
+        file_name="invoice.pdf", file_path=str(out / "invoice.pdf"),
+        file_hash="synthetic-invoice-hash-2inv", source="intake") or ""
+    ddb.store_invoice_lines(inv_doc, BID, [
+        {"invoice_no": INV, "line_position": 1, "product_code": f"{INV}-1",
+         "description": "PCS, SL925 SILVER Plain Jewellery PENDANT",
+         "quantity": 1, "unit_price": 5.0, "total_value": 5.0,
+         "rate_usd": 5.0, "amount_usd": 5.0},
+        {"invoice_no": INV, "line_position": 2, "product_code": f"{INV}-2",
+         "description": "PCS, 14KT Gold Studded PENDANT",
+         "quantity": 1, "unit_price": 106.0, "total_value": 106.0,
+         "rate_usd": 106.0, "amount_usd": 106.0},
+        {"invoice_no": INV_B, "line_position": 1, "product_code": f"{INV_B}-1",
+         "description": "PCS, SL925 SILVER Plain Jewellery PENDANT",
+         "quantity": 1, "unit_price": 7.0, "total_value": 7.0,
+         "rate_usd": 7.0, "amount_usd": 7.0},
+    ])
+
+    from app.services.invoice_packing_extractor import file_sha256
+    pf_a = out / "source" / "packing" / "purchase_A.xlsx"
+    _build_invoice_xlsx(pf_a, INV, [(1, "SYN-001", "925/W", 5.0),
+                                    (2, "SYN-002", "14KT/Y", 106.0)])
+    doc_a = pdb.upsert_packing_document(
+        batch_id=BID, invoice_no=INV,
+        source_file_path=str(pf_a), source_file_hash=file_sha256(pf_a),
+        parser_name="test", parser_version="1", extraction_status="complete")
+
+    pf_b = out / "source" / "packing" / "purchase_B.xlsx"
+    _build_invoice_xlsx(pf_b, INV_B, [(1, "SYN-B01", "925/W", 7.0),
+                                      (2, "SYN-B02", "925/W", 7.0)])
+    doc_b = pdb.upsert_packing_document(
+        batch_id=BID, invoice_no=INV_B,
+        source_file_path=str(pf_b), source_file_hash=file_sha256(pf_b),
+        parser_name="test", parser_version="1", extraction_status="complete")
+
+    pdb.upsert_packing_lines([
+        # Invoice A stored WRONG (sr1 on line 2), correctable — same as _seed().
+        {"batch_id": BID, "packing_document_id": doc_a, "invoice_no": INV,
+         "pack_sr": 1, "invoice_line_position": 2, "product_code": f"{INV}-2",
+         "design_no": "SYN-001", "item_type": "PENDANT", "quantity": 1,
+         "unit_price": 5.0, "total_value": 5.0, "metal": "925",
+         "match_strategy": "type+qty", "extracted_confidence": 0.80,
+         "requires_manual_review": False},
+        {"batch_id": BID, "packing_document_id": doc_a, "invoice_no": INV,
+         "pack_sr": 2, "invoice_line_position": 2, "product_code": f"{INV}-2",
+         "design_no": "SYN-002", "item_type": "PENDANT", "quantity": 1,
+         "unit_price": 106.0, "total_value": 106.0, "metal": "14KT",
+         "match_strategy": "type+qty+rate+metal", "extracted_confidence": 0.95,
+         "requires_manual_review": False},
+        # Invoice B: two pieces on a qty-1 line — the historical over-assignment.
+        {"batch_id": BID, "packing_document_id": doc_b, "invoice_no": INV_B,
+         "pack_sr": 1, "invoice_line_position": 1, "product_code": f"{INV_B}-1",
+         "design_no": "SYN-B01", "item_type": "PENDANT", "quantity": 1,
+         "unit_price": 7.0, "total_value": 7.0, "metal": "925",
+         "match_strategy": "type+qty", "extracted_confidence": 0.80,
+         "requires_manual_review": False},
+        {"batch_id": BID, "packing_document_id": doc_b, "invoice_no": INV_B,
+         "pack_sr": 2, "invoice_line_position": 1, "product_code": f"{INV_B}-1",
+         "design_no": "SYN-B02", "item_type": "PENDANT", "quantity": 1,
+         "unit_price": 7.0, "total_value": 7.0, "metal": "925",
+         "match_strategy": "type+qty", "extracted_confidence": 0.80,
+         "requires_manual_review": False},
+    ])
+
+    if b_confirmed_over:
+        # The operator confirmed BOTH B rows — preserving them keeps line B-1
+        # at 2 assigned vs authority 1, so the plan blocks on B alone.
+        import sqlite3
+        rows = {(r["invoice_no"], r["pack_sr"]): r
+                for r in pdb.get_packing_lines_for_batch(BID)}
+        with sqlite3.connect(tmp_path / "packing.db") as con:
+            for sr in (1, 2):
+                con.execute(
+                    "UPDATE packing_lines SET operator_review_status='confirmed' "
+                    "WHERE id=?", (rows[(INV_B, sr)]["id"],))
+            con.commit()
+    return pf_a, pf_b
+
+
+def _rows_full(pdb, inv=None):
+    rows = pdb.get_packing_lines_for_batch(BID)
+    if inv is not None:
+        rows = [r for r in rows if r.get("invoice_no") == inv]
+    return {r["pack_sr"]: r for r in rows}
+
+
+def test_unscoped_blocked_batch_still_refuses_exactly_as_before(env):
+    """Byte-for-behavior compatibility: without a scope, one blocked invoice
+    still refuses the whole batch with the same refusal code."""
+    cli, tmp, ddb, pdb = env
+    _seed_two_invoices(tmp, ddb, pdb)
+    before = _rows_full(pdb)
+
+    dry = cli.post(f"/api/v1/packing/{BID}/rematch").json()
+    assert dry["plan"]["blocking"] is True
+    assert "scope_invoice" not in dry  # no scope fields on unscoped calls
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID})
+    body = r.json()
+    assert body["applied"] is False
+    assert body["refused"] == "plan_is_blocking"
+    assert _rows_full(pdb) == before
+
+
+def test_scoped_apply_lands_safe_invoice_while_other_stays_blocked(env):
+    """THE incident shape: blockers live only in invoice B; scoping to invoice A
+    applies A's correction while B — confirmed rows included — stays untouched."""
+    cli, tmp, ddb, pdb = env
+    _seed_two_invoices(tmp, ddb, pdb)
+    b_before = _rows_full(pdb, INV_B)
+
+    dry = cli.post(f"/api/v1/packing/{BID}/rematch",
+                   params={"invoice_no": INV}).json()
+    assert dry["dry_run"] is True
+    assert dry["batch_blocking"] is True
+    assert dry["scope_blocking"] is False
+    assert dry["scope_invoice"] == INV
+    # B's blocker is attributed to B alone: visible batch-wide, not gating A.
+    assert {b["code"] for b in dry["plan"]["blockers"]} == {"line_over_authority_after"}
+    assert all(b["scope_invoices"] == [INV_B] for b in dry["plan"]["blockers"])
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID, "invoice_no": INV})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"] is True
+    assert body["batch_blocking"] is True
+    assert body["scope_blocking"] is False
+    assert body["rows_written"] >= 1
+
+    # A corrected: the misplaced silver pendant moved home.
+    a_after = _rows_full(pdb, INV)
+    assert a_after[1]["product_code"] == f"{INV}-1"
+    assert a_after[1]["invoice_line_position"] == 1
+    # B untouched — every field, including the confirmations.
+    assert _rows_full(pdb, INV_B) == b_before
+    assert all(r["operator_review_status"] == "confirmed"
+               for r in b_before.values())
+
+    # The audit event names the scope and both counts.
+    ev = [e for e in _timeline(tmp) if e.get("event") == "packing_rematch_applied"]
+    assert len(ev) == 1
+    d = ev[0]["detail"]
+    assert d["invoice_scope"] == INV
+    assert d["scoped_proposed_changes"] == d["rows_written"] == body["rows_written"]
+    assert d["batch_proposed_changes"] >= d["scoped_proposed_changes"]
+
+
+def test_scope_with_its_own_blocker_refuses(env):
+    """Scoping to the BLOCKED invoice must refuse — the scope is not a bypass."""
+    cli, tmp, ddb, pdb = env
+    _seed_two_invoices(tmp, ddb, pdb)
+    before = _rows_full(pdb)
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID, "invoice_no": INV_B})
+    body = r.json()
+    assert body["applied"] is False
+    assert body["refused"] == "scope_is_blocking"
+    assert body["scope_blocking"] is True
+    assert _rows_full(pdb) == before
+
+
+def test_global_blocker_vetoes_every_scope(env):
+    """A blocker that cannot be attributed (edited file, hash unresolved) is
+    GLOBAL: it must veto even a scope whose own invoice is clean."""
+    cli, tmp, ddb, pdb = env
+    pf_a, pf_b = _seed_two_invoices(tmp, ddb, pdb, b_confirmed_over=False)
+    # Edit B's file after registration: its hash no longer resolves, and the
+    # resulting blocker has empty scope_invoices.
+    import openpyxl
+    wb = openpyxl.load_workbook(pf_b)
+    wb.active.append([9, "PND", "SYN-B99", "925/W", "PLAIN", 0, 0, 1, 1.0, 1.0, ""])
+    wb.save(str(pf_b))
+    before = _rows_full(pdb)
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID, "invoice_no": INV})
+    body = r.json()
+    assert body["applied"] is False
+    assert body["refused"] == "scope_is_blocking"
+    assert any(b["code"] == "no_unique_document_for_file"
+               and b["scope_invoices"] == [] for b in body["scope_blockers"])
+    assert _rows_full(pdb) == before
+
+
+def test_unknown_invoice_scope_refuses(env):
+    cli, tmp, ddb, pdb = env
+    _seed_two_invoices(tmp, ddb, pdb)
+    before = _rows_full(pdb)
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID,
+                         "invoice_no": "TEST/00-00/999"})
+    body = r.json()
+    assert body["ok"] is False
+    assert body["applied"] is False
+    assert body["refused"] == "invoice_scope_unknown"
+    assert _rows_full(pdb) == before
+
+
+def test_second_scoped_apply_is_noop(env):
+    cli, tmp, ddb, pdb = env
+    _seed_two_invoices(tmp, ddb, pdb)
+    cli.post(f"/api/v1/packing/{BID}/rematch",
+             params={"apply": "true", "confirm": BID, "invoice_no": INV})
+    snap = _rows_full(pdb)
+    events_after_first = len(_timeline(tmp))
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID, "invoice_no": INV})
+    body = r.json()
+    assert body["applied"] is False or body.get("rows_written", 0) == 0
+    assert _rows_full(pdb) == snap
+    assert len(_timeline(tmp)) == events_after_first

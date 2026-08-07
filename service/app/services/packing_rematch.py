@@ -24,6 +24,16 @@ carrying more assigned quantity than the invoice authorises is refused outright
 — that is the machine-checkable form of "a remediation may remove a blocker only
 by restoring correct underlying authority, never by increasing availability
 synthetically".
+
+Blocker scope (invoice attribution): every blocker carries ``scope_invoices`` —
+the invoice numbers the defect is attributable to.  An EMPTY list means the
+blocker could not be safely attributed and is GLOBAL: it must veto any write,
+scoped or unscoped.  The attribution exists so a caller may apply the plan for
+one invoice while an unrelated invoice in the same batch stays blocked — one
+blocked invoice must not hold every other invoice in the batch hostage.
+Attribution is deliberately conservative: a blocker spanning two invoices names
+both, and anything ambiguous names none (= global).  The scoping DECISION lives
+in the route; this module only supplies honest attribution.
 """
 
 from __future__ import annotations
@@ -86,6 +96,17 @@ def _assignment(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def _line_key(invoice_no: Any, position: Any) -> Tuple[str, Any]:
     return (_text(invoice_no), position)
+
+
+def _scope(*invoice_nos: Any) -> List[str]:
+    """Blocker scope from the involved invoice numbers.
+
+    Non-empty values are deduplicated and sorted; if NONE of them is a real
+    invoice number the scope is the empty list — the GLOBAL scope, which a
+    scoped apply must treat as blocking everything.  Missing information
+    therefore fails closed instead of silently narrowing a veto.
+    """
+    return sorted({_text(v) for v in invoice_nos if _text(v)})
 
 
 def _tally(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, Any], Dict[str, Any]]:
@@ -187,6 +208,7 @@ def build_rematch_plan(
                 "code": "stored_row_without_identity",
                 "row_id": r.get("id"),
                 "detail": "row has neither pack_sr nor line_position; cannot be paired",
+                "scope_invoices": _scope(r.get("invoice_no")),
             })
             continue
         if ident in stored_by_id:
@@ -197,6 +219,8 @@ def build_rematch_plan(
                 "code": "duplicate_stored_identity",
                 "packing_document_id": ident[0], "pack_sr": ident[1],
                 "row_ids": [stored_by_id[ident].get("id"), r.get("id")],
+                "scope_invoices": _scope(stored_by_id[ident].get("invoice_no"),
+                                         r.get("invoice_no")),
             })
             continue
         stored_by_id[ident] = r
@@ -209,6 +233,7 @@ def build_rematch_plan(
                 "code": "proposed_row_without_identity",
                 "design_no": _text(r.get("design_no")),
                 "detail": "re-parsed row has no serial; cannot be matched to a stored row",
+                "scope_invoices": _scope(r.get("invoice_no")),
             })
             continue
         proposed_by_id[ident] = r
@@ -222,6 +247,7 @@ def build_rematch_plan(
                 "code": "stored_row_not_reparsed",
                 "row_id": r.get("id"),
                 "packing_document_id": ident[0], "pack_sr": ident[1],
+                "scope_invoices": _scope(r.get("invoice_no")),
             })
 
     # A row that changed invoice is not a placement correction — it is different
@@ -240,6 +266,9 @@ def build_rematch_plan(
                 "packing_document_id": ident[0], "pack_sr": ident[1],
                 "stored_invoice_no": _text(r.get("invoice_no")),
                 "proposed_invoice_no": p_inv,
+                # Both invoices are implicated: selecting EITHER for a scoped
+                # apply must keep this veto.
+                "scope_invoices": _scope(r.get("invoice_no"), p_inv),
             })
 
     # A proposed row with no stored counterpart is a new row, which is an upload
@@ -274,6 +303,10 @@ def build_rematch_plan(
             "row_id":              stored.get("id"),
             "packing_document_id": ident[0],
             "pack_sr":             ident[1],
+            # The STORED invoice: it is what the write keeps (a proposal that
+            # changed invoice is refused, never rewritten), so it is the honest
+            # key for scoping which changes belong to which invoice.
+            "invoice_no":          _text(stored.get("invoice_no")),
             "design_no":           _text(stored.get("design_no")),
             "quantity":            round(_num(stored.get("quantity")), 4),
             "unit_price":          round(_num(stored.get("unit_price")), 4),
@@ -339,6 +372,7 @@ def build_rematch_plan(
                 "product_code": a["product_code"],
                 "authority_qty": a["authority_qty"],
                 "proposed_qty": after["assigned_qty"],
+                "scope_invoices": _scope(a["invoice_no"]),
             })
         line_reconciliation.append({**a, "before": before, "after": after})
 
@@ -349,6 +383,7 @@ def build_rematch_plan(
             "code": "assignment_to_unknown_line",
             "invoice_no": key[0], "line_position": key[1],
             "proposed_qty": round(after_tally[key]["assigned_qty"], 4),
+            "scope_invoices": _scope(key[0]),
         })
 
     # ── Downstream sales impact (advisory — never gates the purchase side) ─
