@@ -748,6 +748,7 @@ def _run_rematch(
     apply: bool,
     confirm: str,
     actor: str = "operator",
+    invoice_scope: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The ONE routine behind both the dry-run and the apply.
 
@@ -755,6 +756,15 @@ def _run_rematch(
     approves stops being the change that lands. This computes the plan, and only
     then — if and only if the caller supplied the confirmation token and the plan
     is not blocking — writes it through the canonical persistence path.
+
+    ``invoice_scope`` narrows the WRITE, never the plan. The plan is always
+    computed and returned for the whole batch, so the operator keeps full
+    visibility; but with a scope supplied, only blockers attributable to that
+    invoice — plus global/unattributable blockers, which always veto — decide
+    the apply, and only that invoice's row changes are persisted. Without it a
+    single blocked invoice holds every other invoice in the batch hostage,
+    which couples unrelated repairs for no authority reason (each blocker is
+    already per-invoice-line evidence). Unscoped behaviour is unchanged.
     """
     output_dir = _validate_batch(batch_id)
 
@@ -791,6 +801,7 @@ def _run_rematch(
 
     for pf in src_files:
         entry: Dict[str, Any] = {"file": pf.name, "rows_extracted": 0, "error": None}
+        doc_ids: List[str] = []   # bound before try: the except block reads it
         try:
             fhash = file_sha256(pf)
             doc_ids = pdb.resolve_document_id_by_hash(batch_id, fhash)
@@ -803,6 +814,10 @@ def _run_rematch(
                     "code": "no_unique_document_for_file" if not doc_ids
                             else "multiply_registered_document",
                     "file": pf.name, "document_matches": len(doc_ids),
+                    # No unambiguous document → no honest invoice attribution.
+                    # Empty scope = GLOBAL: this file's rows could belong to any
+                    # invoice, so it must veto scoped applies too.
+                    "scope_invoices": [],
                 })
                 entry["error"] = "document_hash_unresolved"
                 file_results.append(entry)
@@ -829,8 +844,19 @@ def _run_rematch(
         except Exception as exc:
             log.warning("[%s] rematch re-parse failed for %s: %s", batch_id, pf.name, exc)
             entry["error"] = str(exc)[:300]
+            # When the document resolved (the hash check sits above the parse),
+            # its stored rows give the honest invoice attribution. If the
+            # failure struck BEFORE resolution (file_sha256 itself raised),
+            # there is no document — no honest attribution — so global.
+            _file_invs = sorted({
+                str(s.get("invoice_no", "") or "").strip()
+                for s in stored_rows
+                if s.get("packing_document_id") == doc_ids[0]
+                and str(s.get("invoice_no", "") or "").strip()
+            }) if len(doc_ids) == 1 else []
             resolution_blockers.append({
                 "code": "reparse_failed", "file": pf.name, "detail": str(exc)[:300],
+                "scope_invoices": _file_invs,
             })
         file_results.append(entry)
 
@@ -853,6 +879,38 @@ def _run_rematch(
         "plan":     plan,
     }
 
+    # ── Scope evaluation (write-narrowing only — the plan above is always the
+    #    full batch). A blocker gates a scoped decision iff it is attributable
+    #    to the selected invoice OR it carries no attribution at all (empty
+    #    scope_invoices = global, fail-closed).
+    scope = (invoice_scope or "").strip() or None
+    scope_blockers: List[Dict[str, Any]] = []
+    if scope is not None:
+        authority_invoices = {
+            str(il.get("invoice_no", "") or "").strip()
+            for il in invoice_lines
+            if str(il.get("invoice_no", "") or "").strip()
+        }
+        response["scope_invoice"] = scope
+        response["batch_blocking"] = plan["blocking"]
+        if scope not in authority_invoices:
+            response["ok"] = False
+            response["refused"] = "invoice_scope_unknown"
+            response["note"] = (
+                f"invoice_no {scope!r} is not in this batch's invoice authority; "
+                "nothing was written."
+            )
+            return response
+        scope_blockers = [
+            b for b in plan["blockers"]
+            if not b.get("scope_invoices") or scope in b["scope_invoices"]
+        ]
+        response["scope_blocking"] = bool(scope_blockers)
+        response["scope_blockers"] = scope_blockers
+        response["scope_row_changes"] = sum(
+            1 for c in plan["row_changes"] if c.get("invoice_no") == scope
+        )
+
     if not apply:
         response["dry_run"] = True
         response["note"] = (
@@ -871,17 +929,36 @@ def _run_rematch(
         )
         return response
 
-    if plan["blocking"]:
-        response["ok"] = False
-        response["refused"] = "plan_is_blocking"
-        response["note"] = (
-            "The plan has blockers, so no row was rewritten. Resolve them and "
-            "re-run the dry run."
-        )
-        return response
+    if scope is None:
+        if plan["blocking"]:
+            response["ok"] = False
+            response["refused"] = "plan_is_blocking"
+            response["note"] = (
+                "The plan has blockers, so no row was rewritten. Resolve them and "
+                "re-run the dry run."
+            )
+            return response
+        selected_changes = plan["row_changes"]
+    else:
+        if scope_blockers:
+            response["ok"] = False
+            response["refused"] = "scope_is_blocking"
+            response["note"] = (
+                f"Blockers attributable to {scope} (or global/unattributable "
+                "blockers) veto this scoped apply; no row was rewritten. "
+                "Blockers belonging exclusively to other invoices did not gate "
+                "this decision — see scope_blockers vs plan.blockers."
+            )
+            return response
+        selected_changes = [
+            c for c in plan["row_changes"] if c.get("invoice_no") == scope
+        ]
 
-    if not plan["row_changes"]:
-        response["note"] = "No row assignment would change; nothing written."
+    if not selected_changes:
+        response["note"] = (
+            "No row assignment would change; nothing written." if scope is None
+            else f"No row assignment would change within {scope}; nothing written."
+        )
         return response
 
     # Persist through the canonical write path. force_reextract=True is what
@@ -889,7 +966,7 @@ def _run_rematch(
     # its own review-state guard still refuses to silently overwrite an
     # operator-confirmed product_code, which is why the plan surfaces those rows
     # as preserved rather than as changes that will land.
-    changed_ids = {c["row_id"] for c in plan["row_changes"]}
+    changed_ids = {c["row_id"] for c in selected_changes}
     line_records = [
         r for r in _build_rematch_line_records(batch_id, stored_rows, proposed_rows)
         if r.get("_row_id") in changed_ids
@@ -898,17 +975,21 @@ def _run_rematch(
         r.pop("_row_id", None)
 
     written = pdb.upsert_packing_lines(line_records, force_reextract=True)
-    log.info("[%s] rematch APPLIED: %d rows rewritten (%d proposed changes)",
-             batch_id, written, len(plan["row_changes"]))
+    log.info("[%s] rematch APPLIED%s: %d rows rewritten (%d selected of %d proposed changes)",
+             batch_id, f" scope={scope}" if scope else "",
+             written, len(selected_changes), len(plan["row_changes"]))
     tl.log_event(
         output_dir / "audit.json",
         tl.EV_PACKING_REMATCH_APPLIED,
         "packing_rematch",
         actor=actor,
         detail={
-            "batch_id":         batch_id,
-            "rows_written":     written,
-            "proposed_changes": len(plan["row_changes"]),
+            "batch_id":               batch_id,
+            "rows_written":           written,
+            "proposed_changes":       len(selected_changes),
+            "invoice_scope":          scope,
+            "scoped_proposed_changes": len(selected_changes),
+            "batch_proposed_changes":  len(plan["row_changes"]),
         },
     )
 
@@ -965,10 +1046,11 @@ def _build_rematch_line_records(
 
 @router.post("/{batch_id}/rematch")
 def rematch_packing_lines(
-    batch_id: str,
-    apply:    bool = Query(default=False),
-    confirm:  str  = Query(default=""),
-    user:     dict = Depends(require_admin),
+    batch_id:   str,
+    apply:      bool = Query(default=False),
+    confirm:    str  = Query(default=""),
+    invoice_no: Optional[str] = Query(default=None),
+    user:       dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Recompute the packing→invoice assignment for rows already persisted.
 
@@ -991,12 +1073,22 @@ def rematch_packing_lines(
     product_code is never silently overwritten; such rows are reported as
     preserved.
 
+    ``invoice_no`` (optional) narrows the WRITE to one invoice while the plan
+    stays batch-wide for visibility: only blockers attributable to that invoice
+    — plus global/unattributable blockers, which always veto — gate the apply,
+    and only that invoice's row changes persist. Blockers belonging exclusively
+    to OTHER invoices remain visible in the plan but do not veto the scoped
+    write; the response distinguishes ``batch_blocking`` from ``scope_blocking``
+    so "the batch still has problems elsewhere" is never mistaken for "this
+    repair failed". Unscoped calls behave exactly as before.
+
     This endpoint does not call wFirma, does not convert or post any document,
     does not touch inventory or accounting, and cannot raise any line above the
     quantity its purchase invoice authorises.
     """
     return _run_rematch(batch_id, apply=apply, confirm=confirm,
-                        actor=user.get("email") or "operator")
+                        actor=user.get("email") or "operator",
+                        invoice_scope=invoice_no)
 
 
 # ── GET /api/v1/packing/{batch_id} ────────────────────────────────────────────
