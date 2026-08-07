@@ -83,17 +83,16 @@ def test_pending_action_component_present():
 
 
 def test_backend_pending_banner_present():
-    """An explicit operator-facing reason banner heads the still-unwired panels.
+    """DHL authority note remains; PZ pending banner is removed once wired.
 
-    DHL correspondence is wired on Shipment Detail (per-batch write surface). The
-    note (testid dhl-actions-console-note) states Detail = writes, Console =
-    cross-shipment observer — not that writes live only on Console.
-    The PZ panel remains backend-pending (PZ wiring is a later wave)."""
+    BackendPendingBanner helper may remain for other surfaces, but the PZ
+    panel must no longer claim 'not wired into this V2 page'."""
     src = _src()
-    assert "function BackendPendingBanner(" in src, "BackendPendingBanner missing"
-    assert "BACKEND_GAP_REGISTER.md" in src, "must reference the backend gap register"
     assert 'testid="dhl-actions-console-note"' in src
-    assert 'testid="pz-actions-pending-note"' in src
+    assert 'testid="pz-actions-pending-note"' not in src
+    assert "not yet wired into this V2 page" not in src
+    assert 'testid="pz-actions-authority-note"' in src
+    assert "function PzActionsPanel(" in src
     # Authority copy must NOT claim Console owns writes
     assert "All DHL clearance actions (inbox scan, reply send, approvals) run on the DHL Console page" not in src
     assert "Clearance actions below write through the shared DHL backend" in src
@@ -105,7 +104,8 @@ def test_all_action_testids_present():
     for tid in (
         "scan-dhl-inbox", "mark-email-received", "generate-polish-desc",
         "generate-dsk", "build-reply-package", "send-reply", "sad-upload",
-        "run-pz", "confirm-pz", "export-wfirma",
+        "run-pz", "confirm-pz", "export-wfirma", "download-xlsx", "download-pdf",
+        "mark-exported", "pz-open-documents",
     ):
         assert f'testid="{tid}"' in src, f"action testid '{tid}' missing"
 
@@ -113,11 +113,8 @@ def test_all_action_testids_present():
 def test_action_controls_name_real_routes():
     """Each action control names the real backend route it maps to.
 
-    Slice 2B wired the DHL correspondence actions to the existing backend
-    authority. Generate-DSK and Build-Reply-Package were previously MIS-ROUTED to
-    /api/v1/dhl/generate-customs-package (the Polish-description package endpoint);
-    the wired controls now name their true routes /api/v1/dsk/generate and
-    /api/v1/dsk/email-package. The remaining PZ controls stay backend-pending.
+    PZ Run/Regenerate → /process (local generation). Export → /wfirma/pz_create.
+    Confirm/Adopt → /wfirma/pz_confirm|/pz_adopt. Downloads resolve via batch files.
     """
     src = _src()
     for route in (
@@ -128,12 +125,10 @@ def test_action_controls_name_real_routes():
         "/api/v1/dsk/email-package",
         "/api/v1/dhl/send-reply/",
         "/api/v1/upload/shipment/",
-        # wFirma PZ routes live under the upload router prefix (/api/v1/upload),
-        # NOT a bare /api/v1/shipment path. Pin the full real prefix so an
-        # "honest" backend-pending control can never name a 404 route again.
-        "/api/v1/upload/shipment/' + bid + '/wfirma/pz_create",
-        "/api/v1/upload/shipment/' + bid + '/wfirma/pz_confirm",
-        "/api/v1/upload/shipment/' + bid + '/wfirma/pz_adopt",
+        "/process",
+        "/wfirma/pz_create",
+        "/wfirma/pz_confirm",
+        "/wfirma/pz_adopt",
     ):
         assert route in src, f"backend route reference '{route}' missing"
     # Negative: the bare /api/v1/shipment/.../wfirma path (missing the /upload
@@ -142,6 +137,8 @@ def test_action_controls_name_real_routes():
         "wFirma PZ route is missing the /api/v1/upload prefix — that path 404s, "
         "so naming it in a backend-pending control reintroduces the B1 lie"
     )
+    # Run PZ must not be mislabeled as pz_create-only PendingAction
+    assert 'PendingAction label="Run PZ"' not in src
 
 
 # ── C. Lesson M — relocation keeps a redirect to real authority ───────────────

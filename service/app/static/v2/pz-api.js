@@ -1953,5 +1953,33 @@
     getDhlClearanceStatus: (batchId) =>
       _get(`${BASE}/dhl/clearance-status/${encodeURIComponent(batchId)}`),
 
+    // ── PZ lifecycle (V2 Shipment Detail — same authority as V1) ───────────────
+    // Local generation ≠ wFirma booking. process → PDF/XLSX; pz_create → live
+    // wFirma document; pz_adopt/pz_confirm → adopt existing doc into audit.
+
+    // POST /api/v1/upload/shipment/{batch_id}/process — engine run (background).
+    // SAD safe_to_run_pz===false → 409. Idempotent re-run when status allows.
+    processShipment: (batchId) =>
+      _post(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/process`),
+
+    // GET /api/v1/upload/shipment/{batch_id}/wfirma/pz_preview — readiness before create.
+    wfirmaPzPreview: (batchId) =>
+      _get(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_preview`),
+
+    // POST /api/v1/upload/shipment/{batch_id}/wfirma/pz_create — live wFirma PZ.
+    // Requires WFIRMA_CREATE_PZ_ALLOWED + server export guards. Sends X-Operator.
+    wfirmaPzCreate: (batchId) =>
+      _postM(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_create`),
+
+    // POST …/wfirma/pz_adopt and …/wfirma/pz_confirm — same handler; body must
+    // include pz_doc_id (numeric) or pz_number. Local audit only (no create flag).
+    wfirmaPzAdopt: (batchId, payload) =>
+      _postM(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_adopt`, payload || {}),
+    wfirmaPzConfirm: (batchId, payload) =>
+      _postM(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_confirm`, payload || {}),
+
+    // Blob download of a resolved batch file URL (from getBatchFiles). Cookie auth.
+    downloadBatchFile: (url, fallbackName) => _download(url, fallbackName || 'download'),
+
   });
 })();

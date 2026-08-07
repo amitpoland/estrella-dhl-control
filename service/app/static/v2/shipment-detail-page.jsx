@@ -595,6 +595,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
             pzGenerated={pzGenerated} pzExported={pzExported} pzNumber={pzNumber}
             batchId={shipment && shipment.batch_id}
             setActiveTab={setActiveTab}
+            onReload={reloadDetail}
           />
         )}
         {activeTab === 'documents' && (
@@ -1533,11 +1534,249 @@ function SadActionBar({ batchId, onReload, sadPresent }) {
   );
 }
 
-// ── PZ / ACCOUNTING
+// ── PZ / ACCOUNTING — wired to existing upload/process + wfirma authorities ───
+// Same commands as V1 Shipment Detail. Local process ≠ wFirma create. Create and
+// adopt/confirm stay confirmation-gated. Downloads resolve real filenames via
+// getBatchFiles (never hardcode pz.pdf / pz.xlsx).
 
-function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, batchId, setActiveTab }) {
+function _pzActionError(res) {
+  if (!res) return 'Request failed.';
+  if (res.error) return res.error;
+  if (res.data && (res.data.error || res.data.detail)) return res.data.error || res.data.detail;
+  return 'HTTP ' + (res.status || '?');
+}
+
+function PzActionsPanel({ d, sadUploaded, batchId, onReload, setActiveTab }) {
+  const [busy, setBusy] = React.useState('');
+  const [msg, setMsg] = React.useState(null);
+  const [files, setFiles] = React.useState(null);
+  const [confirmRegen, setConfirmRegen] = React.useState(false);
+  const [confirmExport, setConfirmExport] = React.useState(false);
+  const [confirmOpen, setConfirmOpen] = React.useState(false); // confirm PZ number
+  const [adoptOpen, setAdoptOpen] = React.useState(false);
+  const [pzInput, setPzInput] = React.useState('');
+
+  const loadFiles = React.useCallback(async () => {
+    if (!batchId) return;
+    const r = await window.PzApi.getBatchFiles(batchId);
+    setFiles(r.ok ? (r.data && r.data.files) || r.data || {} : null);
+  }, [batchId]);
+
+  React.useEffect(() => { loadFiles(); }, [loadFiles, d.pzFileGenerated, d.pzDocId]);
+
+  const run = async (key, fn, okText) => {
+    setBusy(key); setMsg(null);
+    let res;
+    try { res = await fn(); }
+    catch (e) { res = { ok: false, status: 0, error: (e && e.message) || String(e) }; }
+    setBusy('');
+    if (!res || !res.ok) {
+      const body = res && res.data;
+      const blocked = body && (body.blocking_reasons || body.status === 'blocked');
+      const reason = blocked
+        ? ((body.blocking_reasons || []).join('; ') || body.error || _pzActionError(res))
+        : _pzActionError(res);
+      setMsg({ ok: false, text: reason });
+      return false;
+    }
+    // Idempotent already_* responses are success for the operator.
+    const st = res.data && res.data.status;
+    const text = (st === 'already_created' || st === 'already_adopted')
+      ? (okText + ' (already recorded)')
+      : okText;
+    setMsg({ ok: true, text: text });
+    await loadFiles();
+    if (onReload) onReload();
+    return true;
+  };
+
+  const pzBlocked = !!(d.sadDecision && d.sadDecision.safe_to_run_pz === false);
+  const filesMap = (files && files.files) ? files.files : (files || {});
+  const pdfEntry = filesMap.pz_pdf || {};
+  const xlsxEntry = filesMap.calc_xlsx || filesMap.pz_xlsx || {};
+  const pdfReady = !!(pdfEntry.exists && pdfEntry.url);
+  const xlsxReady = !!(xlsxEntry.exists && xlsxEntry.url);
+  const fileGenerated = !!(d.pzFileGenerated || pdfReady || xlsxReady);
+  const booked = !!d.pzDocId;
+
+  const runState = busy === 'process' ? 'running'
+    : (pzBlocked && !fileGenerated ? 'blocked'
+    : (fileGenerated ? 'completed' : 'available'));
+  const regenState = busy === 'process' ? 'running'
+    : (!fileGenerated ? 'blocked'
+    : (booked ? 'available' : 'available'));
+  const confirmState = busy === 'confirm' ? 'running'
+    : (booked ? 'completed' : (fileGenerated ? 'available' : 'blocked'));
+  const dlXState = busy === 'xlsx' ? 'running' : (xlsxReady ? 'available' : 'blocked');
+  const dlPState = busy === 'pdf' ? 'running' : (pdfReady ? 'available' : 'blocked');
+  const exportState = busy === 'export' ? 'running'
+    : (booked ? 'completed'
+    : (!fileGenerated ? 'blocked' : 'available'));
+  const adoptState = busy === 'adopt' ? 'running'
+    : (booked ? 'completed' : (fileGenerated ? 'available' : 'blocked'));
+
+  const B = (props) => <DhlActionButton {...props} />;
+
+  const submitNumber = async (mode) => {
+    const val = (pzInput || '').trim();
+    if (!val) { setMsg({ ok: false, text: 'Enter a PZ document number or numeric wFirma doc id first.' }); return; }
+    const isNumericId = /^\d+$/.test(val);
+    const payload = isNumericId ? { pz_doc_id: val } : { pz_number: val };
+    const key = mode === 'confirm' ? 'confirm' : 'adopt';
+    const ok = await run(key,
+      () => mode === 'confirm' ? window.PzApi.wfirmaPzConfirm(batchId, payload) : window.PzApi.wfirmaPzAdopt(batchId, payload),
+      mode === 'confirm' ? 'PZ number confirmed in audit.' : 'PZ marked exported (adopted into audit).');
+    if (ok) { setConfirmOpen(false); setAdoptOpen(false); setPzInput(''); }
+  };
+
+  const doExport = async () => {
+    // Preview first so we surface server blockers before create.
+    const prev = await window.PzApi.wfirmaPzPreview(batchId);
+    if (prev && prev.ok === false) {
+      setMsg({ ok: false, text: _pzActionError(prev) });
+      setConfirmExport(false);
+      return;
+    }
+    const pdata = prev && prev.data;
+    if (pdata && pdata.ready === false) {
+      const reasons = (pdata.blocking_reasons || pdata.blockers || []).join('; ') || pdata.error || 'Preview not ready';
+      setMsg({ ok: false, text: 'Export blocked: ' + reasons });
+      setConfirmExport(false);
+      return;
+    }
+    const ok = await run('export', () => window.PzApi.wfirmaPzCreate(batchId),
+      'wFirma PZ create request completed.');
+    if (ok) setConfirmExport(false);
+  };
+
+  return (
+    <div data-testid="pz-clearance-actions" style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>
+        PZ actions · this shipment
+      </div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        {!fileGenerated ? (
+          <B label="Run PZ" icon="▶" testid="run-pz" variant="gold"
+            route={'POST /api/v1/upload/shipment/' + batchId + '/process'}
+            state={runState}
+            reason={pzBlocked ? ('SAD validation blocked PZ: ' + ((d.sadDecision && d.sadDecision.reason) || 'unknown')) : 'Upload SAD first.'}
+            onClick={() => run('process', () => window.PzApi.processShipment(batchId), 'PZ processing started — files refresh when complete.')} />
+        ) : (
+          <B label="Regenerate PZ" icon="↺" testid="regenerate-pz"
+            route={'POST /api/v1/upload/shipment/' + batchId + '/process'}
+            state={regenState}
+            reason="Generate PZ files first."
+            onClick={() => setConfirmRegen(true)} />
+        )}
+        <B label="Confirm PZ Number" icon="✎" testid="confirm-pz"
+          route={'POST /api/v1/upload/shipment/' + batchId + '/wfirma/pz_confirm'}
+          state={confirmState}
+          reason="Generate PZ files before confirming a number."
+          onClick={() => { setAdoptOpen(false); setConfirmOpen(true); setPzInput(d.pzNumber || ''); }} />
+        <B label="Download XLSX" icon="↓" testid="download-xlsx"
+          route={'GET /api/v1/dashboard/batches/' + batchId + '/files → calc_xlsx'}
+          state={dlXState}
+          reason="Calculation XLSX not available yet — Run PZ first."
+          onClick={() => run('xlsx', () => window.PzApi.downloadBatchFile(xlsxEntry.url, xlsxEntry.name || 'pz_calc.xlsx'), 'XLSX download started.')} />
+        <B label="Download PDF" icon="↓" testid="download-pdf"
+          route={'GET /api/v1/dashboard/batches/' + batchId + '/files → pz_pdf'}
+          state={dlPState}
+          reason="PZ PDF not available yet — Run PZ first."
+          onClick={() => run('pdf', () => window.PzApi.downloadBatchFile(pdfEntry.url, pdfEntry.name || 'pz.pdf'), 'PDF download started.')} />
+        <B label="Export to wFirma" icon="↗" testid="export-wfirma"
+          variant={exportState === 'available' ? 'gold' : 'outline'}
+          route={'POST /api/v1/upload/shipment/' + batchId + '/wfirma/pz_create'}
+          state={exportState}
+          reason={booked ? 'Already booked in wFirma.' : 'Generate PZ files before exporting to wFirma.'}
+          onClick={() => setConfirmExport(true)} />
+        <B label="Mark Exported" icon="✓" testid="mark-exported"
+          route={'POST /api/v1/upload/shipment/' + batchId + '/wfirma/pz_adopt'}
+          state={adoptState}
+          reason={booked ? 'Already booked / adopted.' : 'Generate PZ files before marking exported.'}
+          onClick={() => { setConfirmOpen(false); setAdoptOpen(true); setPzInput(d.pzNumber || d.pzDocId || ''); }} />
+      </div>
+
+      {confirmRegen && (
+        <div data-testid="regenerate-pz-confirm" role="alertdialog" style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: 'var(--card)', border: '1px solid var(--badge-amber-border)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Regenerate PZ files?</div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>
+            Re-runs the engine for this shipment (POST …/process). Existing PDF/XLSX will be replaced when processing completes.
+            {booked ? ' wFirma booking is unchanged by regenerate.' : ''}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Btn variant="gold" small disabled={busy === 'process'} data-testid="regenerate-pz-confirm-yes"
+              onClick={async () => { const ok = await run('process', () => window.PzApi.processShipment(batchId), 'PZ regeneration started.'); if (ok) setConfirmRegen(false); }}>
+              {busy === 'process' ? '… Running' : 'Confirm Regenerate'}
+            </Btn>
+            <Btn variant="outline" small disabled={busy === 'process'} onClick={() => setConfirmRegen(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {confirmExport && (
+        <div data-testid="export-wfirma-confirm" role="alertdialog" style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: 'var(--card)', border: '1px solid var(--badge-amber-border)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Create PZ in wFirma?</div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>
+            Calls the live wFirma create path (POST …/wfirma/pz_create). Requires the create flag and server readiness gates.
+            Already-booked shipments stay idempotent (already_created).
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Btn variant="gold" small disabled={busy === 'export'} data-testid="export-wfirma-confirm-yes"
+              onClick={doExport}>
+              {busy === 'export' ? '… Exporting' : 'Confirm & Create in wFirma'}
+            </Btn>
+            <Btn variant="outline" small disabled={busy === 'export'} onClick={() => setConfirmExport(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {(confirmOpen || adoptOpen) && (
+        <div data-testid={confirmOpen ? 'confirm-pz-form' : 'mark-exported-form'} style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: 'var(--card)', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
+            {confirmOpen ? 'Confirm PZ Number' : 'Mark Exported (adopt into audit)'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>
+            Enter the wFirma document number (e.g. PZ 12/3/2026) or numeric doc id. Does not create a new wFirma document.
+          </div>
+          <input data-testid="pz-number-input" value={pzInput} onChange={(e) => setPzInput(e.target.value)}
+            placeholder="PZ number or doc id"
+            style={{ width: '100%', maxWidth: 360, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', marginBottom: 10, fontSize: 13 }} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Btn variant="gold" small disabled={!!busy}
+              data-testid={confirmOpen ? 'confirm-pz-submit' : 'mark-exported-submit'}
+              onClick={() => submitNumber(confirmOpen ? 'confirm' : 'adopt')}>
+              {busy ? '… Saving' : (confirmOpen ? 'Confirm Number' : 'Adopt / Mark Exported')}
+            </Btn>
+            <Btn variant="outline" small disabled={!!busy} onClick={() => { setConfirmOpen(false); setAdoptOpen(false); }}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {msg && (
+        <div data-testid="pz-action-msg" role={msg.ok ? 'status' : 'alert'}
+          style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: msg.ok ? 'var(--badge-green-text)' : 'var(--badge-red-text)' }}>
+          {msg.ok ? '✓ ' : '⚠ '}{msg.text}
+        </div>
+      )}
+
+      <div style={{ marginTop: 12, displayTop: '1px solid var(--border-subtle)', paddingTop: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <Btn variant="outline" small data-testid="pz-open-documents" aria-label="Open generated PZ files in the Documents tab" onClick={() => setActiveTab && setActiveTab('documents')}>
+          ↓ Open generated files in Documents →
+        </Btn>
+        <span style={{ fontSize: 12, color: 'var(--text-2)', flex: 1, minWidth: 220 }}>
+          Generated PZ files — PZ PDF, Calculation XLSX, Audit EN, Audit PL, Audit Memo, Corrections —
+          are served from backend authority in the Documents tab. Toolbar downloads use the same file authority.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, batchId, setActiveTab, onReload }) {
   const bid = batchId || '{batch_id}';
-  const wfirmaStatus = d.pzDocId ? 'Booked ✓' : (d.wfirmaMode === 'clipboard' ? 'Clipboard generated' : (pzExported ? 'Exported ✓' : 'Not exported'));
+  const fileGenerated = !!(d.pzFileGenerated || pzGenerated);
+  const booked = !!d.pzDocId;
+  const wfirmaStatus = booked ? 'Booked ✓' : (d.wfirmaMode === 'clipboard' ? 'Clipboard generated' : (pzExported && booked ? 'Exported ✓' : (fileGenerated ? 'Files ready' : 'Not exported')));
   // Honest readiness: a SAD file existing does NOT mean PZ is ready. If the SAD
   // decision engine blocked PZ (safe_to_run_pz===false), never show "Ready".
   const pzBlocked = !!(d.sadDecision && d.sadDecision.safe_to_run_pz === false);
@@ -1565,11 +1804,11 @@ function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, ba
       <SectionLabel>Step 3 · PZ document &amp; wFirma booking</SectionLabel>
       <PanelCard
         title="PZ Document"
-        subtitle="Generate goods receipt, download audit files, export to wFirma"
-        status={pzExported ? 'Exported' : (pzGenerated ? 'Generated' : (pzBlocked ? 'PZ Blocked' : 'Ready for PZ'))}
-        accent={pzExported ? '#22A06B' : (pzGenerated ? '#22A06B' : 'var(--accent)')}
+        subtitle="Same backend authority as V1 — generate locally, then book or adopt in wFirma"
+        status={booked ? 'Booked' : (fileGenerated ? 'Generated' : (pzBlocked ? 'PZ Blocked' : 'Ready for PZ'))}
+        accent={booked || fileGenerated ? '#22A06B' : 'var(--accent)'}
       >
-        {pzBlocked && !pzGenerated && (
+        {pzBlocked && !fileGenerated && (
           <div data-testid="pz-sad-blocked" style={{ margin: '12px 20px 0', padding: '12px 16px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 8, fontSize: 12, color: 'var(--badge-red-text)' }}>
             <strong>PZ blocked by SAD validation.</strong> Reason: {d.sadDecision.reason || 'unknown'}. Resolve on the DHL / Customs tab before generating PZ.
           </div>
@@ -1577,8 +1816,8 @@ function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, ba
         <div style={{ padding: '18px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28 }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>PZ details</div>
-            <InfoRow label="PZ Status"   value={pzGenerated ? 'Generated ✓' : (pzBlocked ? 'Blocked (SAD validation)' : 'Ready for PZ')} />
-            <InfoRow label="PZ Number"   value={_dash(d.pzNumber)} mono />
+            <InfoRow label="PZ Status"   value={fileGenerated ? 'Generated ✓' : (pzBlocked ? 'Blocked (SAD validation)' : 'Ready for PZ')} />
+            <InfoRow label="PZ Number"   value={_dash(d.pzNumber || pzNumber)} mono />
             <InfoRow label="Net Value"   value={_fmtPln(d.netPln)} />
             <InfoRow label="Gross Value" value={_fmtPln(d.grossPln)} />
             <InfoRow label="Duty A00"    value={_fmtPln(d.dutyPln)} />
@@ -1591,40 +1830,19 @@ function PzTab({ d, shipment, sadUploaded, pzGenerated, pzExported, pzNumber, ba
           </div>
         </div>
 
-        <BackendPendingBanner testid="pz-actions-pending-note">
-          PZ generation and wFirma export are not yet wired into this V2 page. The backend routes
-          exist — run these on the V1 Shipment Detail page today. Wiring is tracked in BACKEND_GAP_REGISTER.md.
-        </BackendPendingBanner>
-        {/* SD-5: full 7-button set per wireframe §3.2 Tab 4 */}
-        <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {/* ▶ Run PZ (gold, primary — shown when PZ not yet generated) */}
-          {!pzGenerated && (
-            <PendingAction label="Run PZ" icon="▶" testid="run-pz" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} variant="gold" />
-          )}
-          {/* ↺ Regenerate PZ (shown when PZ already generated) */}
-          {pzGenerated && (
-            <PendingAction label="Regenerate PZ" icon="↺" testid="regenerate-pz" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} />
-          )}
-          {/* ✎ Confirm PZ Number */}
-          <PendingAction label="Confirm PZ Number" icon="✎" testid="confirm-pz" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_confirm'} />
-          {/* ↓ Download XLSX — GET /api/v1/files/{batch_id}/pz.xlsx */}
-          <PendingAction label="Download XLSX" icon="↓" testid="download-xlsx" route={'GET /api/v1/files/' + bid + '/pz.xlsx'} />
-          {/* ↓ Download PDF — GET /api/v1/files/{batch_id}/pz.pdf */}
-          <PendingAction label="Download PDF" icon="↓" testid="download-pdf" route={'GET /api/v1/files/' + bid + '/pz.pdf'} />
-          {/* ↗ Export to wFirma (gold — primary when PZ generated, not yet exported) */}
-          <PendingAction label="Export to wFirma" icon="↗" testid="export-wfirma" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_create'} variant={pzGenerated && !pzExported ? 'gold' : 'outline'} />
-          {/* ✓ Mark Exported */}
-          <PendingAction label="Mark Exported" icon="✓" testid="mark-exported" route={'POST /api/v1/upload/shipment/' + bid + '/wfirma/pz_adopt'} />
+        <div role="note" data-testid="pz-actions-authority-note" style={{
+          margin: '0 20px 4px', padding: '12px 14px', borderRadius: 8,
+          background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)',
+          color: 'var(--text-2)', fontSize: 12, lineHeight: 1.5,
+        }}>
+          PZ actions below write through the shared upload/process + wFirma backend (same as V1).
+          Local generation and wFirma booking are separate steps. Write/export actions are confirmation-gated;
+          already-booked shipments stay idempotent.
         </div>
-        <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <Btn variant="outline" small data-testid="pz-open-documents" aria-label="Open generated PZ files in the Documents tab" onClick={() => setActiveTab('documents')}>
-            ↓ Open generated files in Documents →
-          </Btn>
-          <span style={{ fontSize: 12, color: 'var(--text-2)', flex: 1, minWidth: 220 }}>
-            Generated PZ files — PZ PDF, Calculation XLSX, Audit EN, Audit PL, Audit Memo, Corrections —
-            are served from backend authority in the <strong>Documents</strong> tab.
-          </span>
-        </div>
+        <PzActionsPanel
+          d={d} sadUploaded={sadUploaded} batchId={bid}
+          onReload={onReload} setActiveTab={setActiveTab}
+        />
       </PanelCard>
     </>
   );
