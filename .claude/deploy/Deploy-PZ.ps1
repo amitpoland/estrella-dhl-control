@@ -710,7 +710,12 @@ function Test-RuntimeUnchanged {
     $code = $LASTEXITCODE
     if ($code -eq 1) {
         Write-Host "  runtime differences present - proceeding with the full deploy"
-        & git -C $SRC diff --name-status $FromSha $ToSha -- $paths
+        # Write-Host only: native git stdout must NOT enter the success output stream.
+        # In Windows PowerShell 5.1, any uncaptured pipeline output is part of the
+        # function's return value, so `if (Test-RuntimeUnchanged …)` would see a
+        # non-empty array (name-status lines + $false) and wrongly take the NO-OP
+        # path on a real delta — the 2026-08-07 consolidation deploy failure mode.
+        & git -C $SRC diff --name-status $FromSha $ToSha -- $paths | ForEach-Object { Write-Host "  $_" }
         return $false
     }
     if ($code -ne 0) {
