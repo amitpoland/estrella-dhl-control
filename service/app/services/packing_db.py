@@ -731,7 +731,8 @@ def upsert_packing_lines(
                     # filtering on it made the lookup miss and every pack_sr
                     # row duplicated on same-batch re-upload.
                     existing = con.execute(
-                        """SELECT id, operator_review_status, product_code FROM packing_lines
+                        """SELECT id, operator_review_status, product_code,
+                                  invoice_line_position FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND pack_sr IS ?
                            LIMIT 1""",
@@ -739,7 +740,8 @@ def upsert_packing_lines(
                     ).fetchone()
                 else:
                     existing = con.execute(
-                        """SELECT id, operator_review_status, product_code FROM packing_lines
+                        """SELECT id, operator_review_status, product_code,
+                                  invoice_line_position FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND invoice_line_position IS ?
                              AND design_no=? AND bag_id=?
@@ -762,7 +764,8 @@ def upsert_packing_lines(
                 # aggregate (N:1) matches collapse to a single row per invoice line.
                 if existing is None and bag_id:
                     existing = con.execute(
-                        """SELECT id, operator_review_status, product_code FROM packing_lines
+                        """SELECT id, operator_review_status, product_code,
+                                  invoice_line_position FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND invoice_line_position IS ?
                              AND bag_id=?
@@ -773,7 +776,8 @@ def upsert_packing_lines(
                 # force_reextract: if still no match (bag_id also changed), widen to position only
                 if existing is None and force_reextract:
                     existing = con.execute(
-                        """SELECT id, operator_review_status, product_code FROM packing_lines
+                        """SELECT id, operator_review_status, product_code,
+                                  invoice_line_position FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND invoice_line_position IS ?
                            LIMIT 1""",
@@ -797,6 +801,13 @@ def upsert_packing_lines(
                     ).strip().lower() == "confirmed"
                     _eff_product_code = (
                         existing["product_code"] if _confirmed else line.get("product_code")
+                    )
+                    # A confirmed row pins its invoice_line_position alongside
+                    # product_code: the pair names ONE invoice line, and moving
+                    # the position under a preserved code would leave the two
+                    # columns naming different lines.
+                    _eff_inv_pos = (
+                        existing["invoice_line_position"] if _confirmed else inv_pos
                     )
                     if _confirmed:
                         _scan_line = dict(line)
@@ -824,8 +835,10 @@ def upsert_packing_lines(
                             # old invoice_line_position behind would leave the two
                             # columns naming different lines — a silent
                             # inconsistency, since every consumer reads one or the
-                            # other and they would no longer agree.
-                            inv_pos,
+                            # other and they would no longer agree. Confirmed rows
+                            # keep BOTH operator values (_eff_inv_pos mirrors
+                            # _eff_product_code) for the same reason.
+                            _eff_inv_pos,
                             _eff_product_code,
                             line.get("batch_no", ""),
                             line.get("tray_id", ""),
