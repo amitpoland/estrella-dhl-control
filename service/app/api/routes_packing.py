@@ -747,6 +747,7 @@ def _run_rematch(
     *,
     apply: bool,
     confirm: str,
+    actor: str = "operator",
 ) -> Dict[str, Any]:
     """The ONE routine behind both the dry-run and the apply.
 
@@ -899,6 +900,17 @@ def _run_rematch(
     written = pdb.upsert_packing_lines(line_records, force_reextract=True)
     log.info("[%s] rematch APPLIED: %d rows rewritten (%d proposed changes)",
              batch_id, written, len(plan["row_changes"]))
+    tl.log_event(
+        output_dir / "audit.json",
+        tl.EV_PACKING_REMATCH_APPLIED,
+        "packing_rematch",
+        actor=actor,
+        detail={
+            "batch_id":         batch_id,
+            "rows_written":     written,
+            "proposed_changes": len(plan["row_changes"]),
+        },
+    )
 
     response["applied"] = True
     response["rows_written"] = written
@@ -951,11 +963,12 @@ def _build_rematch_line_records(
     return out
 
 
-@router.post("/{batch_id}/rematch", dependencies=[Depends(require_admin)])
+@router.post("/{batch_id}/rematch")
 def rematch_packing_lines(
     batch_id: str,
     apply:    bool = Query(default=False),
     confirm:  str  = Query(default=""),
+    user:     dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Recompute the packing→invoice assignment for rows already persisted.
 
@@ -982,7 +995,8 @@ def rematch_packing_lines(
     does not touch inventory or accounting, and cannot raise any line above the
     quantity its purchase invoice authorises.
     """
-    return _run_rematch(batch_id, apply=apply, confirm=confirm)
+    return _run_rematch(batch_id, apply=apply, confirm=confirm,
+                        actor=user.get("email") or "operator")
 
 
 # ── GET /api/v1/packing/{batch_id} ────────────────────────────────────────────
