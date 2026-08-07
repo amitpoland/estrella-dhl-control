@@ -761,6 +761,27 @@ def sync_draft_from_packing_upload(
             "designs_scored_pending": {},
         }
 
+    # ── 1.25 Blank-fill thin sales variants from purchase packing ───────────
+    # Manual allocation / legacy link_as_sales historically dropped KT/quality.
+    # Fill blanks only (never Client PO, never overwrite Sales values) before
+    # draft birth/sync so new drafts inherit commercial identity automatically.
+    sales_backfill: Dict[str, Any] = {}
+    try:
+        from .commercial_authority import backfill_sales_variants_from_purchase
+        sales_backfill = backfill_sales_variants_from_purchase(batch_id) or {}
+        if int(sales_backfill.get("updated") or 0) > 0:
+            sales_lines = ddb.get_sales_packing_lines(batch_id) or sales_lines
+            log.info(
+                "[%s] proforma_draft_sync: sales variant backfill updated=%s",
+                batch_id, sales_backfill.get("updated"),
+            )
+    except Exception as exc:
+        log.warning(
+            "[%s] proforma_draft_sync: sales variant backfill failed (non-fatal): %s",
+            batch_id, exc,
+        )
+        sales_backfill = {"ok": False, "error": str(exc)}
+
     # ── 1.5 Resolve missing product_code via batch-scoped lookup ─────────────
     resolved_lines, resolution_summary = resolve_sales_lines_for_batch(
         batch_id, sales_lines,
@@ -1167,4 +1188,5 @@ def sync_draft_from_packing_upload(
             batch_id, client_name, action, warning,
         )
 
+    result["sales_variant_backfill"] = sales_backfill
     return result

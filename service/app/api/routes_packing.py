@@ -2818,29 +2818,39 @@ def _build_matched_sales_lines(
 
     Returns (matched_list, skipped_count).  Excludes rows where product_code
     is absent/blank or requires_manual_review is set.
+
+    Carries purchase packing variant identity (karat/metal/quality/size/weights)
+    into sales_packing_lines so commercial documents born via link_as_sales are
+    not blank. Client PO is Sales-XLSX-only — never invented from purchase.
     """
+    from ..services.commercial_authority import purchase_variant_fields
+
     matched = [
         ln for ln in packing_lines
         if str(ln.get("product_code") or "").strip()
         and not ln.get("requires_manual_review")
     ]
     skipped = len(packing_lines) - len(matched)
-    sales_lines = [
-        {
+    sales_lines = []
+    for ln in matched:
+        qty = float(ln.get("quantity", 0) or 0)
+        unit = float(ln.get("unit_price_eur") or ln.get("unit_price") or 0)
+        variants = purchase_variant_fields(ln)
+        sales_lines.append({
             "client_name":  client,
             "client_ref":   str(ln.get("invoice_no", "") or ""),
             "product_code": str(ln.get("product_code", "") or ""),
             "design_no":    str(ln.get("design_no", "") or ""),
             "bag_id":       str(ln.get("bag_id", "") or ""),
-            "quantity":     float(ln.get("quantity", 0) or 0),
+            "quantity":     qty,
             "remarks":      str(ln.get("remarks", "") or ""),
-            "unit_price":   float(ln.get("unit_price_eur") or ln.get("unit_price") or 0),
+            "unit_price":   unit,
             "currency":     str(ln.get("currency") or "EUR"),
-            "total_value":  float(ln.get("quantity") or 0) * float(ln.get("unit_price_eur") or ln.get("unit_price") or 0),
-            "price_source": "packing_xlsx_value" if float(ln.get("unit_price_eur") or ln.get("unit_price") or 0) > 0 else "packing_promote",
-        }
-        for ln in matched
-    ]
+            "total_value":  qty * unit,
+            "price_source": "packing_xlsx_value" if unit > 0 else "packing_promote",
+            # Purchase → Sales blank-fill for commercial variants (not Client PO).
+            **variants,
+        })
     return sales_lines, skipped
 
 
@@ -3369,9 +3379,29 @@ def manual_sales_allocation(
         )
 
     # 5. Build line_records matching the sales_packing_lines INSERT column set.
+    # Blank-fill commercial variants from purchase packing so manual allocation
+    # does not birth permanently blank KT/quality/size/weights (Client PO stays
+    # Sales-XLSX-only — purchase has no Client PO authority).
+    from ..services.commercial_authority import (
+        enrich_sales_line_blanks_from_purchase,
+        purchase_variant_fields,
+    )
+    purchase_idx: Dict[str, Dict[str, Any]] = {}
+    for pl in packing_lines:
+        fields = purchase_variant_fields(pl)
+        pc_key = str(pl.get("product_code") or "").strip()
+        dn_key = str(pl.get("design_no") or "").strip()
+        if pc_key and pc_key not in purchase_idx and any(fields.values()):
+            purchase_idx[pc_key] = fields
+        if dn_key:
+            dk = f"dn:{dn_key.casefold()}"
+            if dk not in purchase_idx and any(fields.values()):
+                purchase_idx[dk] = fields
+
     client_ref_val = client_ref
-    line_records = [
-        {
+    line_records = []
+    for v in validated:
+        base = {
             "batch_id":             batch_id,
             "sales_document_id":    sd_id,
             "client_name":          client_name,
@@ -3387,8 +3417,8 @@ def manual_sales_allocation(
             "remarks":              v["remarks"],
             "client_contractor_id": client_cid,
         }
-        for v in validated
-    ]
+        enriched, _filled = enrich_sales_line_blanks_from_purchase(base, purchase_idx)
+        line_records.append(enriched)
 
     # 6. Idempotent write: replaces prior manual allocation for same batch+client.
     write_result = ddb.replace_sales_packing_lines(
