@@ -349,6 +349,30 @@ gate_reconfirmed_at: 2026-07-31T (this session; READY-TO-DEPLOY, LOW)
 
 ## History (most recent first)
 
+- 2026-08-07 — **PR #1104 rebased to main + CMR stale-test repair folded in (test-only;
+  no new PR — GATE 2 exactly full at #1110/#1109/#1104).** New state: base `main`, head
+  `8ddc80c1`, 2 commits, diff vs main = exactly 2 test files
+  (`service/tests/test_sales_packing_reingest.py` +117/−3,
+  `service/tests/test_cmr_packing_lines.py` +38/−9). Mechanics: old base branch
+  `fix/sales-pnd-candidate-authority` had merged as `f43796bc` (= then-main tip), so the
+  single coverage commit was replayed `--onto origin/main f9008292` (clean), the PR base
+  retargeted to `main`, and the CMR repair cherry-picked on top (its parent was exactly
+  the main tip). Force-pushed `--force-with-lease`; disclosure comment posted on the PR.
+  **CMR diagnosis — stale test, NOT a regression (Lesson O-style triage; zero production
+  files touched):** 3 tests grepped `proforma-detail.jsx` for `l.item_type` / `l.metal` /
+  `l.stone_type` / `l.quantity` / `l.net_weight`, identifiers dead since `0de180f1`
+  (PR #699 rewrote `_cmrAggPackingLines` to aggregate draft `editable_lines` as `ln`
+  [billed-qty authority `ln.qty`] enriched by `pk = _enrichPacking(ln)` [`pk.metal`,
+  `pk.stone_type`, `pk.net_weight`, `pk.item_type` fallback]); the aggregation contract
+  is intact. Red ~2 months unnoticed — file sits outside the metered floors (same
+  governance class as `test_pnd_tiebreak_persists`, which this PR also fixes). Migrated
+  tests now pin the ln/pk contract and are scoped to the `_cmrAggPackingLines` IIFE body
+  (`_agg_src()` helper) instead of the whole 6k-line file. **Verification at `8ddc80c1`:**
+  `test_cmr_packing_lines.py` + `test_sales_packing_reingest.py` 90/90; adjacent
+  `test_sales_pnd_candidate_authority.py` + `test_intake_currency_and_pnd.py` 23/23.
+  **Merge deferred (operator rule): #1104 merges after the current production deployment
+  target is no longer held stable; it is NOT a deploy blocker.**
+
 - 2026-08-06 — **PR #1094 CLOSED (merged)** — `feat(deploy): make seven-agent gate evidence a
   machine-checked, tamper-bound precondition of signing`. **Merged SHA
   `77ded8e23e8d92e627e2d77c7f032a9144cfc8b7`**, merged by `amitpoland` 2026-08-06T06:38:34Z,
