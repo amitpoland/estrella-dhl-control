@@ -184,3 +184,66 @@ def test_candidates_without_authority_qty_keep_legacy_behaviour():
     out, summary = disambiguate_pnd(sales, cands, invoice_no=INV)
     assert summary["applied"] is True
     assert out[0]["product_code"] == f"{INV}-1"
+
+
+# ── Description-token grammar boundary (known blind spot, pinned) ────────────
+#
+# invoice_lines carry no item_type column, so build_supplier_candidates derives
+# a candidate's item type from the DESCRIPTION via _canonical_item_type, whose
+# fuzzy scan (description_grammar.canonical_item_type_fuzzy) only matches
+# tokens of 4+ characters inside free text — the length gate that stops "er" /
+# "br" false-positives.  The alias "pnd" is 3 characters, so it is recognised
+# only as a DIRECT hit (the whole squashed description equals "pnd"), never
+# embedded in a longer string.  Consequence: a supplier description like
+# "PCS, 18KT Gold PND" yields ZERO candidates and the resolver refuses with
+# "PND count mismatch".  Lifting the gate for "pnd" is a behaviour change to
+# description_grammar.py (root engine file, multiple consumers) and needs its
+# own reviewed PR — these tests pin the CURRENT boundary so the blind spot is
+# explicit; the first test failing means the grammar was intentionally changed
+# and should be updated alongside that change.
+
+
+def test_embedded_three_char_pnd_token_yields_zero_candidates_known_blind_spot():
+    """KNOWN BLIND SPOT: 'PND' embedded in a longer description is NOT
+    recognised as a pendant (fuzzy scan requires 4+ char tokens), so the line
+    produces no candidate and the resolver refuses with a count mismatch."""
+    from app.services.invoice_packing_extractor import _canonical_item_type
+    # Importing the extractor put the repo root on sys.path — pin the grammar
+    # layer directly too, so this boundary stays pinned even if the extractor
+    # wrapper ever pre-tokenises descriptions before consulting the grammar.
+    from description_grammar import canonical_item_type_fuzzy
+
+    # Grammar level: no recognition; wrapper level: the squash fallback.
+    assert canonical_item_type_fuzzy("PCS, 18KT Gold PND") == ""
+    assert _canonical_item_type("PCS, 18KT Gold PND") == "pcsktgoldpnd"
+
+    lines = [_il(1, "PCS, 18KT Gold PND", rate=50.0)]
+    cands = build_supplier_candidates(lines, [], invoice_no=INV)
+    assert cands == []
+
+    out, summary = disambiguate_pnd([_sale(60.0)], cands, invoice_no=INV)
+    assert summary["applied"] is False
+    assert "count mismatch" in summary["reason"]
+    assert not out[0].get("product_code")
+
+
+def test_bare_pnd_description_is_a_direct_alias_hit_and_produces_a_candidate():
+    """The blind spot is ONLY the embedded token: a description that is nothing
+    but 'PND' squashes to a direct alias hit and yields a candidate."""
+    from app.services.invoice_packing_extractor import _canonical_item_type
+
+    assert _canonical_item_type("PND") == "pendant"
+
+    lines = [_il(1, "PND", rate=50.0)]
+    cands = build_supplier_candidates(lines, [], invoice_no=INV)
+    assert [c["product_code"] for c in cands] == [f"{INV}-1"]
+    assert cands[0]["item_type"] == "PENDANT"
+
+
+def test_embedded_pend_and_pendant_tokens_produce_candidates():
+    """4+ char tokens pass the fuzzy scan's length gate wherever they appear."""
+    for desc in ("PCS, 18KT Gold PEND", "PCS, 18KT Gold Plain PENDANT"):
+        lines = [_il(1, desc, rate=50.0)]
+        cands = build_supplier_candidates(lines, [], invoice_no=INV)
+        assert [c["product_code"] for c in cands] == [f"{INV}-1"], desc
+        assert cands[0]["item_type"] == "PENDANT", desc
