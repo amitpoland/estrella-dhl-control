@@ -868,10 +868,14 @@ def _rows_full(pdb, inv=None):
 
 
 def test_unscoped_blocked_batch_still_refuses_exactly_as_before(env):
-    """Byte-for-behavior compatibility: without a scope, one blocked invoice
+    """Byte-for-behavior compatibility: without a scope, a real plan blocker
     still refuses the whole batch with the same refusal code."""
     cli, tmp, ddb, pdb = env
-    _seed_two_invoices(tmp, ddb, pdb)
+    pf_a, pf_b = _seed_two_invoices(tmp, ddb, pdb)
+    import openpyxl
+    wb = openpyxl.load_workbook(pf_b)
+    wb.active.append([9, "PND", "SYN-B99", "925/W", "PLAIN", 0, 0, 1, 1.0, 1.0, ""])
+    wb.save(str(pf_b))
     before = _rows_full(pdb)
 
     dry = cli.post(f"/api/v1/packing/{BID}/rematch").json()
@@ -887,8 +891,9 @@ def test_unscoped_blocked_batch_still_refuses_exactly_as_before(env):
 
 
 def test_scoped_apply_lands_safe_invoice_while_other_stays_blocked(env):
-    """THE incident shape: blockers live only in invoice B; scoping to invoice A
-    applies A's correction while B — confirmed rows included — stays untouched."""
+    """THE incident shape: invoice B carries a pre-existing over-authority
+    advisory; scoping to invoice A applies A's correction while B — confirmed
+    rows included — stays untouched."""
     cli, tmp, ddb, pdb = env
     _seed_two_invoices(tmp, ddb, pdb)
     b_before = _rows_full(pdb, INV_B)
@@ -896,19 +901,20 @@ def test_scoped_apply_lands_safe_invoice_while_other_stays_blocked(env):
     dry = cli.post(f"/api/v1/packing/{BID}/rematch",
                    params={"invoice_no": INV}).json()
     assert dry["dry_run"] is True
-    assert dry["batch_blocking"] is True
+    assert dry["batch_blocking"] is False
     assert dry["scope_blocking"] is False
     assert dry["scope_invoice"] == INV
-    # B's blocker is attributed to B alone: visible batch-wide, not gating A.
-    assert {b["code"] for b in dry["plan"]["blockers"]} == {"line_over_authority_after"}
-    assert all(b["scope_invoices"] == [INV_B] for b in dry["plan"]["blockers"])
+    assert {b["code"] for b in dry["plan"]["blockers"]} == set()
+    adv = [a for a in dry["plan"]["advisories"]
+           if a["code"] == "line_over_authority_preexisting"]
+    assert adv and all(a["scope_invoices"] == [INV_B] for a in adv)
 
     r = cli.post(f"/api/v1/packing/{BID}/rematch",
                  params={"apply": "true", "confirm": BID, "invoice_no": INV})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["applied"] is True
-    assert body["batch_blocking"] is True
+    assert body["batch_blocking"] is False
     assert body["scope_blocking"] is False
     assert body["rows_written"] >= 1
 
@@ -933,7 +939,11 @@ def test_scoped_apply_lands_safe_invoice_while_other_stays_blocked(env):
 def test_scope_with_its_own_blocker_refuses(env):
     """Scoping to the BLOCKED invoice must refuse — the scope is not a bypass."""
     cli, tmp, ddb, pdb = env
-    _seed_two_invoices(tmp, ddb, pdb)
+    pf_a, pf_b = _seed_two_invoices(tmp, ddb, pdb)
+    import openpyxl
+    wb = openpyxl.load_workbook(pf_b)
+    wb.active.append([9, "PND", "SYN-B99", "925/W", "PLAIN", 0, 0, 1, 1.0, 1.0, ""])
+    wb.save(str(pf_b))
     before = _rows_full(pdb)
 
     r = cli.post(f"/api/v1/packing/{BID}/rematch",

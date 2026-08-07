@@ -239,7 +239,9 @@ def test_released_rows_become_rematch_eligible(env):
     before = client.post(f"/api/v1/packing/{R_BID}/rematch").json()["plan"]
     assert {e["pack_sr"] for e in before["operator_confirmed_preserved"]} == {1}
     assert 1 not in {c["pack_sr"] for c in before["row_changes"]}
-    assert before["blocking"] is True
+    assert before["blocking"] is False
+    assert [a for a in before["advisories"]
+            if a["code"] == "line_over_authority_preexisting"]
 
     r = client.post(f"/api/v1/packing/{R_BID}/release-confirmation",
                     json={"row_ids": [str(rows[1]["id"])],
