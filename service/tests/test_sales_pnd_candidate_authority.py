@@ -208,8 +208,13 @@ def test_embedded_three_char_pnd_token_yields_zero_candidates_known_blind_spot()
     recognised as a pendant (fuzzy scan requires 4+ char tokens), so the line
     produces no candidate and the resolver refuses with a count mismatch."""
     from app.services.invoice_packing_extractor import _canonical_item_type
+    # Importing the extractor put the repo root on sys.path — pin the grammar
+    # layer directly too, so this boundary stays pinned even if the extractor
+    # wrapper ever pre-tokenises descriptions before consulting the grammar.
+    from description_grammar import canonical_item_type_fuzzy
 
-    # Grammar level: the squash fallback, not "pendant".
+    # Grammar level: no recognition; wrapper level: the squash fallback.
+    assert canonical_item_type_fuzzy("PCS, 18KT Gold PND") == ""
     assert _canonical_item_type("PCS, 18KT Gold PND") == "pcsktgoldpnd"
 
     lines = [_il(1, "PCS, 18KT Gold PND", rate=50.0)]
