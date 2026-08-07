@@ -805,6 +805,7 @@ def upsert_packing_lines(
                     con.execute(
                         """UPDATE packing_lines SET
                                packing_document_id=?, design_no=?, bag_id=?,
+                               invoice_line_position=?,
                                product_code=?, batch_no=?, tray_id=?,
                                item_type=?, uom=?, quantity=?, gross_weight=?, net_weight=?,
                                metal=?, karat=?, stone_type=?, remarks=?,
@@ -818,6 +819,13 @@ def upsert_packing_lines(
                             line.get("packing_document_id", ""),
                             line.get("design_no", ""),
                             line.get("bag_id", ""),
+                            # Placement is the thing a re-extraction exists to
+                            # correct. Refreshing product_code while leaving the
+                            # old invoice_line_position behind would leave the two
+                            # columns naming different lines — a silent
+                            # inconsistency, since every consumer reads one or the
+                            # other and they would no longer agree.
+                            inv_pos,
                             _eff_product_code,
                             line.get("batch_no", ""),
                             line.get("tray_id", ""),
@@ -1285,6 +1293,26 @@ def resolve_price_reprocess_targets(
                     (out["already_priced"] if cur > 0 else out["targets"]).append(tgt)
     out["blocking"] = bool(out["invalid"] or out["ambiguous"] or out["unmatched"])
     return out
+
+
+def resolve_document_id_by_hash(batch_id: str, source_file_hash: str) -> List[str]:
+    """Every packing_document in ``batch_id`` whose stored content hash matches.
+
+    EXACT content hash only — deliberately no basename fallback. A re-extraction
+    rewrites persisted purchase authority, and authority for that write comes
+    from the content-addressed document identity: a file replaced or edited under
+    the same name must NOT resolve to the old document. Returning a list (rather
+    than one id or None) forces the caller to treat 0 matches and >1 matches as
+    distinct, blockable conditions instead of collapsing both into a silent skip.
+    Same discipline as ``resolve_price_reprocess_targets``.
+    """
+    if _db_path is None or not batch_id or not source_file_hash:
+        return []
+    with _connect() as con:
+        return [r["id"] for r in con.execute(
+            "SELECT id FROM packing_documents WHERE batch_id=? AND source_file_hash=?",
+            (batch_id, source_file_hash),
+        ).fetchall()]
 
 
 def apply_price_reprocess_targets(
