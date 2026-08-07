@@ -21,6 +21,7 @@ from __future__ import annotations
 import sys
 import threading as _threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.config import settings
@@ -217,10 +218,9 @@ def _customs_grade_translation(item_type: str,
         return None
     return {
         "name_pl":        (norm.get("item_type_pl") or "").strip()
-                          or "Wyrób jubilerski",
+                          or (desc_pl.split("—")[0].split("-")[0].strip() if desc_pl else ""),
         "description_pl": desc_pl,
-        "material_pl":    (norm.get("material_pl")  or "").strip()
-                          or "metal szlachetny",
+        "material_pl":    (norm.get("material_pl")  or "").strip(),
         "purpose_pl":     (norm.get("purpose_pl")   or "").strip()
                           or "Ozdoba — biżuteria do noszenia.",
     }
@@ -254,12 +254,14 @@ def _load_translations() -> tuple:
         except Exception as exc:
             log.warning("description_engine: ITEM_TRANSLATIONS import failed (%s) "
                         "— using minimal in-module fallback", exc)
+            # Empty defaults — never fabricate "Wyrób jubilerski" / "Biżuteria".
+            # Callers must supply real PZ / customs text or get rejected_generic.
             _TRANSLATIONS_CACHE = {}
             _DEFAULT_CACHE = {
-                "name_pl":        "Biżuteria",
-                "description_pl": "Wyrób jubilerski",
-                "material_pl":    "Metal z kamieniami ozdobnymi",
-                "purpose_pl":     "Ozdoba",
+                "name_pl":        "",
+                "description_pl": "",
+                "material_pl":    "",
+                "purpose_pl":     "",
             }
     return _TRANSLATIONS_CACHE, _DEFAULT_CACHE
 
@@ -362,7 +364,15 @@ def get_description_block(
 
     existing = ddb.get_product_description(pc)
     if existing is not None:
-        return existing
+        # Poisoned auto/backfill rows (generic "Wyrób jubilerski…") are NOT
+        # authority — allow fall-through so a caller with real PZ / customs
+        # text can overwrite them. Manual rows and usable non-generic rows
+        # stay locked.
+        _src = str(existing.get("source") or "").strip()
+        _v = validate_product_description_row(existing)
+        if _v.is_usable or _src == "manual":
+            return existing
+        # else: fall through and rewrite when the caller supplies better text
 
     eff_desc_en = (description_en or "").strip()
 
@@ -389,6 +399,29 @@ def get_description_block(
         description_en = eff_desc_en,
     )
     line = build_description_line(eff_desc_pl, eff_desc_en)
+
+    # Never persist a generic placeholder as commercial / customs authority.
+    # Fail closed: return an in-memory diagnostic block without writing.
+    if _contains_forbidden_desc_token(eff_desc_pl, eff_name_pl):
+        log.error(
+            "description_engine: refusing to persist generic description for %s "
+            "(description_pl=%r)",
+            pc, eff_desc_pl[:80],
+        )
+        return {
+            "product_code":      pc,
+            "item_type":         _normalise_item_type(item_type),
+            "name_pl":           "",
+            "description_pl":    "",
+            "description_en":    "",
+            "material_pl":       "",
+            "purpose_pl":        "",
+            "description_block": "",
+            "description_line":  "",
+            "source":            "rejected_generic",
+            "created_at":        None,
+            "updated_at":        None,
+        }
 
     if ddb._db_path is None:
         return {
@@ -1239,3 +1272,129 @@ def resolve_and_stamp_customs_descriptions(
                     "row (source='manual')",
             })
     return missing
+
+
+# ── PZ rows → product_descriptions (single commercial authority) ─────────────
+
+_PZ_ROWS_SOURCE = "pz_rows"
+_OVERWRITEABLE_SOURCES = frozenset({
+    "auto", "pz_rows_backfill", "pz_rows", "rejected_generic", "",
+})
+
+
+def promote_pz_rows_to_product_descriptions(
+    batch_dir: Path,
+    *,
+    dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Promote bilingual descriptions from ``pz_rows.json`` into product_descriptions.
+
+    The PZ calculation output (``nazwa_pl`` / ``nazwa_en`` / ``pl_desc`` /
+    ``description_en``) is the permanent commercial + customs description
+    authority for each ``product_code``. This function:
+
+      * reads ``batch_dir/pz_rows.json``
+      * rejects generic / empty PL text (never fabricates)
+      * overwrites ``source ∈ {auto, pz_rows_backfill, pz_rows}`` rows
+      * never touches ``source='manual'`` rows
+      * writes ``source='pz_rows'`` with ``description_pl = nazwa_pl``,
+        ``description_en = nazwa_en``, ``name_pl = nazwa_pl``
+
+    Returns a summary dict ``{scanned, written, skipped_manual, skipped_generic,
+    skipped_blank, errors, dry_run, sample}``.
+    """
+    import json as _json
+
+    out: Dict[str, Any] = {
+        "scanned": 0,
+        "written": 0,
+        "skipped_manual": 0,
+        "skipped_generic": 0,
+        "skipped_blank": 0,
+        "errors": [],
+        "dry_run": bool(dry_run),
+        "sample": [],
+    }
+    path = Path(batch_dir) / "pz_rows.json"
+    if not path.exists():
+        out["errors"].append(f"pz_rows.json not found at {path}")
+        return out
+
+    try:
+        raw = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        out["errors"].append(f"pz_rows.json parse failed: {exc}")
+        return out
+
+    rows = raw if isinstance(raw, list) else (
+        raw.get("rows") or raw.get("items") or []
+    )
+    if not isinstance(rows, list):
+        out["errors"].append("pz_rows.json has unexpected shape")
+        return out
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        out["scanned"] += 1
+        pc = str(r.get("product_code") or "").strip()
+        if not pc:
+            out["skipped_blank"] += 1
+            continue
+        pl = str(r.get("nazwa_pl") or r.get("pl_desc") or "").strip()
+        en = str(r.get("nazwa_en") or r.get("description_en") or "").strip()
+        item_type = str(r.get("item_type") or "").strip().upper()
+
+        if not pl:
+            out["skipped_blank"] += 1
+            continue
+        if _contains_forbidden_desc_token(pl):
+            out["skipped_generic"] += 1
+            continue
+
+        existing = ddb.get_product_description(pc)
+        if existing is not None and str(existing.get("source") or "") == "manual":
+            out["skipped_manual"] += 1
+            continue
+        if existing is not None and str(existing.get("source") or "") not in _OVERWRITEABLE_SOURCES:
+            out["skipped_manual"] += 1
+            continue
+
+        block = build_description_block(
+            description_pl=pl,
+            material_pl="",
+            purpose_pl="Ozdoba — biżuteria do noszenia.",
+            description_en=en,
+        )
+        line = build_description_line(pl, en)
+
+        if len(out["sample"]) < 5:
+            out["sample"].append({
+                "product_code": pc,
+                "description_pl": pl,
+                "description_en": en,
+                "item_type": item_type,
+            })
+
+        if dry_run:
+            out["written"] += 1
+            continue
+
+        try:
+            ddb.upsert_product_description(
+                product_code=pc,
+                item_type=item_type or str((existing or {}).get("item_type") or ""),
+                name_pl=pl,
+                description_pl=pl,
+                description_en=en,
+                material_pl="",
+                purpose_pl="Ozdoba — biżuteria do noszenia.",
+                description_block=block,
+                description_line=line,
+                source=_PZ_ROWS_SOURCE,
+            )
+            out["written"] += 1
+        except Exception as exc:
+            out["errors"].append({"product_code": pc, "error": str(exc)[:200]})
+
+    return out

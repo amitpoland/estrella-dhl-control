@@ -2075,8 +2075,10 @@ def list_attention_drafts(
 # value is NEVER overwritten.
 NAME_PL_SOURCE_OPERATOR  = "operator"
 NAME_PL_SOURCE_PD        = "product_descriptions"
-NAME_PL_SOURCE_GENERATED = "generated"
+NAME_PL_SOURCE_GENERATED = "generated"  # retained for historical rows; never newly stamped
 NAME_PL_SOURCE_BLANK     = "blank"
+# Diagnostic stamp when PD is absent OR only holds generic/forbidden text.
+NAME_PL_SOURCE_MISSING_PD = "missing_product_descriptions"
 
 
 def _birth_resolve_name_pl(
@@ -2086,55 +2088,70 @@ def _birth_resolve_name_pl(
 ) -> List[Dict[str, Any]]:
     """Resolve each line's ``name_pl`` and stamp ``name_pl_source`` provenance.
 
-    Order: operator (a pre-existing non-blank name_pl) → product_descriptions
-    (``lookup_fn(product_code)["name_pl"]``) → ``desc_generate`` (from the line's
-    transient ``_gen_attrs``) → blank. Never overwrites an operator value; never
-    fabricates on a PD miss unless ``desc_generate`` is supplied AND yields text.
-    Returns new line dicts (does not mutate the input).
+    Order: operator (pre-existing non-blank, non-generic name_pl)
+    → product_descriptions via the shared
+    :func:`description_engine.validate_product_description_row` policy
+    (``description_pl`` preferred, then ``name_pl``; generics rejected)
+    → blank / ``missing_product_descriptions``.
+
+    ``desc_generate`` is accepted for call-site compatibility but **ignored** —
+    fabricated category-template generators are not an authority. Never
+    overwrites a real operator value; never fabricates on a PD miss.
     """
+    _ = desc_generate  # no fabrication — signature kept for callers
+
+    try:
+        from .description_engine import (
+            validate_product_description_row,
+            _contains_forbidden_desc_token,
+        )
+    except Exception:  # pragma: no cover
+        validate_product_description_row = None  # type: ignore
+        def _contains_forbidden_desc_token(*_a, **_k):  # type: ignore
+            return None
+
     out: List[Dict[str, Any]] = []
     for ln in lines:
         row = dict(ln)
         existing = str(row.get("name_pl") or "").strip()
-        if existing:
+        if existing and not _contains_forbidden_desc_token(existing):
             row["name_pl"] = existing
             row["name_pl_source"] = NAME_PL_SOURCE_OPERATOR
             out.append(row)
             continue
 
         pc = str(row.get("product_code") or "").strip()
-        pd_name = ""
+        pd_row = None
         if lookup_fn is not None and pc:
             try:
                 pd_row = lookup_fn(pc)
             except Exception:
                 pd_row = None
-            pd_name = str((pd_row or {}).get("name_pl") or "").strip()
 
-        if pd_name:
-            row["name_pl"] = pd_name
+        commercial = ""
+        commercial_en = ""
+        if pd_row is not None and validate_product_description_row is not None:
+            v = validate_product_description_row(pd_row)
+            commercial = (v.description_pl or v.name_pl or "").strip()
+            commercial_en = (v.description_en or "").strip()
+        elif pd_row is not None:
+            # Policy import failed — fail closed rather than fabricate.
+            commercial = ""
+
+        if commercial:
+            row["name_pl"] = commercial
             row["name_pl_source"] = NAME_PL_SOURCE_PD
+            if not str(row.get("description_pl") or "").strip():
+                row["description_pl"] = commercial
+            if commercial_en and not str(row.get("description_en") or "").strip():
+                row["description_en"] = commercial_en
             out.append(row)
             continue
 
-        gen = ""
-        if desc_generate is not None:
-            ga = row.get("_gen_attrs") or {}
-            try:
-                gen = str(desc_generate(
-                    ctg=str(ga.get("ctg") or ""),
-                    kt=str(ga.get("kt") or ""),
-                    col=str(ga.get("col") or ""),
-                    quality=str(ga.get("quality") or ""),
-                ) or "").strip()
-            except Exception:
-                gen = ""
-        if gen:
-            row["name_pl"] = gen
-            row["name_pl_source"] = NAME_PL_SOURCE_GENERATED
-        else:
-            row["name_pl"] = ""
-            row["name_pl_source"] = NAME_PL_SOURCE_BLANK
+        row["name_pl"] = ""
+        row["name_pl_source"] = (
+            NAME_PL_SOURCE_MISSING_PD if pd_row is not None else NAME_PL_SOURCE_BLANK
+        )
         out.append(row)
     return out
 
@@ -4705,9 +4722,6 @@ def reset_draft_from_sales_packing(
 
 # ── PR 2C — product-description enrichment ──────────────────────────────────
 
-#: Existing missing-description contract (test_proforma_description_authority).
-NAME_PL_SOURCE_MISSING_PD = "missing_product_descriptions"
-
 
 def _description_policy():
     """The shared row-validity policy, imported lazily.
@@ -4735,38 +4749,16 @@ def enrich_lines_from_product_descriptions(
     product_descriptions rows returned by *lookup_fn*.  The caller supplies
     *lookup_fn* so this module stays free from document_db imports.
 
-    For each line the following annotation keys are added (or overwritten):
-        item_type, name_pl, description_pl, description_en,
-        description_bilingual, pd_confidence
+    Commercial ``name_pl`` is the usable ``description_pl`` (preferred) or
+    ``name_pl`` from the shared
+    :func:`description_engine.validate_product_description_row` policy — the
+    same decision the customs resolver applies. Generic placeholders are
+    rejected; the line stays blank with
+    ``name_pl_source=missing_product_descriptions``.
 
-    If no product_descriptions row exists for the line's product_code all
-    six keys are set to ``None``.
-
-    Values that fail the shared row-validity policy
-    (:func:`description_engine.validate_product_description_row` — the same
-    decision the customs resolver applies) are treated like a miss: blank, never
-    substituted.  There is no fallback to the purchase packing list, to a
-    category abbreviation, or to generated wording — the authority row is left
-    untouched on disk and the line carries an explicit warning instead.
-
-    ``description_bilingual`` resolution priority:
-        1. row["description_bilingual"]
-        2. row["description_block"]
-        3. "<description_pl> / <description_en>" when both are non-empty
-        4. None
-    (1 and 2 are only used when they survive the same policy.)
-
-    A line that ends up without a Polish description gets the existing
-    missing-description contract: ``name_pl_source =
-    "missing_product_descriptions"`` plus an entry in ``_warnings``.  This is a
-    warning, not a blocker — final-action gating stays with the existing
-    governed readiness rules.
-
-    All existing fields (qty, unit_price, currency, price_source, client_ref,
-    product_code, design_no, line_id …) are preserved unchanged.
-
-    Returns:
-        (enriched_lines, enriched_count, missing_count)
+    ``enriched_count`` counts lines that received a real commercial name_pl;
+    ``missing_count`` counts lines still without one (including PD-present-
+    but-generic). Operator-confirmed non-generic ``name_pl`` is preserved.
     """
     validate, forbidden = _description_policy()
     enriched: List[Dict[str, Any]] = []
@@ -4775,14 +4767,16 @@ def enrich_lines_from_product_descriptions(
     for ln in lines:
         pc  = str(ln.get("product_code") or "").strip()
         row = lookup_fn(pc) if pc else None
+        existing_pl = str(ln.get("name_pl") or "").strip()
+        operator_kept = (
+            bool(existing_pl)
+            and not forbidden(existing_pl)
+            and str(ln.get("name_pl_source") or "") == NAME_PL_SOURCE_OPERATOR
+        )
+
         if row:
             v = validate(row)
 
-            # description_bilingual: a PRE-BUILT composite, so it is checked for
-            # generic filler only — the per-field EN rules (category label,
-            # supplier shorthand) do not apply to a PL/EN sentence pair. It is
-            # never accepted when its own components were rejected, otherwise a
-            # stale block would smuggle back the text the policy just refused.
             bil = None
             if v.is_usable:
                 prebuilt = (str(row.get("description_bilingual") or "").strip()
@@ -4792,40 +4786,58 @@ def enrich_lines_from_product_descriptions(
                 elif v.description_en:
                     bil = f"{v.description_pl} / {v.description_en}"
 
+            # Commercial name = description_pl (PZ / customs authority), then name_pl.
+            commercial = (v.description_pl or v.name_pl or "").strip()
+            if operator_kept:
+                commercial = existing_pl
+                name_src = NAME_PL_SOURCE_OPERATOR
+            elif commercial:
+                name_src = NAME_PL_SOURCE_PD
+            else:
+                name_src = NAME_PL_SOURCE_MISSING_PD
+
             enriched.append({
                 **ln,
                 "item_type":             str(row.get("item_type") or "").strip() or None,
-                "name_pl":               v.name_pl or None,
+                "name_pl":               commercial or None,
+                "name_pl_source":        name_src,
                 "description_pl":        v.description_pl or None,
                 "description_en":        v.description_en or None,
                 "description_bilingual": bil,
                 "pd_confidence":         (str(row.get("confidence") or "").strip() or None)
                                          if v.is_usable else None,
             })
-            n_hit += 1
         else:
             enriched.append({
                 **ln,
                 "item_type":             None,
-                "name_pl":               None,
+                "name_pl":               existing_pl or None if operator_kept else None,
+                "name_pl_source":        (
+                    NAME_PL_SOURCE_OPERATOR if operator_kept else NAME_PL_SOURCE_BLANK
+                ),
                 "description_pl":        None,
                 "description_en":        None,
                 "description_bilingual": None,
                 "pd_confidence":         None,
             })
-            n_miss += 1
 
         out = enriched[-1]
-        if not out["description_pl"]:
-            # New list — never append into the caller's line dict.
+        if not out.get("description_pl"):
             out["_warnings"] = list(out.get("_warnings") or []) + [
                 f"Product description missing for product_code={pc!r}. "
                 "The canonical product_descriptions row is absent or contains "
-                "generic/forbidden text. Generate or approve the customs "
-                "description package first — no description may be fabricated."
+                "generic/forbidden text. Promote the PZ bilingual description "
+                "(pz_rows.json) into product_descriptions first — no description "
+                "may be fabricated."
             ]
-        if not out["name_pl"] and out.get("name_pl_source") != NAME_PL_SOURCE_OPERATOR:
-            out["name_pl_source"] = NAME_PL_SOURCE_MISSING_PD
+        if out.get("name_pl"):
+            n_hit += 1
+        else:
+            if out.get("name_pl_source") != NAME_PL_SOURCE_OPERATOR:
+                out["name_pl_source"] = (
+                    NAME_PL_SOURCE_MISSING_PD if row is not None else NAME_PL_SOURCE_BLANK
+                )
+            n_miss += 1
 
     return enriched, n_hit, n_miss
 

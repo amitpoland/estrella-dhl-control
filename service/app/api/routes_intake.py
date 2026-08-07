@@ -267,7 +267,6 @@ def _auto_create_draft_for_client(
         check_creation_lines(editable_input)
         # Lazy imports to avoid import cycles (service layer stays free of
         # route/parser imports; we inject these as callables instead).
-        from ..api.sales_packing_parser import generate_name_pl_if_sufficient
         from ..services import wfirma_db as _wfdb
         draft, was_created = pildb.auto_create_draft_from_sales_packing(
             _proforma_db_path(),
@@ -282,9 +281,9 @@ def _auto_create_draft_for_client(
             # birth so drafts are not born with a missing commercial
             # description. Never fabricates; never touches price.
             name_pl_lookup = ddb.get_product_description,
-            # Second-choice name_pl: generate from attributes ONLY when the
-            # category is recognised (declines None otherwise). Never fabricates.
-            desc_generate  = generate_name_pl_if_sufficient,
+            # No category-template / AI / placeholder generator — PZ /
+            # product_descriptions is the only commercial-description authority.
+            desc_generate  = None,
             # Birth advisory: surface missing wFirma product mapping (read-only;
             # never writes wFirma). Visibility only — does not block creation.
             product_mapping_lookup = _wfdb.get_product,

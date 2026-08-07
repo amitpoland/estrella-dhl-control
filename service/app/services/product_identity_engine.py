@@ -278,19 +278,30 @@ def parse_product_code(product_code: str) -> ProductCodeParsed:
 def is_generic_description(description_pl: str) -> bool:
     """
     Return True when description_pl is a known generic fallback that is not
-    acceptable as a wFirma product name.
+    acceptable as a wFirma product name / proforma commercial description.
 
-    These descriptions are forbidden as wFirma product names because they
-    give no product-specific information:
+    These descriptions are forbidden because they give no product-specific
+    information:
       "Biżuteria złota", "Biżuteria srebrna", "Biżuteria",
       "Wyrób jubilerski", "Wyrób", "Towar"
 
-    Also returns True for empty or whitespace-only strings.
+    Also returns True for:
+      * empty / whitespace-only strings
+      * long-form auto-fallback like
+        "Wyrób jubilerski — wyrób jubilerski do noszenia."
+      * any string whose normalised form *starts with* a known generic stem
+        (so poisoned auto rows cannot pass as authority)
     """
     if not description_pl or not description_pl.strip():
         return True
     normalized = description_pl.strip().lower()
-    return normalized in _GENERIC_PATTERNS
+    if normalized in _GENERIC_PATTERNS:
+        return True
+    # Long-form auto-fallback / stem match — never treat as commercial authority.
+    for stem in _GENERIC_PATTERNS:
+        if len(stem) >= 4 and normalized.startswith(stem):
+            return True
+    return False
 
 
 # ── Confidence model ──────────────────────────────────────────────────────────

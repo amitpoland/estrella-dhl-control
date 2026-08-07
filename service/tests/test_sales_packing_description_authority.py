@@ -301,7 +301,8 @@ class TestParserContainment:
         monkeypatch.setattr(document_db, "upsert_product_description", _boom)
         rows, _total = spp.parse_ejl_sales_packing(_tsv("RNG"))
         assert len(rows) == 1
-        assert spp.generate_name_pl_if_sufficient("RNG", "14KT", "YG", "LGD")
+        # Fabrication helper is permanently disabled — never invents name_pl.
+        assert spp.generate_name_pl_if_sufficient("RNG", "14KT", "YG", "LGD") is None
 
     def test_parser_wording_does_not_decide_authority_wording(self, monkeypatch):
         """Corrupting the parser's vocabulary must not move the customs answer."""
@@ -420,7 +421,9 @@ class TestManualRowAccepted:
         assert ln["description_pl"] == CANON_PL
         assert ln["description_en"] == CANON_EN
         assert ln["description_bilingual"] == f"{CANON_PL} / {CANON_EN}"
-        assert ln["name_pl"] == "Pierścionek złoty"
+        # Commercial name_pl = description_pl (PZ / customs authority), not the
+        # short noun-only name_pl column.
+        assert ln["name_pl"] == CANON_PL
         assert "name_pl_source" not in ln or ln["name_pl_source"] != "missing_product_descriptions"
         assert "_warnings" not in ln
 

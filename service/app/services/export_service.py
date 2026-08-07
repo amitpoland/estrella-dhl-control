@@ -156,6 +156,49 @@ def process_shipment(
     # without re-running the engine or parsing the XLSX.
     _write_pz_rows_json(output_dir, result)
 
+    # ── Promote PZ bilingual descriptions → product_descriptions (canonical) ─
+    # nazwa_pl / nazwa_en from pz_rows.json are the single commercial authority.
+    # Non-fatal: a promote failure must never block PDF/XLSX delivery.
+    try:
+        from .description_engine import promote_pz_rows_to_product_descriptions
+        from . import document_db as _ddb
+        from . import proforma_invoice_link_db as _pildb
+        _promo = promote_pz_rows_to_product_descriptions(output_dir, dry_run=False)
+        log.info(
+            "pz_rows → product_descriptions promote: written=%s skipped_generic=%s "
+            "skipped_manual=%s errors=%s",
+            _promo.get("written"), _promo.get("skipped_generic"),
+            _promo.get("skipped_manual"), len(_promo.get("errors") or []),
+        )
+        result["pz_description_promote"] = {
+            k: _promo[k] for k in (
+                "written", "skipped_generic", "skipped_manual",
+                "skipped_blank", "scanned", "errors",
+            ) if k in _promo
+        }
+        # Propagate into editable drafts for this batch so name_pl blockers
+        # clear without a separate operator enrich step.
+        _pf = Path(settings.storage_root) / "proforma_links.db"
+        _enriched_drafts = 0
+        if _pf.exists() and int(_promo.get("written") or 0) > 0:
+            for _d in _pildb.list_drafts_for_batch(_pf, batch_id):
+                if _d.draft_state not in _pildb.EDITABLE_STATES:
+                    continue
+                try:
+                    _pildb.enrich_draft_lines(
+                        _pf, _d.id, "pz-process-promote",
+                        _d.updated_at, _ddb.get_product_description,
+                    )
+                    _enriched_drafts += 1
+                except Exception as _ee:
+                    log.warning(
+                        "post-promote draft enrich failed draft_id=%s: %s",
+                        _d.id, _ee,
+                    )
+        result["pz_description_promote"]["drafts_enriched"] = _enriched_drafts
+    except Exception as exc:
+        log.warning("pz_rows → product_descriptions promote failed (non-fatal): %s", exc)
+
     # ── Compliance audit report (bilingual EN + PL) + PDF memo + risk score ──
     result["audit_generation_status"] = "pending"
     try:

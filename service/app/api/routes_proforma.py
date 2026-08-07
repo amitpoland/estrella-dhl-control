@@ -1293,7 +1293,8 @@ def _build_preview(batch_id: str, client_name: str,
                     if _blank_name_pl:
                         blocking_reasons.append(
                             f"{_blank_name_pl} line(s) have blank commercial description (name_pl) "
-                            "— import sales prices before approving"
+                            "— promote PZ bilingual descriptions into product_descriptions "
+                            "and enrich the draft (never fabricate placeholders)"
                         )
                     _zero_unit_price = sum(
                         1 for ln in _edit_lines
