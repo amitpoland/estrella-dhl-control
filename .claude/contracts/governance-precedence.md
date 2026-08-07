@@ -23,6 +23,13 @@ Applies to all agents, all sessions, all deploy decisions.
    Convenience sequences for day-to-day operation.
    Subordinate to GATES 1–6 and the deploy gate. If a workflow step would skip a gate, the gate wins.
 
+**CI appears at no level of this ladder.** GitHub Actions CI is evidence, never
+authority: it may not gate PR merges or production deploys, and no repository
+configuration may elevate it without an operator DECISIONS entry. Normative rule (sole
+authority): `CLAUDE.md` § PRODUCTION DELIVERY AUTHORITY — CI IS NOT A GATE. That section
+also specialises level 2 (the 7-agent deploy gate) with the post-GO freeze and the
+once-per-runtime-payload rule; it is summarized, never restated, everywhere else.
+
 ---
 
 ## Resolved conflicts
@@ -46,6 +53,26 @@ Engineering Lessons — those bind at the same or higher layer.
 Lesson A: every coordinator/builder PR must include a real-builder regression test. Binds at GATE 1 (PR opening).
 Lesson D: LOCAL-COMMIT-ONLY deploys must carry a disclosure header. Binds at the 7-agent deploy gate.
 Different triggers, different layers. No conflict.
+
+### Post-GO freeze vs OBSERVATION LAYER RULES 2–3 (2026-08-07)
+
+During the post-GO deployment window, `agent-performance-observer` and
+`flow-context-keeper` auto-fires are **deferred, not cancelled**: they fire immediately
+after successful smoke verification or rollback completion. Outside that window RULES 2–3
+apply unchanged. Normative rule: `CLAUDE.md` § PRODUCTION DELIVERY AUTHORITY, B4/B6.
+
+### Post-GO freeze vs GATE 4 disposition timing (2026-08-07)
+
+A GATE-4 disposition owed during a post-GO window is deferred until after smoke
+verification or rollback completion. The disposition obligation itself is unchanged —
+deferral is timing, not exemption. Normative rule: `CLAUDE.md` § PRODUCTION DELIVERY
+AUTHORITY, B4/B6.
+
+### GATE 2 open-PR arithmetic vs deployment (2026-08-07)
+
+GATE 2 governs **opening PRs**; it never delays a production deployment. Clearing the PR
+queue is backlog work that resumes after the release closes. Normative rule: `CLAUDE.md`
+§ PRODUCTION DELIVERY AUTHORITY, B6.
 
 ---
 

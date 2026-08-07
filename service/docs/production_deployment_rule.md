@@ -203,6 +203,14 @@ without one — it is validated *before* the signing key is loaded.
 - **CI is not consulted** by any of this. A red inherited baseline is not a production
   hold; node-ID comparison remains a test-PR merge tool.
 
+**Production delivery authority (operator reset, 2026-08-07) — summary only.** After a
+seven-agent GO, deployment is Priority 1: until smoke verification (or rollback)
+completes, only deploy, smoke, rollback, and rollback-preparation work is permitted. A GO
+binds to the runtime payload's bytes and remains valid while a byte-for-byte payload
+comparison against the gated head is empty — bookkeeping commits do not re-open the gate.
+CI never authorizes or blocks a deploy. **Normative rule (sole authority — not restated
+here): `CLAUDE.md` § PRODUCTION DELIVERY AUTHORITY — CI IS NOT A GATE.**
+
 **One-time migration, before the first deploy after this landed.** List
 `PZ_DEPLOY_AUTH_DIR` and re-mint every `deploy` and `reconcile` authorization minted
 beforehand — **regardless of what its `gate_evidence_ref` looks like**. Two independent

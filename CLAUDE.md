@@ -72,6 +72,99 @@ Production: `C:\PZ` | Service: `PZService` (NSSM, port 47213) | Public: `https:/
 
 ---
 
+## PRODUCTION DELIVERY AUTHORITY — CI IS NOT A GATE (PERMANENT, operator-ratified 2026-08-07, VERBATIM)
+
+> The block below is the operator's exact reset instruction (2026-08-07) — verbatim, not
+> paraphrased. This section is the **SOLE normative definition of production delivery
+> authority**. Every other document (`service/docs/production_deployment_rule.md`,
+> `.claude/contracts/governance-precedence.md`, `.claude/contracts/seven-agent-evidence.md`,
+> `service/docs/ops/ci-sharded-suite.md`, `.claude/contracts/pr-merge-verification-contract.md`)
+> summarizes and references this section; none may restate or independently redefine it.
+
+**RESET OPERATING MODEL.**
+
+**Production delivery authority is:**
+
+**Fix → targeted tests → ONE seven-agent gate → merge → deploy → smoke test → close.**
+
+**GitHub Actions CI is diagnostic only and MUST NOT gate production. Never wait for
+aggregate-green when main carries inherited failures. Do not classify historical CI
+failures unless a changed file is implicated.**
+
+**After seven-agent GO, production deployment becomes Priority 1. No test-only PR, docs
+PR, GATE-4 task, observer, scorecard, memory update, queue arithmetic, CI run, or
+unrelated finding may delay it.**
+
+**Only a new HIGH/CRITICAL executable defect in the pending runtime change may stop
+deployment.**
+
+**LOW/MEDIUM findings go to backlog and are not implemented during the active release.**
+
+**Test-only changes do not invalidate a prior production-code gate when production bytes
+are unchanged.**
+
+**Seven-agent review runs once per runtime payload, not once per subsequent bookkeeping
+commit.**
+
+**After deployment and smoke verification, resume backlog work.**
+
+### Binding rules
+
+**B1 — What "diagnostic" means (positive definition).** CI exists to: detect regressions
+introduced by a changed file, detect platform-specific (Windows / py3.9) failures, and
+provide evidence for later cleanup. It never authorizes and never blocks a merge or a
+deployment. The only CI question ever asked of a PR is: *"did this PR introduce a NEW
+failure?"* If no, proceed. For test-only and docs-only PRs, CI is ignored for production
+purposes. Node-ID set-difference classification remains a **test-PR merge tool** only —
+it is never deployment ceremony.
+
+**B2 — No configuration may elevate CI.** No repository configuration — branch
+protection, required status checks, merge queues, auto-merge, or any future platform
+mechanism — may elevate CI to deployment or merge authority without an explicit operator
+governance decision recorded in PROJECT_STATE.md DECISIONS. The check-name note inside
+`.github/workflows/ci.yml` (naming `Service pytest (aggregate)`) is a hypothetical
+technical fact, not an intent.
+
+**B3 — Runtime payload (formal definition + measurable gate-validity criterion).**
+*Runtime payload* = every file copied to production by the governed deployment procedure:
+the `service/app` tree plus the governed engine files enumerated by the deploy config
+(`engine_files` in `.claude/deploy/windows_prod_v2.json`; 16 entries at ratification).
+Documentation, tests, CI workflows, GitHub metadata, review notes, and memory/state files
+are explicitly excluded. **A previous seven-agent GO remains valid only when a
+byte-for-byte comparison between the previously approved runtime payload and the pending
+runtime payload is empty.** Any non-empty payload diff requires a fresh seven-agent
+round; an empty diff means the prior GO stands and is never re-run for bookkeeping
+commits. (Precedent: the PR #1100 gate — "payload diff vs gated head verified EMPTY".)
+
+**B4 — Post-GO freeze (rollback preserved).** Between seven-agent GO and completed smoke
+verification, only these activities are permitted: the deployment itself, smoke
+verification, rollback, and rollback preparation. Deferred — not cancelled — until after
+successful smoke verification or rollback completion: OBSERVATION LAYER RULE 2/3
+auto-fires, GATE-4 dispositions, scorecards, memory/state updates, new PRs of any class,
+CI runs and CI analysis, and unrelated findings. A newly discovered issue interrupts the
+window only if it is a HIGH/CRITICAL executable defect in the pending runtime payload
+itself.
+
+**B5 — What may stop a release.** An identity, auth, copy, or health failure during the
+deploy itself, or a HIGH/CRITICAL finding on the pending runtime payload. Nothing else.
+LOW/MEDIUM findings go to backlog and are handled after the deploy closes.
+
+**B6 — Precedence (narrow, time-boxed).** For the post-GO deployment window only, this
+section temporarily supersedes the scheduling requirements of the MANDATORY OBSERVATION
+LAYER and GATE-4 disposition timing. All deferred obligations resume immediately after
+successful smoke verification or rollback completion. Outside that window, GATES 1–6 and
+the Observation Layer apply unchanged. GATE-2 open-PR arithmetic never delays a
+deployment.
+
+**Reference**: operator reset instruction + same-day deploy-first churn-freeze ruling
+(both 2026-08-07). This section completes the authority model already expressed in
+`service/docs/production_deployment_rule.md` §"CI is not consulted" and
+`.claude/contracts/seven-agent-evidence.md`; precedence interactions are recorded in
+`.claude/contracts/governance-precedence.md`. All of those documents point here — this
+section is the single normative text.
+
+---
+
 ## Canonical working-tree registry (PATH GUARD — permanent, consolidated 2026-07-17)
 
 All subagent file reads, hash verification, and git operations must target exactly one of these paths.

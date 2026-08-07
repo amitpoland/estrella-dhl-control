@@ -8,6 +8,13 @@
 
 ## 1. Where C1–C6 are defined and executed
 
+> **CORRECTED 2026-08-07:** the next paragraph's "no GitHub Actions CI" claim is stale —
+> PR #1056 (2026-07-31) added `.github/workflows/ci.yml`, a **diagnostic-only** workflow
+> that gates neither merges nor deploys (normative rule: `CLAUDE.md` § PRODUCTION
+> DELIVERY AUTHORITY — CI IS NOT A GATE). The paragraph's operative content survives
+> unchanged: deploys remain operator-gated robocopy, and C1–C6 remain an agent-run
+> verification process. Original text retained unedited below for auditability.
+
 There is **no GitHub Actions CI** in this repository (no `.github/workflows/`), by deliberate
 design — deploys are operator-gated robocopy to a Windows NSSM service, not Actions-driven.
 `verify.sh` / `make verify` are the **engine golden-batch gate** (PZ calculation correctness);
