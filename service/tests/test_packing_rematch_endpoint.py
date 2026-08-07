@@ -315,6 +315,108 @@ def test_operator_confirmed_row_survives_an_apply(env):
     assert _rows_by_sr(pdb)[1]["operator_review_status"] == "confirmed"
 
 
+def test_apply_lands_corrections_while_a_preexisting_advisory_remains(env):
+    """The live-incident shape, end to end: advisory + write in ONE apply.
+
+    Line 2 (authority 1) is pinned over authority by TWO operator-confirmed
+    rows — releasable only by an operator ruling, and the write never adds to
+    it. The unconfirmed silver row sr1, wrongly stored on line 2, is the one
+    correction the plan can make (line 2 drains 3 → 2, still over). The apply
+    must land exactly that correction, leave both confirmed rows byte for
+    byte, and record the advisory in the response and the audit timeline.
+    """
+    cli, tmp, ddb, pdb = env
+    out = tmp / "outputs" / BID
+    (out / "source" / "packing").mkdir(parents=True, exist_ok=True)
+    (out / "audit.json").write_text(json.dumps(
+        {"batch_id": BID, "tracking_no": BID, "awb": BID,
+         "carrier": "DHL", "timeline": []}), encoding="utf-8")
+
+    inv_doc = ddb.register_document(
+        batch_id=BID, document_type="purchase_invoice",
+        file_name="invoice.pdf", file_path=str(out / "invoice.pdf"),
+        file_hash="synthetic-invoice-hash-adv", source="intake") or ""
+    ddb.store_invoice_lines(inv_doc, BID, [
+        {"invoice_no": INV, "line_position": 1, "product_code": f"{INV}-1",
+         "description": "PCS, SL925 SILVER Plain Jewellery PENDANT",
+         "quantity": 1, "unit_price": 5.0, "total_value": 5.0,
+         "rate_usd": 5.0, "amount_usd": 5.0},
+        {"invoice_no": INV, "line_position": 2, "product_code": f"{INV}-2",
+         "description": "PCS, 14KT Gold Studded PENDANT",
+         "quantity": 1, "unit_price": 106.0, "total_value": 106.0,
+         "rate_usd": 106.0, "amount_usd": 106.0},
+    ])
+
+    pf = out / "source" / "packing" / "purchase_syn_adv.xlsx"
+    _build_three_row_xlsx(pf)
+    from app.services.invoice_packing_extractor import file_sha256
+    doc_id = pdb.upsert_packing_document(
+        batch_id=BID, invoice_no=INV,
+        source_file_path=str(pf), source_file_hash=file_sha256(pf),
+        parser_name="test", parser_version="1", extraction_status="complete")
+
+    common = {"batch_id": BID, "packing_document_id": doc_id, "invoice_no": INV,
+              "item_type": "PENDANT", "quantity": 1,
+              "requires_manual_review": False}
+    pdb.upsert_packing_lines([
+        # sr1: the silver piece, wrongly persisted on the gold line —
+        # unconfirmed, so its correction is writable.
+        {**common, "pack_sr": 1, "invoice_line_position": 2,
+         "product_code": f"{INV}-2", "design_no": "SYN-001", "metal": "925",
+         "unit_price": 5.0, "total_value": 5.0,
+         "match_strategy": "type+qty", "extracted_confidence": 0.70},
+        # sr2 + sr3: two gold pieces both pinned to the 1-pc gold line by the
+        # operator — the pre-existing over-authority the write cannot fix.
+        {**common, "pack_sr": 2, "invoice_line_position": 2,
+         "product_code": f"{INV}-2", "design_no": "SYN-002", "metal": "14KT",
+         "unit_price": 106.0, "total_value": 106.0,
+         "match_strategy": "operator", "extracted_confidence": 1.0},
+        {**common, "pack_sr": 3, "invoice_line_position": 2,
+         "product_code": f"{INV}-2", "design_no": "SYN-003", "metal": "14KT",
+         "unit_price": 106.0, "total_value": 106.0,
+         "match_strategy": "operator", "extracted_confidence": 1.0},
+    ])
+    rows = _rows_by_sr(pdb)
+    import sqlite3
+    with sqlite3.connect(tmp / "packing.db") as con:
+        for sr in (2, 3):
+            con.execute(
+                "UPDATE packing_lines SET operator_review_status='confirmed' WHERE id=?",
+                (rows[sr]["id"],))
+        con.commit()
+
+    dry = cli.post(f"/api/v1/packing/{BID}/rematch").json()["plan"]
+    assert dry["blocking"] is False
+    adv = [a for a in dry["advisories"]
+           if a["code"] == "line_over_authority_preexisting"]
+    assert adv and adv[0]["product_code"] == f"{INV}-2"
+    assert adv[0]["assigned_qty_before"] == 3.0
+    assert adv[0]["assigned_qty_after"] == 2.0
+    # The one writable correction: sr1 leaves the gold line.
+    assert {c["pack_sr"] for c in dry["row_changes"]} == {1}
+
+    before = _rows_by_sr(pdb)
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"] is True
+    assert body["rows_written"] == 1
+
+    after = _rows_by_sr(pdb)
+    # The correction landed.
+    assert after[1]["invoice_line_position"] == 1
+    assert after[1]["product_code"] == f"{INV}-1"
+    # Both confirmed rows survive byte for byte — the write never saw them.
+    assert after[2] == before[2]
+    assert after[3] == before[3]
+    assert after[2]["operator_review_status"] == "confirmed"
+    # The audit event records that an advisory remained at apply time.
+    events = [e for e in _timeline(tmp) if e["event"] == "packing_rematch_applied"]
+    assert len(events) == 1
+    assert events[0]["detail"]["advisories"] == 1
+
+
 # ── Re-parse failure (the reparse_failed blocker branch) ─────────────────────
 
 def test_reparse_failure_is_a_blocker_and_apply_refuses(env, monkeypatch):

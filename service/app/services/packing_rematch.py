@@ -392,11 +392,13 @@ def build_rematch_plan(
                     "scope_invoices": _scope(a["invoice_no"]),
                 })
             else:
-                # Over before, and the plan adds not one piece to it (equal or
-                # drained).  The violation predates this write and only an
-                # operator ruling (e.g. un-confirming the rows that pin it) can
-                # resolve it — so it must not veto the unrelated corrections in
-                # this plan.  Advisory, never a gate (Lesson N).
+                # Over before, and the plan adds not one piece to it — the
+                # tally is what is guarded, so "adds nothing" means the line's
+                # quantity does not rise (untouched, drained, or an equal-qty
+                # composition swap).  The violation predates this write and
+                # only an operator ruling (e.g. un-confirming the rows that
+                # pin it) can resolve it — so it must not veto the unrelated
+                # corrections in this plan.  Advisory, never a gate (Lesson N).
                 advisories.append({
                     "code": "line_over_authority_preexisting",
                     "invoice_no": a["invoice_no"], "line_position": a["line_position"],
