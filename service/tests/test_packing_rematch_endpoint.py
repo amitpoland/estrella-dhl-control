@@ -129,6 +129,11 @@ def _rows_by_sr(pdb):
     return {r["pack_sr"]: r for r in pdb.get_packing_lines_for_batch(BID)}
 
 
+def _timeline(tmp) -> list:
+    audit = json.loads((tmp / "outputs" / BID / "audit.json").read_text(encoding="utf-8"))
+    return audit.get("timeline", [])
+
+
 # ── Dry run ──────────────────────────────────────────────────────────────────
 
 def test_dry_run_proposes_the_correction_and_writes_nothing(env):
@@ -500,6 +505,81 @@ def test_partial_apply_preserves_confirmed_row_and_lands_the_rest(env):
     # The machine's correction landed around it.
     assert after[3]["invoice_line_position"] == 2
     assert after[3]["product_code"] == f"{INV}-2"
+
+
+# ── Audit timeline attribution ───────────────────────────────────────────────
+
+def test_apply_lands_a_rematch_event_in_the_batch_timeline(env):
+    """A confirm-gated rewrite of purchase-authority assignments must be
+    attributable in the operator-visible batch timeline, not only in the app
+    log (GATE-4 follow-up from the PR #1099 gate, persistence FLAG 2)."""
+    cli, tmp, ddb, pdb = env
+    _seed(tmp, ddb, pdb)
+
+    r = cli.post(f"/api/v1/packing/{BID}/rematch",
+                 params={"apply": "true", "confirm": BID})
+    body = r.json()
+    assert body["applied"] is True
+
+    events = [e for e in _timeline(tmp) if e["event"] == "packing_rematch_applied"]
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["trigger_source"] == "packing_rematch"
+    # The actor is the authenticated admin's identity, not a role literal —
+    # a multi-admin install must be able to say WHO applied the rewrite.
+    assert ev["actor"] == "t@l"
+    assert ev["detail"]["batch_id"] == BID
+    assert ev["detail"]["rows_written"] == body["rows_written"]
+    # rows_written and proposed_changes are recorded separately by design (an
+    # upsert may legitimately land fewer rows than planned); the fixture has
+    # exactly one mis-placed row, so both are 1 here.
+    assert ev["detail"]["rows_written"] == 1
+    assert ev["detail"]["proposed_changes"] == 1
+
+
+def test_dry_run_and_refused_apply_emit_no_rematch_event(env):
+    """Only a write that actually landed may claim one in the timeline."""
+    cli, tmp, ddb, pdb = env
+    _seed(tmp, ddb, pdb)
+
+    assert cli.post(f"/api/v1/packing/{BID}/rematch").json()["dry_run"] is True
+    refused = cli.post(f"/api/v1/packing/{BID}/rematch",
+                       params={"apply": "true", "confirm": "wrong"}).json()
+    assert refused["applied"] is False
+
+    assert [e for e in _timeline(tmp) if e["event"] == "packing_rematch_applied"] == []
+
+
+def test_blocking_plan_apply_emits_no_rematch_event(env):
+    cli, tmp, ddb, pdb = env
+    pf = _seed(tmp, ddb, pdb)
+    import openpyxl
+    wb = openpyxl.load_workbook(pf)
+    wb.active.append([3, "RNG", "SYN-003", "14KT/Y", "G-VS", 0, 0, 1, 50.0, 50.0, ""])
+    wb.save(str(pf))  # hash mismatch → blocking plan
+
+    refused = cli.post(f"/api/v1/packing/{BID}/rematch",
+                       params={"apply": "true", "confirm": BID}).json()
+    assert refused["refused"] == "plan_is_blocking"
+    assert [e for e in _timeline(tmp) if e["event"] == "packing_rematch_applied"] == []
+
+
+def test_noop_second_apply_emits_no_second_rematch_event(env):
+    """After a successful apply, re-applying finds zero row_changes and must
+    not write — and must not claim a second rewrite in the timeline."""
+    cli, tmp, ddb, pdb = env
+    _seed(tmp, ddb, pdb)
+
+    first = cli.post(f"/api/v1/packing/{BID}/rematch",
+                     params={"apply": "true", "confirm": BID}).json()
+    assert first["applied"] is True
+
+    second = cli.post(f"/api/v1/packing/{BID}/rematch",
+                      params={"apply": "true", "confirm": BID}).json()
+    assert second["applied"] is False or second.get("rows_written", 0) == 0
+
+    events = [e for e in _timeline(tmp) if e["event"] == "packing_rematch_applied"]
+    assert len(events) == 1
 
 
 # ── Auth (Lesson O: session-guarded route, tests migrate with it) ────────────
