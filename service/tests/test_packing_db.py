@@ -178,6 +178,40 @@ class TestPackingLines:
         lines = pdb.get_packing_lines_for_batch("BATCH001")
         assert lines[0]["quantity"] == pytest.approx(7.0)
 
+    def test_match_strategy_persisted_on_insert_and_update(self, db):
+        """The matcher has always reported WHICH evidence placed a row; the
+        write path used to drop it, leaving extracted_confidence as a bare
+        number an operator could not audit.  Pinned on both paths because a
+        column that is only written on INSERT silently goes stale on re-upload.
+        """
+        from app.services import packing_db as pdb
+        pdb.upsert_packing_lines([_make_line(match_strategy="type+qty+rate+metal")])
+        lines = pdb.get_packing_lines_for_batch("BATCH001")
+        assert lines[0]["match_strategy"] == "type+qty+rate+metal"
+
+        pdb.upsert_packing_lines(
+            [_make_line(match_strategy="type+metal_aggregate")], force_reextract=True
+        )
+        lines = pdb.get_packing_lines_for_batch("BATCH001")
+        assert len(lines) == 1
+        assert lines[0]["match_strategy"] == "type+metal_aggregate"
+
+    def test_match_strategy_absent_is_null_not_empty_string(self, db):
+        """Unmatched rows carry no strategy; NULL says 'never placed', which is
+        distinguishable from a placement whose strategy was lost."""
+        from app.services import packing_db as pdb
+        pdb.upsert_packing_lines([_make_line()])
+        lines = pdb.get_packing_lines_for_batch("BATCH001")
+        assert lines[0]["match_strategy"] is None
+
+    def test_match_strategy_does_not_reopen_operator_review(self, db):
+        """match_strategy is machine evidence, not source content: improving the
+        matcher must not look like the source document changed."""
+        from app.services.packing_db import compute_source_revision
+        base = _make_line(match_strategy="type+qty")
+        changed = _make_line(match_strategy="type+qty+rate+metal")
+        assert compute_source_revision(base) == compute_source_revision(changed)
+
     def test_dedup_pack_sr_across_documents_skipped(self, db):
         """Re-upload contract: packing_document_id is traceability only, NOT
         part of the pack_sr dedup key (batch_id, invoice_no, pack_sr). A

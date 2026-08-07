@@ -490,6 +490,10 @@ def _persist_packing_rows(
             "remarks":               str(r.get("remarks", "") or ""),
             "extracted_confidence":  _safe_float(r.get("extracted_confidence", 0)),
             "requires_manual_review": bool(r.get("requires_manual_review", False)),
+            # WHICH evidence placed this row on its line — the account behind
+            # extracted_confidence, without which a flagged row gives an
+            # operator a number and no reason.
+            "match_strategy":        r.get("match_strategy") or None,
             "invoice_no_raw":        str(r.get("invoice_no", "") or ""),
             "supplier_name":         supplier_name,
             # Source-list serial (Sr / PkSr) — primary uniqueness key so two

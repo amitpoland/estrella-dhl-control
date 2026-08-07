@@ -85,6 +85,9 @@ def compute_source_revision(row: Dict[str, Any]) -> str:
         the source; including it would let a manual re-map look like a source change.
       * ``extracted_confidence``  — machine EVIDENCE; re-scoring confidence must
         never reopen an operator-confirmed row.
+      * ``match_strategy``        — machine evidence for the same reason: it
+        records WHICH evidence placed the row, and improving the matcher must
+        not look like the source document changed.
 
     Returns a 16-hex-char digest (stable across processes; no randomness).
     """
@@ -211,6 +214,13 @@ def init_packing_db(db_path: Path) -> None:
         _add_column_if_missing(con, "packing_lines", "operator_confirmed_at",    "TEXT DEFAULT NULL")
         _add_column_if_missing(con, "packing_lines", "operator_confirmed_by",    "TEXT DEFAULT NULL")
         _add_column_if_missing(con, "packing_lines", "operator_source_revision", "TEXT DEFAULT NULL")
+
+        # match_strategy — WHICH evidence placed this row on its invoice line
+        # ("type+qty+rate+metal", "qty+rate", "type+metal_aggregate", …).  The
+        # matcher has always emitted it; it was silently dropped at write time,
+        # leaving extracted_confidence as a bare number with no account of what
+        # produced it.  An operator reviewing a flagged row needs the reason.
+        _add_column_if_missing(con, "packing_lines", "match_strategy", "TEXT DEFAULT NULL")
 
         # P1 parser observability: per-document parser_diagnostic_json column
         # carries the structured diagnostic dict captured by extract_packing.
@@ -799,7 +809,7 @@ def upsert_packing_lines(
                                item_type=?, uom=?, quantity=?, gross_weight=?, net_weight=?,
                                metal=?, karat=?, stone_type=?, remarks=?,
                                extracted_confidence=?, requires_manual_review=?,
-                               scan_code=?,
+                               match_strategy=?, scan_code=?,
                                unit_price_eur=?, metal_color=?, quality_string=?,
                                size=?, diamond_weight=?, color_weight=?,
                                updated_at=?
@@ -822,6 +832,7 @@ def upsert_packing_lines(
                             line.get("remarks", ""),
                             float(line.get("extracted_confidence", 0)),
                             1 if line.get("requires_manual_review") else 0,
+                            line.get("match_strategy") or None,
                             scan_code or None,
                             float(line.get("unit_price_eur", 0) or 0),
                             str(line.get("metal_color", "") or ""),
@@ -843,12 +854,12 @@ def upsert_packing_lines(
                             product_code, design_no, batch_no, bag_id, tray_id,
                             item_type, uom, quantity, gross_weight, net_weight,
                             metal, karat, stone_type, remarks,
-                            extracted_confidence, requires_manual_review,
+                            extracted_confidence, requires_manual_review, match_strategy,
                             pack_sr, unit_price, total_value, scan_code,
                             unit_price_eur, metal_color, quality_string,
                             size, diamond_weight, color_weight,
                             created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         line_id, line.get("packing_document_id", ""),
                         batch_id,
@@ -869,6 +880,7 @@ def upsert_packing_lines(
                         line.get("remarks", ""),
                         float(line.get("extracted_confidence", 0)),
                         1 if line.get("requires_manual_review") else 0,
+                        line.get("match_strategy") or None,
                         pack_sr,
                         unit_price,
                         float(line.get("total_value", 0) or 0),
