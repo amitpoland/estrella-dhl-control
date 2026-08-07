@@ -390,12 +390,10 @@ def test_empty_inputs_produce_an_empty_non_blocking_plan():
 def test_every_blocker_carries_scope_invoices_and_authority_blocker_names_its_invoice():
     """Scope attribution is what lets the route apply one invoice while another
     is blocked; an over-authority blocker must name exactly its own invoice."""
-    stored = [_row(1, 1), _row(2, 1)]          # two pieces on a qty-1 line
-    proposed = [
-        {k: v for k, v in _row(1, 1).items() if k != "id"},
-        {k: v for k, v in _row(2, 1, conf=0.85).items() if k != "id"},
-    ]
-    plan = build_rematch_plan(stored, proposed, [_line(1, 1, 10.0)])
+    stored = [_row(1, 1), _row(2, 1), _row(3, 2)]
+    proposed = [_row(1, 1), _row(2, 1), _row(3, 1)]
+    plan = build_rematch_plan(
+        stored, proposed, [_line(1, 1, 10.0), _line(2, 1, 10.0)])
     assert plan["blocking"] is True
     assert all("scope_invoices" in b for b in plan["blockers"])
     over = [b for b in plan["blockers"] if b["code"] == "line_over_authority_after"]

@@ -406,6 +406,7 @@ def build_rematch_plan(
                     "authority_qty": a["authority_qty"],
                     "assigned_qty_before": before["assigned_qty"],
                     "assigned_qty_after": after["assigned_qty"],
+                    "scope_invoices": _scope(a["invoice_no"]),
                 })
         line_reconciliation.append({**a, "before": before, "after": after})
 
