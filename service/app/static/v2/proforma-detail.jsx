@@ -4217,7 +4217,7 @@ function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOffici
     draft_proforma: { name: 'Draft Proforma', groupHint: 'Estrella preview before post' },
     official_proforma: { name: 'Official Proforma (wFirma)', groupHint: 'Posted fiscal PDF' },
     invoice: { name: 'Invoice PDF (wFirma)', groupHint: 'After Convert' },
-    packing_list: { name: 'Commercial Packing List', groupHint: 'Browser preview' },
+    packing_list: { name: 'Commercial Packing List', groupHint: 'Preview + PDF download (same commercial authority)' },
     cmr: { name: 'CMR', groupHint: 'Transport document' },
     dhl_label: { name: 'DHL Transport Label', groupHint: 'Attach to package' },
     dhl_waybill: { name: 'DHL Waybill / Hand to Courier', groupHint: 'Courier handover' },
