@@ -811,24 +811,10 @@ def upsert_product_mirror(
             owner = owner_row["product_code"] if owner_row else product_code
             return {"written": False, "collision": True, "owner": owner}
         if also_set_master_status:
-            cur = con.execute(
+            con.execute(
                 "UPDATE product_master SET status=?, updated_at=? WHERE product_code=?",
                 (also_set_master_status, now, product_code),
             )
-            if cur.rowcount == 0:
-                # Create path can confirm a wFirma id before a Product Master
-                # row exists (invoice-line-only batches). Insert a minimal
-                # mapped Master row so readiness does not stay false-blocked.
-                con.execute(
-                    "INSERT INTO product_master "
-                    "(product_code, design_no, description, status, is_active, "
-                    " created_at, updated_at) "
-                    "VALUES (?,?,?,?,1,?,?)",
-                    (
-                        product_code, "", name or "",
-                        also_set_master_status, now, now,
-                    ),
-                )
     return {"written": True, "collision": False, "owner": product_code}
 
 

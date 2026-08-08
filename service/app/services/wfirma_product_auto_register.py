@@ -434,9 +434,6 @@ def _register_one(
             wfirma_id=str(result.wfirma_id).strip(),
             product_code=product_code,
             name=block.get("name_pl") or "",
-            # Proforma/dashboard readiness reads product_master.status=='mapped'
-            # (not the transitional cache alone). Keep Master in lockstep.
-            also_set_master_status="mapped",
         )
         if _mres.get("collision"):
             out["status"] = "failed"
@@ -646,7 +643,6 @@ def adopt_exact_product_code(
         wfirma_id=wid,
         product_code=pc,
         name=product_name_pl or "",
-        also_set_master_status="mapped",
         cache_kwargs=dict(
             product_code=pc,
             wfirma_product_id=wid,
@@ -727,31 +723,6 @@ def converge_products_for_batch(
                     adopt_failed.append(ar)
     scan["auto_adopted"] = adopted
     scan["auto_adopt_failed"] = adopt_failed
-    # Heal Product Master status for any code that now has a confirmed
-    # wfirma_product_id (create / adopt / prior matched). Dashboard readiness
-    # gates on product_master.status=='mapped'; leaving it at
-    # mapping_required after a successful goods create is a false blocker.
-    try:
-        from . import reservation_db as _rdb_heal
-        _rdb_path = _reservation_db_path()
-        _rdb_heal.init_reservation_db(_rdb_path)
-        for res in list(scan.get("results") or []):
-            st = (res.get("status") or "").strip()
-            pc = (res.get("product_code") or "").strip()
-            wid = (res.get("wfirma_product_id") or "").strip()
-            if st in ("existing_mapped", "created") and pc and wid:
-                _rdb_heal.upsert_product_mirror(
-                    _rdb_path,
-                    wfirma_id=wid,
-                    product_code=pc,
-                    name=res.get("wfirma_name") or "",
-                    also_set_master_status="mapped",
-                )
-    except Exception as exc:
-        log.warning(
-            "[%s] product_master status heal after converge failed: %s",
-            batch_id, exc,
-        )
     scan["ok"] = (
         int(scan.get("failed") or 0) == 0
         and int(scan.get("blocked") or 0) == 0
