@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from app.services.master_data_db import (
     init_db,
     validate_incoterm, upsert_incoterm, get_incoterm, list_incoterms, delete_incoterm,
+    soft_delete_incoterm, seed_default_incoterms, DEFAULT_INCOTERM_CATALOGUE,
     validate_vat_config, create_vat_config, get_vat_config, list_vat_config,
     update_vat_config, delete_vat_config,
 )
@@ -36,6 +37,34 @@ from app.core.config import settings
 
 def test_incoterm_validate_requires_code():
     assert any("code" in e for e in validate_incoterm({}))
+
+
+def test_incoterm_seed_defaults_restores_soft_deleted(tmp_path):
+    db = tmp_path / "md.sqlite"
+    init_db(db)
+    upsert_incoterm(db, {"code": "EXW", "name": "Ex Works", "active": True})
+    soft_delete_incoterm(db, "EXW")
+    exw = get_incoterm(db, "EXW")
+    assert exw is not None
+    assert exw.active is False
+    assert exw.deleted_at
+
+    result = seed_default_incoterms(db)
+    assert "EXW" in result["restored"]
+    assert set(result["created"]) >= {"DAP", "FOB", "FCA"}
+    assert len(result["created"]) + 1 == len(DEFAULT_INCOTERM_CATALOGUE)  # EXW restored, rest created
+
+    active = {i.code for i in list_incoterms(db, active=True)}
+    expected = {p["code"] for p in DEFAULT_INCOTERM_CATALOGUE}
+    assert active == expected
+    exw2 = get_incoterm(db, "EXW")
+    assert exw2.active is True
+    assert not exw2.deleted_at
+
+    # Idempotent
+    again = seed_default_incoterms(db)
+    assert again["created"] == []
+    assert again["restored"] == []
 
 
 def test_incoterm_validate_rejects_bad_code():
@@ -171,6 +200,19 @@ def test_api_incoterms_lifecycle(b7_client):
 def test_api_incoterms_put_422_bad_code(b7_client):
     r = b7_client.put("/api/v1/incoterms/foobar", json={"name": "X"}, headers=_hdr())
     assert r.status_code == 422
+
+
+def test_api_incoterms_seed_defaults(b7_client):
+    r = b7_client.post("/api/v1/incoterms/seed-defaults", headers=_hdr())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["active_count"] >= 11
+    assert "DAP" in body["active_codes"]
+    assert "EXW" in body["active_codes"]
+    r2 = b7_client.post("/api/v1/incoterms/seed-defaults", headers=_hdr())
+    assert r2.status_code == 200
+    assert r2.json()["created"] == []
+    assert r2.json()["restored"] == []
 
 
 def test_api_vat_full_lifecycle(b7_client):

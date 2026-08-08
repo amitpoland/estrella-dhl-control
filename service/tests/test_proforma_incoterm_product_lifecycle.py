@@ -209,6 +209,30 @@ def test_birth_seeds_cm_default_incoterm(storage):
     assert d.incoterm == "CIP"
 
 
+def test_seed_blank_incoterms_all_batches(storage):
+    from app.services.commercial_authority import seed_blank_draft_incoterms_all
+    _mk_cm(storage, "C-100", default_incoterm="EXW")
+    db = storage / "proforma_links.db"
+    for bid in ("B1", "B2"):
+        pildb.auto_create_draft_from_sales_packing(
+            db,
+            batch_id=bid,
+            client_name="A",
+            currency="EUR",
+            lines=[{"product_code": f"P-{bid}", "qty": 1, "unit_price": 1.0, "currency": "EUR"}],
+            operator="test",
+            client_contractor_id="C-100",
+        )
+    with pildb._connect(db) as conn:
+        conn.execute(
+            "UPDATE proforma_drafts SET draft_state='editing', incoterm=NULL"
+        )
+        conn.commit()
+    res = seed_blank_draft_incoterms_all(proforma_db=db, operator="test")
+    assert res["seeded_count"] == 2
+    assert {s["incoterm"] for s in res["seeded"]} == {"EXW"}
+
+
 # ── Readiness blocker dedupe + repair hints ──────────────────────────────────
 
 def test_repair_hint_create_disabled_not_sales_price():

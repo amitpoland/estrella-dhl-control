@@ -739,3 +739,61 @@ def converge_batch_draft_authority(
         batch_id, proforma_db=proforma_db, operator=operator,
     )
     return out
+
+
+def seed_blank_draft_incoterms_all(
+    *,
+    proforma_db: Path,
+    operator: str = "commercial_authority",
+) -> Dict[str, Any]:
+    """Re-seed blank editable drafts across all batches from Customer Master.
+
+    Posted/converted/locked drafts are never modified. Drafts that already
+    carry a saved Incoterm are never overwritten. Customers without a proven
+    ``default_incoterm`` leave drafts unset.
+    """
+    from . import proforma_invoice_link_db as pildb
+
+    if not Path(proforma_db).exists():
+        return {"seeded": [], "skipped": [{"reason": "no_proforma_db"}], "batches": []}
+
+    editable = getattr(pildb, "EDITABLE_STATES", ("draft", "editing", "post_failed"))
+    batch_ids: List[str] = []
+    seen = set()
+    for d in pildb.list_all_drafts(Path(proforma_db)) if hasattr(pildb, "list_all_drafts") else []:
+        bid = (getattr(d, "batch_id", None) or "").strip()
+        state = (getattr(d, "draft_state", None) or "").strip()
+        if not bid or bid in seen:
+            continue
+        if state not in editable and state != "":
+            continue
+        seen.add(bid)
+        batch_ids.append(bid)
+
+    if not batch_ids:
+        # Fallback: distinct batch_id via sqlite when list_all_drafts absent.
+        import sqlite3
+        with sqlite3.connect(str(proforma_db)) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT batch_id FROM proforma_drafts
+                WHERE TRIM(COALESCE(batch_id,'')) != ''
+                  AND draft_state IN ('draft','editing','post_failed','')
+                """
+            ).fetchall()
+            batch_ids = [r[0] for r in rows if r[0]]
+
+    seeded: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    for bid in batch_ids:
+        res = seed_blank_draft_incoterms(
+            bid, proforma_db=proforma_db, operator=operator,
+        )
+        seeded.extend(res.get("seeded") or [])
+        skipped.extend(res.get("skipped") or [])
+    return {
+        "batches": batch_ids,
+        "seeded": seeded,
+        "skipped": skipped,
+        "seeded_count": len(seeded),
+    }

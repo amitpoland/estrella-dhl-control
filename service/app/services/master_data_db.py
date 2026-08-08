@@ -844,6 +844,119 @@ def delete_incoterm(db_path: Path, code: str) -> bool:
             return False
 
 
+# Operator-triggered Incoterm catalogue (POST /incoterms/seed-defaults).
+# ICC Incoterms 2020 — supported business values for Master Data dropdowns.
+# Does NOT set Customer Master.default_incoterm and does NOT invent draft values.
+DEFAULT_INCOTERM_CATALOGUE: List[Dict[str, Any]] = [
+    {
+        "code": "EXW", "name": "Ex Works",
+        "risk_transfer_point": "Seller's premises",
+        "freight_included": False, "insurance_included": False, "customs_included": False,
+        "notes": "Buyer arranges all transport and clearance from seller's door.",
+        "active": True,
+    },
+    {
+        "code": "FCA", "name": "Free Carrier",
+        "risk_transfer_point": "Named place (carrier handover)",
+        "freight_included": False, "insurance_included": False, "customs_included": False,
+        "notes": "Seller delivers to carrier nominated by buyer.",
+        "active": True,
+    },
+    {
+        "code": "CPT", "name": "Carriage Paid To",
+        "risk_transfer_point": "First carrier",
+        "freight_included": True, "insurance_included": False, "customs_included": False,
+        "notes": "Seller pays carriage to named place; risk transfers at first carrier.",
+        "active": True,
+    },
+    {
+        "code": "CIP", "name": "Carriage and Insurance Paid To",
+        "risk_transfer_point": "First carrier",
+        "freight_included": True, "insurance_included": True, "customs_included": False,
+        "notes": "Seller pays carriage + insurance to named place.",
+        "active": True,
+    },
+    {
+        "code": "DAP", "name": "Delivered at Place",
+        "risk_transfer_point": "Named place of destination",
+        "freight_included": True, "insurance_included": False, "customs_included": False,
+        "notes": "Seller delivers ready for unloading at destination; buyer clears import.",
+        "active": True,
+    },
+    {
+        "code": "DPU", "name": "Delivered at Place Unloaded",
+        "risk_transfer_point": "Named place of destination (unloaded)",
+        "freight_included": True, "insurance_included": False, "customs_included": False,
+        "notes": "Seller delivers unloaded at destination; buyer clears import.",
+        "active": True,
+    },
+    {
+        "code": "DDP", "name": "Delivered Duty Paid",
+        "risk_transfer_point": "Named place of destination",
+        "freight_included": True, "insurance_included": False, "customs_included": True,
+        "notes": "Seller delivers cleared for import, duties paid.",
+        "active": True,
+    },
+    {
+        "code": "FAS", "name": "Free Alongside Ship",
+        "risk_transfer_point": "Alongside vessel at named port",
+        "freight_included": False, "insurance_included": False, "customs_included": False,
+        "notes": "Sea/inland waterway only.",
+        "active": True,
+    },
+    {
+        "code": "FOB", "name": "Free on Board",
+        "risk_transfer_point": "On board vessel at named port",
+        "freight_included": False, "insurance_included": False, "customs_included": False,
+        "notes": "Sea/inland waterway only.",
+        "active": True,
+    },
+    {
+        "code": "CFR", "name": "Cost and Freight",
+        "risk_transfer_point": "On board vessel",
+        "freight_included": True, "insurance_included": False, "customs_included": False,
+        "notes": "Sea/inland waterway only.",
+        "active": True,
+    },
+    {
+        "code": "CIF", "name": "Cost, Insurance and Freight",
+        "risk_transfer_point": "On board vessel",
+        "freight_included": True, "insurance_included": True, "customs_included": False,
+        "notes": "Sea/inland waterway only.",
+        "active": True,
+    },
+]
+
+
+def seed_default_incoterms(db_path: Path) -> Dict[str, List[str]]:
+    """Restore the supported Incoterm catalogue.
+
+    - Missing codes are inserted (active).
+    - Soft-deleted / inactive catalogue members are restored to active and
+      metadata refreshed from the canonical catalogue.
+    - Operator-added codes outside this catalogue are never touched.
+    - Never writes Customer Master or Proforma drafts.
+
+    Returns ``{"created": [...], "restored": [...]}``.
+    """
+    init_db(db_path)
+    created: List[str] = []
+    restored: List[str] = []
+    for profile in DEFAULT_INCOTERM_CATALOGUE:
+        code = str(profile["code"]).upper()
+        existing = get_incoterm(db_path, code)
+        if existing is None:
+            upsert_incoterm(db_path, dict(profile))
+            created.append(code)
+            continue
+        needs_restore = (not existing.active) or bool(existing.deleted_at)
+        if needs_restore:
+            upsert_incoterm(db_path, dict(profile))
+            restore_incoterm(db_path, code)
+            restored.append(code)
+    return {"created": created, "restored": restored}
+
+
 # ── B7 VAT Config (READ-ONLY w.r.t. wFirma invoicing) ────────────────────────
 
 _ISO2_RE = re.compile(r"^[A-Z]{2}$")
