@@ -166,6 +166,9 @@ def test_no_write_surface_in_module_source():
     assert "queue_email" not in src
     assert "create_shipment(" not in src
     assert "robocopy" not in src.lower()
+    assert "INSERT " not in src.upper()
+    assert "UPDATE " not in src.upper()
+    assert ".write_text(" not in src
 
 
 def test_csv_export_columns():
@@ -176,8 +179,30 @@ def test_csv_export_columns():
     assert "1111111111" in text
 
 
+def test_routes_require_api_key(monkeypatch):
+    """When API_KEY is configured, unauthenticated GETs must 401 (Lesson O)."""
+    from fastapi.testclient import TestClient
+    from app.core.config import settings
+    from app.main import app
+
+    monkeypatch.setattr(settings, "api_key", "test-logistics-key-only")
+    monkeypatch.setattr(settings, "environment", "prod")
+    client = TestClient(app)
+    r = client.get("/api/v1/dhl/logistics/projection")
+    assert r.status_code == 401
+    r2 = client.get("/api/v1/dhl/logistics/export/csv")
+    assert r2.status_code == 401
+    # Valid key succeeds (projection may be empty but auth must pass).
+    r3 = client.get(
+        "/api/v1/dhl/logistics/projection",
+        headers={"X-API-Key": "test-logistics-key-only"},
+    )
+    assert r3.status_code == 200
+
+
 def test_routes_registered():
     from app.main import app
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/api/v1/dhl/logistics/projection" in paths
     assert "/api/v1/dhl/logistics/export/csv" in paths
+    assert "/api/v1/dhl/logistics/shipments/{awb}" in paths

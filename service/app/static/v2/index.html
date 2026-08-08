@@ -673,7 +673,7 @@ function App() {
               No Retry / Requeue / Scan / Lane / Force / Refresh affordances. */}
           {!viewerDoc && page === 'dhl' && (
             <>
-              <PageHeader title="DHL / Customs" subtitle="Read-only DHL observer — live automation status, daily operations report, inbox-scanner health, and shipment queue. No write actions." />
+              <PageHeader title="DHL / Customs" subtitle="Logistics Control Tower — inbound + outbound tracking, stage durations, delay analysis. Read-only. Automation Health is secondary." />
               <SubTabStrip active={page} onNav={handleNav} />
               <DhlCustomsPage onViewShipment={handleViewShipment} />
             </>

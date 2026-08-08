@@ -110,9 +110,16 @@ function DhlCustomsPage({ onViewShipment }) {
     const params = { view, direction };
     if (q.trim()) params.q = q.trim();
     if (stage.trim()) params.stage = stage.trim();
+    const qs = new URLSearchParams(params).toString();
+    const url = '/api/v1/dhl/logistics/export/csv' + (qs ? ('?' + qs) : '');
     if (window.PzApi && window.PzApi.exportDhlLogisticsCsv) {
-      window.PzApi.exportDhlLogisticsCsv(params);
+      Promise.resolve(window.PzApi.exportDhlLogisticsCsv(params)).catch((e) => {
+        window.alert('CSV export failed: ' + ((e && e.message) || String(e)));
+      });
+      return;
     }
+    // Fallback when pz-api.js is unavailable — same auth cookie as the page.
+    window.open(url, '_blank', 'noopener');
   };
 
   const fmt = (v) => (v == null || v === '') ? '—' : String(v);

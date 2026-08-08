@@ -520,6 +520,12 @@ def _delivery_confirmation_state(awb: str) -> Dict[str, Any]:
 
 
 def classify_outbound(row: Dict[str, Any], tracking: Dict[str, Any]) -> str:
+    """Classify an outbound carrier_shipments row for logistics Active/Delivered.
+
+    Note: carrier_shipments.state ``complete`` means *booking created successfully*
+    (AWB issued) — NOT physical delivery. Physical delivery comes only from
+    tracking evidence (delivered_at / status=delivered).
+    """
     if int(row.get("do_not_use") or 0) == 1:
         return "excluded"
     if tracking.get("delivered_at") or str(tracking.get("status") or "").lower() == "delivered":
@@ -527,6 +533,7 @@ def classify_outbound(row: Dict[str, Any], tracking: Dict[str, Any]) -> str:
     state = str(row.get("state") or "")
     if state == "failed":
         return "exception"
+    # pending/submitted/complete = booking lifecycle; still logistics-active until delivered
     if state in ("complete", "submitted", "pending") and row.get("tracking_ref"):
         return "active"
     return "unknown"
@@ -909,14 +916,35 @@ def project_logistics(
 
 
 def project_shipment_detail(awb: str) -> Optional[Dict[str, Any]]:
-    """Return one shipment projection + full timeline by AWB (inbound or outbound)."""
+    """Return one shipment projection + full timeline by AWB (inbound or outbound).
+
+    Looks up only the matching audit / carrier row — does not rescan the full
+    Control Tower population on every drawer open.
+    """
     awb = (awb or "").strip()
     if not awb:
         return None
-    full = project_logistics(direction="all", view="all")
-    for row in full.get("rows") or []:
-        if str(row.get("awb") or "") == awb:
-            return row
+
+    # Outbound first — AWB uniqueness is tracking_ref in carrier_shipments.
+    try:
+        from .carrier.persistence import shipment_db as csdb
+        crow = csdb.get_shipment_by_tracking_ref(_carrier_db_path(), awb)
+        if crow:
+            return project_outbound_row(crow)
+    except Exception as exc:
+        log.debug("logistics_projector: detail outbound lookup failed: %s", exc)
+
+    # Inbound — scan audits for matching AWB only (stop at first hit).
+    for path in _audit_paths():
+        audit = _read_audit(path)
+        if not audit:
+            continue
+        if _awb_of(audit) != awb:
+            continue
+        if not audit.get("batch_id"):
+            audit = dict(audit)
+            audit["batch_id"] = path.parent.name
+        return project_inbound_row(audit)
     return None
 
 
