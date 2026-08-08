@@ -86,6 +86,8 @@ KNOWN_EMAIL_TYPES = frozenset({
     "agency_followup",
     "agency",
     "broker_followup",
+    "proforma_send",
+    "customer_delivery_confirmation",
 })
 
 

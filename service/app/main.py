@@ -103,6 +103,7 @@ from .api.routes_master_jewelry import (
 )
 from .api.routes_finance_postings import router as finance_postings_router
 from .api.routes_supplier_invoice_ocr import router as supplier_invoice_ocr_router
+from .api.routes_shipment_documents import router as shipment_documents_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -563,6 +564,7 @@ app.include_router(box_types_router)                 # Phase D: box_types master
 app.include_router(finance_postings_router)         # Phase 6F.3: read-only breakdown endpoint (no writes, no posting/settlement/FX/wFirma coupling; init_db lazy-on-call)
 app.include_router(settings_router)                # Phase 7: company profile (seller identity + bank details)
 app.include_router(supplier_invoice_ocr_router)    # Supplier invoice OCR: extraction drafts + operator review (no wFirma write)
+app.include_router(shipment_documents_router)      # Shipment Document Hub: aggregated manifest + complete package + public delivery receipt
 
 
 # ── Auth-aware static file serving ───────────────────────────────────────────
@@ -626,6 +628,24 @@ def admin_users_page(request: Request) -> Response:
         return RedirectResponse(url="/dashboard", status_code=302)
     file_path = _static_dir / "admin-users.html"
     content   = file_path.read_bytes()
+    return Response(
+        content=content, media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/receipt/{token}", include_in_schema=False)
+def delivery_receipt_page(token: str) -> Response:
+    """Public customer delivery-confirmation page — NO dashboard auth.
+
+    The page is a static shell; it reads the token from its own URL and talks
+    to the public API under /api/v1/shipment-documents/public/receipt/{token}.
+    Serving it here (app root, un-prefixed) keeps the emailed link short.
+    """
+    file_path = _static_dir / "public" / "delivery-receipt.html"
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    content = file_path.read_bytes()
     return Response(
         content=content, media_type="text/html",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},

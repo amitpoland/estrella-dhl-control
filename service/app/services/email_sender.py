@@ -620,8 +620,12 @@ def send_queued_email(
             STALE_QUEUE_DAYS    as _ssa_stale_days,
         )
         _bid = str(entry.get("batch_id") or "").strip()
+        # Allowlist: the customer delivery-confirmation email must NOT be
+        # suppressed by the delivered guard — it fires BECAUSE the outbound
+        # shipment was delivered (the guard targets inbound customs follow-ups).
+        _etype = (entry.get("email_type") or "").strip().lower()
         _g   = _ssa_check_send_allowed(_bid)
-        if not _g["allowed"]:
+        if not _g["allowed"] and _etype != "customer_delivery_confirmation":
             _mark_queue_terminal(
                 queue_id,
                 terminal_status="suppressed_delivered",

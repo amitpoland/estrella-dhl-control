@@ -1081,4 +1081,18 @@ def get_tracking_status(
     except Exception:
         pass  # cache write failure is non-fatal
 
+    # ── Outbound delivery hook (best-effort; never breaks tracking) ───────────
+    # A freshly-computed 'delivered' status is the transition point where a
+    # customer delivery-confirmation email may be queued (behind a default-OFF
+    # feature flag + activation boundary inside the hook). The hook passes the
+    # delivered signal explicitly, so it never re-enters get_tracking_status.
+    if result.get("status") == "delivered":
+        try:
+            from .outbound_delivery_hook import on_outbound_tracking_update
+            on_outbound_tracking_update(
+                tracking_no, "delivered", result.get("events") or [],
+            )
+        except Exception as _hook_exc:
+            log.debug("[tracking] outbound delivery hook failed: %s", _hook_exc)
+
     return result

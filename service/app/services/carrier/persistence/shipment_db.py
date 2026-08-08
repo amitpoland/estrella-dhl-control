@@ -437,6 +437,29 @@ def update_shipment_fields(
         )
 
 
+def get_shipment_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[dict]:
+    """Return the most recent full shipment row for an AWB, or None (read-only).
+
+    Used by the outbound-delivery hook to resolve an AWB back to its owning
+    draft context (batch_id, client_ref, created_at) so a customer
+    delivery-confirmation email can be routed and its activation boundary
+    checked. Never mutates state.
+    """
+    ref = (tracking_ref or "").strip()
+    if not ref or not Path(db_path).exists():
+        return None
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM carrier_shipments WHERE tracking_ref = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (ref,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return dict(row) if row else None
+
+
 def get_batch_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[str]:
     """CW-1: resolve a DHL tracking number to its batch_id (read-only).
 

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Confirm your delivery · Estrella Jewels</title>
+  <style>
+    :root {
+      --bg: #f5f3ef;
+      --card: #ffffff;
+      --ink: #1c1a17;
+      --muted: #6b655c;
+      --line: #e3ded5;
+      --accent: #8a6d3b;      /* warm gold */
+      --accent-ink: #ffffff;
+      --good: #2f7d52;
+      --issue: #b23c3c;
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 560px; margin: 0 auto; padding: 24px 16px 64px; }
+    .brand { text-align: center; margin: 8px 0 20px; }
+    .brand .name { font-size: 22px; letter-spacing: 3px; text-transform: uppercase; font-weight: 600; }
+    .brand .sub { color: var(--muted); font-size: 13px; letter-spacing: 1px; }
+    .card {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 22px; margin-bottom: 16px;
+    }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    .awb { color: var(--muted); font-size: 14px; margin-bottom: 4px; }
+    fieldset { border: none; padding: 0; margin: 0 0 8px; }
+    legend { font-weight: 600; margin-bottom: 10px; }
+    .opt {
+      display: flex; align-items: flex-start; gap: 10px; padding: 12px;
+      border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; cursor: pointer;
+    }
+    .opt input { margin-top: 3px; }
+    .opt.good { border-left: 4px solid var(--good); }
+    .opt.issue { border-left: 4px solid var(--issue); }
+    .opt .t { font-weight: 600; }
+    .opt .d { color: var(--muted); font-size: 13px; }
+    #issueBlock { display: none; margin-top: 6px; }
+    .cat { display: flex; align-items: center; gap: 10px; padding: 8px 4px; }
+    textarea, input[type=file] { width: 100%; }
+    textarea {
+      border: 1px solid var(--line); border-radius: 10px; padding: 10px;
+      font: inherit; min-height: 84px; resize: vertical;
+    }
+    label.blk { display: block; font-weight: 600; margin: 14px 0 6px; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    button {
+      width: 100%; padding: 14px; border: none; border-radius: 12px;
+      background: var(--accent); color: var(--accent-ink);
+      font-size: 16px; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .msg { padding: 14px; border-radius: 10px; margin-bottom: 12px; font-size: 14px; display: none; }
+    .msg.err { background: #fbeaea; color: var(--issue); display: block; }
+    .msg.ok  { background: #e9f5ee; color: var(--good); display: block; }
+    .center { text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <div class="name">Estrella Jewels</div>
+      <div class="sub">Delivery Confirmation</div>
+    </div>
+
+    <div id="loading" class="card center" data-testid="receipt-loading">Loading…</div>
+
+    <div id="doneCard" class="card center" data-testid="receipt-done" style="display:none">
+      <h1>Thank you</h1>
+      <p id="doneMsg">Your response has been recorded.</p>
+    </div>
+
+    <form id="form" class="card" data-testid="receipt-form" style="display:none">
+      <h1>Confirm your delivery</h1>
+      <div class="awb" data-testid="receipt-awb"></div>
+      <div class="awb" data-testid="receipt-customer"></div>
+
+      <div id="formMsg" class="msg"></div>
+
+      <fieldset>
+        <legend>How did your parcel arrive?</legend>
+        <label class="opt good">
+          <input type="radio" name="condition" value="good" data-testid="condition-good" />
+          <span>
+            <span class="t">All good</span>
+            <span class="d">I received everything in perfect condition.</span>
+          </span>
+        </label>
+        <label class="opt issue">
+          <input type="radio" name="condition" value="issue" data-testid="condition-issue" />
+          <span>
+            <span class="t">There was a problem</span>
+            <span class="d">Something was damaged, missing or tampered with.</span>
+          </span>
+        </label>
+      </fieldset>
+
+      <div id="issueBlock" data-testid="issue-block">
+        <label class="blk">What happened? (select all that apply)</label>
+        <label class="cat"><input type="checkbox" name="cat" value="package_box_damaged" data-testid="cat-package_box_damaged" /> Package / box damaged</label>
+        <label class="cat"><input type="checkbox" name="cat" value="packing_damaged" data-testid="cat-packing_damaged" /> Packing damaged</label>
+        <label class="cat"><input type="checkbox" name="cat" value="goods_damaged" data-testid="cat-goods_damaged" /> Goods damaged</label>
+        <label class="cat"><input type="checkbox" name="cat" value="item_missing" data-testid="cat-item_missing" /> Item missing</label>
+        <label class="cat"><input type="checkbox" name="cat" value="theft_tampering" data-testid="cat-theft_tampering" /> Suspected theft / tampering</label>
+        <label class="cat"><input type="checkbox" name="cat" value="other" data-testid="cat-other" /> Other</label>
+
+        <label class="blk" for="photos">Add photos (optional, up to 8)</label>
+        <input type="file" id="photos" name="photos" accept="image/jpeg,image/png,image/webp,image/gif" multiple data-testid="photos-input" />
+        <div class="hint">JPEG, PNG, WEBP or GIF — max 5 MB each.</div>
+      </div>
+
+      <label class="blk" for="comments">Comments (optional)</label>
+      <textarea id="comments" name="comments" data-testid="comments-input" placeholder="Tell us anything else about your delivery…"></textarea>
+
+      <div style="margin-top:18px">
+        <button type="submit" id="submitBtn" data-testid="submit-btn" disabled>Submit</button>
+      </div>
+    </form>
+
+    <p class="center hint">Estrella Jewels · This page is only for confirming your delivery.</p>
+  </div>
+
+  <script>
+    (function () {
+      // Token is the last path segment of /receipt/{token}
+      var parts = window.location.pathname.split('/').filter(Boolean);
+      var token = parts.length ? parts[parts.length - 1] : '';
+      var apiBase = '/api/v1/shipment-documents/public/receipt/' + encodeURIComponent(token);
+
+      var loading = document.getElementById('loading');
+      var form = document.getElementById('form');
+      var doneCard = document.getElementById('doneCard');
+      var doneMsg = document.getElementById('doneMsg');
+      var formMsg = document.getElementById('formMsg');
+      var issueBlock = document.getElementById('issueBlock');
+      var submitBtn = document.getElementById('submitBtn');
+
+      function showMsg(kind, text) {
+        formMsg.className = 'msg ' + kind;
+        formMsg.textContent = text;
+      }
+      function showDone(text) {
+        loading.style.display = 'none';
+        form.style.display = 'none';
+        doneCard.style.display = 'block';
+        if (text) doneMsg.textContent = text;
+      }
+
+      // Load metadata
+      fetch(apiBase, { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
+        .then(function (res) {
+          loading.style.display = 'none';
+          if (!res.ok) {
+            showDone((res.body && res.body.error) || 'This link is not valid.');
+            return;
+          }
+          if (res.body.used) { showDone('This delivery was already confirmed. Thank you!'); return; }
+          if (res.body.expired) { showDone('This confirmation link has expired.'); return; }
+          form.style.display = 'block';
+          document.querySelector('[data-testid="receipt-awb"]').textContent =
+            'Tracking: ' + (res.body.awb_masked || '');
+          document.querySelector('[data-testid="receipt-customer"]').textContent =
+            (res.body.customer_name ? 'For: ' + res.body.customer_name : '');
+        })
+        .catch(function () {
+          loading.style.display = 'none';
+          showDone('Something went wrong loading this page. Please try again later.');
+        });
+
+      // Toggle issue block + enable submit when a condition is picked
+      Array.prototype.forEach.call(document.getElementsByName('condition'), function (el) {
+        el.addEventListener('change', function () {
+          issueBlock.style.display = (el.value === 'issue') ? 'block' : 'none';
+          submitBtn.disabled = false;
+        });
+      });
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var condition = (document.querySelector('input[name="condition"]:checked') || {}).value;
+        if (!condition) { showMsg('err', 'Please choose an option.'); return; }
+
+        var fd = new FormData();
+        fd.append('condition', condition);
+        fd.append('comments', document.getElementById('comments').value || '');
+        if (condition === 'issue') {
+          Array.prototype.forEach.call(document.querySelectorAll('input[name="cat"]:checked'), function (c) {
+            fd.append('categories', c.value);
+          });
+          var photos = document.getElementById('photos').files || [];
+          for (var i = 0; i < photos.length; i++) { fd.append('photos', photos[i]); }
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting…';
+        fetch(apiBase, { method: 'POST', body: fd })
+          .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
+          .then(function (res) {
+            if (res.ok) { showDone('Your response has been recorded. Thank you!'); return; }
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit';
+            showMsg('err', (res.body && res.body.error) || 'Could not submit. Please try again.');
+          })
+          .catch(function () {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit';
+            showMsg('err', 'Network error. Please try again.');
+          });
+      });
+    })();
+  </script>
+</body>
+</html>
