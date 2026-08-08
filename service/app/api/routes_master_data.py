@@ -39,6 +39,7 @@ from ..services.master_data_db import (
     validate_product_local, upsert_product_local, get_product_local,
     list_product_local, delete_product_local,
     validate_incoterm, upsert_incoterm, get_incoterm, list_incoterms, delete_incoterm,
+    seed_default_incoterms,
     validate_vat_config, create_vat_config, get_vat_config, list_vat_config,
     update_vat_config, delete_vat_config,
     validate_fx_rate, create_fx_rate, get_fx_rate, list_fx_rates,
@@ -489,6 +490,39 @@ def list_incoterms_endpoint(active: Optional[str] = Query(None,
         log.error("list_incoterms failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"DB error: {exc}")
     return JSONResponse({"count": len(recs), "incoterms": [_incoterm_dict(i) for i in recs]})
+
+
+@incoterms_router.post(
+    "/seed-defaults",
+    dependencies=[_write_auth],
+    summary="Seed ICC Incoterms 2020 catalogue (insert missing + restore soft-deleted)",
+)
+async def seed_default_incoterms_endpoint(request: Request) -> JSONResponse:
+    """Restore the supported Incoterm catalogue used by Master Data / Proforma UI.
+
+    Inserts missing ICC 2020 codes and restores soft-deleted/inactive catalogue
+    members. Does not set Customer Master defaults or patch Proforma drafts.
+    Idempotent.
+    """
+    init_db(_DB_PATH)
+    try:
+        result = seed_default_incoterms(_DB_PATH)
+    except Exception as exc:
+        log.error("seed_default_incoterms failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    touched = result.get("created", []) + result.get("restored", [])
+    if touched:
+        audit_safe(
+            "incoterms", "seed_defaults", ",".join(touched),
+            request=request, before=None, after=result,
+        )
+    active = list_incoterms(_DB_PATH, active=True, limit=100)
+    return JSONResponse({
+        "created": result.get("created", []),
+        "restored": result.get("restored", []),
+        "active_count": len(active),
+        "active_codes": [i.code for i in active],
+    })
 
 
 @incoterms_router.get("/{code}", dependencies=[_auth], summary="Get incoterm")
@@ -1181,7 +1215,8 @@ def master_capabilities() -> JSONResponse:
             create_kind="put", flags=["empty_at_install"]),
         "incoterms": _crud_domain(
             "incoterms", "Incoterms", "/api/v1/incoterms", "code",
-            create_kind="put", flags=["empty_at_install"]),
+            create_kind="put", flags=["seed_available"],
+            note="POST /api/v1/incoterms/seed-defaults restores ICC Incoterms 2020 catalogue."),
         "vat": _crud_domain(
             "vat", "VAT Rates", "/api/v1/vat-config", "vat_id",
             create_kind="post",
@@ -1238,6 +1273,7 @@ def master_capabilities() -> JSONResponse:
                                   "Assign roles per user on the Users tab.",
         },
     }
+    caps["incoterms"]["seed_route"] = "/api/v1/incoterms/seed-defaults"
     return JSONResponse({
         "capabilities": caps,
         "flags": {
