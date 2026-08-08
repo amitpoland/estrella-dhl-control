@@ -5320,6 +5320,34 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       present:    amt > 0 || zeroDecision,
     };
   });
+  // ONE VAT authority for Preview/PDF — same vocabulary as backend
+  // normalize_stored_vat / compute_document_vat_totals. Never hardcode WDT.
+  const _previewNetGoods = lines.reduce((s, l) => s + l.netEur, 0);
+  const _previewCharges = Number(_cc.service_charge_subtotal) || 0;
+  const _previewTaxable = _previewNetGoods + _previewCharges;
+  const _previewVat = (() => {
+    const raw = String(liveDraft.vat_code || '').trim();
+    const ctx = String(liveDraft.vat_context || '').trim().toLowerCase();
+    const MODE = { '222': '23', '228': 'WDT', '229': 'EXP', '230': 'NP', '234': '0' };
+    const RATE = { '23': 0.23, '8': 0.08, '5': 0.05, WDT: 0, EXP: 0, NP: 0, NPUE: 0, ZW: 0, '0': 0 };
+    const LABEL = {
+      '23': '23% domestic VAT', '8': '8% domestic VAT', '5': '5% domestic VAT',
+      WDT: '0% WDT — intra-EU supply', EXP: '0% Export',
+      NP: 'NP — not subject to PL VAT', '0': '0%',
+    };
+    let code = MODE[raw] || (/^\d+$/.test(raw) ? null : (raw.toUpperCase() === 'WDT' || raw.toUpperCase() === 'EXP' || raw.toUpperCase() === 'NP' ? raw.toUpperCase() : (RATE[raw] != null ? raw : null)));
+    if (!code && ctx === 'domestic') code = '23';
+    if (!code && ctx === 'wdt') code = 'WDT';
+    if (!code && ctx === 'export') code = 'EXP';
+    const rate = (code && RATE[code] != null) ? RATE[code] : 0;
+    const net = Math.round((_previewTaxable + 1e-12) * 100) / 100;
+    const vatAmount = Math.round((net * rate + 1e-12) * 100) / 100;
+    const gross = Math.round((net + vatAmount + 1e-12) * 100) / 100;
+    const label = (code && LABEL[code]) || (raw ? String(raw) : 'VAT TBD');
+    const lineTax = code === '23' ? '23%' : (code === 'WDT' ? '0% WDT' : (code === 'EXP' ? '0% EXP' : (code || '—')));
+    const pill = code === '23' ? 'VAT 23%' : (code === 'WDT' ? 'WDT 0%' : (code === 'EXP' ? 'EXP 0%' : (code || 'VAT TBD')));
+    return { code, label, lineTax, pill, rate, net, vatAmount, gross };
+  })();
   const previewDocData = {
     doc_no:   _previewLabel,
     currency: draftCurrency,
@@ -5327,6 +5355,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     // Authority-resolved same-currency subtotal (freight + insurance). The doc
     // renderer prefers this over re-summing the charge rows — one subtotal source.
     charges_total: Number(_cc.service_charge_subtotal) || 0,
+    vat_code: _previewVat.code || liveDraft.vat_code || null,
+    vat_context: liveDraft.vat_context || null,
+    vat_label: _previewVat.label,
+    vat_line_label: _previewVat.lineTax,
+    vat_pill: _previewVat.pill,
+    net_taxable: _previewVat.net,
+    vat_amount: _previewVat.vatAmount,
+    gross_total: _previewVat.gross,
     date:     commercialIssueDate || '—',
     due:      _dueFallback,
     payment:  paymentTermsDisplay,
@@ -5816,9 +5852,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         quality:      (ln.quality_string || '').trim(),
         dia_wt:       _dia > 0 ? _dia : null,
         col_wt:       _cwt > 0 ? _cwt : null,
-        // Gross / net grams = Purchase Packing physical extract only.
-        gross_wt:     Number(pk.gross_weight)   > 0 ? Number(pk.gross_weight)   : null,
-        net_wt:       Number(pk.net_weight)     > 0 ? Number(pk.net_weight)     : null,
+        // Gross / net grams = draft line (GET attach_physical_weights) first,
+        // then purchase packing enrich. Never invent.
+        gross_wt:     Number(ln.gross_weight) > 0 ? Number(ln.gross_weight)
+                      : (Number(pk.gross_weight) > 0 ? Number(pk.gross_weight) : null),
+        net_wt:       Number(ln.net_weight) > 0 ? Number(ln.net_weight)
+                      : (Number(pk.net_weight) > 0 ? Number(pk.net_weight) : null),
         qty,
         unit_price:   unitPrice,
         total_value:  unitPrice * qty,
@@ -8885,6 +8924,10 @@ const PF_VAT_LABELS = {
   '8':  '8% domestic',
   '5':  '5% domestic',
   '0':  '0%',
+  // wFirma vat_mode ids (legacy drafts may still store these before normalize)
+  '222': '23% domestic',
+  '228': '0% WDT — intra-EU supply',
+  '229': '0% Export',
 };
 
 function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, currency, resolvedInsurance }) {
