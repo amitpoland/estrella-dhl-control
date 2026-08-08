@@ -344,7 +344,7 @@
               }}>PENDING</span>
             </div>
             <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 10 }}>
-              Live tracking unavailable{err ? (' — ' + err) : ''}. You can still open DHL’s public tracker.
+              Live tracking unavailable{err ? (' — ' + String(err).replace(/\.\s*$/, '')) : ''}. You can still open DHL's public tracker.
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
               <a
