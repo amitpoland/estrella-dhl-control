@@ -50,6 +50,32 @@ def _delivered_at_from_events(events: Optional[List[dict]]) -> Optional[str]:
     return None
 
 
+def _delivered_location_from_events(events: Optional[List[dict]]) -> Optional[str]:
+    """Best-effort delivered location from the tracking event stream.
+
+    Deliberately uses the SAME delivered-event matching semantics as
+    :func:`_delivered_at_from_events` so the timestamp and the location shown to
+    the customer always come from one and the same event. ``location`` is
+    already normalised upstream by ``tracking_service._normalise_dhl_events``
+    (``CITY - CC``); presentation-only, never a gate.
+
+    The ``ts`` guard below is not incidental: it is what makes this helper pick
+    the *identical* event the timestamp helper picks, including when an earlier
+    delivered-matching event carries no timestamp.
+    """
+    if not events:
+        return None
+    for ev in events:
+        blob = " ".join(
+            str(ev.get(k, "")) for k in ("description", "status", "statusCode")
+        ).lower()
+        if "delivered" in blob:
+            ts = ev.get("timestamp") or ev.get("time") or ev.get("date")
+            if ts:
+                return str(ev.get("location") or "").strip() or None
+    return None
+
+
 def on_outbound_tracking_update(
     awb: str,
     status: str,
@@ -121,6 +147,7 @@ def on_outbound_tracking_update(
             client_name=client_name,
             delivered=True,
             carrier_delivered_at=_delivered_at_from_events(events),
+            delivery_location=_delivered_location_from_events(events),
             booking_created_at=booking_created_at,
         )
     except Exception as exc:  # pragma: no cover - hook must never raise
