@@ -1927,6 +1927,146 @@ _VMODE_TO_CONTEXT: Dict[int, tuple] = {
     234: ("zero",     "0"),
 }
 
+# Code-string → context (stable draft vocabulary; never store bare vat_mode ids).
+_CODE_TO_CONTEXT: Dict[str, str] = {
+    "23": "domestic",
+    "8": "domestic",
+    "5": "domestic",
+    "WDT": "wdt",
+    "EXP": "export",
+    "NP": "np",
+    "NPUE": "npue",
+    "ZW": "zw",
+    "0": "zero",
+}
+
+_VAT_RATE_BY_CODE: Dict[str, float] = {
+    "23": 0.23,
+    "8": 0.08,
+    "5": 0.05,
+    "WDT": 0.0,
+    "EXP": 0.0,
+    "NP": 0.0,
+    "NPUE": 0.0,
+    "ZW": 0.0,
+    "0": 0.0,
+}
+
+_VAT_LABEL_BY_CODE: Dict[str, str] = {
+    "23": "23% domestic VAT",
+    "8": "8% domestic VAT",
+    "5": "5% domestic VAT",
+    "WDT": "0% WDT — intra-EU supply",
+    "EXP": "0% Export",
+    "NP": "NP — not subject to PL VAT",
+    "NPUE": "NPUE",
+    "ZW": "ZW",
+    "0": "0%",
+}
+
+
+def normalize_stored_vat(raw: Any) -> Dict[str, Any]:
+    """Normalize draft/CM VAT vocabulary to ``{vat_code, vat_context, label, rate}``.
+
+    Accepts wFirma vat_mode integers (``222``/``228``/``229``…), their string
+    forms, or already-normalized codes (``23``/``WDT``/``EXP``). Unknown values
+    return ``blocked`` with empty code — never invent a regime.
+    """
+    if raw is None:
+        return {
+            "vat_code": None,
+            "vat_context": "blocked",
+            "label": "VAT TBD",
+            "rate": 0.0,
+            "ok": False,
+        }
+    s = str(raw).strip()
+    if not s:
+        return {
+            "vat_code": None,
+            "vat_context": "blocked",
+            "label": "VAT TBD",
+            "rate": 0.0,
+            "ok": False,
+        }
+    # Integer vat_mode first (222 → domestic/23).
+    try:
+        mode_int = int(s)
+    except (TypeError, ValueError):
+        mode_int = None
+    if mode_int is not None and mode_int in _VMODE_TO_CONTEXT:
+        ctx, code = _VMODE_TO_CONTEXT[mode_int]
+        return {
+            "vat_code": code,
+            "vat_context": ctx,
+            "label": _VAT_LABEL_BY_CODE.get(code, code),
+            "rate": float(_VAT_RATE_BY_CODE.get(code, 0.0)),
+            "ok": True,
+        }
+    code = s.upper() if s.upper() in _CODE_TO_CONTEXT else s
+    # Preserve numeric domestic codes as digits ("23"), not uppercased.
+    if s in _CODE_TO_CONTEXT:
+        code = s
+    elif s.upper() in _CODE_TO_CONTEXT:
+        code = s.upper()
+    ctx = _CODE_TO_CONTEXT.get(code)
+    if ctx is None:
+        return {
+            "vat_code": None,
+            "vat_context": "blocked",
+            "label": f"Unknown VAT {s!r}",
+            "rate": 0.0,
+            "ok": False,
+        }
+    return {
+        "vat_code": code,
+        "vat_context": ctx,
+        "label": _VAT_LABEL_BY_CODE.get(code, code),
+        "rate": float(_VAT_RATE_BY_CODE.get(code, 0.0)),
+        "ok": True,
+    }
+
+
+def compute_document_vat_totals(
+    net_amount: float,
+    vat_code: Any = None,
+    vat_context: Any = None,
+) -> Dict[str, Any]:
+    """Compute Net / VAT / Gross from a resolved VAT code or context.
+
+    Domestic 23% applies VAT to the taxable net (goods + same-currency charges).
+    WDT / export / zero-rate regimes keep VAT at 0.00. Rounding is half-up to
+    2 decimal places — one rule for Preview / PDF / Post display.
+    """
+    norm = normalize_stored_vat(vat_code)
+    if not norm["ok"] and vat_context:
+        # Context-only fallback (e.g. draft has vat_context=domestic, blank code).
+        ctx = str(vat_context or "").strip().lower()
+        if ctx == "domestic":
+            norm = normalize_stored_vat("23")
+        elif ctx == "wdt":
+            norm = normalize_stored_vat("WDT")
+        elif ctx == "export":
+            norm = normalize_stored_vat("EXP")
+    try:
+        net = round(float(net_amount or 0.0) + 1e-12, 2)
+    except (TypeError, ValueError):
+        net = 0.0
+    rate = float(norm.get("rate") or 0.0) if norm.get("ok") else 0.0
+    vat_amt = round(net * rate + 1e-12, 2)
+    gross = round(net + vat_amt + 1e-12, 2)
+    return {
+        "vat_code": norm.get("vat_code"),
+        "vat_context": norm.get("vat_context"),
+        "label": norm.get("label") or "VAT TBD",
+        "rate": rate,
+        "rate_pct": int(round(rate * 100)) if rate else 0,
+        "net": net,
+        "vat_amount": vat_amt,
+        "gross": gross,
+        "ok": bool(norm.get("ok")),
+    }
+
 
 def resolve_vat_context_from_master(cm: Any) -> Dict[str, Any]:
     """Resolve VAT context from ``customer_master`` fields (D1/D2, ADR-027).
