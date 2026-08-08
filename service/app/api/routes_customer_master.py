@@ -475,6 +475,7 @@ def list_customers_endpoint(
     Phase 4B Wave 3b-2: defaults to active-only when ``active`` is omitted.
     ``q`` filters by case-insensitive substring match on bill_to_name.
     """
+    init_db(_DB_PATH)  # idempotent schema migrate (e.g. default_incoterm)
     try:
         records = list_customers(_DB_PATH, country=country,
                                  risk_status=risk_status, limit=limit, q=q,
@@ -889,6 +890,7 @@ def client_master_dictionaries_status() -> JSONResponse:
 @router.get("/{contractor_id}", dependencies=[_auth], summary="Get one customer")
 def get_customer_endpoint(contractor_id: str) -> JSONResponse:
     """Read a customer by wFirma contractor id.  404 if not found."""
+    init_db(_DB_PATH)
     try:
         record = get_customer(_DB_PATH, contractor_id)
     except Exception as exc:

@@ -82,9 +82,11 @@ def test_commercial_fields_from_sales_packing_draft_line(detail):
     assert "pk.quality_string" not in pack_builder
 
 
-def test_physical_weights_still_from_purchase_packing(detail):
+def test_physical_weights_prefer_draft_line_then_purchase_packing(detail):
     pack_builder = detail.split("const packingListData")[1].split(
         "const draftState"
     )[0]
+    assert "Number(ln.gross_weight)" in pack_builder
+    assert "Number(ln.net_weight)" in pack_builder
     assert "Number(pk.gross_weight)" in pack_builder
     assert "Number(pk.net_weight)" in pack_builder
