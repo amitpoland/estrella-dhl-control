@@ -127,6 +127,34 @@ def run_carrier_event_processing(batch_id: Optional[str] = None) -> Dict[str, An
             })
         if events:
             summary["written"] = int(tdb.record_events_batch(events) or 0)
+
+        # Bridge DELIVERED webhook stages into the outbound customer
+        # delivery-confirmation hook (best-effort). Same authority as
+        # tracking_service.get_tracking_status — never raises into CW-1.
+        delivered_awbs = {
+            (e.get("awb") or "").strip()
+            for e in events
+            if (e.get("stage") or "").upper() == "DELIVERED" and (e.get("awb") or "").strip()
+        }
+        if delivered_awbs:
+            try:
+                from ..outbound_delivery_hook import on_outbound_tracking_update
+            except Exception:
+                on_outbound_tracking_update = None  # type: ignore
+            if on_outbound_tracking_update is not None:
+                for awb in delivered_awbs:
+                    try:
+                        on_outbound_tracking_update(
+                            awb,
+                            status="delivered",
+                            events=[{"description": "delivered", "status": "delivered"}],
+                        )
+                        summary["delivery_hooks"] = int(summary.get("delivery_hooks") or 0) + 1
+                    except Exception as hook_exc:
+                        log.debug(
+                            "[cw1] outbound delivery hook skipped for %s: %s",
+                            awb, hook_exc,
+                        )
     except Exception as exc:
         summary["errors"] += 1
         summary["last_error"] = f"{type(exc).__name__}: {exc}"

@@ -170,6 +170,46 @@ def mark_notification_failed(db_path: Path, awb: str, *, reason: str = "") -> No
         )
 
 
+def reset_failed_notification_for_retry(db_path: Path, awb: str) -> bool:
+    """Clear a failed notification so a new email can be queued (same AWB).
+
+    Only acts when status='failed'. Unused receipt token rows for the AWB are
+    removed (token plaintext was never stored — a new link must be minted).
+    Returns True when a failed row was cleared.
+    """
+    awb = (awb or "").strip()
+    if not awb or not Path(db_path).exists():
+        return False
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM delivery_notifications WHERE awb = ?", (awb,),
+        ).fetchone()
+        if row is None or (row["status"] or "") != "failed":
+            return False
+        # Drop unused receipts for this AWB (used_at IS NULL) — never delete
+        # a receipt the customer already submitted.
+        conn.execute(
+            "DELETE FROM delivery_receipts WHERE awb = ? AND used_at IS NULL",
+            (awb,),
+        )
+        conn.execute(
+            "DELETE FROM delivery_notifications WHERE awb = ? AND status = 'failed'",
+            (awb,),
+        )
+        return True
+
+
+def get_notification_by_email_id(db_path: Path, email_id: str) -> Optional[dict]:
+    email_id = (email_id or "").strip()
+    if not email_id or not Path(db_path).exists():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM delivery_notifications WHERE email_id = ?", (email_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_notification_by_awb(db_path: Path, awb: str) -> Optional[dict]:
     if not (awb or "").strip() or not Path(db_path).exists():
         return None

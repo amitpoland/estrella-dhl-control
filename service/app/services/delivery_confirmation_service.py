@@ -212,6 +212,9 @@ def maybe_notify_outbound_delivered(
         return {"notified": False, "reason": "no_customer_email", "awb": awb}
 
     # Idempotency anchor — first delivered event for this AWB inserts the row.
+    # Failed status is sticky: do NOT auto-retry from tracking refresh / webhook
+    # loops (that would mint a new token and re-spam the customer). Operator
+    # resend can call reset_failed_notification_for_retry explicitly later.
     row, created = dcdb.create_notification_if_absent(
         db,
         awb=awb,
@@ -222,6 +225,9 @@ def maybe_notify_outbound_delivered(
         activation_cutoff_ok=activation_cutoff_ok,
     )
     if not created:
+        status = (row or {}).get("status") or ""
+        if status == "failed":
+            return {"notified": False, "reason": "notification_failed", "awb": awb}
         return {"notified": False, "reason": "already_notified", "awb": awb}
 
     # Mint the opaque public token + persist its hash.
@@ -242,8 +248,10 @@ def maybe_notify_outbound_delivered(
     )
 
     link = build_receipt_link(token)
-    subject = "Please confirm receipt of your Estrella Jewels delivery"
-    html_body, text_body = _delivery_email_bodies(customer_name, awb, link)
+    subject = "Your Estrella shipment has been delivered — confirm condition"
+    html_body, text_body = _delivery_email_bodies(
+        customer_name, awb, link, carrier_delivered_at=carrier_delivered_at,
+    )
 
     email_id = ""
     try:
@@ -273,25 +281,100 @@ def maybe_notify_outbound_delivered(
     }
 
 
-def _delivery_email_bodies(customer_name: Optional[str], awb: str, link: str) -> tuple[str, str]:
+def _delivery_email_bodies(
+    customer_name: Optional[str],
+    awb: str,
+    link: str,
+    *,
+    carrier_delivered_at: Optional[str] = None,
+) -> tuple[str, str]:
+    """Transactional Estrella delivery-confirmation email (HTML + plain text).
+
+    Table-based, email-client-safe HTML — no JS. Distinct from DHL carrier
+    notifications. CTA opens the secure /receipt/&#123;token&#125; page only.
+    """
     from html import escape
     who = escape(customer_name or "Customer")
     awb_e = escape(awb)
     link_e = escape(link)
-    html = (
-        f"<p>Dear {who},</p>"
-        "<p>Your shipment from Estrella Jewels has been delivered.</p>"
-        f"<p>Tracking reference: <strong>{awb_e}</strong></p>"
-        "<p>Please take a moment to confirm you received it in good condition, "
-        "or let us know if there was any problem:</p>"
-        f'<p><a href="{link_e}">Confirm receipt / report an issue</a></p>'
-        "<p>Thank you,<br>Estrella Jewels</p>"
+    when_raw = (carrier_delivered_at or "").strip()
+    when_disp = ""
+    if when_raw:
+        try:
+            when_disp = datetime.fromisoformat(
+                when_raw.replace("Z", "+00:00")
+            ).strftime("%d %b %Y %H:%M UTC")
+        except Exception:
+            when_disp = when_raw[:32]
+    when = escape(when_disp)
+    when_row = (
+        f'<tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">Delivered</td>'
+        f'<td style="padding:4px 0;font-size:13px;font-weight:600;color:#1c1a17;">{when}</td></tr>'
+        if when else ""
     )
+    html = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Delivery confirmation</title></head>
+<body style="margin:0;padding:0;background:#f5f3ef;color:#1c1a17;
+ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f3ef;padding:24px 12px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;
+ border:1px solid #e3ded5;border-radius:14px;">
+<tr><td style="padding:28px 28px 8px;text-align:center;">
+  <div style="font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#6b655c;font-weight:600;">Estrella Jewels</div>
+  <h1 style="margin:14px 0 0;font-size:22px;line-height:1.3;color:#1c1a17;font-weight:700;">
+    Your Estrella shipment has been delivered
+  </h1>
+</td></tr>
+<tr><td style="padding:8px 28px 0;font-size:15px;line-height:1.55;color:#1c1a17;">
+  <p style="margin:0 0 14px;">Dear {who},</p>
+  <p style="margin:0 0 18px;">DHL has marked your shipment as delivered. Please confirm everything arrived correctly,
+  or report damage / missing items and attach photographs if needed.</p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+   style="background:#f5f3ef;border-radius:10px;padding:12px 14px;margin:0 0 22px;">
+    <tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">Customer</td>
+        <td style="padding:4px 0;font-size:13px;font-weight:600;">{who}</td></tr>
+    <tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">Carrier</td>
+        <td style="padding:4px 0;font-size:13px;font-weight:600;">DHL</td></tr>
+    <tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">AWB</td>
+        <td style="padding:4px 0;font-size:13px;font-weight:700;font-family:ui-monospace,monospace;">{awb_e}</td></tr>
+    {when_row}
+  </table>
+  <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 18px;">
+    <tr><td align="center" bgcolor="#8a6d3b" style="border-radius:12px;">
+      <a href="{link_e}" style="display:inline-block;padding:14px 28px;font-size:16px;font-weight:700;
+       color:#ffffff;text-decoration:none;border-radius:12px;">Confirm delivery condition</a>
+    </td></tr>
+  </table>
+  <p style="margin:0 0 8px;font-size:13px;color:#6b655c;line-height:1.5;">
+    You can confirm receipt in good condition, or report damaged packaging, damaged goods,
+    missing items, suspected loss/theft, or another problem — and attach photos when reporting an issue.
+  </p>
+  <p style="margin:16px 0 0;font-size:12px;color:#6b655c;word-break:break-all;">
+    If the button does not work, open this secure link:<br/>
+    <a href="{link_e}" style="color:#8a6d3b;">{link_e}</a>
+  </p>
+</td></tr>
+<tr><td style="padding:22px 28px 28px;font-size:13px;color:#6b655c;">
+  Thank you,<br/><strong style="color:#1c1a17;">Estrella Jewels</strong>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>"""
     text = (
+        f"Your Estrella shipment has been delivered\n\n"
         f"Dear {customer_name or 'Customer'},\n\n"
-        f"Your shipment from Estrella Jewels (tracking {awb}) has been delivered.\n"
-        "Please confirm you received it in good condition, or report a problem:\n"
-        f"{link}\n\nThank you,\nEstrella Jewels\n"
+        f"DHL has marked your shipment as delivered.\n"
+        f"Customer: {customer_name or 'Customer'}\n"
+        f"Carrier: DHL\n"
+        f"AWB: {awb}\n"
+        + (f"Delivered: {carrier_delivered_at}\n" if carrier_delivered_at else "")
+        + "\nConfirm delivery condition (or report damage / missing items):\n"
+        f"{link}\n\n"
+        "You can confirm good condition, or report damaged packaging, damaged goods,\n"
+        "missing items, suspected loss/theft, or another problem, and attach photos.\n\n"
+        "Thank you,\nEstrella Jewels\n"
     )
     return html, text
 

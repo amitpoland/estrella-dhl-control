@@ -751,7 +751,42 @@ def _build_shipment_body(
             {"typeCode": "invoice", "isRequested": True, "invoiceType": "commercial"}
         )
 
+    # MyDHL Express REST carrier notifications (official Create Shipment field
+    # ``shipmentNotification`` — typeCode email|sms, receiverId = email/phone).
+    # Distinct from Estrella /receipt/{token} delivery-confirmation email.
+    # Only request when recipient contact is present; operator is responsible
+    # for lawful basis / consent to receive DHL messages (MyDHL API terms).
+    notifications = _build_shipment_notifications(request.recipient_address)
+    if notifications:
+        body["shipmentNotification"] = notifications
+
     return body
+
+
+def _build_shipment_notifications(recipient_address: Optional[dict]) -> list:
+    """Build MyDHL ``shipmentNotification`` entries from recipient contact.
+
+    Official shape (MyDHL Express REST Create Shipment):
+      [{"typeCode": "email"|"sms", "receiverId": "<email|phone>", "languageCode": "eng"}]
+    Email when non-blank. SMS only when phone is E.164-like (leading '+').
+    """
+    addr = recipient_address or {}
+    out: list = []
+    email = (addr.get("email") or "").strip()
+    if email and "@" in email:
+        out.append({
+            "typeCode": "email",
+            "receiverId": email,
+            "languageCode": "eng",
+        })
+    phone = (addr.get("phone") or "").strip().replace(" ", "")
+    if phone.startswith("+") and len(phone) >= 8 and phone[1:].isdigit():
+        out.append({
+            "typeCode": "sms",
+            "receiverId": phone,
+            "languageCode": "eng",
+        })
+    return out
 
 
 def _build_shipper_details(settings) -> dict:

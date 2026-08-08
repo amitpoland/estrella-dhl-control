@@ -3919,149 +3919,25 @@ function _pfPickPrim(e, keys) {
   return '';
 }
 
-function OutboundShipmentTracking({ awb, batchId, carrier }) {
-  const [tracking, setTracking] = React.useState(null);
-  const [loading, setLoading] = React.useState(!!awb);
-  const [refreshing, setRefreshing] = React.useState(false);
-  const [err, setErr] = React.useState(null);
-
-  const load = React.useCallback(async (forceRefresh) => {
-    if (!awb) {
-      setTracking(null);
-      setLoading(false);
-      return;
-    }
-    if (forceRefresh) setRefreshing(true);
-    else setLoading(true);
-    setErr(null);
-    try {
-      if (forceRefresh && window.PzApi && window.PzApi.refreshDhlTracking) {
-        await window.PzApi.refreshDhlTracking(awb, batchId || '');
-      }
-      const r = window.PzApi && window.PzApi.getDhlTracking
-        ? await window.PzApi.getDhlTracking(awb, batchId || '', {
-            carrier: carrier || '',
-            refresh: !!forceRefresh,
-          })
-        : { ok: false, error: 'PzApi.getDhlTracking unavailable' };
-      if (r && r.ok) setTracking(r.data || null);
-      else {
-        setTracking(null);
-        setErr((r && r.error) || 'tracking unavailable');
-      }
-    } catch (e) {
-      setTracking(null);
-      setErr((e && e.message) || 'tracking unavailable');
-    }
-    setLoading(false);
-    setRefreshing(false);
-  }, [awb, batchId, carrier]);
-
-  React.useEffect(() => {
-    let alive = true;
-    load(false);
-    // Auto-refresh outbound status every 2 minutes while AWB is present.
-    const t = awb ? setInterval(() => { if (alive) load(true); }, 120000) : null;
-    return () => { alive = false; if (t) clearInterval(t); };
-  }, [load, awb]);
-
-  const box = { padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 };
-  const events = (tracking && Array.isArray(tracking.events)) ? tracking.events.slice().reverse() : [];
-  const statusLabel = (tracking && (tracking.status_label || tracking.status)) || '';
-
-  return (
-    <div data-testid="pf-logistics-outbound-tracking" style={{ marginTop: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-        <div>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)' }}>Outbound shipment tracking</div>
-          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
-            Customer DHL AWB · canonical GET /api/v1/tracking/&#123;awb&#125; · not import clearance
-          </div>
-        </div>
-        <button
-          type="button"
-          data-testid="pf-logistics-outbound-refresh"
-          disabled={!awb || loading || refreshing}
-          onClick={() => load(true)}
-          style={{
-            fontSize: 12, fontWeight: 600, padding: '5px 10px', borderRadius: 6, cursor: (!awb || loading || refreshing) ? 'default' : 'pointer',
-            background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)',
-            opacity: (!awb || loading || refreshing) ? 0.6 : 1,
-          }}
-        >
-          {refreshing ? '… Refreshing' : '↻ Refresh'}
-        </button>
+function OutboundShipmentTracking({ awb, batchId, carrier, draftId }) {
+  // Shared presentation authority — estrella-outbound-tracking.jsx
+  // (same card as Shipment Detail). Tracking bytes still only from PzApi.
+  const Card = window.EJOutboundTrackingCard;
+  if (!Card) {
+    return (
+      <div data-testid="pf-logistics-outbound-tracking" style={{ marginTop: 16, fontSize: 12, color: 'var(--text-3)' }}>
+        Outbound tracking card unavailable (shared component not loaded).
       </div>
-
-      {!awb && (
-        <div style={{ ...box, fontSize: 11.5, color: 'var(--text-3)' }} data-testid="pf-logistics-outbound-empty">
-          No outbound AWB linked for this draft yet. Book / generate the customer shipment first — import clearance events are shown separately below and are not the outbound timeline.
-        </div>
-      )}
-
-      {awb && loading && (
-        <div data-testid="pf-logistics-outbound-loading" style={{ ...box, fontSize: 12, color: 'var(--text-3)' }}>
-          Loading outbound tracking for AWB {awb}…
-        </div>
-      )}
-
-      {awb && !loading && tracking && (
-        <div style={{ ...box, marginBottom: events.length ? 10 : 0 }} data-testid="pf-logistics-outbound-status">
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 18px', fontSize: 12 }}>
-            <span data-testid="pf-logistics-outbound-awb">AWB: <strong style={{ fontFamily: 'monospace' }}>{tracking.tracking_no || awb}</strong></span>
-            <span data-testid="pf-logistics-outbound-carrier">Carrier: <strong>{tracking.carrier || carrier || 'DHL'}</strong></span>
-            <span data-testid="pf-logistics-outbound-status-label">Status: <strong>{statusLabel || '—'}</strong></span>
-            <span data-testid="pf-logistics-outbound-location">Location: <strong>{tracking.last_location || '—'}</strong></span>
-            <span data-testid="pf-logistics-outbound-event-time">Event time: <strong style={{ fontFamily: 'monospace' }}>{tracking.last_update || tracking.last_update_display || '—'}</strong></span>
-          </div>
-          {(tracking.last_event) ? (
-            <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 6 }} data-testid="pf-logistics-outbound-last-event">
-              Latest event: {typeof tracking.last_event === 'string' ? tracking.last_event : _pfPickPrim(tracking.last_event, ['description', 'status', 'message']) || '—'}
-            </div>
-          ) : null}
-          {tracking.tracking_url ? (
-            <div style={{ marginTop: 6 }}>
-              <a href={tracking.tracking_url} target="_blank" rel="noopener noreferrer"
-                data-testid="pf-logistics-outbound-url"
-                style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)' }}>Open carrier tracking ↗</a>
-              <span style={{ fontSize: 10.5, color: 'var(--text-3)', marginLeft: 10 }}>
-                Source: {tracking.source || '—'}{tracking.available === false ? ' · unavailable/fallback' : ''}
-              </span>
-            </div>
-          ) : (
-            <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 6 }}>
-              Source: {(tracking && tracking.source) || '—'}
-              {tracking && tracking.available === false ? ' · tracking unavailable (backend gate / no live data)' : ''}
-            </div>
-          )}
-        </div>
-      )}
-
-      {awb && !loading && !tracking && (
-        <div style={{ ...box, fontSize: 11.5, color: 'var(--text-3)' }} data-testid="pf-logistics-outbound-err">
-          Outbound tracking not available for AWB {awb}{err ? ` (${err})` : ''}.
-        </div>
-      )}
-
-      {awb && !loading && events.length > 0 && (
-        <div style={{ ...box, padding: 0, overflow: 'hidden' }} data-testid="pf-logistics-outbound-timeline">
-          {events.map((e, i) => (
-            <div key={i} data-testid="pf-logistics-outbound-timeline-row"
-              style={{ display: 'flex', gap: 12, padding: '8px 14px', borderBottom: i < events.length - 1 ? '1px solid var(--border)' : 'none' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 92, fontFamily: 'monospace' }}>
-                {String(_pfPickPrim(e, ['timestamp', 'time', 'at', 'date']) || '').slice(0, 16) || '—'}
-              </span>
-              <span style={{ fontSize: 12, color: 'var(--text)', flex: 1 }}>
-                <strong>{_pfPickPrim(e, ['description', 'status', 'label', 'event', 'type']) || '—'}</strong>
-                {_pfPickPrim(e, ['location', 'where', 'place'])
-                  ? <span style={{ color: 'var(--text-3)' }}> · {_pfPickPrim(e, ['location', 'where', 'place'])}</span>
-                  : null}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+    );
+  }
+  return (
+    <Card
+      awb={awb}
+      batchId={batchId}
+      carrier={carrier}
+      draftId={draftId}
+      testIdRoot="pf-logistics-outbound"
+    />
   );
 }
 
@@ -7234,6 +7110,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 awb={(carrierShipment && carrierShipment.tracking_ref) || (_transport && _transport.outbound_awb) || ''}
                 batchId={liveDraft.batch_id || (draft && draft.batch_id) || ''}
                 carrier={(carrierShipment && carrierShipment.carrier) || 'DHL'}
+                draftId={draft && draft.id}
               />
               <ImportClearanceLogisticsPanel
                 batchId={liveDraft.batch_id || (draft && draft.batch_id) || ''}
