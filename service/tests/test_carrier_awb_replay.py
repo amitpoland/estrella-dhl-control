@@ -76,6 +76,7 @@ def _req(batch_id: str = "BATCH-REPLAY") -> ShipmentRequest:
         weight_kg=1.5,
         dimensions={"length_cm": 20, "width_cm": 15, "height_cm": 10},
         product_code="U",
+        incoterm="DAP",
     )
 
 

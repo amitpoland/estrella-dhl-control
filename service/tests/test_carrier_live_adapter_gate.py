@@ -32,6 +32,7 @@ def _req(batch_id: str = "BATCH-001") -> ShipmentRequest:
         currency="EUR",
         weight_kg=1.0,
         dimensions={"length": 20, "width": 15, "height": 10},
+        incoterm="DAP",
     )
 
 

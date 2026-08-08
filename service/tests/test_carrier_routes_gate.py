@@ -21,6 +21,15 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+
+@pytest.fixture(autouse=True)
+def _incoterm_resolved_for_shipment_posts(monkeypatch):
+    """Route gate tests — supply resolved Incoterm (production never invents DAP)."""
+    monkeypatch.setattr(
+        "app.api.routes_carrier_actions._resolve_booking_incoterm",
+        lambda **kwargs: {"value": "DAP", "source": "customer_master"},
+    )
+
 from app.api.routes_carrier_actions import (
     _get_carrier_config,
     _get_coordinator,
