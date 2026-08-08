@@ -90,10 +90,12 @@ def _write_dhl_doc(tmp_path, kind_subdir, batch, awb):
 
 
 def _build(tmp_path, draft_id):
-    return sdm.build_manifest(
-        draft_id, storage_root=tmp_path,
-        proforma_db=_proforma_db(tmp_path), carrier_db=_carrier_db(tmp_path),
-    )
+    # Force carrier soft-skip so unit tests never hit live MyDHL Get Image / ePOD.
+    with patch.object(settings, "carrier_api_status", "pending"):
+        return sdm.build_manifest(
+            draft_id, storage_root=tmp_path,
+            proforma_db=_proforma_db(tmp_path), carrier_db=_carrier_db(tmp_path),
+        )
 
 
 def _find(entries, doc_type):
@@ -115,6 +117,7 @@ def client(tmp_path):
 # ── 1. Draft proforma uses Estrella preview, not wFirma ─────────────────────────
 
 def test_draft_proforma_uses_estrella_preview(tmp_path):
+    """Draft Proforma must use canonical browser modal — not preview.html."""
     with patch.object(settings, "storage_root", tmp_path), \
          patch.object(settings, "carrier_storage_root", None):
         d = _seed_draft(tmp_path)
@@ -122,9 +125,27 @@ def test_draft_proforma_uses_estrella_preview(tmp_path):
     entry = _find(m["groups"]["commercial"], "draft_proforma")
     assert entry["authority"] == "Estrella"
     assert entry["status"] == "Generated"
-    assert entry["preview_url"] == f"/api/v1/proforma/draft/{d.id}/preview.html"
-    assert "document.pdf" not in (entry["preview_url"] or "")
+    assert entry["reason"] == "browser_preview"
+    assert entry["preview_url"] is None
     assert entry["download_available"] is False
+    # No parallel server HTML preview authority on the Documents card.
+    assert "preview.html" not in str(entry)
+    # Official wFirma proforma remains a distinct card.
+    official = _find(m["groups"]["commercial"], "official_proforma")
+    assert official["authority"] == "wFirma"
+    assert official["status"] == "Pending"
+
+
+def test_no_second_draft_proforma_renderer_in_hub_ui():
+    """Documents hub must open onOpenPreview('proforma'), not preview.html."""
+    jsx = Path(__file__).resolve().parents[1] / "app" / "static" / "v2" / "proforma-detail.jsx"
+    src = jsx.read_text(encoding="utf-8")
+    # Hub previewClick routes draft_proforma to canonical modal.
+    assert "document_type === 'draft_proforma'" in src
+    assert "onOpenPreview('proforma')" in src or 'onOpenPreview("proforma")' in src
+    # Manifest no longer pins draft card to preview.html (server HTML is not
+    # the Documents-tab authority). Keep estrella-doc-proforma as the renderer.
+    assert "estrella-doc-proforma" in src or "EJProforma" in src
 
 
 # ── 2. Posted proforma exposes official wFirma PDF URL ──────────────────────────
@@ -176,16 +197,56 @@ def test_client_scoped_no_cross_client_leak(tmp_path):
 
 # ── 5. Historical unavailable waybill when AWB exists but file missing ──────────
 
-def test_historical_unavailable_waybill(tmp_path):
+def test_waybill_not_provided_does_not_block_complete_package(tmp_path, monkeypatch):
+    """When Get Image is not authorized / empty, waybill is Pending — not a package blocker."""
+    from app.services.carrier import document_image_service as dis
+
+    class _Denied:
+        status = "not_authorized"
+        detail = "8032"
+        path = None
+
+    monkeypatch.setattr(dis, "ensure_waybill_persisted",
+                        lambda *a, **k: _Denied())
     with patch.object(settings, "storage_root", tmp_path), \
          patch.object(settings, "carrier_storage_root", None):
-        d = _seed_draft(tmp_path)
-        _seed_shipment(tmp_path, client_ref="ACME")   # AWB booked, no files saved
+        d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
+        _seed_shipment(tmp_path, client_ref="ACME")
+        _write_dhl_doc(tmp_path, "labels", BATCH, AWB)
         m = _build(tmp_path, d.id)
     assert m["awb"] == AWB
     wb = _find(m["groups"]["carrier"], "dhl_waybill")
-    assert wb["status"] == "Historical unavailable"
-    assert wb["reason"]
+    assert wb["status"] == "Pending"
+    assert wb["required_for_complete_package"] is False
+    assert "Not provided by DHL" in (wb["reason"] or "")
+    cp = m["groups"]["complete_package"]
+    assert cp["ready"] is True
+    assert not any("Waybill" in x for x in cp["missing"])
+
+
+def test_waybill_recoverable_path_persists_and_requires(tmp_path, monkeypatch):
+    from app.services.carrier import document_image_service as dis
+    target = tmp_path / "carrier" / "waybill_docs" / f"{BATCH}-{AWB}.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(_SAMPLE_PDF)
+
+    class _Ok:
+        status = "persisted"
+        detail = None
+        path = target
+
+    monkeypatch.setattr(dis, "ensure_waybill_persisted",
+                        lambda *a, **k: _Ok())
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path, proforma_id="WF-1")
+        _seed_shipment(tmp_path, client_ref="ACME")
+        _write_dhl_doc(tmp_path, "labels", BATCH, AWB)
+        m = _build(tmp_path, d.id)
+    wb = _find(m["groups"]["carrier"], "dhl_waybill")
+    assert wb["status"] == "Generated"
+    assert wb["required_for_complete_package"] is True
+    assert wb["download_url"] == f"/api/v1/carrier/{BATCH}/waybill-doc/{AWB}"
 
 
 # ── 6. Label package persistence resolver (client-scoped preference) ────────────
@@ -510,14 +571,15 @@ def test_epod_manifest_and_complete_package_optional(tmp_path, client, monkeypat
         ep0 = _find(m0["groups"]["carrier"], "dhl_epod")
         assert ep0["status"] == "Pending"
         assert ep0["required_for_complete_package"] is False
+        assert "Available after eligible DHL delivery" in (ep0["reason"] or "")
 
         _write_dhl_doc(tmp_path, "labels", BATCH, AWB)
-        _write_dhl_doc(tmp_path, "waybill_docs", BATCH, AWB)
         _write_dhl_doc(tmp_path, "epods", BATCH, AWB)
         m1 = _build(tmp_path, d.id)
         ep1 = _find(m1["groups"]["carrier"], "dhl_epod")
         assert ep1["status"] == "Generated"
         assert ep1["download_url"] == f"/api/v1/carrier/{BATCH}/epod/{AWB}"
+        # Label alone is enough — waybill not required when DHL never provided one.
         assert m1["groups"]["complete_package"]["ready"] is True
 
     from app.services import wfirma_client
@@ -528,7 +590,6 @@ def test_epod_manifest_and_complete_package_optional(tmp_path, client, monkeypat
     monkeypatch.setattr(doc_package, "_resolve_customer_from_batch", lambda *a, **k: None)
     monkeypatch.setattr(doc_package, "render_packing_list_pdf",
                         lambda *a, **k: b"%PDF-1.4 packing %%EOF")
-
     r = client.get(
         f"/api/v1/shipment-documents/draft/{d.id}/complete-package",
         headers=_auth_headers(),
@@ -537,6 +598,51 @@ def test_epod_manifest_and_complete_package_optional(tmp_path, client, monkeypat
     import io, zipfile
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
     assert "dhl-epod.pdf" in names
+
+
+def test_epod_not_eligible_after_delivered(tmp_path, monkeypatch):
+    from app.services.carrier import epod_service as es
+
+    class _No:
+        status = "not_eligible"
+        detail = "404"
+        path = None
+
+    monkeypatch.setattr(es, "ensure_epod_result", lambda *a, **k: _No())
+    monkeypatch.setattr(sdm, "_tracking_says_delivered", lambda *a, **k: True)
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path)
+        _seed_shipment(tmp_path, client_ref="ACME")
+        m = _build(tmp_path, d.id)
+    ep = _find(m["groups"]["carrier"], "dhl_epod")
+    assert ep["status"] == "Pending"
+    assert "Not provided by DHL" in (ep["reason"] or "")
+
+
+def test_commercial_package_generate_meta(tmp_path):
+    from app.services.master_data_db import init_db, upsert_box_type
+    md = tmp_path / "master_data.sqlite"
+    init_db(md)
+    upsert_box_type(md, {
+        "code": "DHL-RING", "name": "Ring",
+        "length_cm": 20, "width_cm": 15, "height_cm": 10,
+        "tare_weight_kg": 0.1, "carrier": "DHL", "active": 1,
+    })
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path, proforma_id="WF-1")
+        _seed_shipment(tmp_path, client_ref="ACME")
+        # Attach box_type_code on shipment
+        import sqlite3
+        with sqlite3.connect(str(_carrier_db(tmp_path))) as c:
+            c.execute("UPDATE carrier_shipments SET box_type_code=? WHERE tracking_ref=?",
+                      ("DHL-RING", AWB))
+        m = _build(tmp_path, d.id)
+    pkg = _find(m["groups"]["carrier"], "dhl_commercial_package")
+    assert "generate" in pkg
+    assert pkg["generate"]["can_generate"] is True
+    assert pkg["generate"]["box_type_id"] is not None
 
 
 def test_cmr_never_required_for_complete_package(tmp_path):
