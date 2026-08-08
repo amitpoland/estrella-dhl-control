@@ -130,22 +130,25 @@ def resolve_customer_email(draft: Any, storage_root: Path) -> str:
 # ── Outbound delivered → notify ──────────────────────────────────────────────────
 
 
-def _activation_ok(booking_created_at: Optional[str]) -> bool:
+def _activation_ok(
+    carrier_delivered_at: Optional[str],
+    booking_created_at: Optional[str],
+) -> bool:
     """Strict activation boundary — protects against mass-notifying history.
 
-    Returns True only when the operator has set an activation timestamp AND the
-    booking was created at/after it. When the activation timestamp is empty
-    (feature "not activated") or the booking date is unknown, returns False so
-    a historical delivered shipment is never notified.
+    Prefer carrier delivery time when present; fall back to booking created_at
+    only when the delivery timestamp is missing. Requires a non-empty
+    ``customer_delivery_confirmation_activated_at``. Empty activation or an
+    unknown comparison timestamp → False (never mass-notify history).
     """
     from ..core.config import settings
     activated_at = (settings.customer_delivery_confirmation_activated_at or "").strip()
     if not activated_at:
         return False
-    bca = (booking_created_at or "").strip()
-    if not bca:
+    pivot = (carrier_delivered_at or "").strip() or (booking_created_at or "").strip()
+    if not pivot:
         return False
-    return bca >= activated_at
+    return pivot >= activated_at
 
 
 def maybe_notify_outbound_delivered(
@@ -184,7 +187,7 @@ def maybe_notify_outbound_delivered(
     if not delivered and not carrier_delivered_at:
         return {"notified": False, "reason": "not_delivered"}
 
-    activation_cutoff_ok = _activation_ok(booking_created_at)
+    activation_cutoff_ok = _activation_ok(carrier_delivered_at, booking_created_at)
     if not activation_cutoff_ok:
         # Record intent is not created — never mass-notify historical deliveries.
         return {"notified": False, "reason": "activation_boundary", "awb": awb}
