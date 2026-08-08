@@ -460,6 +460,33 @@ def get_shipment_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[d
     return dict(row) if row else None
 
 
+def list_tracked_shipments(
+    db_path: Path,
+    *,
+    limit: int = 5000,
+) -> list:
+    """Read-only list of carrier_shipments rows that have a tracking_ref (AWB).
+
+    Used by the DHL Logistics Control Tower projection. Never invents AWBs —
+    only returns rows where DHL booking already persisted ``tracking_ref``.
+    Excludes nothing by state; the projector classifies active/delivered.
+    """
+    if not Path(db_path).exists():
+        return []
+    lim = max(1, min(int(limit or 5000), 20000))
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM carrier_shipments "
+                "WHERE tracking_ref IS NOT NULL AND TRIM(tracking_ref) != '' "
+                "ORDER BY created_at DESC LIMIT ?",
+                (lim,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [dict(r) for r in rows]
+
+
 def get_batch_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[str]:
     """CW-1: resolve a DHL tracking number to its batch_id (read-only).
 
