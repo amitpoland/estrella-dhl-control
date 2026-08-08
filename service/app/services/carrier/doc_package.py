@@ -3,7 +3,8 @@ doc_package.py — Path-DOC: outbound customs/shipping document package generato
 
 Generates a PDF package for outbound physical dispatch:
   1. Commercial invoice — fetched from wFirma (READ-ONLY).
-  2. Packing list PDF  — generated locally from packing_lines / editable_lines_json.
+  2. Packing list PDF  — Commercial Packing List authority
+     (``commercial_packing_list``; same model as Documents tab Preview).
   3. CN23 customs declaration PDF — generated locally; included ONLY for non-EU
      destinations (customer_master.country ∉ EU-27).
 
@@ -430,166 +431,27 @@ def render_packing_list_pdf(
     draft: Any,          # ProformaDraft or None
     delivery_addr: Optional[Dict[str, str]] = None,
 ) -> bytes:
+    """Generate the Commercial Packing List PDF (canonical document authority).
+
+    Presentation/export adapter over ``commercial_packing_list`` — the SAME
+    document model the Proforma Documents tab Preview uses
+    (``packingListData`` / ``EJPackingList``).
+
+    Row authority = draft billed editable_lines. packing.db is NOT a packing-list
+    document authority (it may still enrich physical weights via
+    commercial_authority). The retired simplified portrait sheet
+    (Product Code/Design · Type · Qty · Gross/Net · Dia/Col) is gone.
     """
-    Generate an A4 packing list PDF.
+    from ..commercial_packing_list import render_packing_list_pdf_from_authorities
 
-    Data sources (in priority order):
-      1. packing_lines (packing.db) — per-piece rows
-      2. proforma_draft.editable_lines_json — fallback if packing_lines empty
-    """
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib import colors
-        from reportlab.lib.units import mm
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-        )
-    except ImportError as exc:
-        raise RuntimeError(f"ReportLab unavailable: {exc}") from exc
-
-    font, font_bold = _register_fonts()
-    styles = getSampleStyleSheet()
-    H1  = ParagraphStyle("H1",  parent=styles["Normal"], fontName=font_bold,
-                          fontSize=14, leading=18)
-    H2  = ParagraphStyle("H2",  parent=styles["Normal"], fontName=font_bold,
-                          fontSize=10, leading=13)
-    TXT = ParagraphStyle("TXT", parent=styles["Normal"], fontName=font,
-                          fontSize=9,  leading=12)
-    SML = ParagraphStyle("SML", parent=styles["Normal"], fontName=font,
-                          fontSize=8,  leading=11, textColor=colors.HexColor("#555555"))
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4,
-                             leftMargin=20*mm, rightMargin=20*mm,
-                             topMargin=20*mm, bottomMargin=20*mm)
-    story = []
-
-    # ── Header ────────────────────────────────────────────────────────────────
-    story.append(Paragraph("PACKING LIST", H1))
-    story.append(Spacer(1, 4*mm))
-
-    prof_ref = ""
-    if draft and draft.wfirma_proforma_fullnumber:
-        prof_ref = draft.wfirma_proforma_fullnumber
-    elif draft and draft.wfirma_proforma_id:
-        prof_ref = draft.wfirma_proforma_id
-
-    meta_rows = []
-    if company:
-        meta_rows.append(["Shipper:", company.legal_name or ""])
-    # Consignee name: resolved via Customer Master resolve_delivery_address()
-    client_name_str = ""
-    if delivery_addr:
-        client_name_str = delivery_addr.get("name", "")
-    elif customer:
-        client_name_str = getattr(customer, "bill_to_name", "") or ""
-    if client_name_str:
-        meta_rows.append(["Consignee:", client_name_str])
-    if prof_ref:
-        meta_rows.append(["Reference (PROF):", prof_ref])
-    meta_rows.append(["Batch:", batch_id])
-    meta_rows.append(["Date:", datetime.utcnow().strftime("%Y-%m-%d")])
-
-    if meta_rows:
-        mt = Table(meta_rows, colWidths=[45*mm, None])
-        mt.setStyle(TableStyle([
-            ("FONTNAME",  (0, 0), (0, -1), font_bold),
-            ("FONTNAME",  (1, 0), (1, -1), font),
-            ("FONTSIZE",  (0, 0), (-1, -1), 9),
-            ("TOPPADDING",    (0, 0), (-1, -1), 2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ]))
-        story.append(mt)
-
-    story.append(Spacer(1, 6*mm))
-
-    # ── Lines ─────────────────────────────────────────────────────────────────
-    packing_lines = _load_packing_lines(batch_id, storage_root)
-    lines_source = "packing_lines"
-
-    if not packing_lines and draft and draft.editable_lines_json:
-        try:
-            raw = json.loads(draft.editable_lines_json or "[]") or []
-            packing_lines = [
-                {
-                    "product_code": ln.get("product_code", ""),
-                    "design_no":    ln.get("design_no", ""),
-                    "item_type":    ln.get("design_no", ln.get("product_code", "")),
-                    "quantity":     ln.get("qty", 0),
-                    "gross_weight": 0.0,
-                    "net_weight":   0.0,
-                }
-                for ln in raw
-            ]
-            lines_source = "proforma_draft"
-        except Exception:
-            pass
-
-    # Weights: gross/net in GRAMS (packing sheet), diamond/color in CARATS.
-    # Net and stone-weight columns were previously omitted from this PDF even
-    # though the data exists (2026-07-16 repair); a missing value renders "—",
-    # never fabricated.
-    headers = ["#", "Product Code / Design", "Type", "Qty",
-               "Gross Wt (g)", "Net Wt (g)", "Dia Wt (ct)", "Col Wt (ct)"]
-    data = [headers]
-    total_qty = 0
-    total_gw = 0.0
-    total_nw = 0.0
-    for i, ln in enumerate(packing_lines, 1):
-        pc    = (ln.get("product_code") or ln.get("design_no") or "")[:30]
-        itype = (ln.get("item_type") or "")[:20]
-        qty   = int(ln.get("quantity") or 0)
-        gw    = float(ln.get("gross_weight") or 0)
-        nw    = float(ln.get("net_weight") or 0)
-        dia   = float(ln.get("diamond_weight") or 0)
-        col   = float(ln.get("color_weight") or 0)
-        total_qty += qty
-        total_gw  += gw
-        total_nw  += nw
-        data.append([str(i), pc, itype, str(qty),
-                     f"{gw:.1f}" if gw else "—",
-                     f"{nw:.1f}" if nw else "—",
-                     f"{dia:.2f}" if dia else "—",
-                     f"{col:.2f}" if col else "—"])
-
-    if len(data) > 1:
-        data.append(["", "TOTAL", "", str(total_qty),
-                     f"{total_gw:.1f}" if total_gw else "—",
-                     f"{total_nw:.1f}" if total_nw else "—",
-                     "", ""])
-
-    col_ws = [8*mm, 55*mm, 24*mm, 12*mm, 20*mm, 20*mm, 18*mm, 18*mm]
-    tbl = Table(data, colWidths=col_ws, repeatRows=1)
-    tbl.setStyle(TableStyle([
-        ("FONTNAME",      (0, 0), (-1, 0),  font_bold),
-        ("FONTNAME",      (0, 1), (-1, -1), font),
-        ("FONTSIZE",      (0, 0), (-1, -1), 8),
-        ("BACKGROUND",    (0, 0), (-1, 0),  colors.HexColor("#0B3D2E")),
-        ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
-        ("ROWBACKGROUNDS",(0, 1), (-1, -2), [colors.white, colors.HexColor("#F5F3EE")]),
-        ("FONTNAME",      (0, -1),(-1, -1), font_bold),
-        ("TOPPADDING",    (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("GRID",          (0, 0), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
-    ]))
-    story.append(tbl)
-
-    if lines_source == "proforma_draft":
-        story.append(Spacer(1, 3*mm))
-        story.append(Paragraph(
-            "Note: weights sourced from proforma draft (packing data unavailable).",
-            SML,
-        ))
-
-    story.append(Spacer(1, 5*mm))
-    story.append(Paragraph(
-        f"Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC | "
-        "ESTRELLA JEWELS Sp. z o. o. Spółka Komandytowa", SML,
-    ))
-
-    doc.build(story)
-    return buf.getvalue()
+    return render_packing_list_pdf_from_authorities(
+        batch_id=batch_id,
+        storage_root=storage_root,
+        company=company,
+        customer=customer,
+        draft=draft,
+        delivery_addr=delivery_addr,
+    )
 
 
 def render_cn23_pdf(

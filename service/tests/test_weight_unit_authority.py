@@ -102,8 +102,12 @@ class TestPackageWeightComposition:
 
     def test_doc_package_labels_line_weights_as_grams(self):
         """Packing list + CN23 line columns declare grams explicitly."""
+        # Packing list PDF moved to commercial_packing_list (canonical authority);
+        # CN23 remains in doc_package.
+        cpl = DOC_PKG.parent.parent / "commercial_packing_list.py"
+        cpl_src = cpl.read_text(encoding="utf-8")
         src = DOC_PKG.read_text(encoding="utf-8")
-        assert "Gross Wt (g)" in src                  # packing list header
+        assert "Gross Wt (g)" in cpl_src              # commercial packing list header
         assert '"Wt (g)"' in src                      # CN23 contents header
 
 
