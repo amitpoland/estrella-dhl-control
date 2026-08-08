@@ -369,10 +369,11 @@
   function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch, onOpenMenu, title }) {
     return (
       <header className="atlas-topbar" data-testid="topbar" style={{
-        height: 56, background: 'var(--card)',
+        height: 56, maxHeight: 56, background: 'var(--card)',
         borderBottom: '1px solid var(--border)',
         display: 'flex', alignItems: 'center',
-        padding: '0 24px', gap: 12, flexShrink: 0, minWidth: 0,
+        padding: '0 16px', gap: 10, flexShrink: 0, minWidth: 0,
+        overflow: 'hidden', position: 'relative', zIndex: 20, boxSizing: 'border-box',
       }}>
         {onOpenMenu && (
           <button
@@ -383,42 +384,45 @@
             aria-label="Open navigation menu"
             style={{
               display: 'none', alignItems: 'center', justifyContent: 'center',
-              width: 40, height: 40, flexShrink: 0, marginLeft: -6,
+              width: 44, height: 44, flexShrink: 0, marginLeft: -4,
               background: 'var(--bg-subtle)', border: '1px solid var(--border)',
               borderRadius: 8, cursor: 'pointer', color: 'var(--text)',
               fontSize: 20, lineHeight: 1, fontFamily: 'inherit',
             }}
           >☰</button>
         )}
-        <button onClick={onOpenSearch || undefined} style={{
-          flex: 1, maxWidth: 360, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10,
+        <button onClick={onOpenSearch || undefined} className="topbar-search" style={{
+          flex: '1 1 auto', maxWidth: 360, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8,
           background: 'var(--bg-subtle)', border: '1px solid var(--border)',
           borderRadius: 6, padding: '7px 12px', cursor: 'pointer',
-          color: 'var(--text-3)', fontSize: 12, fontFamily: 'inherit',
+          color: 'var(--text-3)', fontSize: 12, fontFamily: 'inherit', overflow: 'hidden',
         }} data-testid="topbar-search">
-          <span style={{ fontSize: 13 }}>⌕</span>
+          <span style={{ fontSize: 13, flexShrink: 0 }}>⌕</span>
           <span className="topbar-search-label" style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Search AWB, PI, INV, client…</span>
-          <span className="topbar-search-kbd" style={{ fontFamily: 'monospace', fontSize: 9.5, padding: '1px 5px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 3, fontWeight: 600 }}>⌘K</span>
+          <span className="topbar-search-kbd" style={{ fontFamily: 'monospace', fontSize: 9.5, padding: '1px 5px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 3, fontWeight: 600, flexShrink: 0 }}>⌘K</span>
         </button>
-        <div style={{ flex: 1, minWidth: 0 }} />
-        <button onClick={onToggleDark || undefined} title={isDark ? 'Light mode' : 'Dark mode'} style={{
-          background: 'var(--bg-subtle)', border: '1px solid var(--border)',
-          borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
-          fontSize: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
-        }} data-testid="topbar-theme-toggle">{isDark ? '☀' : '☾'}</button>
-        {onNewShipment && (
-          <button onClick={onNewShipment} className="topbar-new-shipment" style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: 'var(--accent)', color: 'var(--accent-text)',
-            border: 'none', borderRadius: 6, padding: '7px 14px',
-            fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0,
-          }} data-testid="topbar-new-shipment">
-            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
-            <span className="topbar-new-shipment-label">New Shipment</span>
-          </button>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent), var(--accent-light))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: 'var(--accent-text)' }}>A</div>
+        <div className="topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' }}>
+          <button onClick={onToggleDark || undefined} title={isDark ? 'Light mode' : 'Dark mode'} className="topbar-theme" style={{
+            background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+            borderRadius: 6, cursor: 'pointer',
+            fontSize: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0, width: 36, height: 36,
+          }} data-testid="topbar-theme-toggle">{isDark ? '☀' : '☾'}</button>
+          {onNewShipment && (
+            <button onClick={onNewShipment} className="topbar-new-shipment" aria-label="New Shipment" style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              background: 'var(--accent)', color: 'var(--accent-text)',
+              border: 'none', borderRadius: 6, padding: '7px 14px',
+              fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0,
+              minWidth: 36, height: 36, boxSizing: 'border-box',
+            }} data-testid="topbar-new-shipment">
+              <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+              <span className="topbar-new-shipment-label">New Shipment</span>
+            </button>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent), var(--accent-light))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: 'var(--accent-text)' }}>A</div>
+          </div>
         </div>
       </header>
     );
@@ -636,10 +640,13 @@
       @media (max-width: 900px) {
         .sidebar-desktop { display: none !important; }
         .mobile-hamburger { display: flex !important; }
-        .atlas-topbar { padding: 0 12px !important; gap: 8px !important; }
+        .atlas-topbar { padding: 0 10px !important; gap: 8px !important; }
         .atlas-page-header { padding: 16px 16px 0 !important; }
-        .topbar-search-kbd, .topbar-new-shipment-label { display: none !important; }
-        .topbar-new-shipment { padding: 7px 10px !important; }
+        .topbar-search-kbd, .topbar-new-shipment-label, .topbar-notify { display: none !important; }
+        .topbar-new-shipment { padding: 0 !important; width: 36px !important; }
+      }
+      @media (max-width: 600px) {
+        .topbar-theme { display: none !important; }
       }
     `;
     document.head.appendChild(tag);
@@ -701,14 +708,14 @@
           </div>
         )}
         {isNarrow && mobileOpen && (
-          <div data-testid="mobile-nav-drawer" style={{ position: 'fixed', inset: 0, zIndex: 300, display: 'flex' }}>
+          <div data-testid="mobile-nav-drawer" style={{ position: 'fixed', inset: 0, zIndex: 1100, display: 'flex' }}>
             <div style={{
               width: 'min(280px, 86vw)', height: '100%', overflowY: 'auto', flexShrink: 0,
               background: 'var(--sidebar-bg)', boxShadow: '8px 0 24px var(--shadow-heavy)',
             }}>
               <Sidebar active={activeNav} collapsed={false} onToggle={() => setMobileOpen(false)} onNav={handleNav} />
             </div>
-            <div data-testid="mobile-nav-backdrop" style={{ flex: 1, background: 'var(--overlay)' }} onClick={() => setMobileOpen(false)} />
+            <div data-testid="mobile-nav-backdrop" style={{ flex: 1, minWidth: 0, background: 'var(--overlay)' }} onClick={() => setMobileOpen(false)} />
           </div>
         )}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>

@@ -108,12 +108,22 @@ window.EstrellaShared = {
   @keyframes spin { to { transform: rotate(360deg); } }
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent, #c9a456); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
 
+  /* Z-index scale — drawer must sit above sticky MOCK banner */
+  :root {
+    --z-ops: 10;
+    --z-topbar: 20;
+    --z-mock-banner: 30;
+    --z-drawer: 1100;
+  }
+
   /* Shell: desktop sidebar visible by default; hamburger hidden until tablet */
   .sidebar-desktop { display: flex; flex-shrink: 0; }
   .mobile-hamburger { display: none !important; }
   .mobile-nav-drawer { display: none; }
+  .atlas-chrome { flex-shrink: 0; position: relative; z-index: var(--z-topbar); background: var(--card); }
   .atlas-page-header { padding: 24px 32px 0; }
   .atlas-content-pad { padding: 20px 32px 40px; }
+  .atlas-main-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
   .quick-flow-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
   .kpi-strip-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
   .kanban-board {
@@ -124,6 +134,8 @@ window.EstrellaShared = {
     -webkit-overflow-scrolling: touch;
     padding-bottom: 4px;
   }
+  .ops-status-strip { z-index: var(--z-ops); }
+  .mock-banner { z-index: var(--z-mock-banner) !important; }
 
   /* ── Responsive — tablet (≤1100px) */
   @media (max-width: 1100px) {
@@ -141,14 +153,19 @@ window.EstrellaShared = {
     .sidebar-desktop { display: none !important; }
     .mobile-hamburger { display: flex !important; }
     .mobile-nav-drawer { display: flex !important; }
-    .atlas-topbar { padding: 0 12px !important; gap: 8px !important; }
+    .atlas-topbar { padding: 0 10px !important; gap: 8px !important; }
     .atlas-page-header { padding: 16px 16px 0 !important; }
     .atlas-content-pad { padding: 14px 16px 32px !important; }
     .topbar-user-meta,
     .topbar-user-caret,
-    .topbar-search-kbd { display: none !important; }
-    .topbar-new-shipment { padding: 7px 10px !important; }
+    .topbar-search-kbd,
+    .topbar-notify { display: none !important; }
+    .topbar-new-shipment { padding: 0 !important; width: 36px !important; }
     .topbar-new-shipment-label { display: none !important; }
+    .topbar-actions { gap: 6px !important; }
+    .ops-status-strip { padding: 6px 12px !important; gap: 8px !important; }
+    .ops-status-polled { display: none !important; }
+    .ops-status-health { font-size: 10.5px !important; }
     .quick-flow-grid { grid-template-columns: repeat(2, 1fr) !important; }
     .kpi-strip-grid { grid-template-columns: repeat(2, 1fr) !important; }
     table { display: block !important; overflow-x: auto !important; white-space: nowrap !important; -webkit-overflow-scrolling: touch; }
@@ -161,8 +178,11 @@ window.EstrellaShared = {
     .quick-flow-grid { grid-template-columns: 1fr !important; }
     .kpi-strip-grid { grid-template-columns: 1fr 1fr !important; }
     .atlas-page-header h1 { font-size: 20px !important; }
-    .topbar-notify { display: none !important; }
+    .topbar-theme { display: none !important; }
+    .topbar-search { max-width: none !important; padding: 7px 10px !important; }
     .topbar-search-label { font-size: 11px !important; }
+    .ops-status-meta { display: none !important; }
+    .mock-banner { font-size: 11px !important; padding: 8px 12px !important; }
     input[placeholder*="Search"] { max-width: 140px !important; }
   }
 
@@ -385,9 +405,12 @@ function App() {
   };
 
   // Parse /v2/<page>[?query] → { page, search }
+  // Treat bare /v2/, /v2/index.html, and empty slug as Dashboard (shell entry).
   function parseV2Location() {
-    const raw = window.location.pathname.replace(/^\/v2\/?/, '') || 'dashboard';
-    const slug = raw.split('/')[0] || 'dashboard';
+    let raw = window.location.pathname.replace(/^\/v2\/?/, '') || 'dashboard';
+    raw = raw.replace(/\/+$/, '');
+    let slug = raw.split('/')[0] || 'dashboard';
+    if (!slug || slug === 'index.html') slug = 'dashboard';
     const target = ROUTE_REDIRECTS[slug] || slug;
     return { page: target, search: window.location.search };
   }
@@ -599,7 +622,7 @@ function App() {
         <div
           className="mobile-nav-drawer"
           data-testid="mobile-nav-drawer"
-          style={{ position: 'fixed', inset: 0, zIndex: 300, display: 'flex' }}
+          style={{ position: 'fixed', inset: 0, zIndex: 1100, display: 'flex' }}
         >
           <div
             style={{
@@ -612,7 +635,7 @@ function App() {
           </div>
           <div
             data-testid="mobile-nav-backdrop"
-            style={{ flex: 1, background: 'var(--overlay)' }}
+            style={{ flex: 1, minWidth: 0, background: 'var(--overlay)' }}
             onClick={() => setMobileSidebarOpen(false)}
           />
         </div>
@@ -620,7 +643,7 @@ function App() {
 
       {/* Main */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        <div style={{ position: 'relative', flexShrink: 0 }}>
+        <div className="atlas-chrome" data-testid="atlas-chrome">
           <TopBar
             onNewShipment={() => setShowNewShipment(true)}
             onToggleDark={() => setIsDark(d => !d)}
@@ -631,7 +654,7 @@ function App() {
           <OperationalStatusStrip />
         </div>
 
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: '#F2F0EB' }}>
+        <div className="atlas-main-scroll" style={{ background: 'var(--bg)' }}>
 
           {/* MOCK badge — shown for every un-wired page (Sprint 1, Phase 3) */}
           {!viewerDoc && <MockBanner page={page} />}

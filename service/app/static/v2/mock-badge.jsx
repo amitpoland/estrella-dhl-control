@@ -79,33 +79,42 @@ function MockBanner({ page }) {
   return (
     <div
       data-testid="mock-banner"
+      className="mock-banner"
       style={{
+        // Stay below mobile nav drawer (z-index 1100) — sticky only within page scroll
         position: 'sticky',
         top: 0,
-        zIndex: 900,
-        background: '#7c3aed',
-        color: '#fff',
-        padding: '10px 20px',
+        zIndex: 30,
+        background: 'var(--badge-purple-bg)',
+        color: 'var(--badge-purple-text)',
+        padding: '10px 16px',
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         gap: 10,
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: 600,
         letterSpacing: '0.02em',
-        borderBottom: '2px solid #6d28d9',
+        borderBottom: '1px solid var(--badge-purple-border)',
+        flexShrink: 0,
+        flexWrap: 'wrap',
+        lineHeight: 1.45,
       }}
     >
       <span style={{
-        background: '#fff',
-        color: '#7c3aed',
+        background: 'var(--card)',
+        color: 'var(--badge-purple-text)',
         borderRadius: 4,
-        padding: '1px 8px',
+        padding: '2px 8px',
         fontSize: 10.5,
         fontWeight: 800,
         letterSpacing: '0.1em',
         textTransform: 'uppercase',
+        flexShrink: 0,
+        border: '1px solid var(--badge-purple-border)',
       }}>MOCK</span>
-      This page is not yet wired to the live backend — data shown is design-time placeholder only.
+      <span style={{ flex: '1 1 180px', minWidth: 0 }}>
+        This page is not yet wired to the live backend — data shown is design-time placeholder only.
+      </span>
     </div>
   );
 }

@@ -61,3 +61,32 @@ def test_appshell_unmounts_sidebar_on_narrow():
     # Wrapper (not the aside) owns sidebar-desktop so the drawer copy stays visible
     assert 'data-testid="sidebar-desktop"' in src
     assert 'aside data-testid="sidebar" className="sidebar-desktop"' not in src
+
+
+def test_topbar_clips_overflow_so_it_cannot_paint_over_ops_strip():
+    src = _COMPONENTS.read_text(encoding="utf-8", errors="replace")
+    assert "overflow: 'hidden'" in src or 'overflow: "hidden"' in src
+    assert "maxHeight: 56" in src
+    assert "topbar-actions" in src
+
+
+def test_mock_banner_zindex_below_drawer():
+    banner = (_V2 / "mock-badge.jsx").read_text(encoding="utf-8", errors="replace")
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "zIndex: 30" in banner
+    assert "zIndex: 900" not in banner
+    assert "zIndex: 1100" in html
+    assert "--z-drawer: 1100" in html
+
+
+def test_ops_status_strip_is_nonwrapping_scroll_row():
+    src = (_V2 / "wireframe-update.jsx").read_text(encoding="utf-8", errors="replace")
+    assert 'className="ops-status-strip"' in src
+    assert "ops-status-items" in src
+    assert "flexWrap: 'nowrap'" in src
+
+
+def test_index_html_slug_resolves_to_dashboard():
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "slug === 'index.html'" in html
+    assert "slug = 'dashboard'" in html
