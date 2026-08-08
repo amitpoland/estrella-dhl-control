@@ -1,17 +1,17 @@
 """
 dhl_logistics_projector.py — Read-only DHL Logistics Control Tower projection.
 
-PURE READ ONLY. No writes. No workflow mutation. No second tracker.
+PURE READ ONLY. No writes. No workflow mutation. No second tracker / live MyDHL poll.
 
 Aggregates existing authorities into one direction-aware logistics shape:
 
-  Inbound  → batch audit timeline + dhl_readiness + tracking (inbound)
-  Outbound → carrier_shipments + tracking_db/cache + delivery_confirmation_*
+  Inbound  → batch audit timeline + tracking_cache + tracking_db (inbound)
+  Outbound → carrier_shipments + tracking_cache (canonical, same as EJOutboundTrackingCard)
+             + delivery_confirmation_*
 
-Does NOT persist duplicate business truth. Does NOT change
-dhl_orchestrator.is_active_shipment (follow-up automation stays on its own
-predicate). Control Tower "Active" uses logistics terminal rules so customs/PZ
-completed residue does not inflate Active counts.
+Transport / customs / business-workflow are separate dimensions.
+Main Status = transport_status. Booking state ``complete`` ≠ Delivered.
+Customs/PZ complete does NOT remove an Active physical shipment.
 
 Timezone: UTC internally; operator-facing display fields use Europe/Warsaw.
 """
@@ -228,28 +228,6 @@ def _is_customs_or_pz_complete(audit: Dict[str, Any], timeline: List[Dict[str, A
     return False
 
 
-def classify_inbound(audit: Dict[str, Any]) -> str:
-    """Return logistics classification for an inbound shipment.
-
-    Values: active | delivered | completed | excluded | unknown
-    """
-    awb = _awb_of(audit)
-    if not awb:
-        return "unknown"
-    if awb in _EXCLUDED_AWBS:
-        return "excluded"
-    timeline = audit.get("timeline") or []
-    if not isinstance(timeline, list):
-        timeline = []
-    if _is_physically_delivered(audit, timeline):
-        return "delivered"
-    if _is_customs_or_pz_complete(audit, timeline):
-        return "completed"
-    if not (audit.get("clearance_decision") or audit.get("tracking") or timeline):
-        return "unknown"
-    return "active"
-
-
 def _build_inbound_milestones(
     timeline: List[Dict[str, Any]],
     tracking_events: List[Dict[str, Any]],
@@ -347,149 +325,424 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
         timeline = []
     batch_id = str(audit.get("batch_id") or "").strip()
 
-    tracking_events: List[Dict[str, Any]] = []
-    try:
-        from . import tracking_db as tdb
-        if batch_id:
-            tracking_events = tdb.get_events_for_batch(batch_id, direction="inbound") or []
-    except Exception as exc:
-        log.debug("logistics_projector: tracking_db inbound read failed: %s", exc)
-
+    tracking = _inbound_tracking_snapshot(awb, batch_id, audit)
+    tracking_events = list(tracking.get("events") or [])
     for ev in (audit.get("tracking_events") or []):
         if isinstance(ev, dict):
             tracking_events.append(ev)
 
-    classification = classify_inbound(audit)
+    classification = classify_inbound(audit, tracking)
+    customs_complete = _is_customs_or_pz_complete(audit, timeline)
     milestones = _build_inbound_milestones(timeline, tracking_events)
+    # Inject cache-derived Poland arrival / delivered into milestones if missing
+    if tracking.get("arrived_pl_at") and not any(m["stage_id"] == "arrived_pl" for m in milestones):
+        milestones.append({
+            "stage_id": "arrived_pl",
+            "label": "Arrived Poland",
+            "timestamp_utc": tracking["arrived_pl_at"].isoformat(),
+            "timestamp_warsaw": _to_warsaw_iso(tracking["arrived_pl_at"]),
+            "duration_from_previous_hours": None,
+            "duration_from_previous_human": None,
+            "authority": tracking.get("source") or "tracking_cache",
+            "location": tracking.get("last_location"),
+        })
+        milestones.sort(key=lambda m: m.get("timestamp_utc") or "")
+    if tracking.get("delivered_at") and not any(m["stage_id"] == "delivered" for m in milestones):
+        milestones.append({
+            "stage_id": "delivered",
+            "label": "Delivered",
+            "timestamp_utc": tracking["delivered_at"].isoformat(),
+            "timestamp_warsaw": _to_warsaw_iso(tracking["delivered_at"]),
+            "duration_from_previous_hours": None,
+            "duration_from_previous_human": None,
+            "authority": tracking.get("source") or "tracking_cache",
+            "location": tracking.get("last_location"),
+        })
+        milestones.sort(key=lambda m: m.get("timestamp_utc") or "")
+
     stage_id, stage_started = _current_stage_from_milestones(milestones, classification)
 
     created_at = _first_timeline_ts(timeline, ("batch_created", "awb_uploaded"))
     if created_at is None:
         created_at = _parse_iso(audit.get("created_at"))
 
-    delivered_at = None
-    for m in milestones:
-        if m["stage_id"] == "delivered":
-            delivered_at = _parse_iso(m.get("timestamp_utc"))
-            break
+    delivered_at = tracking.get("delivered_at")
+    if delivered_at is None:
+        for m in milestones:
+            if m["stage_id"] == "delivered":
+                delivered_at = _parse_iso(m.get("timestamp_utc"))
+                break
     if delivered_at is None and classification == "delivered":
         delivered_at = _first_timeline_ts(timeline, tuple(_DELIVERED_TIMELINE_EVENTS))
 
-    total_end = delivered_at or now
-    total_hours = _hours_between(created_at, total_end)
-    stage_age = _hours_between(stage_started, now) if classification == "active" else None
+    pickup_at = tracking.get("picked_up_at")
+    # Total transit: preferential pickup → delivered; freeze at delivery; — if delivered w/o ts
+    booking_age_hours = _hours_between(created_at, delivered_at or now)
+    if classification == "delivered":
+        if delivered_at and (pickup_at or created_at):
+            total_hours = _hours_between(pickup_at or created_at, delivered_at)
+            # Reject inverted chronology
+            if total_hours is None:
+                total_hours = None
+        else:
+            total_hours = None  # delivered without trustworthy end/start → —
+        stage_age = None
+    else:
+        start = pickup_at  # do not silently use booking as pickup for transit
+        total_hours = _hours_between(start, now) if start else None
+        stage_age = _hours_between(stage_started, now) if stage_started else (
+            _hours_between(created_at, now) if created_at else None
+        )
 
-    tr = audit.get("tracking") if isinstance(audit.get("tracking"), dict) else {}
-    current_status = (
-        (tr or {}).get("status")
-        or audit.get("clearance_status")
-        or classification
+    booking_to_delivery = _hours_between(created_at, delivered_at) if delivered_at else None
+
+    has_movement = _has_physical_movement(tracking)
+    transport_status = _transport_status_label(
+        tracking.get("status"), has_awb=bool(awb), has_movement=has_movement
     )
-    current_location = (tr or {}).get("last_location") or (tr or {}).get("location")
+    if classification == "delivered":
+        transport_status = "Delivered"
+    elif classification == "exception":
+        transport_status = "Exception"
 
     try:
         from .dhl_readiness import compute_dhl_readiness
         dhl_status = compute_dhl_readiness(audit).get("dhl_status")
     except Exception:
         dhl_status = None
+    customs_status = dhl_status or audit.get("clearance_status") or (
+        "customs_complete" if customs_complete else "customs_open"
+    )
 
-    label_map = {sid: lab for sid, lab, _ in _INBOUND_MILESTONES}
+    conf = _delivery_confirmation_state(awb)
+    business_workflow_status = None
+    if classification == "delivered":
+        if conf.get("customer_response") == "received":
+            business_workflow_status = "customer_confirmed"
+        elif conf.get("estrella_delivery_confirmation"):
+            business_workflow_status = "confirmation_sent"
+        else:
+            business_workflow_status = "delivered"
+
     attention_reasons: List[str] = []
-    exc = _inbound_exception(audit, timeline)
+    data_quality: List[str] = []
+    exc = _inbound_exception(audit, timeline) or tracking.get("exception")
     if exc:
         attention_reasons.append(f"exception:{exc}")
-    if classification == "active" and stage_age is not None and stage_age > 72:
-        attention_reasons.append("stage_age_above_72h")
-    if classification == "active" and dhl_status in ("dhl_replied", "agency_forwarded"):
-        attention_reasons.append(f"waiting:{dhl_status}")
+    if classification == "active" and not has_movement and created_at:
+        age = _hours_between(created_at, now)
+        if age is not None and age >= NO_MOVEMENT_ATTENTION_HOURS:
+            attention_reasons.append("no_carrier_movement_12h")
+    last_blob = " ".join(
+        str(x or "") for x in (tracking.get("status"), tracking.get("last_event"))
+    ).upper()
+    if any(k in last_blob for k in ("READY FOR COLLECTION", "MISSED", "ATTEMPTED", "COLLECTION")):
+        attention_reasons.append("missed_delivery_or_ready_for_collection")
+    if classification == "delivered" and delivered_at is None:
+        data_quality.append("delivered_without_timestamp")
+    if delivered_at and created_at and delivered_at < created_at:
+        data_quality.append("invalid_timestamp_order_delivery_before_created")
+        total_hours = None
+        booking_to_delivery = None
+    if not tracking.get("events") and not tracking.get("status"):
+        data_quality.append("tracking_evidence_missing")
+    party = _party_inbound(audit)
+    if not party:
+        data_quality.append("missing_party_identity")
+
+    # Stage age follows transport evidence, not the latest customs milestone.
+    transport_stage_started = None
+    if classification == "active":
+        if tracking_events:
+            last_ev = tracking_events[-1]
+            transport_stage_started = _parse_iso(
+                last_ev.get("event_time") or last_ev.get("timestamp") or last_ev.get("date")
+            )
+        if transport_stage_started is None:
+            transport_stage_started = pickup_at or tracking.get("arrived_pl_at") or created_at
+        stage_age = _hours_between(transport_stage_started, now) if transport_stage_started else stage_age
+        stage_started = transport_stage_started or stage_started
 
     return {
         "direction": "inbound",
         "classification": classification,
+        "transport_status": transport_status,
+        "customs_status": customs_status,
+        "customs_complete": customs_complete,
+        "business_workflow_status": business_workflow_status,
         "batch_id": batch_id or None,
         "awb": awb,
-        "party": _party_inbound(audit),
+        "party": party,
         "party_role": "supplier",
         "carrier": "DHL",
         "created_at_utc": created_at.isoformat() if created_at else None,
         "created_at_warsaw": _to_warsaw_iso(created_at),
-        "pickup_at_utc": None,
-        "pickup_at_warsaw": None,
+        "pickup_at_utc": pickup_at.isoformat() if isinstance(pickup_at, datetime) else None,
+        "pickup_at_warsaw": _to_warsaw_iso(pickup_at) if isinstance(pickup_at, datetime) else None,
         "expected_delivery_utc": None,
         "expected_delivery_warsaw": None,
-        "current_status": current_status,
-        "current_location": current_location,
-        "current_stage": stage_id,
-        "current_stage_label": label_map.get(stage_id, stage_id),
-        "stage_started_at_utc": stage_started.isoformat() if stage_started else None,
-        "stage_started_at_warsaw": _to_warsaw_iso(stage_started),
+        "current_status": transport_status,
+        "current_location": tracking.get("last_location"),
+        "current_stage": transport_status.lower().replace(" ", "_"),
+        "current_stage_label": transport_status,
+        "stage_started_at_utc": stage_started.isoformat() if stage_started and classification == "active" else None,
+        "stage_started_at_warsaw": _to_warsaw_iso(stage_started) if classification == "active" else None,
         "stage_age_hours": stage_age,
         "stage_age_human": _fmt_duration(stage_age),
         "total_elapsed_hours": total_hours,
         "total_elapsed_human": _fmt_duration(total_hours),
-        "delivered_at_utc": delivered_at.isoformat() if delivered_at else None,
-        "delivered_at_warsaw": _to_warsaw_iso(delivered_at),
+        "booking_age_hours": booking_age_hours,
+        "booking_age_human": _fmt_duration(booking_age_hours),
+        "booking_to_delivery_hours": booking_to_delivery,
+        "booking_to_delivery_human": _fmt_duration(booking_to_delivery),
+        "pickup_is_authoritative": pickup_at is not None,
+        "delivered_at_utc": delivered_at.isoformat() if isinstance(delivered_at, datetime) else None,
+        "delivered_at_warsaw": _to_warsaw_iso(delivered_at) if isinstance(delivered_at, datetime) else None,
         "received_by": None,
         "exception": exc,
         "attention_reasons": attention_reasons,
-        "needs_attention": bool(attention_reasons) and classification == "active",
+        "needs_attention": bool(attention_reasons) and classification in ("active", "exception"),
         "customs_pipeline_status": dhl_status,
         "clearance_status": audit.get("clearance_status"),
         "milestones": milestones,
-        "latest_event": (milestones[-1]["label"] if milestones else None),
+        "latest_event": (milestones[-1]["label"] if milestones else tracking.get("last_event")),
         "latest_event_at_warsaw": (milestones[-1].get("timestamp_warsaw") if milestones else None),
         "dhl_email_requested": None,
         "dhl_sms_requested": None,
-        "estrella_delivery_confirmation": None,
-        "customer_response": None,
+        "estrella_delivery_confirmation": conf.get("estrella_delivery_confirmation"),
+        "customer_response": conf.get("customer_response"),
         "destination_country": "PL",
         "destination_city": None,
         "draft_id": None,
         "orch_active": None,
         "data_gaps": _inbound_gaps(audit, milestones),
+        "data_quality": data_quality,
+        "tracking_source": tracking.get("source"),
     }
 
 
 def _outbound_tracking_snapshot(awb: str, batch_id: str) -> Dict[str, Any]:
-    """Best-effort read of tracking without live DHL poll (cache / tracking_db only)."""
+    """Best-effort read of tracking WITHOUT live MyDHL poll.
+
+    Authority order (same truth EJOutboundTrackingCard uses when cache is warm):
+      1. per-batch tracking_cache.json via select_cached_tracking_record
+      2. tracking_db events for the AWB (any direction — writers often omit outbound)
+    Never call get_tracking_status(..., refresh=True) from this projector.
+    """
     out: Dict[str, Any] = {
         "status": None,
+        "status_label": None,
         "last_event": None,
         "last_location": None,
         "events": [],
         "delivered_at": None,
         "picked_up_at": None,
+        "departed_at": None,
         "expected_delivery": None,
         "received_by": None,
         "exception": None,
+        "source": None,
     }
+
+    # --- 1) Canonical cached snapshot (primary for outbound delivery) ---
+    if batch_id:
+        try:
+            from .tracking_service import (
+                TERMINAL_STATUSES,
+                _load_cache,
+                select_cached_tracking_record,
+            )
+            cache_dir = _storage_root() / "outputs" / batch_id
+            if (cache_dir / "tracking_cache.json").exists():
+                rec = select_cached_tracking_record(_load_cache(cache_dir), awb)
+                if rec:
+                    out["source"] = "tracking_cache"
+                    out["status"] = rec.get("status")
+                    out["status_label"] = rec.get("status_label")
+                    out["last_location"] = (
+                        rec.get("last_location")
+                        or rec.get("location")
+                        or (rec.get("events") or [{}])[-1].get("location")
+                        if rec.get("events") else None
+                    )
+                    cache_events = list(rec.get("events") or [])
+                    out["events"] = cache_events
+                    # Derive pickup / delivered / exception from descriptions + status
+                    for ev in cache_events:
+                        if not isinstance(ev, dict):
+                            continue
+                        ts = _parse_iso(ev.get("timestamp") or ev.get("event_time") or ev.get("date"))
+                        blob = " ".join(
+                            str(ev.get(k) or "") for k in ("description", "status", "statusCode")
+                        ).lower()
+                        if ts and ("picked up" in blob or "pickup" in blob) and out["picked_up_at"] is None:
+                            out["picked_up_at"] = ts
+                        if ts and "departed" in blob and out["departed_at"] is None:
+                            out["departed_at"] = ts
+                        if ts and "delivered" in blob:
+                            out["delivered_at"] = ts
+                        if "exception" in blob or "failure" in blob or "on hold" in blob:
+                            out["exception"] = ev.get("description") or blob
+                        if out["last_event"] is None or ts:
+                            out["last_event"] = ev.get("description") or ev.get("status")
+                    if out["status"] in TERMINAL_STATUSES or str(out["status"] or "").lower() == "delivered":
+                        if out["delivered_at"] is None and cache_events:
+                            # last event timestamp as delivered when status says delivered
+                            last = cache_events[-1]
+                            out["delivered_at"] = _parse_iso(
+                                last.get("timestamp") or last.get("event_time") or last.get("date")
+                            )
+                        out["status"] = "delivered"
+                    # ETA — only if cache actually carries it (do not invent)
+                    for key in ("estimated_delivery", "estimatedDeliveryDate", "expected_delivery"):
+                        if rec.get(key):
+                            out["expected_delivery"] = _parse_iso(rec.get(key))
+                            break
+        except Exception as exc:
+            log.debug("logistics_projector: tracking_cache read failed: %s", exc)
+
+    # --- 2) tracking_db secondary (do not force direction=outbound) ---
     try:
         from . import tracking_db as tdb
-        events = tdb.get_events_for_awb(awb, direction="outbound") or []
-        if not events and batch_id:
-            events = tdb.get_events_for_batch(batch_id, direction="outbound") or []
-        out["events"] = events
+        events = tdb.get_events_for_awb(awb) or []
+        # Prefer AWB-matched events; ignore batch-wide inbound import AWB pollution
         if events:
-            last = events[-1]
-            out["status"] = last.get("status") or last.get("normalized_stage")
-            out["last_event"] = last.get("description") or last.get("stage")
-            out["last_location"] = last.get("location")
+            if not out["events"]:
+                out["events"] = events
+                out["source"] = out["source"] or "tracking_db"
             for ev in events:
+                if not isinstance(ev, dict):
+                    continue
                 stage = str(ev.get("normalized_stage") or ev.get("stage") or "").upper()
                 ts = _parse_iso(ev.get("event_time") or ev.get("timestamp"))
                 if stage in ("PICKED_UP", "SHIPMENT_PICKED_UP") and out["picked_up_at"] is None:
                     out["picked_up_at"] = ts
+                if stage in ("DEPARTED_ORIGIN",) and out["departed_at"] is None:
+                    out["departed_at"] = ts
                 if stage in ("DELIVERED", "CLOSED"):
-                    out["delivered_at"] = ts
+                    out["delivered_at"] = ts or out["delivered_at"]
                     out["status"] = "delivered"
                 if stage == "EXCEPTION":
                     out["exception"] = ev.get("description") or "exception"
+                if out["last_event"] is None:
+                    out["last_event"] = ev.get("description") or ev.get("stage")
+                    out["last_location"] = out["last_location"] or ev.get("location")
+                    out["status"] = out["status"] or ev.get("status") or ev.get("normalized_stage")
     except Exception as exc:
-        log.debug("logistics_projector: outbound tracking_db failed: %s", exc)
+        log.debug("logistics_projector: tracking_db read failed: %s", exc)
 
     # Do NOT call live MyDHL from this projector — reporting must stay read-only
-    # and must not create a second tracker poll path. tracking_db + audit events only.
+    # and must not create a second tracker poll path.
     return out
+
+
+def _inbound_tracking_snapshot(awb: str, batch_id: str, audit: Dict[str, Any]) -> Dict[str, Any]:
+    """Inbound transport evidence from audit.tracking + batch tracking_cache + tracking_db."""
+    out: Dict[str, Any] = {
+        "status": None,
+        "status_label": None,
+        "last_location": None,
+        "delivered_at": None,
+        "picked_up_at": None,
+        "arrived_pl_at": None,
+        "events": [],
+        "exception": None,
+        "source": None,
+    }
+    tr = audit.get("tracking") if isinstance(audit.get("tracking"), dict) else {}
+    if tr:
+        out["status"] = tr.get("status")
+        out["status_label"] = tr.get("status_label")
+        out["last_location"] = tr.get("last_location") or tr.get("location")
+        out["source"] = "audit.tracking"
+        if str(tr.get("status") or "").lower() == "delivered":
+            out["delivered_at"] = _parse_iso(tr.get("delivered_at") or tr.get("updated_at"))
+
+    # Prefer cache (canonical) over audit.tracking when present
+    cache_snap = _outbound_tracking_snapshot(awb, batch_id)  # same cache reader
+    if cache_snap.get("status") or cache_snap.get("events"):
+        for k in ("status", "status_label", "last_location", "delivered_at", "picked_up_at",
+                  "events", "exception", "source"):
+            if cache_snap.get(k) is not None:
+                out[k] = cache_snap.get(k)
+        # Poland arrival from cache events
+        for ev in cache_snap.get("events") or []:
+            if not isinstance(ev, dict):
+                continue
+            blob = " ".join(str(ev.get(k) or "") for k in ("description", "location", "status")).lower()
+            ts = _parse_iso(ev.get("timestamp") or ev.get("event_time"))
+            if ts and ("poland" in blob or "warsaw" in blob or "pl-" in blob or blob.endswith(" pl")):
+                if out["arrived_pl_at"] is None:
+                    out["arrived_pl_at"] = ts
+
+    try:
+        from . import tracking_db as tdb
+        if batch_id:
+            db_events = tdb.get_events_for_batch(batch_id, direction="inbound") or []
+            if not out["events"]:
+                out["events"] = db_events
+            for ev in db_events:
+                stage = str(ev.get("normalized_stage") or ev.get("stage") or "").upper()
+                ts = _parse_iso(ev.get("event_time") or ev.get("timestamp"))
+                if stage in ("ARRIVED_DESTINATION_COUNTRY",) and out["arrived_pl_at"] is None:
+                    out["arrived_pl_at"] = ts
+                if stage in ("DELIVERED", "CLOSED"):
+                    out["delivered_at"] = ts or out["delivered_at"]
+                    out["status"] = "delivered"
+                if stage in ("PICKED_UP",) and out["picked_up_at"] is None:
+                    out["picked_up_at"] = ts
+    except Exception as exc:
+        log.debug("logistics_projector: inbound tracking_db failed: %s", exc)
+
+    return out
+
+
+def _transport_status_label(status: Optional[str], *, has_awb: bool, has_movement: bool) -> str:
+    """Human transport status for the main table — never booking 'complete'."""
+    s = str(status or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if s in ("delivered",):
+        return "Delivered"
+    if s in ("returned", "cancelled"):
+        return s.replace("_", " ").title()
+    if s in ("exception", "failure", "on_hold"):
+        return "Exception" if s != "on_hold" else "On Hold"
+    if s in ("out_for_delivery",):
+        return "Out for Delivery"
+    if s in ("at_destination", "arrived_destination", "cleared"):
+        return "At Destination"
+    if s in ("in_customs", "customs"):
+        return "In Customs"
+    if s in ("in_transit", "transit", "departed"):
+        return "In Transit"
+    if s in ("picked_up", "pickup"):
+        return "Picked up"
+    if has_movement:
+        return "In Transit"
+    if has_awb:
+        return "Pickup pending"
+    return "Booked"
+
+
+NO_MOVEMENT_ATTENTION_HOURS = 12.0
+
+
+def _has_physical_movement(tracking: Dict[str, Any]) -> bool:
+    if tracking.get("picked_up_at") or tracking.get("departed_at") or tracking.get("delivered_at"):
+        return True
+    st = str(tracking.get("status") or "").lower()
+    if st in ("", "unknown", "not_found", "none", "pending", "booked"):
+        return False
+    if st in ("delivered", "in_transit", "out_for_delivery", "picked_up", "in_customs",
+              "at_destination", "cleared", "exception", "on_hold"):
+        return True
+    # Events with real carrier progress
+    for ev in tracking.get("events") or []:
+        if not isinstance(ev, dict):
+            continue
+        blob = " ".join(str(ev.get(k) or "") for k in ("description", "status", "normalized_stage")).lower()
+        if any(k in blob for k in ("picked up", "departed", "transit", "delivered", "customs", "arrived")):
+            return True
+    return False
 
 
 def _delivery_confirmation_state(awb: str) -> Dict[str, Any]:
@@ -519,22 +772,46 @@ def _delivery_confirmation_state(awb: str) -> Dict[str, Any]:
     return result
 
 
-def classify_outbound(row: Dict[str, Any], tracking: Dict[str, Any]) -> str:
-    """Classify an outbound carrier_shipments row for logistics Active/Delivered.
+def classify_inbound(audit: Dict[str, Any], tracking: Optional[Dict[str, Any]] = None) -> str:
+    """Transport-based classification for inbound Active/Delivered filters.
 
-    Note: carrier_shipments.state ``complete`` means *booking created successfully*
-    (AWB issued) — NOT physical delivery. Physical delivery comes only from
-    tracking evidence (delivered_at / status=delivered).
+    customs/PZ completion is NOT a transport terminal — it is a separate customs_status.
+    """
+    awb = _awb_of(audit)
+    if not awb:
+        return "unknown"
+    if awb in _EXCLUDED_AWBS:
+        return "excluded"
+    timeline = audit.get("timeline") or []
+    if not isinstance(timeline, list):
+        timeline = []
+    tracking = tracking or {}
+    st = str(tracking.get("status") or "").lower()
+    if tracking.get("delivered_at") or st == "delivered" or _is_physically_delivered(audit, timeline):
+        return "delivered"
+    if st in ("exception", "failure") or tracking.get("exception"):
+        return "exception"
+    if not (audit.get("clearance_decision") or audit.get("tracking") or timeline or tracking.get("events")):
+        return "unknown"
+    return "active"
+
+
+def classify_outbound(row: Dict[str, Any], tracking: Dict[str, Any]) -> str:
+    """Classify outbound for logistics Active/Delivered.
+
+    carrier_shipments.state ``complete`` = booking done, NOT physical delivery.
     """
     if int(row.get("do_not_use") or 0) == 1:
         return "excluded"
-    if tracking.get("delivered_at") or str(tracking.get("status") or "").lower() == "delivered":
+    st = str(tracking.get("status") or "").lower()
+    if tracking.get("delivered_at") or st == "delivered":
         return "delivered"
+    if st in ("returned", "cancelled"):
+        return "delivered"  # terminal non-active
     state = str(row.get("state") or "")
-    if state == "failed":
+    if state == "failed" or st in ("exception", "failure") or tracking.get("exception"):
         return "exception"
-    # pending/submitted/complete = booking lifecycle; still logistics-active until delivered
-    if state in ("complete", "submitted", "pending") and row.get("tracking_ref"):
+    if row.get("tracking_ref"):
         return "active"
     return "unknown"
 
@@ -549,24 +826,68 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
     classification = classify_outbound(row, tracking)
     conf = _delivery_confirmation_state(awb)
 
-    pickup_at = tracking.get("picked_up_at") or created_at
+    # Never treat booking created_at as pickup — pickup must be authoritative.
+    pickup_at = tracking.get("picked_up_at")
+    departed_at = tracking.get("departed_at")
     delivered_at = tracking.get("delivered_at")
-    total_end = delivered_at or now
-    total_hours = _hours_between(pickup_at or created_at, total_end)
-
+    has_movement = _has_physical_movement(tracking)
     events = tracking.get("events") or []
-    current_stage = "booked"
-    stage_started = created_at
-    if events:
-        last = events[-1]
-        current_stage = str(last.get("normalized_stage") or last.get("stage") or "in_transit")
-        stage_started = _parse_iso(last.get("event_time") or last.get("timestamp")) or stage_started
-    if classification == "delivered":
-        current_stage = "DELIVERED"
-        stage_started = delivered_at or stage_started
 
-    stage_age = _hours_between(stage_started, now) if classification == "active" else None
-    stage_label = _OUTBOUND_STAGE_LABELS.get(current_stage.upper(), current_stage)
+    booking_age_hours = _hours_between(created_at, delivered_at or now)
+    booking_to_delivery = _hours_between(created_at, delivered_at) if delivered_at else None
+
+    data_quality: List[str] = []
+    if classification == "delivered" and delivered_at is None:
+        data_quality.append("delivered_without_timestamp")
+    if delivered_at and created_at and delivered_at < created_at:
+        data_quality.append("invalid_timestamp_order_delivery_before_created")
+
+    if classification == "delivered":
+        if delivered_at and pickup_at and delivered_at >= pickup_at:
+            total_hours = _hours_between(pickup_at, delivered_at)
+        elif delivered_at and created_at and delivered_at >= created_at and pickup_at is None:
+            # Prefer pickup; without pickup leave total as — and expose booking_to_delivery
+            total_hours = None
+        else:
+            total_hours = None
+        stage_age = None
+        stage_started = delivered_at
+    else:
+        total_hours = _hours_between(pickup_at, now) if pickup_at else None
+        stage_started = created_at
+        if events:
+            last = events[-1]
+            stage_started = _parse_iso(last.get("event_time") or last.get("timestamp") or last.get("date")) or stage_started
+        elif pickup_at:
+            stage_started = pickup_at
+        stage_age = _hours_between(stage_started, now) if stage_started else None
+
+    if "invalid_timestamp_order_delivery_before_created" in data_quality:
+        total_hours = None
+        booking_to_delivery = None
+
+    transport_status = _transport_status_label(
+        tracking.get("status"), has_awb=bool(awb), has_movement=has_movement
+    )
+    if classification == "delivered":
+        transport_status = "Delivered"
+    elif classification == "exception":
+        transport_status = "Exception"
+    # Never surface carrier booking state "complete" as transport status
+    booking_state = str(row.get("state") or "")
+    if transport_status.lower() in ("complete", "completed") or (
+        not tracking.get("status") and booking_state == "complete" and classification != "delivered"
+    ):
+        transport_status = "Pickup pending" if awb and not has_movement else transport_status
+
+    business_workflow_status = None
+    if classification == "delivered":
+        if conf.get("customer_response") == "received":
+            business_workflow_status = "customer_confirmed"
+        elif conf.get("estrella_delivery_confirmation"):
+            business_workflow_status = "confirmation_sent"
+        else:
+            business_workflow_status = "delivered"
 
     milestones: List[Dict[str, Any]] = []
     if created_at:
@@ -584,7 +905,7 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
     for ev in events:
         if not isinstance(ev, dict):
             continue
-        ts = _parse_iso(ev.get("event_time") or ev.get("timestamp"))
+        ts = _parse_iso(ev.get("event_time") or ev.get("timestamp") or ev.get("date"))
         if ts is None:
             continue
         stage = str(ev.get("normalized_stage") or ev.get("stage") or "event")
@@ -596,7 +917,7 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
             "timestamp_warsaw": _to_warsaw_iso(ts),
             "duration_from_previous_hours": dur,
             "duration_from_previous_human": _fmt_duration(dur),
-            "authority": "tracking_db",
+            "authority": tracking.get("source") or "tracking_cache",
             "location": ev.get("location"),
         })
         prev = ts
@@ -604,26 +925,43 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
     attention: List[str] = []
     if tracking.get("exception"):
         attention.append("carrier_exception")
-    # Stage-age attention only when we have real transit evidence — bare
-    # "booked" with no tracking events is incomplete evidence, not a delay signal.
-    has_transit_evidence = bool(events) or (
-        str(tracking.get("status") or "").lower() not in ("", "none", "unknown")
-        and classification == "active"
-    )
+    if classification == "active" and not has_movement and created_at:
+        age = _hours_between(created_at, now)
+        if age is not None and age >= NO_MOVEMENT_ATTENTION_HOURS:
+            attention.append("no_carrier_movement_12h")
+    last_blob = " ".join(
+        str(x or "") for x in (tracking.get("status"), tracking.get("last_event"))
+    ).upper()
+    if any(k in last_blob for k in ("READY FOR COLLECTION", "MISSED", "ATTEMPTED", "COLLECTION")):
+        attention.append("missed_delivery_or_ready_for_collection")
+    eta = tracking.get("expected_delivery")
     if (
         classification == "active"
-        and has_transit_evidence
-        and current_stage.upper() not in ("BOOKED",)
-        and stage_age is not None
-        and stage_age > 72
+        and isinstance(eta, datetime)
+        and eta < now
     ):
-        attention.append("stage_age_above_72h")
-    if "COLLECTION" in str(tracking.get("status") or "").upper() or "READY" in str(tracking.get("last_event") or "").upper():
-        attention.append("ready_for_collection_or_missed")
+        attention.append("expected_delivery_passed")
+
+    if not tracking.get("events") and not tracking.get("status"):
+        data_quality.append("tracking_evidence_missing")
+    if not client:
+        data_quality.append("missing_party_identity")
+
+    first_movement = pickup_at or departed_at
+    if events and first_movement is None:
+        for ev in events:
+            ts = _parse_iso(ev.get("event_time") or ev.get("timestamp") or ev.get("date"))
+            if ts:
+                first_movement = ts
+                break
 
     return {
         "direction": "outbound",
         "classification": classification,
+        "transport_status": transport_status,
+        "customs_status": None,
+        "customs_complete": False,
+        "business_workflow_status": business_workflow_status,
         "batch_id": batch_id or None,
         "awb": awb,
         "party": client,
@@ -634,23 +972,30 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         "pickup_at_utc": pickup_at.isoformat() if isinstance(pickup_at, datetime) else None,
         "pickup_at_warsaw": _to_warsaw_iso(pickup_at) if isinstance(pickup_at, datetime) else None,
         "expected_delivery_utc": (
-            tracking["expected_delivery"].isoformat()
-            if isinstance(tracking.get("expected_delivery"), datetime) else None
+            eta.isoformat() if isinstance(eta, datetime) else None
         ),
         "expected_delivery_warsaw": (
-            _to_warsaw_iso(tracking.get("expected_delivery"))
-            if isinstance(tracking.get("expected_delivery"), datetime) else None
+            _to_warsaw_iso(eta) if isinstance(eta, datetime) else None
         ),
-        "current_status": tracking.get("status") or row.get("state"),
+        "current_status": transport_status,
         "current_location": tracking.get("last_location"),
-        "current_stage": current_stage,
-        "current_stage_label": stage_label,
-        "stage_started_at_utc": stage_started.isoformat() if stage_started else None,
-        "stage_started_at_warsaw": _to_warsaw_iso(stage_started),
+        "current_stage": transport_status.lower().replace(" ", "_"),
+        "current_stage_label": transport_status,
+        "stage_started_at_utc": (
+            stage_started.isoformat() if stage_started and classification == "active" else None
+        ),
+        "stage_started_at_warsaw": _to_warsaw_iso(stage_started) if classification == "active" else None,
         "stage_age_hours": stage_age,
         "stage_age_human": _fmt_duration(stage_age),
         "total_elapsed_hours": total_hours,
         "total_elapsed_human": _fmt_duration(total_hours),
+        "booking_age_hours": booking_age_hours,
+        "booking_age_human": _fmt_duration(booking_age_hours),
+        "booking_to_delivery_hours": booking_to_delivery,
+        "booking_to_delivery_human": _fmt_duration(booking_to_delivery),
+        "pickup_is_authoritative": pickup_at is not None,
+        "first_movement_at_utc": first_movement.isoformat() if isinstance(first_movement, datetime) else None,
+        "departed_at_utc": departed_at.isoformat() if isinstance(departed_at, datetime) else None,
         "delivered_at_utc": delivered_at.isoformat() if isinstance(delivered_at, datetime) else None,
         "delivered_at_warsaw": _to_warsaw_iso(delivered_at) if isinstance(delivered_at, datetime) else None,
         "received_by": tracking.get("received_by"),
@@ -671,12 +1016,14 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         "draft_id": None,
         "orch_active": False,
         "do_not_use": bool(int(row.get("do_not_use") or 0)),
-        "booking_state": row.get("state"),
+        "booking_state": booking_state,
         "data_gaps": [
             "mydhl_shipmentNotification_request_not_persisted",
             "estimated_delivery_not_in_tracking_service",
             "received_by_pod_signatory_not_parsed",
         ],
+        "data_quality": data_quality,
+        "tracking_source": tracking.get("source"),
     }
 
 
@@ -694,33 +1041,152 @@ def _percentile(values: List[float], p: float) -> Optional[float]:
 
 def _cohort_stats(hours_list: List[float]) -> Dict[str, Any]:
     clean = [h for h in hours_list if h is not None and h >= 0]
-    if len(clean) < 3:
+    if not clean:
         return {
-            "n": len(clean),
-            "average": round(statistics.mean(clean), 2) if clean else None,
+            "n": 0,
+            "average": None,
+            "average_human": None,
             "median": None,
+            "median_human": None,
+            "typical_human": None,
             "p90": None,
+            "p90_human": None,
             "sufficient": False,
         }
+    avg = round(statistics.mean(clean), 2)
+    med = round(statistics.median(clean), 2) if len(clean) >= 3 else None
+    p90 = _percentile(clean, 90)
     return {
         "n": len(clean),
-        "average": round(statistics.mean(clean), 2),
-        "median": round(statistics.median(clean), 2),
-        "p90": _percentile(clean, 90),
-        "sufficient": True,
+        "average": avg,
+        "average_human": _fmt_duration(avg),
+        "median": med,
+        "median_human": _fmt_duration(med),
+        "typical_human": _fmt_duration(med if med is not None else avg),
+        "p90": p90,
+        "p90_human": _fmt_duration(p90),
+        "sufficient": len(clean) >= 3,
     }
 
 
-def _stage_duration_analytics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    buckets: Dict[str, List[float]] = {}
-    for r in rows:
-        for m in r.get("milestones") or []:
-            dur = m.get("duration_from_previous_hours")
-            if dur is None:
+def _milestone_ts(row: Dict[str, Any], stage_id: str) -> Optional[datetime]:
+    for m in row.get("milestones") or []:
+        if str(m.get("stage_id") or "") == stage_id:
+            return _parse_iso(m.get("timestamp_utc"))
+    return None
+
+
+# Fixed transition pairs — both endpoints must exist with valid chronology.
+_INBOUND_FIXED_TRANSITIONS: Tuple[Tuple[str, str, str], ...] = (
+    ("origin_pickup_to_poland", "Origin pickup → Poland arrival", "pickup|arrived_pl"),
+    ("poland_to_dhl_email", "Poland arrival → DHL email", "arrived_pl|dhl_email"),
+    ("dhl_email_to_dsk", "DHL email → DSK", "dhl_email|dsk"),
+    ("dsk_to_agency_sad", "DSK → Agency/SAD", "dsk|sad"),
+    ("sad_to_customs_cleared", "SAD → Customs cleared", "sad|customs_cleared"),
+    ("customs_cleared_to_pz", "Customs cleared → PZ", "customs_cleared|pz"),
+    ("origin_pickup_to_delivered", "Origin pickup → Delivered", "pickup|delivered"),
+)
+
+_OUTBOUND_FIXED_TRANSITIONS: Tuple[Tuple[str, str, str], ...] = (
+    ("booking_to_first_movement", "Booking → first carrier movement", "booked|first_movement"),
+    ("pickup_to_delivery", "Pickup → delivery", "pickup|delivered"),
+    ("departure_to_delivery", "Departure → delivery", "departed|delivered"),
+)
+
+
+def _row_timestamp_map(row: Dict[str, Any]) -> Dict[str, Optional[datetime]]:
+    """Exact named timestamps for fixed transitions (no predecessor mixing)."""
+    pickup = _parse_iso(row.get("pickup_at_utc"))
+    delivered = _parse_iso(row.get("delivered_at_utc"))
+    created = _parse_iso(row.get("created_at_utc"))
+    departed = _parse_iso(row.get("departed_at_utc"))
+    first_movement = _parse_iso(row.get("first_movement_at_utc")) or pickup or departed
+    return {
+        "pickup": pickup,
+        "delivered": delivered,
+        "booked": created,
+        "first_movement": first_movement,
+        "departed": departed,
+        "arrived_pl": _milestone_ts(row, "arrived_pl"),
+        "dhl_email": _milestone_ts(row, "dhl_email"),
+        "dsk": _milestone_ts(row, "dsk") or _milestone_ts(row, "dsk_received"),
+        "sad": _milestone_ts(row, "sad") or _milestone_ts(row, "agency"),
+        "customs_cleared": _milestone_ts(row, "customs_cleared"),
+        "pz": _milestone_ts(row, "pz"),
+    }
+
+
+def _fixed_transition_analytics(
+    rows: List[Dict[str, Any]],
+    specs: Tuple[Tuple[str, str, str], ...],
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key, label, pair in specs:
+        start_key, end_key = pair.split("|", 1)
+        samples: List[float] = []
+        for r in rows:
+            tsmap = _row_timestamp_map(r)
+            a = tsmap.get(start_key)
+            b = tsmap.get(end_key)
+            hours = _hours_between(a, b)
+            if hours is None:
                 continue
-            sid = str(m.get("stage_id") or "unknown")
-            buckets.setdefault(sid, []).append(float(dur))
-    return {sid: _cohort_stats(vals) for sid, vals in buckets.items()}
+            samples.append(hours)
+        stats = _cohort_stats(samples)
+        out[key] = {
+            "id": key,
+            "label": label,
+            "start_key": start_key,
+            "end_key": end_key,
+            **stats,
+        }
+    return out
+
+
+def _collect_transit_hours(rows: List[Dict[str, Any]]) -> Tuple[List[float], List[Dict[str, Any]]]:
+    """Valid pickup→delivered (or authoritative total) samples + DQ exclusions."""
+    valid: List[float] = []
+    excluded: List[Dict[str, Any]] = []
+    for r in rows:
+        if r.get("classification") != "delivered":
+            continue
+        dq = list(r.get("data_quality") or [])
+        delivered = _parse_iso(r.get("delivered_at_utc"))
+        pickup = _parse_iso(r.get("pickup_at_utc"))
+        created = _parse_iso(r.get("created_at_utc"))
+        total = r.get("total_elapsed_hours")
+        start = pickup
+        # Inbound may lack pickup — allow first movement / arrived_pl as transport start
+        if start is None and r.get("direction") == "inbound":
+            start = _milestone_ts(r, "arrived_pl") or _parse_iso(r.get("first_movement_at_utc"))
+        if delivered is None:
+            excluded.append({"awb": r.get("awb"), "reason": "delivered_without_timestamp", "direction": r.get("direction")})
+            continue
+        if start is None:
+            excluded.append({"awb": r.get("awb"), "reason": "missing_transport_start", "direction": r.get("direction")})
+            continue
+        hours = _hours_between(start, delivered)
+        if hours is None:
+            excluded.append({
+                "awb": r.get("awb"),
+                "reason": "invalid_chronology_or_negative",
+                "direction": r.get("direction"),
+                "data_quality": dq,
+            })
+            continue
+        if created and delivered < created:
+            excluded.append({
+                "awb": r.get("awb"),
+                "reason": "delivery_before_created",
+                "direction": r.get("direction"),
+            })
+            continue
+        # Prefer row total when it already encodes pickup→delivered; else use computed
+        if isinstance(total, (int, float)) and total >= 0:
+            valid.append(float(total))
+        else:
+            valid.append(hours)
+    return valid, excluded
 
 
 def project_logistics(
@@ -777,16 +1243,27 @@ def project_logistics(
         if dts and dts.astimezone(POLAND_TZ).date() == today_w:
             delivered_today.append(r)
 
-    in_delivered_hours = [
-        r["total_elapsed_hours"] for r in inbound_rows
-        if r["classification"] in ("delivered", "completed") and r.get("total_elapsed_hours") is not None
-    ]
-    out_delivered_hours = [
-        r["total_elapsed_hours"] for r in outbound_rows
-        if r["classification"] == "delivered" and r.get("total_elapsed_hours") is not None
-    ]
-    in_stats = _cohort_stats([h for h in in_delivered_hours if isinstance(h, (int, float))])
-    out_stats = _cohort_stats([h for h in out_delivered_hours if isinstance(h, (int, float))])
+    in_hours, in_excluded = _collect_transit_hours(inbound_rows)
+    out_hours, out_excluded = _collect_transit_hours(outbound_rows)
+    in_stats = _cohort_stats(in_hours)
+    out_stats = _cohort_stats(out_hours)
+
+    data_quality_summary = {
+        "tracking_evidence_missing": 0,
+        "invalid_timestamp_order": 0,
+        "delivered_without_timestamp": 0,
+        "missing_party_identity": 0,
+    }
+    for r in all_rows:
+        for flag in r.get("data_quality") or []:
+            if flag == "tracking_evidence_missing":
+                data_quality_summary["tracking_evidence_missing"] += 1
+            elif "invalid_timestamp_order" in flag or flag == "delivery_before_created":
+                data_quality_summary["invalid_timestamp_order"] += 1
+            elif flag == "delivered_without_timestamp":
+                data_quality_summary["delivered_without_timestamp"] += 1
+            elif flag == "missing_party_identity":
+                data_quality_summary["missing_party_identity"] += 1
 
     direction = (direction or "all").lower()
     view = (view or "active").lower()
@@ -799,7 +1276,8 @@ def project_logistics(
     if view == "active":
         rows = [r for r in rows if r["classification"] in ("active", "exception")]
     elif view == "delivered":
-        rows = [r for r in rows if r["classification"] in ("delivered", "completed")]
+        # Transport Delivered only — customs/PZ complete is NOT delivered
+        rows = [r for r in rows if r["classification"] == "delivered"]
     elif view == "attention":
         rows = [r for r in rows if r.get("needs_attention")]
 
@@ -812,6 +1290,7 @@ def project_logistics(
             r for r in rows
             if stage_l in str(r.get("current_stage") or "").lower()
             or stage_l in str(r.get("current_stage_label") or "").lower()
+            or stage_l in str(r.get("transport_status") or "").lower()
             or stage_l in str(r.get("current_status") or "").lower()
         ]
 
@@ -849,24 +1328,31 @@ def project_logistics(
     rows.sort(key=_sort_key)
 
     orch_active_count = sum(1 for r in inbound_rows if r.get("orch_active"))
-    orch_active_but_completed = sum(
+    customs_complete_still_active = sum(
         1 for r in inbound_rows
-        if r.get("orch_active") and r["classification"] in ("completed", "delivered")
+        if r.get("customs_complete") and r["classification"] == "active"
     )
 
     analytics = {
         "inbound_transit_hours": in_stats,
         "outbound_transit_hours": out_stats,
-        "stage_duration_samples": _stage_duration_analytics(inbound_rows + outbound_rows),
+        "fixed_transitions_inbound": _fixed_transition_analytics(inbound_rows, _INBOUND_FIXED_TRANSITIONS),
+        "fixed_transitions_outbound": _fixed_transition_analytics(outbound_rows, _OUTBOUND_FIXED_TRANSITIONS),
+        "data_quality_excluded": {
+            "inbound_transit": in_excluded,
+            "outbound_transit": out_excluded,
+            "counts": {
+                "inbound": len(in_excluded),
+                "outbound": len(out_excluded),
+            },
+        },
+        "data_quality_summary": data_quality_summary,
         "population_notes": {
-            "active_inbound": "classification==active (not orch is_active_shipment)",
-            "active_outbound": "carrier_shipments with tracking_ref, not delivered, not do_not_use",
-            "avg_inbound_transit": "delivered+completed inbound with measurable created→end hours; n>=3 for median/p90",
-            "avg_outbound_transit": "delivered outbound with measurable pickup/created→delivered; n>=3 for median/p90",
-            "orch_residue": (
-                f"{orch_active_but_completed} of {orch_active_count} orch-active inbound "
-                "rows are logistics completed/delivered (reporting defect if shown as Active)"
-            ),
+            "active_inbound": "AWB present and transport not Delivered/terminal (customs/PZ does not remove Active)",
+            "active_outbound": "carrier AWB present, tracking not Delivered; booking state=complete is NOT delivered",
+            "avg_inbound_transit": "only physically delivered with valid start→delivered chronology",
+            "avg_outbound_transit": "only physically delivered with authoritative pickup→delivered",
+            "customs_complete_still_active": customs_complete_still_active,
         },
     }
 
@@ -876,11 +1362,15 @@ def project_logistics(
         "needs_attention": len(attention),
         "delivered_today": len(delivered_today),
         "avg_inbound_transit_hours": in_stats.get("average"),
+        "avg_inbound_transit_human": in_stats.get("average_human"),
         "avg_outbound_transit_hours": out_stats.get("average"),
+        "avg_outbound_transit_human": out_stats.get("average_human"),
         "inbound_transit_median_hours": in_stats.get("median"),
         "outbound_transit_median_hours": out_stats.get("median"),
+        "inbound_transit_n": in_stats.get("n"),
+        "outbound_transit_n": out_stats.get("n"),
         "orch_active_inbound": orch_active_count,
-        "orch_active_but_logistics_terminal": orch_active_but_completed,
+        "customs_complete_still_active": customs_complete_still_active,
     }
 
     return {
@@ -902,9 +1392,11 @@ def project_logistics(
         },
         "authority": {
             "page": "presentation_analytics_only",
-            "inbound": "audit.timeline + dhl_readiness + tracking inbound",
-            "outbound": "carrier_shipments + tracking + delivery_confirmation",
+            "inbound": "audit.timeline + tracking_cache + tracking_db (read-only)",
+            "outbound": "carrier_shipments + tracking_cache (canonical) + delivery_confirmation",
+            "tracking": "select_cached_tracking_record / tracking_cache.json — no live MyDHL poll",
             "no_writes": True,
+            "no_second_poller": True,
         },
         "data_gaps": [
             "estimated_delivery_not_parsed_from_mydhl",
@@ -950,13 +1442,27 @@ def project_shipment_detail(awb: str) -> Optional[Dict[str, Any]]:
 
 LOGISTICS_CSV_COLUMNS = [
     "direction", "party", "awb", "created_at_warsaw", "pickup_at_warsaw",
-    "current_stage_label", "stage_age_hours", "total_elapsed_hours",
+    "transport_status", "customs_status", "current_location",
+    "stage_age_hours", "total_elapsed_hours", "booking_to_delivery_hours",
     "expected_delivery_warsaw", "delivered_at_warsaw", "exception",
-    "classification", "batch_id", "current_status",
+    "classification", "needs_attention", "attention_reasons",
+    "batch_id", "booking_state", "data_quality",
 ]
 
 
-def rows_to_logistics_csv(rows: List[Dict[str, Any]]) -> bytes:
+def rows_to_logistics_csv(rows: List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None) -> bytes:
     from . import master_csv
-    slim = [{c: r.get(c) for c in LOGISTICS_CSV_COLUMNS} for r in rows]
-    return master_csv.rows_to_csv(slim, LOGISTICS_CSV_COLUMNS)
+    slim = []
+    for r in rows:
+        item = {c: r.get(c) for c in LOGISTICS_CSV_COLUMNS}
+        if isinstance(item.get("attention_reasons"), list):
+            item["attention_reasons"] = "|".join(str(x) for x in item["attention_reasons"])
+        if isinstance(item.get("data_quality"), list):
+            item["data_quality"] = "|".join(str(x) for x in item["data_quality"])
+        slim.append(item)
+    body = master_csv.rows_to_csv(slim, LOGISTICS_CSV_COLUMNS)
+    # Prepend filter provenance so export parity with UI is auditable
+    if filters:
+        filt_line = "# filters_applied: " + "; ".join(f"{k}={v}" for k, v in filters.items()) + "\r\n"
+        return filt_line.encode("utf-8") + body
+    return body
