@@ -284,29 +284,144 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             log.warning("ePOD HTTP failed for awb=%s: %s", ref, exc)
             return None
 
+        outcome = self._epod_response_to_outcome(resp, ref)
+        return outcome.get("pdf") if outcome.get("status") == "ok" else None
+
+    def fetch_electronic_pod_outcome(
+        self,
+        tracking_ref: str,
+        *,
+        content: str = "epod-summary",
+    ) -> dict:
+        """Like fetch_electronic_pod but returns {status, pdf?, detail?}."""
+        ref = (tracking_ref or "").strip()
+        if not ref:
+            return {"status": "error", "detail": "missing_ref"}
+        try:
+            self._check_credentials()
+        except Exception as exc:
+            return {"status": "error", "detail": f"credentials:{exc}"}
+
+        params: dict = {"content": content or "epod-summary"}
+        if self._config.account_number:
+            params["shipperAccountNumber"] = self._config.account_number
+        url = (
+            f"{self._config.api_url.rstrip('/')}"
+            f"{self._api_path()}/shipments/{ref}/proof-of-delivery"
+        )
+        try:
+            with httpx.Client(
+                auth=httpx.BasicAuth(self._config.api_key, self._config.api_secret),
+                timeout=30.0,
+            ) as client:
+                resp = client.get(url, params=params)
+        except Exception as exc:
+            return {"status": "error", "detail": f"http:{exc}"}
+        return self._epod_response_to_outcome(resp, ref)
+
+    def _epod_response_to_outcome(self, resp, ref: str) -> dict:
         if resp.status_code == 404:
             log.info("ePOD not available for awb=%s (404)", ref)
-            return None
+            return {"status": "not_eligible", "detail": "404"}
+        if resp.status_code in (401, 403):
+            return {"status": "error", "detail": f"auth:{resp.status_code}"}
         if not resp.is_success:
             log.warning(
                 "ePOD fetch failed for awb=%s status=%s body=%s",
                 ref, resp.status_code, (resp.text or "")[:200],
             )
-            return None
-
-        # Raw PDF body (some gateways) or JSON with base64 documents.
+            return {
+                "status": "error",
+                "detail": f"status={resp.status_code}",
+            }
         ctype = (resp.headers.get("content-type") or "").lower()
         raw = resp.content or b""
         if raw[:4] == b"%PDF":
-            return raw
+            return {"status": "ok", "pdf": raw}
         if "pdf" in ctype and raw:
-            return raw
+            return {"status": "ok", "pdf": raw}
         try:
             data = resp.json()
         except Exception:
-            log.warning("ePOD response was not PDF/JSON for awb=%s", ref)
-            return None
-        return _extract_epod_pdf_bytes(data)
+            return {"status": "error", "detail": "non_pdf_non_json"}
+        pdf = _extract_epod_pdf_bytes(data)
+        if pdf:
+            return {"status": "ok", "pdf": pdf}
+        return {"status": "not_eligible", "detail": "empty_documents"}
+
+    def fetch_document_image(
+        self,
+        tracking_ref: str,
+        *,
+        type_code: str = "waybill",
+        pickup_year_month: str,
+        encoding_format: str = "pdf",
+    ) -> dict:
+        """Fetch a MyDHL document image after booking (Get Image service).
+
+        Official REST:
+          GET {api}/mydhlapi[/test]/shipments/{awb}/get-image
+              ?shipperAccountNumber=&typeCode=waybill&pickupYearAndMonth=YYYY-MM
+
+        Returns a structured outcome dict (never raises):
+          {"status": "ok", "pdf": bytes}
+          {"status": "not_found"|"not_authorized"|"error", "detail": str}
+        """
+        ref = (tracking_ref or "").strip()
+        ym = (pickup_year_month or "").strip()
+        tc = (type_code or "waybill").strip()
+        if not ref or not ym:
+            return {"status": "error", "detail": "missing_ref_or_pickup_month"}
+        try:
+            self._check_credentials()
+        except Exception as exc:
+            return {"status": "error", "detail": f"credentials:{exc}"}
+
+        params: dict = {
+            "typeCode": tc,
+            "pickupYearAndMonth": ym,
+            "encodingFormat": encoding_format or "pdf",
+        }
+        if self._config.account_number:
+            params["shipperAccountNumber"] = self._config.account_number
+
+        url = (
+            f"{self._config.api_url.rstrip('/')}"
+            f"{self._api_path()}/shipments/{ref}/get-image"
+        )
+        try:
+            with httpx.Client(
+                auth=httpx.BasicAuth(self._config.api_key, self._config.api_secret),
+                timeout=30.0,
+            ) as client:
+                resp = client.get(url, params=params)
+        except Exception as exc:
+            return {"status": "error", "detail": f"http:{exc}"}
+
+        if resp.status_code == 404:
+            return {"status": "not_found", "detail": "404"}
+        if resp.status_code in (401, 403):
+            return {
+                "status": "not_authorized",
+                "detail": (resp.text or "")[:240],
+            }
+        if not resp.is_success:
+            return {
+                "status": "error",
+                "detail": f"status={resp.status_code} {(resp.text or '')[:200]}",
+            }
+
+        raw = resp.content or b""
+        if raw[:4] == b"%PDF":
+            return {"status": "ok", "pdf": raw}
+        try:
+            data = resp.json()
+        except Exception:
+            return {"status": "error", "detail": "non_pdf_non_json"}
+        pdf = _extract_epod_pdf_bytes(data)  # same base64 document shapes
+        if pdf:
+            return {"status": "ok", "pdf": pdf}
+        return {"status": "not_found", "detail": "no_pdf_in_response"}
 
     # ── private guards ────────────────────────────────────────────────────────
 

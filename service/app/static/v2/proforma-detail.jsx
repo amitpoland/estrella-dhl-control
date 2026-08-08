@@ -4160,6 +4160,8 @@ function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOffici
   const [manifest, setManifest] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [err, setErr] = React.useState(null);
+  const [generatingCommercial, setGeneratingCommercial] = React.useState(false);
+  const [genMsg, setGenMsg] = React.useState(null);
 
   const reload = React.useCallback(() => {
     if (!draftId || !window.PzApi || !window.PzApi.getShipmentDocumentManifest) {
@@ -4183,6 +4185,33 @@ function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOffici
   }, [draftId]);
 
   React.useEffect(() => { reload(); }, [reload]);
+
+  const onGenerateCommercial = React.useCallback((gen) => {
+    if (!gen || !gen.can_generate || !batchId || !window.PzApi || !window.PzApi.createLabelPackage) {
+      setGenMsg((gen && (gen.missing || []).map(m => m.reason).join(' ')) || 'Cannot generate — prerequisites missing.');
+      return;
+    }
+    setGeneratingCommercial(true);
+    setGenMsg(null);
+    window.PzApi.createLabelPackage(batchId, {
+      box_type_id: gen.box_type_id,
+      client_name: gen.client_name || undefined,
+    })
+      .then((r) => {
+        if (!r || r.ok === false) {
+          const gaps = r && r.data && r.data.detail && r.data.detail.gaps;
+          const msg = gaps
+            ? gaps.map(g => g.reason || g.field).join('; ')
+            : ((r && r.error) || 'Generate failed');
+          setGenMsg(msg);
+          return;
+        }
+        setGenMsg('Commercial package generated.');
+        reload();
+      })
+      .catch((e) => setGenMsg((e && e.message) || String(e)))
+      .finally(() => setGeneratingCommercial(false));
+  }, [batchId, reload]);
 
   const DOC_META = {
     draft_proforma: { name: 'Draft Proforma', groupHint: 'Estrella preview before post' },
@@ -4227,6 +4256,11 @@ function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOffici
     const chip = chipStyle(d.status);
     const browserPreview = d.reason === 'browser_preview';
     const previewClick = () => {
+      // Canonical Estrella preview surfaces (same modal as toolbar Preview).
+      if (browserPreview && d.document_type === 'draft_proforma') {
+        onOpenPreview && onOpenPreview('proforma');
+        return;
+      }
       if (browserPreview && (d.document_type === 'packing_list' || d.document_type === 'cmr')) {
         onOpenPreview && onOpenPreview(d.document_type === 'packing_list' ? 'packing' : 'cmr');
         return;
@@ -4275,7 +4309,23 @@ function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOffici
               ↓ Download
             </a>
           ) : null}
-          {!canPreview && !canDownload ? (
+          {d.document_type === 'dhl_commercial_package' && d.generate ? (
+            <button
+              type="button"
+              data-testid="pf-doc-dhl_commercial_package-generate"
+              disabled={!d.generate.can_generate || generatingCommercial}
+              onClick={() => onGenerateCommercial && onGenerateCommercial(d.generate)}
+              style={d.generate.can_generate && !generatingCommercial ? actBtn : actBtnDisabled}
+              title={
+                d.generate.can_generate
+                  ? 'Generate via existing POST /label-package and persist'
+                  : ((d.generate.missing || []).map(m => m.reason).join(' ') || 'Prerequisites missing')
+              }
+            >
+              {generatingCommercial ? 'Generating…' : (d.status === 'Generated' ? '↻ Regenerate' : '⚙ Generate Commercial Package')}
+            </button>
+          ) : null}
+          {!canPreview && !canDownload && d.document_type !== 'dhl_commercial_package' ? (
             <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999, opacity: 0.55 }}
               data-testid={`pf-doc-unavailable-${d.document_type}`}>Not available</span>
           ) : null}
@@ -4365,6 +4415,9 @@ function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOffici
         {tracking && tracking.awb ? ` Outbound AWB ${tracking.awb} (Unified Tracking).` : ''}
       </div>
       {deliveryBanner()}
+      {genMsg ? (
+        <div data-testid="pf-doc-commercial-gen-msg" style={{ fontSize: 12, color: 'var(--badge-amber-text)', marginBottom: 10 }}>{genMsg}</div>
+      ) : null}
       {renderGroup('Commercial', manifest.groups.commercial, 'pf-doc-group-commercial')}
       {renderGroup('Transport', manifest.groups.transport, 'pf-doc-group-transport')}
       {renderGroup('DHL / Carrier', manifest.groups.carrier, 'pf-doc-group-carrier')}

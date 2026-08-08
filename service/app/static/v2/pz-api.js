@@ -1891,6 +1891,45 @@
     getShipmentDocumentManifest: (draftId) =>
       _get(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/manifest`),
 
+    // POST /api/v1/carrier/{batch_id}/label-package — Path-DOC commercial package.
+    // Streams PDF/ZIP AND persists under doc_packages/. Uses raw fetch (not
+    // JSON apiFetch) because the success body is binary. Does NOT invent a
+    // second composer — this is the existing canonical route.
+    createLabelPackage: async (batchId, body) => {
+      const op = _resolveOperator();
+      try {
+        const res = await fetch(
+          `${BASE}/carrier/${encodeURIComponent(batchId)}/label-package`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(op ? { 'X-Operator': op } : {}),
+            },
+            body: JSON.stringify(body || {}),
+          },
+        );
+        if (!res.ok) {
+          let data = null;
+          try { data = await res.json(); } catch (_) { /* binary/empty */ }
+          return {
+            ok: false,
+            status: res.status,
+            error: (data && data.detail && data.detail.error)
+              || (typeof data?.detail === 'string' ? data.detail : null)
+              || `HTTP ${res.status}`,
+            data,
+          };
+        }
+        // Drain the stream so the connection closes; persistence already happened.
+        try { await res.blob(); } catch (_) { /* ignore */ }
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, status: 0, error: (err && err.message) || String(err) };
+      }
+    },
+
     // GET /api/v1/shipment-documents/draft/{draft_id}/complete-package
     // Direct download URL for the authoritative ZIP (when ready).
     completeShipmentPackageUrl: (draftId) =>

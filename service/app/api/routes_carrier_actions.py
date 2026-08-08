@@ -1252,6 +1252,63 @@ def download_epod(
 
 
 @router.post(
+    "/{batch_id}/waybill-doc/{tracking_ref}/fetch",
+    summary="Fetch MyDHL waybill via Get Image and persist (best-effort)",
+)
+def fetch_waybill_doc(
+    batch_id: str,
+    tracking_ref: str,
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Operator-triggered waybill recovery via MyDHL Get Image.
+
+    200 when present/persisted; 404 when DHL has no image; 403 when the
+    account is not entitled to Get Image (honest not-provided).
+    """
+    from ..services.carrier.document_image_service import ensure_waybill_persisted
+
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        raise HTTPException(status_code=400, detail="invalid batch_id")
+    if not (isinstance(tracking_ref, str) and _SAFE_REF.match(tracking_ref)):
+        raise HTTPException(status_code=400, detail="invalid tracking_ref")
+
+    outcome = ensure_waybill_persisted(batch_id, tracking_ref)
+    if outcome.status in ("present", "persisted"):
+        return JSONResponse({
+            "ok": True,
+            "batch_id": batch_id,
+            "tracking_ref": tracking_ref,
+            "status": outcome.status,
+            "download_url": f"/api/v1/carrier/{batch_id}/waybill-doc/{tracking_ref}",
+        })
+    if outcome.status == "not_authorized":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "MyDHL Get Image not authorized for this account.",
+                "code": "WAYBILL_NOT_AUTHORIZED",
+                "detail": outcome.detail,
+            },
+        )
+    if outcome.status == "not_found":
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "MyDHL has no waybill image for this AWB.",
+                "code": "WAYBILL_NOT_FOUND",
+            },
+        )
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "error": "Waybill recovery failed.",
+            "code": "WAYBILL_FETCH_FAILED",
+            "detail": outcome.detail,
+        },
+    )
+
+
+@router.post(
     "/{batch_id}/epod/{tracking_ref}/fetch",
     summary="Fetch MyDHL ePOD and persist it (best-effort)",
 )

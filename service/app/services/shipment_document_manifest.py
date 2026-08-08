@@ -161,14 +161,17 @@ def build_manifest(
     # ── COMMERCIAL group ──────────────────────────────────────────────────────
     commercial: List[Dict[str, Any]] = []
 
-    # draft_proforma — Estrella browser preview (print), no server download.
+    # draft_proforma — SAME canonical Estrella Proforma Preview modal as the
+    # toolbar Preview button (estrella-doc-proforma.jsx + draft docData).
+    # reason=browser_preview tells the Documents UI to call onOpenPreview
+    # ('proforma') — never open the parallel server preview.html surface.
     commercial.append(_entry(
         "draft_proforma", "Estrella", GENERATED,
         reference=(draft.wfirma_proforma_fullnumber or f"Draft #{draft.id}"),
         generated_at=draft.created_at,
         preview_available=True, download_available=False,
-        preview_url=f"/api/v1/proforma/draft/{draft.id}/preview.html",
-        reason=None,
+        preview_url=None,
+        reason="browser_preview",
     ))
 
     posted = bool((draft.wfirma_proforma_id or "").strip())
@@ -245,16 +248,18 @@ def build_manifest(
             reason="CMR is available after a DHL shipment is booked.",
         ))
 
-    # ── CARRIER group (DHL label / waybill / receipt / commercial package) ─────
+    # ── CARRIER group (DHL label / waybill / receipt / ePOD / commercial pkg) ─
     carrier: List[Dict[str, Any]] = []
-    dhl_specs = [
-        ("dhl_label", "label", "label"),
-        ("dhl_waybill", "waybill-doc", "waybill-doc"),
-        ("dhl_receipt", "receipt", "receipt"),
-    ]
     label_present = False
     waybill_present = False
-    for doc_type, kind, url_seg in dhl_specs:
+    waybill_required = False  # only when a real waybill file exists for this AWB
+
+    # Label + receipt: disk only (saved at create_shipment). Waybill: disk first,
+    # then best-effort MyDHL Get Image recovery when missing.
+    for doc_type, kind, url_seg in (
+        ("dhl_label", "label", "label"),
+        ("dhl_receipt", "receipt", "receipt"),
+    ):
         if not awb:
             carrier.append(_entry(
                 doc_type, "DHL", PENDING,
@@ -266,8 +271,6 @@ def build_manifest(
         present = _shipment_doc_file(kind, batch_id, awb) is not None
         if doc_type == "dhl_label":
             label_present = present
-        elif doc_type == "dhl_waybill":
-            waybill_present = present
         if present:
             url = f"/api/v1/carrier/{b_enc}/{url_seg}/{quote(awb, safe='')}"
             carrier.append(_entry(
@@ -275,80 +278,77 @@ def build_manifest(
                 reference=awb,
                 preview_available=True, download_available=True,
                 preview_url=url, download_url=url,
-                required_for_complete_package=(doc_type in ("dhl_label", "dhl_waybill")),
+                # Transport Label is the courier-attach authority for this stack.
+                required_for_complete_package=(doc_type == "dhl_label"),
             ))
         else:
             carrier.append(_entry(
                 doc_type, "DHL", HISTORICAL_UNAVAILABLE,
                 reference=awb,
                 preview_available=False, download_available=False,
-                required_for_complete_package=(doc_type in ("dhl_label", "dhl_waybill")),
+                required_for_complete_package=(doc_type == "dhl_label"),
                 reason=(
                     "AWB exists but no saved document file — this shipment was "
                     "booked before document capture, or the file was never stored."
                 ),
             ))
 
-    # dhl_epod — MyDHL electronic proof of delivery (carrier evidence; optional).
-    # Never required for Complete Package — DHL only returns ePOD for certain
-    # delivered shipments. Separate from customer delivery confirmation.
-    if not awb:
-        carrier.append(_entry(
-            "dhl_epod", "DHL", PENDING,
-            preview_available=False, download_available=False,
-            required_for_complete_package=False,
-            reason="No AWB booked for this client yet.",
-        ))
-    else:
-        epod_present = _shipment_doc_file("epod", batch_id, awb) is not None
-        if epod_present:
-            url = f"/api/v1/carrier/{b_enc}/epod/{quote(awb, safe='')}"
-            carrier.append(_entry(
-                "dhl_epod", "DHL", GENERATED,
-                reference=awb,
-                preview_available=True, download_available=True,
-                preview_url=url, download_url=url,
-                required_for_complete_package=False,
-            ))
-        else:
-            carrier.append(_entry(
-                "dhl_epod", "DHL", PENDING,
-                reference=awb,
-                preview_available=False, download_available=False,
-                required_for_complete_package=False,
-                reason=(
-                    "MyDHL ePOD is available only for certain delivered shipments. "
-                    "Fetch via POST /api/v1/carrier/{batch}/epod/{awb}/fetch after "
-                    "delivery, or wait for the outbound-delivery hook."
-                ),
-            ))
+    # dhl_waybill — try local file, then MyDHL Get Image (when account entitled).
+    waybill_entry = _resolve_waybill_entry(
+        batch_id=batch_id, awb=awb, b_enc=b_enc,
+        shipment_created_at=(shipment_row or {}).get("created_at"),
+    )
+    carrier.append(waybill_entry)
+    waybill_present = waybill_entry["status"] == GENERATED
+    # Only a real on-disk waybill is package-mandatory. When DHL never provided
+    # one (create omitted waybillDoc AND Get Image 403/404), do not permanently
+    # block Complete Package — Transport Label remains the courier authority.
+    waybill_required = waybill_present
 
-    # dhl_commercial_package — the persisted Path-DOC package.
+    # dhl_epod — carrier POD; optional; never confuses with customer confirmation.
+    carrier.append(_resolve_epod_entry(
+        batch_id=batch_id, awb=awb, b_enc=b_enc, storage_root=storage_root,
+    ))
+
+    # dhl_commercial_package — Path-DOC composer (existing POST label-package).
     pkg = _doc_package_file(batch_id, client_name) if batch_id else None
+    box_type_code = (shipment_row or {}).get("box_type_code") if shipment_row else None
+    gen_meta = _commercial_package_generate_meta(
+        storage_root=storage_root,
+        batch_id=batch_id,
+        client_name=client_name,
+        posted=posted,
+        box_type_code=box_type_code if isinstance(box_type_code, str) else None,
+    )
     if pkg is not None:
-        carrier.append(_entry(
+        pkg_entry = _entry(
             "dhl_commercial_package", "Estrella", GENERATED,
             preview_available=False, download_available=True,
             download_url=f"/api/v1/carrier/{b_enc}/documents",
             required_for_complete_package=False,
-        ))
+        )
     else:
-        carrier.append(_entry(
+        pkg_entry = _entry(
             "dhl_commercial_package", "Estrella", PENDING,
             preview_available=False, download_available=False,
             required_for_complete_package=False,
             reason=(
-                "Generate the label package (POST /api/v1/carrier/{batch}/"
-                "label-package); it is now persisted and will appear here."
+                "; ".join(g["reason"] for g in gen_meta["missing"])
+                if gen_meta["missing"]
+                else "Not generated yet — use Generate Commercial Package."
             ),
-        ))
+        )
+    pkg_entry["generate"] = gen_meta
+    carrier.append(pkg_entry)
 
     # ── Complete package readiness ─────────────────────────────────────────────
-    # ePOD and CMR are intentionally optional — neither blocks readiness.
+    # Mandatory: fiscal PDF + packing list + DHL transport label (when booked).
+    # Waybill only when DHL actually provided one. ePOD/CMR/commercial pkg optional.
     complete_package = _build_complete_package(
         draft_id=draft.id,
         posted=posted, converted=converted, has_lines=has_lines,
-        awb=awb, label_present=label_present, waybill_present=waybill_present,
+        awb=awb, label_present=label_present,
+        waybill_present=waybill_present, waybill_required=waybill_required,
     )
 
     # ── Delivery confirmation summary (or None) ────────────────────────────────
@@ -379,6 +379,220 @@ def build_manifest(
     }
 
 
+def _resolve_waybill_entry(
+    *,
+    batch_id: str,
+    awb: Optional[str],
+    b_enc: str,
+    shipment_created_at: Optional[str],
+) -> Dict[str, Any]:
+    """Waybill card: local file, else MyDHL Get Image recovery, else honest gap."""
+    from ..api.routes_carrier_actions import _shipment_doc_file
+
+    if not awb:
+        return _entry(
+            "dhl_waybill", "DHL", PENDING,
+            preview_available=False, download_available=False,
+            required_for_complete_package=False,
+            reason="No AWB booked for this client yet.",
+        )
+    present = _shipment_doc_file("waybill-doc", batch_id, awb) is not None
+    if not present:
+        try:
+            from .carrier.document_image_service import ensure_waybill_persisted
+            ym = None
+            created = (shipment_created_at or "").strip()
+            if len(created) >= 7 and created[4] == "-":
+                ym = created[:7]
+            outcome = ensure_waybill_persisted(batch_id, awb, pickup_year_month=ym)
+            present = outcome.status in ("present", "persisted")
+            if not present:
+                if outcome.status == "not_authorized":
+                    return _entry(
+                        "dhl_waybill", "DHL", PENDING,
+                        reference=awb,
+                        preview_available=False, download_available=False,
+                        required_for_complete_package=False,
+                        reason=(
+                            "Not provided by DHL for this account — MyDHL Get Image "
+                            "returned not authorized (8032). Transport Label is the "
+                            "courier handover document for this booking."
+                        ),
+                    )
+                if outcome.status == "not_found":
+                    return _entry(
+                        "dhl_waybill", "DHL", PENDING,
+                        reference=awb,
+                        preview_available=False, download_available=False,
+                        required_for_complete_package=False,
+                        reason=(
+                            "Not provided by DHL for this shipment — MyDHL create "
+                            "response had no waybillDoc and Get Image returned 404."
+                        ),
+                    )
+                # skipped / error — do not invent Historical-unavailable blocker
+                return _entry(
+                    "dhl_waybill", "DHL", PENDING,
+                    reference=awb,
+                    preview_available=False, download_available=False,
+                    required_for_complete_package=False,
+                    reason=(
+                        "No waybill on disk and recovery was not possible "
+                        f"({outcome.status}: {outcome.detail or 'n/a'}). "
+                        "Transport Label remains the courier document when present."
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover
+            log.debug("waybill recovery failed: %s", exc)
+            return _entry(
+                "dhl_waybill", "DHL", PENDING,
+                reference=awb,
+                preview_available=False, download_available=False,
+                required_for_complete_package=False,
+                reason="Waybill recovery failed — see server logs.",
+            )
+    url = f"/api/v1/carrier/{b_enc}/waybill-doc/{quote(awb, safe='')}"
+    return _entry(
+        "dhl_waybill", "DHL", GENERATED,
+        reference=awb,
+        preview_available=True, download_available=True,
+        preview_url=url, download_url=url,
+        required_for_complete_package=True,
+    )
+
+
+def _resolve_epod_entry(
+    *,
+    batch_id: str,
+    awb: Optional[str],
+    b_enc: str,
+    storage_root: Path,
+) -> Dict[str, Any]:
+    """ePOD card with best-effort persist + honest Pending reasons."""
+    if not awb:
+        return _entry(
+            "dhl_epod", "DHL", PENDING,
+            preview_available=False, download_available=False,
+            required_for_complete_package=False,
+            reason="No AWB booked for this client yet.",
+        )
+    try:
+        from .carrier.epod_service import ensure_epod_result
+        outcome = ensure_epod_result(batch_id, awb)
+    except Exception as exc:  # pragma: no cover
+        log.debug("ePOD ensure failed: %s", exc)
+        outcome = None
+
+    if outcome is not None and outcome.status in ("present", "persisted") and outcome.path:
+        url = f"/api/v1/carrier/{b_enc}/epod/{quote(awb, safe='')}"
+        return _entry(
+            "dhl_epod", "DHL", GENERATED,
+            reference=awb,
+            preview_available=True, download_available=True,
+            preview_url=url, download_url=url,
+            required_for_complete_package=False,
+        )
+
+    # Distinguish delivered-but-not-eligible vs not-yet-delivered when possible.
+    delivered = _tracking_says_delivered(awb, storage_root)
+    if outcome is not None and outcome.status == "not_eligible":
+        return _entry(
+            "dhl_epod", "DHL", PENDING,
+            reference=awb,
+            preview_available=False, download_available=False,
+            required_for_complete_package=False,
+            reason="Not provided by DHL for this shipment.",
+        )
+    if delivered:
+        return _entry(
+            "dhl_epod", "DHL", PENDING,
+            reference=awb,
+            preview_available=False, download_available=False,
+            required_for_complete_package=False,
+            reason=(
+                "Shipment is delivered but MyDHL ePOD could not be retrieved "
+                f"({getattr(outcome, 'status', 'unknown')})."
+            ),
+        )
+    return _entry(
+        "dhl_epod", "DHL", PENDING,
+        reference=awb,
+        preview_available=False, download_available=False,
+        required_for_complete_package=False,
+        reason="Available after eligible DHL delivery.",
+    )
+
+
+def _tracking_says_delivered(awb: str, storage_root: Path) -> bool:
+    """Best-effort delivered check via tracking_service (never raises)."""
+    try:
+        from . import tracking_service
+        cache_dir = Path(storage_root) / "outputs" / "_doc_hub_tracking"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        result = tracking_service.get_tracking_status(
+            awb, "DHL", cache_dir, refresh=False,
+        )
+        status = (
+            (result.get("status") or "")
+            if isinstance(result, dict) else ""
+        )
+        return str(status).strip().lower() == "delivered"
+    except Exception:
+        return False
+
+
+def _commercial_package_generate_meta(
+    *,
+    storage_root: Path,
+    batch_id: str,
+    client_name: str,
+    posted: bool,
+    box_type_code: Optional[str],
+) -> Dict[str, Any]:
+    """UI contract for the Generate Commercial Package action (no second composer)."""
+    missing: List[Dict[str, str]] = []
+    box_type_id = None
+    if not batch_id:
+        missing.append({"field": "batch", "reason": "No batch_id on this draft."})
+    if not posted:
+        missing.append({
+            "field": "proforma",
+            "reason": "Post the proforma to wFirma first (commercial invoice source).",
+        })
+    code = (box_type_code or "").strip()
+    if not code:
+        missing.append({
+            "field": "box_type",
+            "reason": "No box profile on the DHL booking — book with a Box Profile first.",
+        })
+    else:
+        try:
+            from .master_data_db import get_box_type_by_code, init_db as init_md
+            md = Path(storage_root) / "master_data.sqlite"
+            init_md(md)
+            box = get_box_type_by_code(md, code)
+            if box is None:
+                missing.append({
+                    "field": "box_type",
+                    "reason": f"Box profile {code!r} not found in box_types master.",
+                })
+            else:
+                box_type_id = int(box.id)
+        except Exception as exc:
+            missing.append({
+                "field": "box_type",
+                "reason": f"Box profile lookup failed: {exc}",
+            })
+    return {
+        "can_generate": len(missing) == 0 and box_type_id is not None,
+        "missing": missing,
+        "box_type_code": code or None,
+        "box_type_id": box_type_id,
+        "endpoint": f"/api/v1/carrier/{quote(batch_id, safe='')}/label-package" if batch_id else None,
+        "client_name": client_name or None,
+    }
+
+
 def _build_complete_package(
     *,
     draft_id: int,
@@ -387,7 +601,8 @@ def _build_complete_package(
     has_lines: bool,
     awb: Optional[str],
     label_present: bool,
-    waybill_present: bool,
+    waybill_present: bool = False,
+    waybill_required: bool = False,
 ) -> Dict[str, Any]:
     """Readiness of the one-click complete package (authoritative bytes only)."""
     missing: List[str] = []
@@ -405,9 +620,10 @@ def _build_complete_package(
 
     if awb:
         if not label_present:
-            missing.append("DHL Label (Historical unavailable — no saved file).")
-        if not waybill_present:
-            missing.append("DHL Waybill (Historical unavailable — no saved file).")
+            missing.append("DHL Transport Label (no saved file).")
+        # Waybill only blocks when DHL actually provided one for this AWB.
+        if waybill_required and not waybill_present:
+            missing.append("DHL Waybill (file missing after it was known present).")
     else:
         missing.append("DHL booking — Available after DHL booking.")
 
