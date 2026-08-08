@@ -591,6 +591,31 @@ def test_whatif_requires_no_authorization_and_writes_nothing():
         assert "$script:PlanOnly" in seg, f"{fn} must be a no-op under -WhatIf"
 
 
+def test_set_service_state_surfaces_sc_exit_code():
+    """#1152 non-elevated Release: sc Access Denied was Out-Null'd into a 60s timeout.
+
+    Set-ServiceState must capture sc.exe output + exit / FAILED code, refuse Access
+    Denied immediately with an elevation hint, and must not pipe sc to Out-Null alone.
+    """
+    body = _read(DEPLOY_SCRIPT)
+    start = body.index("function Set-ServiceState")
+    seg = body[start:]
+    seg = seg[: seg.index("\nfunction ") if "\nfunction " in seg else len(seg)]
+    # The live sc invocation must capture output, not discard it.
+    assert re.search(r"& sc\.exe \$verb \$svc 2>&1", seg), "sc.exe must capture 2>&1"
+    assert not re.search(r"& sc\.exe[^`\n]*\|\s*Out-Null", seg), (
+        "sc.exe must not be piped to Out-Null inside Set-ServiceState — that swallowed Access Denied"
+    )
+    assert "$LASTEXITCODE" in seg or "LASTEXITCODE" in seg
+    assert "Access Denied" in seg or "Access is denied" in seg
+    assert "elevated Administrator" in seg or "net session" in seg
+    assert "FAILED" in seg  # parse sc FAILED <n> text
+    assert "already $Target" in seg or "already" in seg.lower()
+    # Must still wait for the target state after a successful sc call.
+    assert "service_wait_seconds" in seg
+    assert "did not reach $Target" in seg
+
+
 def test_rollback_survives_missing_engine_metadata():
     body = _read(DEPLOY_SCRIPT)
     assert "-Optional" in body, "component manifests must be optional so app-only units restore"

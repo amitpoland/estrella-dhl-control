@@ -232,11 +232,40 @@ function Set-ServiceState {
     param($Cfg, [ValidateSet("Stopped", "Running")][string]$Target)
     $svc = $Cfg.service
     if ($script:PlanOnly) { Write-Host "  would drive $svc to $Target"; return }
-    if ($Target -eq "Stopped") { & sc.exe stop $svc | Out-Null } else { & sc.exe start $svc | Out-Null }
+    # Already there: do not call sc.exe (stop-on-stopped / start-on-running are noisy and
+    # historically collapsed into the generic wait timeout when exit codes were discarded).
+    if ((Get-Service $svc).Status -eq $Target) {
+        Write-Host "  $svc is already $Target"
+        return
+    }
+    $verb = if ($Target -eq "Stopped") { "stop" } else { "start" }
+    # Capture stdout+stderr AND $LASTEXITCODE. Piping to Out-Null alone swallowed Access
+    # Denied (5) during the #1152 release attempts and burned the full service_wait_seconds
+    # on a timeout that looked like a hung service rather than a non-elevated shell.
+    $scOut = @(& sc.exe $verb $svc 2>&1 | ForEach-Object { "$_" })
+    $scCode = $LASTEXITCODE
+    $joined = (($scOut -join " ") -replace '\s+', ' ').Trim()
+    # sc.exe often prints "FAILED <n>:" even when the process exit code is unreliable;
+    # prefer the FAILED code when present.
+    $failed = [regex]::Match($joined, 'FAILED\s+(\d+)')
+    if ($failed.Success) { $scCode = [int]$failed.Groups[1].Value }
+    # Benign: 0 success. 1062 = stop when not running. 1056 = start when already running.
+    $benign = @(0)
+    if ($Target -eq "Stopped") { $benign += 1062 }
+    if ($Target -eq "Running") { $benign += 1056 }
+    if ($scCode -notin $benign) {
+        if ($scCode -eq 5 -or $joined -match 'Access is denied') {
+            throw ("BLOCKED: sc.exe $verb $svc Access Denied (exit $scCode). " +
+                   "Re-run from an elevated Administrator shell (net session must succeed). " +
+                   "sc output: $joined")
+        }
+        throw "BLOCKED: sc.exe $verb $svc failed (exit $scCode): $joined"
+    }
     $deadline = (Get-Date).AddSeconds($Cfg.service_wait_seconds)
     while ((Get-Service $svc).Status -ne $Target -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
     if ((Get-Service $svc).Status -ne $Target) {
-        throw "BLOCKED: $svc did not reach $Target within $($Cfg.service_wait_seconds)s"
+        throw ("BLOCKED: $svc did not reach $Target within $($Cfg.service_wait_seconds)s " +
+               "(sc.exe $verb exit $scCode). Last sc output: $joined")
     }
     Write-Host "  $svc is $Target"
 }
