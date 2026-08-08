@@ -199,5 +199,12 @@ def client(storage):
 
 Unchanged. `.claude/contracts/test-baseline.md` remains the single source of
 truth for deploy pass criteria, and `deploy_qa_reviewer` still reads it. Sharding
-changes how results are *collected*, not what counts as a pass — and the
-aggregate job is red whenever any shard is red or incomplete.
+changes how results are *collected*, not what counts as a deploy pass.
+
+The aggregate job's **Actions exit code** uses
+`junit_summary.py --fail-on incomplete`: it is red only when a shard's XML is
+MISSING or INCOMPLETE. Inherited test failures stay in the step summary (full
+failure list, grouped by file) but do not fail the job — matching the
+operating-model rule that aggregate CI is diagnostic and must not stay
+permanently red on the suite's standing failure set. Local triage without the
+flag (`--fail-on any`, the default) still exits non-zero on any failed test.
