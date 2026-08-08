@@ -9,7 +9,12 @@ Canonical chain:
                      Packing never carried them (manual allocation / legacy).
   Product Master product_local.origin_country → ISO origin (never invent).
 
-Never invents commercial values. Never writes wFirma.
+Incoterm hierarchy (single resolver — no duplicate fields):
+  saved draft.incoterm → Customer Master default_incoterm → unset
+  UI / Preview / Packing / CMR / Invoice all read the resolved value.
+
+Never invents commercial values. Never invents wfirma_product_id.
+wFirma goods writes only through wfirma_product_auto_register (flag-gated).
 """
 from __future__ import annotations
 
@@ -19,6 +24,24 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
+
+
+def resolve_incoterm(
+    draft_incoterm: Optional[str] = None,
+    cm_default_incoterm: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """ONE Incoterm hierarchy for every commercial consumer.
+
+    Returns ``{"value": str|None, "source": "draft"|"customer_master"|"unset"}``.
+    Never invents DAP/EXW — blank stays blank with source ``unset``.
+    """
+    saved = (draft_incoterm or "").strip().upper()
+    if saved:
+        return {"value": saved, "source": "draft"}
+    cm = (cm_default_incoterm or "").strip().upper()
+    if cm:
+        return {"value": cm, "source": "customer_master"}
+    return {"value": None, "source": "unset"}
 
 # Variant fields that Sales Packing owns for commercial documents.
 # client_po is Sales-only (Purchase Packing has no Client PO column).
@@ -382,6 +405,62 @@ def promote_and_enrich_batch_drafts(
     }
 
 
+def seed_blank_draft_incoterms(
+    batch_id: str,
+    *,
+    proforma_db: Path,
+    operator: str = "commercial_authority",
+) -> Dict[str, Any]:
+    """Persist Customer Master default_incoterm onto editable drafts that
+    have a blank saved incoterm. Never overwrites a saved draft value.
+    Never touches posted/converted/approved drafts.
+    """
+    from ..core.config import settings
+    from . import customer_master_db as cmdb
+    from . import proforma_invoice_link_db as pildb
+
+    seeded: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    cm_path = Path(settings.storage_root) / "customer_master.sqlite"
+    if not Path(proforma_db).exists():
+        return {"batch_id": batch_id, "seeded": [], "skipped": [{"reason": "no_proforma_db"}]}
+
+    for d in pildb.list_drafts_for_batch(Path(proforma_db), batch_id):
+        state = (d.draft_state or "").strip()
+        if state not in getattr(pildb, "EDITABLE_STATES", ("draft", "editing", "post_failed")):
+            skipped.append({"draft_id": d.id, "reason": "locked_state", "state": state})
+            continue
+        if (d.incoterm or "").strip():
+            skipped.append({"draft_id": d.id, "reason": "draft_already_set"})
+            continue
+        cid = (getattr(d, "client_contractor_id", None) or "").strip()
+        if not cid:
+            skipped.append({"draft_id": d.id, "reason": "no_contractor_id"})
+            continue
+        try:
+            cm = cmdb.get_customer(cm_path, cid) if cm_path.exists() else None
+        except Exception as exc:
+            skipped.append({"draft_id": d.id, "reason": f"cm_lookup:{exc}"[:120]})
+            continue
+        cm_def = (getattr(cm, "default_incoterm", None) or "").strip().upper() if cm else ""
+        if not cm_def:
+            skipped.append({"draft_id": d.id, "reason": "cm_default_unset"})
+            continue
+        try:
+            pildb.update_draft_fields(
+                Path(proforma_db), int(d.id),
+                {"incoterm": cm_def},
+                operator=operator,
+                expected_updated_at=d.updated_at,
+            )
+            seeded.append({
+                "draft_id": d.id, "incoterm": cm_def, "source": "customer_master",
+            })
+        except Exception as exc:
+            skipped.append({"draft_id": d.id, "reason": f"write:{exc}"[:160]})
+    return {"batch_id": batch_id, "seeded": seeded, "skipped": skipped}
+
+
 def converge_batch_draft_authority(
     batch_id: str,
     *,
@@ -395,6 +474,8 @@ def converge_batch_draft_authority(
     2. Rematch + persist sales product_codes (invoice-scoped matcher)
     3. Promote descriptions (pz_rows or audit stamps) + enrich drafts
     4. Optionally reset editable drafts from refreshed sales rows
+    5. Converge wFirma product mappings (search → reuse / create-if-allowed)
+    6. Seed blank draft Incoterm from Customer Master default
     """
     from . import document_db as ddb
     from . import proforma_invoice_link_db as pildb
@@ -428,4 +509,19 @@ def converge_batch_draft_authority(
             except Exception as exc:
                 resets[-1]["enrich_error"] = str(exc)[:200]
     out["draft_resets"] = resets
+
+    # After PL/EN descriptions exist, converge wFirma goods mapping via the
+    # existing auto-register authority (search-first; create only when allowed).
+    try:
+        from . import wfirma_product_auto_register as _wfar
+        out["wfirma_products"] = _wfar.converge_products_for_batch(
+            batch_id, operator=operator, auto_adopt_exact=True,
+        )
+    except Exception as exc:
+        out["wfirma_products"] = {"ok": False, "error": str(exc)[:300]}
+        out["ok"] = False
+
+    out["incoterms"] = seed_blank_draft_incoterms(
+        batch_id, proforma_db=proforma_db, operator=operator,
+    )
     return out

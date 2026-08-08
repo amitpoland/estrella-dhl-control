@@ -73,12 +73,29 @@ def _seed_packing(batch_id: str, rows: list[dict]) -> None:
 
 # A spy result for the wFirma goods step (never touches the network).
 def _mirror_spy():
+    """Spy for dry-run ensure_products_for_batch."""
     calls = []
 
     def _fake(batch_id, *, dry_run=False, operator="operator"):
         calls.append({"batch_id": batch_id, "dry_run": dry_run})
         return {"batch_id": batch_id, "dry_run": dry_run, "scanned": 0,
                 "created": 0, "errors": []}
+
+    return _fake, calls
+
+
+def _converge_spy():
+    """Spy for live converge_products_for_batch."""
+    calls = []
+
+    def _fake(batch_id, *, operator="operator", auto_adopt_exact=True):
+        calls.append({
+            "batch_id": batch_id,
+            "operator": operator,
+            "auto_adopt_exact": auto_adopt_exact,
+        })
+        return {"batch_id": batch_id, "ok": True, "scanned": 0,
+                "created": 0, "errors": [], "blocked_reasons": []}
 
     return _fake, calls
 
@@ -118,9 +135,9 @@ def test_sync_projects_every_code_with_variant_signature(env):
          "metal_color": "Y", "diamond_weight": 1.0, "quality_string": "F-VVS", "size": "6"},
     ]
     _seed_packing(batch, rows)
-    fake, _calls = _mirror_spy()
+    fake, _calls = _converge_spy()
 
-    with patch("app.services.wfirma_product_auto_register.ensure_products_for_batch", fake):
+    with patch("app.services.wfirma_product_auto_register.converge_products_for_batch", fake):
         res = pms.run_product_master_sync(batch, dry_run=False)
 
     assert res["processed"] == 2
@@ -140,9 +157,9 @@ def test_sync_is_idempotent(env):
     batch = "SHIPMENT_TEST_B"
     rows = [{"product_code": "EJL/26-27/010-1", "design_no": "D010", "karat": "14KT"}]
     _seed_packing(batch, rows)
-    fake, _calls = _mirror_spy()
+    fake, _calls = _converge_spy()
 
-    with patch("app.services.wfirma_product_auto_register.ensure_products_for_batch", fake):
+    with patch("app.services.wfirma_product_auto_register.converge_products_for_batch", fake):
         r1 = pms.run_product_master_sync(batch, dry_run=False)
         r2 = pms.run_product_master_sync(batch, dry_run=False)
 
@@ -167,9 +184,9 @@ def test_sync_never_invents_product_code(env):
         {"product_code": None, "design_no": "NCK"},
     ]
     _seed_packing(batch, rows)
-    fake, _calls = _mirror_spy()
+    fake, _calls = _converge_spy()
 
-    with patch("app.services.wfirma_product_auto_register.ensure_products_for_batch", fake):
+    with patch("app.services.wfirma_product_auto_register.converge_products_for_batch", fake):
         res = pms.run_product_master_sync(batch, dry_run=False)
 
     assert res["processed"] == 3
@@ -181,47 +198,73 @@ def test_sync_never_invents_product_code(env):
     assert all_codes == ["EJL/26-27/020-1"]
 
 
-def test_sync_writes_legal_polish_descriptions(env):
-    """(d) the description step runs live and produces a legal Polish block."""
-    batch = "SHIPMENT_TEST_D"
-    rows = [{"product_code": "EJL/26-27/030-1", "design_no": "D030", "item_type": "ring"}]
-    _seed_packing(batch, rows)
-    fake, _calls = _mirror_spy()
+def test_sync_composes_description_step_live(env):
+    """(d) live sync invokes packing description regenerate (non-dry).
 
-    with patch("app.services.wfirma_product_auto_register.ensure_products_for_batch", fake):
+    Thin packing seeds only yield ITEM_TRANSLATIONS generic PL
+    ("Pierścionek — wyrób jubilerski…"), which description_engine
+    refuse-closes without persisting. Canonical PL/EN for wFirma
+    converge is PZ/customs / approved product_descriptions authority —
+    pin that a pre-seeded legal block survives the sync compose step.
+    """
+    batch = "SHIPMENT_TEST_D"
+    code = "EJL/26-27/030-1"
+    rows = [{
+        "product_code": code, "design_no": "D030",
+        "item_type": "ring", "karat": "14KT", "metal_color": "W",
+        "diamond_weight": 0.5, "quality_string": "G-VS", "size": "7",
+    }]
+    _seed_packing(batch, rows)
+    ddb.upsert_product_description(
+        product_code=code,
+        item_type="RING",
+        name_pl="Pierścionek",
+        description_pl="Pierścionek złoto białe 585 z diamentami 0,50 ct G-VS",
+        description_en="Ring 14KT white gold with diamonds 0.50 ct G-VS",
+        material_pl="złoto białe 585",
+        purpose_pl="do noszenia",
+        description_block="Pierścionek złoto białe 585 z diamentami 0,50 ct G-VS",
+        description_line="Pierścionek złoto białe 585 z diamentami 0,50 ct G-VS",
+        source="manual",
+    )
+    fake, _calls = _converge_spy()
+
+    with patch("app.services.wfirma_product_auto_register.converge_products_for_batch", fake):
         res = pms.run_product_master_sync(batch, dry_run=False)
 
-    # the composed description step reported a live (non-dry) write
     assert res["descriptions"].get("dry_run") is False
-    row = ddb.get_product_description("EJL/26-27/030-1")
+    assert res["descriptions"].get("scanned") == 1
+    row = ddb.get_product_description(code)
     assert row is not None
-    assert (row.get("description_pl") or "").strip() != ""
+    assert row.get("source") == "manual"
+    assert "diamentami" in (row.get("description_pl") or "")
 
 
-def test_mirror_step_runs_dry_run_zero_creates(env):
-    """(e) the wFirma goods step is always invoked in dry-run (no create calls)."""
+def test_mirror_step_runs_live_converge(env):
+    """(e) live sync converges wFirma goods (reuse/create-gated); dry-run uses ensure."""
     batch = "SHIPMENT_TEST_E"
     _seed_packing(batch, [{"product_code": "EJL/26-27/040-1", "design_no": "D040"}])
-    fake, calls = _mirror_spy()
+    fake, calls = _converge_spy()
 
-    with patch("app.services.wfirma_product_auto_register.ensure_products_for_batch", fake):
+    with patch("app.services.wfirma_product_auto_register.converge_products_for_batch", fake):
         pms.run_product_master_sync(batch, dry_run=False)
 
     assert len(calls) == 1
-    assert calls[0]["dry_run"] is True
+    assert calls[0]["batch_id"] == batch
+    assert calls[0]["auto_adopt_exact"] is True
 
 
 def test_status_envelope_shape_after_run(env):
     """(f) status endpoint returns the canonical four-questions envelope."""
     batch = "SHIPMENT_TEST_F"
     _seed_packing(batch, [{"product_code": "EJL/26-27/050-1", "design_no": "D050"}])
-    fake, _calls = _mirror_spy()
+    fake, _calls = _converge_spy()
 
     # before any run: honest 'never run'
     pre = pms.get_status(batch)
     assert pre["ever_run"] is False and pre["running"] is False
 
-    with patch("app.services.wfirma_product_auto_register.ensure_products_for_batch", fake):
+    with patch("app.services.wfirma_product_auto_register.converge_products_for_batch", fake):
         pms.run_product_master_sync(batch, dry_run=False)
 
     st = pms.get_status(batch)

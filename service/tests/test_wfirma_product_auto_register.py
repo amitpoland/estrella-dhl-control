@@ -48,6 +48,23 @@ def _seed_invoice_lines(documents_db: Path, batch_id: str,
             )
 
 
+def _seed_canonical_descriptions(rows: List[Tuple[str, str, str]]) -> None:
+    """Establish PL/EN product_descriptions — required before live create."""
+    from app.services import document_db as ddb
+    for pc, desc, _hsn in rows:
+        ddb.upsert_product_description(
+            product_code=pc,
+            item_type="RING",
+            name_pl=f"Produkt {pc}",
+            description_pl=f"Produkt {pc}",
+            material_pl="złoto",
+            purpose_pl="biżuteria",
+            description_block=f"Produkt {pc}",
+            description_en=desc or f"Product {pc}",
+            description_line=f"Produkt {pc}",
+        )
+
+
 @pytest.fixture
 def isolated_dbs(tmp_path, monkeypatch):
     from app.core.config import settings as _s
@@ -353,8 +370,9 @@ class TestEnsureProductsForBatch:
 
     def test_missing_flag_on_calls_create_and_mirrors(self, isolated_dbs, monkeypatch):
         bid = "B_FLAG_ON"
-        _seed_invoice_lines(isolated_dbs / "documents.db", bid,
-                            _awb_6049349806_lines()[:2])
+        rows = _awb_6049349806_lines()[:2]
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid, rows)
+        _seed_canonical_descriptions(rows)
         from app.core.config import settings as _s
         monkeypatch.setattr(_s, "wfirma_create_product_allowed", True, raising=False)
 
@@ -391,8 +409,9 @@ class TestEnsureProductsForBatch:
 
     def test_create_failure_writes_no_local_mapping(self, isolated_dbs, monkeypatch):
         bid = "B_CREATE_FAIL"
-        _seed_invoice_lines(isolated_dbs / "documents.db", bid,
-                            _awb_6049349806_lines()[:1])
+        rows = _awb_6049349806_lines()[:1]
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid, rows)
+        _seed_canonical_descriptions(rows)
         from app.core.config import settings as _s
         monkeypatch.setattr(_s, "wfirma_create_product_allowed", True, raising=False)
 
@@ -416,8 +435,9 @@ class TestEnsureProductsForBatch:
         """Second invocation: search-first finds the now-mirrored code in
         wFirma → existing_mapped, never calls create again."""
         bid = "B_IDEMPOTENT"
-        _seed_invoice_lines(isolated_dbs / "documents.db", bid,
-                            _awb_6049349806_lines()[:1])
+        rows = _awb_6049349806_lines()[:1]
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid, rows)
+        _seed_canonical_descriptions(rows)
         from app.core.config import settings as _s
         monkeypatch.setattr(_s, "wfirma_create_product_allowed", True, raising=False)
 
@@ -529,8 +549,9 @@ class TestEndpoints:
 
     def test_write_endpoint_honors_flag_on(self, isolated_dbs, client, monkeypatch):
         bid = "B_WRITE_FLAG_ON"
-        _seed_invoice_lines(isolated_dbs / "documents.db", bid,
-                            _awb_6049349806_lines()[:1])
+        rows = _awb_6049349806_lines()[:1]
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid, rows)
+        _seed_canonical_descriptions(rows)
         from app.core.config import settings as _s
         monkeypatch.setattr(_s, "wfirma_create_product_allowed", True, raising=False)
 
@@ -636,8 +657,9 @@ class TestReservationMappingMirror:
 
     def test_created_writes_reservation_mapping(self, isolated_dbs, monkeypatch):
         bid = "B_MIRROR_CREATED"
-        _seed_invoice_lines(isolated_dbs / "documents.db", bid,
-                            _awb_6049349806_lines()[:1])
+        rows = _awb_6049349806_lines()[:1]
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid, rows)
+        _seed_canonical_descriptions(rows)
         _seed_reservation_queue_db(isolated_dbs)
         from app.core.config import settings as _s
         monkeypatch.setattr(_s, "wfirma_create_product_allowed", True, raising=False)

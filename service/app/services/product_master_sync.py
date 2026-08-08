@@ -9,16 +9,18 @@ targets an existing store, through its existing owner:
         → cpa_product_service.upsert_product_master_from_packing  (product_master)
         → design_product_bridge.populate_from_packing            (design_product_mapping)
         → description_engine.regenerate_descriptions_for_packing_lines (product_descriptions)
-        → wfirma_product_auto_register.ensure_products_for_batch  (wfirma_product_mirror, PREVIEW only)
+        → wfirma_product_auto_register.converge_products_for_batch
+          (search → reuse exact product_code; create only when
+           WFIRMA_CREATE_PRODUCT_ALLOWED + canonical PL/EN exist)
 
 Governance (Slice 1 constraints):
   * product_code is NEVER minted here — it is read from packing_lines (minted by
     document_db.store_invoice_lines). Blank-product_code rows are skipped.
   * The Master stays ADVISORY — this module reads packing and writes the Master;
     it gates nothing and never blocks billing / packing operations.
-  * The wFirma goods step runs in DRY-RUN (match/preview) only — it never creates
-    a wFirma product. Live create stays behind wfirma_create_product_allowed and
-    the C-1w write-path slices.
+  * Live wFirma goods converge reuses existing goods by product_code (mirror
+    adopt). Live create stays behind wfirma_create_product_allowed + PL/EN
+    eligibility. Dry-run sync still search/match only.
   * No schema migration: the variant identity is stored in the existing
     product_master.normalized_design_attributes column (see cpa_product_service
     .build_variant_signature).
@@ -64,7 +66,8 @@ def run_product_master_sync(
     ``dry_run=True``  → preview only: writes NOTHING, reports would-be counts.
                         Does not touch the persisted sync-status row.
     ``dry_run=False`` → writes product_master + design_product_mapping +
-                        product_descriptions; wFirma goods step stays preview.
+                        product_descriptions; then converges wFirma goods
+                        (reuse exact matches; create only when flag + PL/EN).
 
     Returns a summary shaped for the canonical status contract plus the
     per-stage sub-results.
@@ -94,7 +97,7 @@ def run_product_master_sync(
             1 for r in packing_rows if not str(r.get("product_code") or "").strip()
         )
         desc = _safe_descriptions(batch_id, dry_run=True)
-        mirror = _safe_mirror_preview(batch_id)
+        mirror = _safe_mirror_dry_run(batch_id)
         return {
             "batch_id":    batch_id,
             "dry_run":     True,
@@ -138,9 +141,12 @@ def run_product_master_sync(
     desc = _safe_descriptions(batch_id, dry_run=False)
     errors.extend(str(e) for e in (desc.get("errors") or []))
 
-    # 4. wFirma goods MIRROR — preview/match only, never creates.
-    mirror = _safe_mirror_preview(batch_id)
+    # 4. wFirma goods converge (search → reuse; create if flag + PL/EN ready).
+    mirror = _safe_product_converge(batch_id)
     errors.extend(str(e) for e in (mirror.get("errors") or []))
+    for br in (mirror.get("blocked_reasons") or []):
+        if br:
+            errors.append(str(br))
 
     duration_ms = int((time.time() - started) * 1000)
     last_error = errors[0] if errors else ""
@@ -185,13 +191,27 @@ def _safe_descriptions(batch_id: str, *, dry_run: bool) -> Dict[str, Any]:
         return {"errors": [f"descriptions: {exc}"]}
 
 
-def _safe_mirror_preview(batch_id: str) -> Dict[str, Any]:
-    """wFirma goods mirror in DRY-RUN — search/match only, zero create calls."""
+def _safe_mirror_dry_run(batch_id: str) -> Dict[str, Any]:
+    """Dry-run search/match only — zero wFirma writes, zero local adopt."""
     from . import wfirma_product_auto_register as auto
     try:
         return auto.ensure_products_for_batch(batch_id, dry_run=True)
     except Exception as exc:
-        log.warning("[product_master_sync] mirror preview failed: %s", exc)
+        log.warning("[product_master_sync] mirror dry-run failed: %s", exc)
+        return {"errors": [f"mirror: {exc}"]}
+
+
+def _safe_product_converge(batch_id: str) -> Dict[str, Any]:
+    """Live converge after descriptions: search → reuse exact code;
+    create only when WFIRMA_CREATE_PRODUCT_ALLOWED + canonical PL/EN exist.
+    """
+    from . import wfirma_product_auto_register as auto
+    try:
+        return auto.converge_products_for_batch(
+            batch_id, operator="product_master_sync", auto_adopt_exact=True,
+        )
+    except Exception as exc:
+        log.warning("[product_master_sync] product converge failed: %s", exc)
         return {"errors": [f"mirror: {exc}"]}
 
 

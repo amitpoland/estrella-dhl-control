@@ -1284,10 +1284,30 @@ def adopt_pending_found_for_batch(
         if status == "matched" and wfid:
             skipped.append({"product_code": pc, "reason": "already_matched"})
         elif status == "pending_adoption" and wfid:
-            if wfdb.adopt_pending_product(pc):
+            # Mirror-first adopt so Proforma readiness (mirror read) unblocks.
+            # Cache-only adopt_pending_product left the mirror empty → duplicate
+            # "missing wfirma_product_id" blockers after a supposedly successful
+            # batch adopt.
+            try:
+                _ar = _wfar.adopt_exact_product_code(
+                    pc,
+                    wfirma_product_id=wfid,
+                    product_name_pl=(row.get("product_name_pl") or ""),
+                    unit=(row.get("unit") or "szt."),
+                )
+            except Exception as _exc:
+                skipped.append({
+                    "product_code": pc,
+                    "reason": f"adopt_failed:{type(_exc).__name__}",
+                })
+                continue
+            if _ar.get("ok"):
                 adopted.append(pc)
-            else:                       # lost a race / row changed under us
-                skipped.append({"product_code": pc, "reason": "adopt_no_op"})
+            else:
+                skipped.append({
+                    "product_code": pc,
+                    "reason": (_ar.get("error") or "adopt_no_op")[:160],
+                })
         elif not row:
             skipped.append({"product_code": pc, "reason": "not_resolved_yet"})
         elif not wfid:

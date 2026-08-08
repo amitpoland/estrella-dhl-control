@@ -2422,6 +2422,23 @@ def auto_create_draft_from_sales_packing(
         # single shared blob is the #593 Cluster A pollution bug.
         source_json   = json.dumps(source,   ensure_ascii=False, sort_keys=True)
         editable_json = json.dumps(editable, ensure_ascii=False, sort_keys=True)
+        # Birth Incoterm: Customer Master default when contractor known.
+        # Hierarchy seed only — never invents DAP/EXW.
+        birth_incoterm = None
+        if cid:
+            try:
+                from ..core.config import settings as _cfg
+                from . import customer_master_db as _cmdb
+                _cm_path = Path(_cfg.storage_root) / "customer_master.sqlite"
+                if _cm_path.exists():
+                    _cm = _cmdb.get_customer(_cm_path, cid)
+                    if _cm is not None:
+                        birth_incoterm = (
+                            str(getattr(_cm, "default_incoterm", None) or "")
+                            .strip().upper() or None
+                        )
+            except Exception:
+                birth_incoterm = None
         cur = conn.execute(
             """
             INSERT INTO proforma_drafts
@@ -2431,15 +2448,15 @@ def auto_create_draft_from_sales_packing(
                  draft_state, draft_version, editable_lines_json,
                  service_charges_json, buyer_override_json,
                  ship_to_override_json, payment_terms_json, remarks,
-                 wfirma_proforma_fullnumber, client_contractor_id)
+                 wfirma_proforma_fullnumber, client_contractor_id, incoterm)
             VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?,
                     ?, 1, ?,
-                    '[]', '{}', '{}', '{}', '', '', ?)
+                    '[]', '{}', '{}', '{}', '', '', ?, ?)
             """,
             (str(batch_id), str(client_name), legacy_status,
              str(currency or "").upper(),
              source_json, now, now,
-             initial_state, editable_json, cid),
+             initial_state, editable_json, cid, birth_incoterm),
         )
         conn.commit()
         new_id = int(cur.lastrowid or 0)
@@ -3975,6 +3992,9 @@ _CM_COMMERCIAL_FIELDS: frozenset = frozenset([
     # for back-compat but no longer leaves amount=0.
     "insurance_amount",
     "insurance_formula_basis",
+    # Incoterm — Customer Master default_incoterm. Blank draft only is filled
+    # when the apply path includes this key; never invents a code.
+    "incoterm",
 ])
 
 
@@ -4062,6 +4082,7 @@ def apply_customer_commercial_to_draft(
             for k in ("method", "days", "invoice_language_id")
         },
         "vat_code": d.vat_code,
+        "incoterm": d.incoterm,
         "freight": next(
             (c for c in existing_charges if c.get("charge_type") == "freight"), None
         ),
@@ -4069,6 +4090,12 @@ def apply_customer_commercial_to_draft(
             (c for c in existing_charges if c.get("charge_type") == "insurance"), None
         ),
     }
+
+    # ── Incoterm (blank-draft fill or explicit apply) ─────────────────────
+    new_incoterm = d.incoterm  # default unchanged
+    if "incoterm" in updates and updates["incoterm"] is not None:
+        _inc = str(updates["incoterm"]).strip().upper()
+        new_incoterm = _inc or None
 
     # ── Compute new payment_terms ─────────────────────────────────────────
     new_pt = dict(existing_pt)
@@ -4198,6 +4225,7 @@ def apply_customer_commercial_to_draft(
             for k in ("method", "days", "invoice_language_id")
         },
         "vat_code": new_vat_code,
+        "incoterm": new_incoterm,
         "freight": next(
             (c for c in new_charges if c.get("charge_type") == "freight"), None
         ),
@@ -4214,6 +4242,7 @@ def apply_customer_commercial_to_draft(
         "draft_state=?", "updated_at=?",
         "payment_terms_json=?", "service_charges_json=?",
         "vat_code=?", "decision_source=?",
+        "incoterm=?",
     ]
     args: List[Any] = [
         new_state, now_ts,
@@ -4221,6 +4250,7 @@ def apply_customer_commercial_to_draft(
         json.dumps(new_charges, ensure_ascii=False, sort_keys=True),
         new_vat_code,
         new_decision_source,
+        new_incoterm,
     ]
     args.append(int(draft_id))
 

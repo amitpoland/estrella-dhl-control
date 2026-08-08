@@ -95,16 +95,19 @@ def test_batch_adopt_classifies_and_adopts_only_found_pending():
     }
     adopted_calls = []
 
-    def _fake_adopt(pc):
+    def _fake_adopt_exact(pc, **kwargs):
         adopted_calls.append(pc)
-        return products.get(pc, {}).get("sync_status") == "pending_adoption" \
+        ok = products.get(pc, {}).get("sync_status") == "pending_adoption" \
             and bool(products.get(pc, {}).get("wfirma_product_id"))
+        return {"ok": ok, "product_code": pc,
+                "error": "" if ok else "adopt_no_op"}
 
     with patch("app.services.document_db.get_invoice_lines_for_batch",
                return_value=_invoice_rows("PENDING1", "PENDING2", "MATCHED1",
                                           "NOWFID1", "MISSING1")), \
          patch("app.services.wfirma_db.get_products_batch", return_value=products), \
-         patch("app.services.wfirma_db.adopt_pending_product", side_effect=_fake_adopt):
+         patch("app.services.wfirma_product_auto_register.adopt_exact_product_code",
+               side_effect=_fake_adopt_exact):
         resp = cap.adopt_pending_found_for_batch("BATCH_X", x_operator=None)
 
     data = json.loads(resp.body)
@@ -114,7 +117,7 @@ def test_batch_adopt_classifies_and_adopts_only_found_pending():
     assert data["adopted_count"] == 2
     assert sorted(data["adopted"]) == ["PENDING1", "PENDING2"]
 
-    # adopt_pending_product is called ONLY for the found-pending rows
+    # mirror-first adopt is called ONLY for the found-pending rows
     assert sorted(adopted_calls) == ["PENDING1", "PENDING2"]
 
     reasons = {s["product_code"]: s["reason"] for s in data["skipped"]}
@@ -127,7 +130,8 @@ def test_batch_adopt_empty_batch_is_safe():
     from app.api import routes_wfirma_capabilities as cap
     with patch("app.services.document_db.get_invoice_lines_for_batch", return_value=[]), \
          patch("app.services.wfirma_db.get_products_batch", return_value={}), \
-         patch("app.services.wfirma_db.adopt_pending_product", return_value=False) as m:
+         patch("app.services.wfirma_product_auto_register.adopt_exact_product_code",
+               return_value={"ok": False}) as m:
         resp = cap.adopt_pending_found_for_batch("BATCH_EMPTY", x_operator=None)
     data = json.loads(resp.body)
     assert data["adopted_count"] == 0 and data["considered"] == 0
@@ -136,7 +140,7 @@ def test_batch_adopt_empty_batch_is_safe():
 
 def test_batch_adopt_only_considers_this_batch_codes():
     """A code that is pending_adoption but is NOT in this batch's invoice_lines
-    must never be passed to adopt_pending_product — batch scoping bounds which
+    must never be passed to adopt_exact_product_code — batch scoping bounds which
     codes the call may adopt (reviewer-challenge: cross-batch scoping)."""
     from app.api import routes_wfirma_capabilities as cap
     calls = []
@@ -147,8 +151,10 @@ def test_batch_adopt_only_considers_this_batch_codes():
          patch("app.services.wfirma_db.get_products_batch",
                return_value={"IN_BATCH": {"sync_status": "pending_adoption",
                                           "wfirma_product_id": "9"}}), \
-         patch("app.services.wfirma_db.adopt_pending_product",
-               side_effect=lambda pc: (calls.append(pc), True)[1]):
+         patch("app.services.wfirma_product_auto_register.adopt_exact_product_code",
+               side_effect=lambda pc, **kw: (
+                   calls.append(pc), {"ok": True, "product_code": pc}
+               )[1]):
         resp = cap.adopt_pending_found_for_batch("BATCH_Y", x_operator=None)
     data = json.loads(resp.body)
     assert data["adopted"] == ["IN_BATCH"]
@@ -184,7 +190,7 @@ def test_batch_endpoint_registered_and_local_only(cap_src):
             and isinstance(fn.body[0].value.value, str)):
         fn.body = fn.body[1:]
     body = ast.unparse(fn).lower()
-    assert "adopt_pending_product" in body
+    assert "adopt_exact_product_code" in body
     for forbidden in ("wfirma_client", "create_product", "create_warehouse_pz"):
         assert forbidden not in body, (
             f"batch adopt must be local-only — found wFirma-write token {forbidden!r}"

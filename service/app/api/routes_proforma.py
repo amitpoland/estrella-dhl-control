@@ -4851,6 +4851,21 @@ def _customer_master_suggestions(d: "pildb.ProformaDraft",
         return stub
 
 
+def _resolve_draft_incoterm(d: "pildb.ProformaDraft") -> Dict[str, Optional[str]]:
+    """Resolve Incoterm via draft → Customer Master default → unset."""
+    from ..services.commercial_authority import resolve_incoterm
+    cm_def = None
+    cid = (getattr(d, "client_contractor_id", None) or "").strip()
+    if cid:
+        try:
+            cm = get_customer_master(_customer_master_db_path(), cid)
+            if cm is not None:
+                cm_def = getattr(cm, "default_incoterm", None)
+        except Exception:
+            cm_def = None
+    return resolve_incoterm(getattr(d, "incoterm", None), cm_def)
+
+
 def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
     """Full editable payload — parses the JSON blobs into native lists/dicts
     so the dashboard can render without a second decode step."""
@@ -4877,6 +4892,8 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         float(ln.get("unit_price", 0) or 0) <= 0
         for ln in editable_lines
     )
+
+    _inc_res = _resolve_draft_incoterm(d)
 
     full = {
         **_draft_to_summary(d),
@@ -4914,7 +4931,12 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "fx_table_date":         getattr(d, "fx_rate_date", None),     # returned NBP table date
         "source_currency":       getattr(d, "source_currency", None),
         "fx_cross_rate":         getattr(d, "fx_cross_rate", None),    # source→doc via PLN
+        # Incoterm hierarchy: saved draft → Customer Master default → unset.
+        # `incoterm` remains the SAVED draft value (PATCH target). Display /
+        # Preview / Packing / CMR consumers use `incoterm_resolved`.
         "incoterm":              getattr(d, "incoterm", None),
+        "incoterm_resolved":     _inc_res.get("value"),
+        "incoterm_source":       _inc_res.get("source"),
         # Wireframe rebuild Slice 1 — additive display fields. Stored on the
         # draft since Phase 7 but never surfaced; read-only projection.
         "vat_code":              getattr(d, "vat_code", None),
@@ -6562,7 +6584,8 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         )
 
     # ── Incoterm + insurance section ───────────────────────────────────────────
-    _incoterm_val  = _safe(d.incoterm) if d.incoterm else "—"
+    _inc_res = _resolve_draft_incoterm(d)
+    _incoterm_val  = _safe(_inc_res.get("value")) if _inc_res.get("value") else "—"
     try:
         _ins_eur = float(d.insurance_eur)
         _insurance_val = f"{_ins_eur:.2f} EUR"
@@ -7264,17 +7287,36 @@ def _repair_hint_for_blocker(reason: str) -> str:
     if "customer" in r or "kontrahent" in r or "contractor" in r:
         return ("Fix the customer mapping in wfirma_customers / Customer "
                 "Master for this client, then re-check readiness.")
-    if "name_pl" in r or "commercial description" in r or "product_descriptions" in r:
+    if "name_pl" in r or "commercial description" in r or "product_descriptions" in r \
+            or "canonical pl/en" in r:
         return ("Promote PZ/audit bilingual descriptions into "
                 "product_descriptions and enrich the draft "
                 "(packing sync / PZ process / "
                 "enrich-from-product-descriptions). Not a sales-price issue.")
+    if "wfirma_create_product_allowed" in r or "wfirma_create_product" in r:
+        return ("Enable WFIRMA_CREATE_PRODUCT_ALLOWED to create missing wFirma "
+                "goods (search-first auto-register), or adopt an existing "
+                "wFirma product_code match. Not a sales-price issue.")
+    if "not matched in wfirma_products" in r or "unresolved in wfirma_products" in r \
+            or "missing wfirma_product_id" in r:
+        return ("Register/adopt the missing product_codes via "
+                "POST /api/v1/wfirma/goods/auto-register/{batch_id} "
+                "(create only when WFIRMA_CREATE_PRODUCT_ALLOWED). "
+                "Do not invent wfirma_product_id.")
+    if "stale_authority_refused" in r or "non-authority description" in r:
+        return ("Establish canonical PL/EN product_descriptions before "
+                "wFirma goods create. Not a sales-price issue.")
     if "unmapped" in r or "no product code" in r or "carry no product" in r:
         return ("Re-run sales packing matcher against purchase packing "
                 "(invoice-scoped lot resolution), then reset the draft from "
                 "sales packing so dropped designs re-enter editable lines.")
-    if "unit_price" in r or "sales price" in r or "sales-packing authority" in r \
-            or "authority" in r:
+    if "unit_price" in r or "sales price" in r or "sales-packing authority" in r:
+        return ("Import/refresh sales prices from the sales packing list so "
+                "every line has unit_price and totals match the "
+                "sales-packing authority.")
+    # Narrow leftover "authority" matches — never map product/create gates
+    # to the sales-price repair hint (was the misleading catch-all).
+    if "authority" in r and "sales" in r:
         return ("Import/refresh sales prices from the sales packing list so "
                 "every line has unit_price and totals match the "
                 "sales-packing authority.")
@@ -7490,6 +7532,8 @@ def _derive_draft_readiness(
             continue   # re-derived below with billed-line product_code authority
         if "not matched in wfirma_products" in _rs:
             continue   # section 3 re-derives this draft-scoped (distinct billed codes)
+        if "unresolved in wfirma_products" in _rs:
+            continue   # warehouse batch-wide duplicate of section 3 root cause
         if any(_m in _rs for _m in _STOCK_STATE_MARKERS):
             continue   # section 3b re-derives this draft-scoped (distinct billed codes)
         _add(_rs)
