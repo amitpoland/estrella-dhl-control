@@ -27,7 +27,7 @@ from ..core.config import settings
 from ..core.security import require_api_key
 from ..core.logging import get_logger
 from ..auth.dependencies import require_admin
-from ..core.audit import audit_safe
+from ..core.audit import audit_safe, actor_from_request
 from ..core.role_gate import require_role_or_apikey, MASTER_ADMIN, MASTER_EDITOR
 from ..services.customer_master_db import (
     CustomerMaster,
@@ -468,6 +468,10 @@ def list_customers_endpoint(
         description="omit = active-only (default); 'false' = inactive only; 'true' = active only"),
     limit:       int           = Query(200, ge=1, le=1000, description="Max rows returned"),
     q:           Optional[str] = Query(None, description="Case-insensitive name search (substring)"),
+    missing_incoterm: Optional[bool] = Query(
+        None,
+        description="true = only customers with blank default_incoterm; false = only with a set default",
+    ),
 ) -> JSONResponse:
     """List customers with optional filters. Returns up to `limit` records,
     ordered by most-recently-updated first.
@@ -477,9 +481,16 @@ def list_customers_endpoint(
     """
     init_db(_DB_PATH)  # idempotent schema migrate (e.g. default_incoterm)
     try:
+        # Over-fetch when filtering Incoterm so limit still applies after filter.
+        fetch_limit = limit if missing_incoterm is None else min(1000, max(limit * 5, limit))
         records = list_customers(_DB_PATH, country=country,
-                                 risk_status=risk_status, limit=limit, q=q,
+                                 risk_status=risk_status, limit=fetch_limit, q=q,
                                  active=_resolve_list_active(active))
+        if missing_incoterm is True:
+            records = [c for c in records if not (c.default_incoterm or "").strip()]
+        elif missing_incoterm is False:
+            records = [c for c in records if (c.default_incoterm or "").strip()]
+        records = records[:limit]
     except Exception as exc:
         log.error("list_customers failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"DB error: {exc}")
@@ -887,6 +898,114 @@ def client_master_dictionaries_status() -> JSONResponse:
     return JSONResponse(wdc.get_refresh_status())
 
 
+@router.get(
+    "/incoterm-review",
+    dependencies=[_auth],
+    summary="Customer Master Incoterm operator review (evidence + classification)",
+)
+def customer_incoterm_review_endpoint(
+    q: Optional[str] = Query(None, description="Name / NIP / contractor id search"),
+    country: Optional[str] = Query(None, description="ISO-3166 alpha-2"),
+    contractor_id: Optional[str] = Query(None, description="Exact contractor id"),
+    missing_incoterm: Optional[bool] = Query(
+        None, description="true = blank CM default only",
+    ),
+    classification: Optional[str] = Query(
+        None, description="SET | REVIEW | NO EVIDENCE",
+    ),
+    limit: int = Query(1000, ge=1, le=5000),
+) -> JSONResponse:
+    """Governed operator review surface for default_incoterm.
+
+    Never invents an Incoterm from country. Soft/orphan hints (e.g. UAB→DAP)
+    appear as REVIEW evidence but are never preselected.
+    """
+    from ..services import customer_incoterm_authority as cia
+
+    init_db(_DB_PATH)
+    try:
+        payload = cia.build_incoterm_review(
+            q=q,
+            country=country,
+            contractor_id=contractor_id,
+            missing_incoterm=missing_incoterm,
+            classification=classification,
+            limit=limit,
+        )
+    except Exception as exc:
+        log.error("incoterm_review failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+    return JSONResponse(payload)
+
+
+@router.post(
+    "/incoterm-bulk",
+    dependencies=[_write_auth],
+    summary="Bulk-assign Customer Master default_incoterm (explicit selection + confirm)",
+)
+async def customer_incoterm_bulk_endpoint(request: Request) -> JSONResponse:
+    """Safe bulk assignment.
+
+    Body::
+      {
+        "contractor_ids": ["123", ...],   # required, non-empty
+        "default_incoterm": "DAP",        # required catalogue code (or "" to clear)
+        "confirm": true                   # required literal true
+      }
+
+    Never infers from country. Never selects customers for the operator.
+    After successful CM writes, reseeds blank editable drafts only.
+    """
+    from ..services import customer_incoterm_authority as cia
+
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    if body.get("confirm") is not True:
+        raise HTTPException(
+            status_code=422,
+            detail="confirm must be true — bulk Incoterm assignment requires explicit confirmation",
+        )
+    ids = body.get("contractor_ids")
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=422, detail="contractor_ids must be a non-empty list")
+    if len(ids) > 500:
+        raise HTTPException(status_code=422, detail="contractor_ids capped at 500 per request")
+    if "default_incoterm" not in body:
+        raise HTTPException(status_code=422, detail="default_incoterm is required")
+    code = body.get("default_incoterm")
+    code_s = "" if code is None else str(code).strip().upper()
+
+    assignments = {str(cid).strip(): code_s for cid in ids if str(cid).strip()}
+    if not assignments:
+        raise HTTPException(status_code=422, detail="no valid contractor_ids")
+
+    init_db(_DB_PATH)
+    try:
+        result = cia.apply_customer_incoterms(
+            assignments,
+            operator=actor_from_request(request) or "customer_master_incoterm",
+            reseed_editable=True,
+        )
+    except Exception as exc:
+        log.error("incoterm_bulk failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+
+    if result.get("errors") and not any(u.get("changed") for u in result.get("updated") or []):
+        raise HTTPException(status_code=422, detail=result)
+
+    audit_safe(
+        "customers", "update",
+        ",".join(list(assignments.keys())[:20]),
+        request=request, before=None, after=result,
+        reason="incoterm_bulk",
+    )
+    return JSONResponse(result)
+
+
 @router.get("/{contractor_id}", dependencies=[_auth], summary="Get one customer")
 def get_customer_endpoint(contractor_id: str) -> JSONResponse:
     """Read a customer by wFirma contractor id.  404 if not found."""
@@ -955,7 +1074,29 @@ async def upsert_customer_endpoint(contractor_id: str, request: Request) -> JSON
     log.info("customer_master_upsert contractor_id=%s row_id=%d", contractor_id, row_id)
     audit_safe("customers", "create" if existing is None else "update", contractor_id,
                request=request, before=existing, after=stored)
-    return JSONResponse(status_code=200, content=_customer_to_dict(stored))
+
+    # When default_incoterm changes, reseed blank editable drafts for this
+    # contractor only. Posted/converted drafts stay untouched.
+    draft_reseed: Dict[str, Any] = {"seeded_count": 0, "seeded": [], "skipped": []}
+    before_inc = (getattr(existing, "default_incoterm", None) or "").strip().upper() or None if existing else None
+    after_inc = (getattr(stored, "default_incoterm", None) or "").strip().upper() or None
+    if before_inc != after_inc and after_inc:
+        try:
+            from ..services import customer_incoterm_authority as cia
+            draft_reseed = cia.seed_blank_draft_incoterms_for_contractors(
+                [contractor_id],
+                operator=actor_from_request(request) or "customer_master_incoterm",
+            )
+        except Exception as exc:
+            log.warning(
+                "incoterm_reseed_after_cm_put failed contractor_id=%s: %s",
+                contractor_id, exc,
+            )
+            draft_reseed = {"seeded_count": 0, "error": str(exc)[:200]}
+
+    payload = _customer_to_dict(stored)
+    payload["draft_reseed"] = draft_reseed
+    return JSONResponse(status_code=200, content=payload)
 
 
 @router.delete("/{contractor_id}", dependencies=[_write_auth],

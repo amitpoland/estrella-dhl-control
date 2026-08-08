@@ -563,6 +563,16 @@
     saveCustomerMaster: (clientKey, body) =>
       _put(`${BASE}/customer-master/${encodeURIComponent(clientKey)}`, body),
 
+    // GET /api/v1/customer-master/incoterm-review — operator Incoterm workflow
+    listCustomerIncotermReview: (params) => {
+      const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+      return _get(`${BASE}/customer-master/incoterm-review${qs}`);
+    },
+
+    // POST /api/v1/customer-master/incoterm-bulk — explicit selection + confirm
+    bulkAssignCustomerIncoterm: (body) =>
+      _postM(`${BASE}/customer-master/incoterm-bulk`, body),
+
     // GET /api/v1/customer-master/sync-from-wfirma/preview — read-only, no wFirma write
     previewWfirmaSyncCustomer: () =>
       _get(`${BASE}/customer-master/sync-from-wfirma/preview`),

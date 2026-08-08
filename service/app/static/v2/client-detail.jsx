@@ -139,11 +139,13 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
   const [dicts, setDicts] = React.useState({
     vat_modes: [], currencies: [], languages: [],
     invoice_series: [], proforma_series: [],
+    incoterms: [],
     source_state: {}, fetched_at: null,
   });
   const [dictRefreshing, setDictRefreshing] = React.useState(false);
 
-  const _applyDicts = (d) => setDicts({
+  const _applyDicts = (d) => setDicts(prev => ({
+    ...prev,
     vat_modes:       d.vat_modes       || [],
     currencies:      d.currencies      || [],
     languages:       d.languages       || [],
@@ -151,7 +153,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
     proforma_series: d.proforma_series || [],
     source_state:    d.source_state    || {},
     fetched_at:      d.fetched_at      || null,
-  });
+  }));
 
   // ── Load customer on mount ──────────────────────────────────────────
   React.useEffect(() => {
@@ -177,6 +179,13 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
     PzApi.getCustomerDictionaries()
       .then(res => { if (res.ok && res.data) _applyDicts(res.data); })
       .catch(() => { /* keep empty defaults — operator can still hand-edit IDs */ });
+    PzApi.listIncoterms({ active: 'true' })
+      .then(res => {
+        if (!res.ok) return;
+        const list = (res.data && res.data.incoterms) || [];
+        setDicts(prev => ({ ...prev, incoterms: list }));
+      })
+      .catch(() => {});
   }, []);
 
   const contractorId = (original && original.bill_to_contractor_id) || clientKey;
@@ -1044,6 +1053,29 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                     ))}
                   </select>
                 </label>
+                <label style={_cdLabelStyle}>
+                  <span style={_cdLabelTextStyle}>Default Incoterm</span>
+                  <select data-testid="cd-default_incoterm"
+                    value={val('default_incoterm')}
+                    onChange={e => set('default_incoterm', e.target.value)}
+                    style={_cdInputStyle}>
+                    <option value="">— unset —</option>
+                    {(dicts.incoterms && dicts.incoterms.length
+                      ? dicts.incoterms
+                      : ['EXW','FCA','CPT','CIP','DAP','DPU','DDP','FAS','FOB','CFR','CIF'].map(c => ({ code: c, name: c }))
+                    ).map(i => (
+                      <option key={i.code || i} value={i.code || i}>
+                        {(i.code || i) + (i.name && i.name !== (i.code || i) ? ` — ${i.name}` : '')}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4 }}
+                data-testid="cd-default_incoterm-hint">
+                Canonical commercial default. Blank editable drafts inherit this; posted/converted drafts stay unchanged.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
                 <label style={_cdLabelStyle}>
                   <span style={_cdLabelTextStyle}>Default language</span>
                   <select data-testid="cd-default_language_id"
