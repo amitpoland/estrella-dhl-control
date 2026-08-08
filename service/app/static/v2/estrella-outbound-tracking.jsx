@@ -328,8 +328,44 @@
         )}
 
         {awb && !loading && !tracking && (
-          <div data-testid={testIdRoot + '-err'} style={{ marginTop: 12, fontSize: 12.5, color: 'var(--text-3)' }}>
-            Outbound tracking not available for AWB {awb}{err ? (' (' + err + ')') : ''}.
+          <div data-testid={testIdRoot + '-err'} style={{ marginTop: 14 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <span data-testid={testIdRoot + '-carrier'} style={{
+                fontSize: 12, fontWeight: 800, letterSpacing: '0.04em', color: 'var(--text-2)',
+                padding: '4px 8px', borderRadius: 6, background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+              }}>{String(carrier || 'DHL').toUpperCase()}</span>
+              <span data-testid={testIdRoot + '-awb'} style={{
+                fontSize: 14, fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: 'var(--text)',
+              }}>AWB {awb}</span>
+              <span data-testid={testIdRoot + '-status-badge'} style={{
+                display: 'inline-flex', alignItems: 'center', padding: '5px 12px', borderRadius: 999,
+                background: 'var(--badge-neutral-bg)', color: 'var(--text-2)', border: '1px solid var(--border)',
+                fontSize: 12, fontWeight: 800, letterSpacing: '0.03em', textTransform: 'uppercase',
+              }}>PENDING</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 10 }}>
+              Live tracking unavailable{err ? (' — ' + err) : ''}. You can still open DHL’s public tracker.
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <a
+                href={'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=' + encodeURIComponent(awb)}
+                target="_blank" rel="noopener noreferrer"
+                data-testid={testIdRoot + '-url'}
+                style={Object.assign({}, btn, { color: 'var(--accent)', borderColor: 'var(--accent)' })}
+              >
+                Open DHL tracking ↗
+              </a>
+            </div>
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer' }}>Diagnostic</summary>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4, fontFamily: 'ui-monospace, monospace' }}>
+                GET /api/v1/tracking/&#123;awb&#125; · outbound customer AWB only
+              </div>
+            </details>
+            {draftId ? <LifecycleStrip trackingStatus="" delivery={delivery} /> : null}
+            <div data-testid={testIdRoot + '-dhl-notify-note'} style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+              DHL carrier email/SMS: requested on booking when recipient contact is present (MyDHL shipmentNotification) — separate from Estrella delivery confirmation.
+            </div>
           </div>
         )}
 
