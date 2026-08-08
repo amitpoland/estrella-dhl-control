@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import statistics
 from datetime import datetime, timezone
 from pathlib import Path
@@ -188,6 +189,46 @@ def _first_timeline_ts(timeline: List[Dict[str, Any]], names: Tuple[str, ...]) -
         if ev.get("event") in want:
             return _parse_iso(ev.get("ts"))
     return None
+
+
+def _earliest_timeline_ts(timeline: List[Dict[str, Any]]) -> Optional[datetime]:
+    earliest: Optional[datetime] = None
+    for ev in timeline:
+        if not isinstance(ev, dict):
+            continue
+        ts = _parse_iso(ev.get("ts"))
+        if ts is None:
+            continue
+        if earliest is None or ts < earliest:
+            earliest = ts
+    return earliest
+
+
+def _batch_id_month_start(batch_id: str) -> Optional[datetime]:
+    """Parse SHIPMENT_<awb>_YYYY-MM_<hash> → first day of that month (UTC)."""
+    m = re.search(r"_(\d{4})-(\d{2})_", str(batch_id or ""))
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), 1, tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _resolve_created_at(
+    audit: Dict[str, Any],
+    timeline: List[Dict[str, Any]],
+    batch_id: str,
+) -> Optional[datetime]:
+    """Best-effort created anchor for age / residue — never invents delivery."""
+    created = _first_timeline_ts(timeline, ("batch_created", "awb_uploaded"))
+    if created is None:
+        created = _parse_iso(audit.get("created_at"))
+    if created is None:
+        created = _earliest_timeline_ts(timeline)
+    if created is None:
+        created = _batch_id_month_start(batch_id)
+    return created
 
 
 def _timeline_has(timeline: List[Dict[str, Any]], names) -> bool:
@@ -362,9 +403,7 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
 
     stage_id, stage_started = _current_stage_from_milestones(milestones, classification)
 
-    created_at = _first_timeline_ts(timeline, ("batch_created", "awb_uploaded"))
-    if created_at is None:
-        created_at = _parse_iso(audit.get("created_at"))
+    created_at = _resolve_created_at(audit, timeline, batch_id)
 
     delivered_at = tracking.get("delivered_at")
     if delivered_at is None:
@@ -405,6 +444,17 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
     elif classification == "exception":
         transport_status = "Exception"
 
+    # Historical Unresolved residue — after transport truth is known; does not invent Delivered.
+    if _is_historical_unresolved(
+        classification=classification,
+        customs_complete=customs_complete,
+        has_movement=has_movement,
+        created_at=created_at,
+        delivered_at=delivered_at if isinstance(delivered_at, datetime) else None,
+        now=now,
+    ):
+        classification = "historical_unresolved"
+
     try:
         from .dhl_readiness import compute_dhl_readiness
         dhl_status = compute_dhl_readiness(audit).get("dhl_status")
@@ -429,6 +479,7 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
     exc = _inbound_exception(audit, timeline) or tracking.get("exception")
     if exc:
         attention_reasons.append(f"exception:{exc}")
+    # Operational attention only — historical residue is audit/reporting, not Needs Attention.
     if classification == "active" and not has_movement and created_at:
         age = _hours_between(created_at, now)
         if age is not None and age >= NO_MOVEMENT_ATTENTION_HOURS:
@@ -436,7 +487,9 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
     last_blob = " ".join(
         str(x or "") for x in (tracking.get("status"), tracking.get("last_event"))
     ).upper()
-    if any(k in last_blob for k in ("READY FOR COLLECTION", "MISSED", "ATTEMPTED", "COLLECTION")):
+    if classification in ("active", "exception") and any(
+        k in last_blob for k in ("READY FOR COLLECTION", "MISSED", "ATTEMPTED", "COLLECTION")
+    ):
         attention_reasons.append("missed_delivery_or_ready_for_collection")
     if classification == "delivered" and delivered_at is None:
         data_quality.append("delivered_without_timestamp")
@@ -462,6 +515,9 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
             transport_stage_started = pickup_at or tracking.get("arrived_pl_at") or created_at
         stage_age = _hours_between(transport_stage_started, now) if transport_stage_started else stage_age
         stage_started = transport_stage_started or stage_started
+    elif classification == "historical_unresolved":
+        # Keep age visible for audit; stage is frozen reporting residue, not operational stage age growth semantics
+        stage_age = _hours_between(created_at, now) if created_at else stage_age
 
     return {
         "direction": "inbound",
@@ -724,6 +780,39 @@ def _transport_status_label(status: Optional[str], *, has_awb: bool, has_movemen
 
 
 NO_MOVEMENT_ATTENTION_HOURS = 12.0
+
+# Historical Unresolved / data residue — NOT Delivered, NOT deleted.
+# Requires ALL of: no Delivered evidence, no physical carrier movement,
+# customs/PZ complete, and created age well beyond operational handling.
+# Age alone never classifies residue.
+HISTORICAL_UNRESOLVED_HOURS = 30.0 * 24.0  # 30 days
+
+
+def _is_historical_unresolved(
+    *,
+    classification: str,
+    customs_complete: bool,
+    has_movement: bool,
+    created_at: Optional[datetime],
+    delivered_at: Optional[datetime],
+    now: datetime,
+) -> bool:
+    """True when an inbound row is stale customs-complete residue without transport progress.
+
+    Does not invent Delivered. Does not change transport_status labels.
+    """
+    if classification != "active":
+        return False
+    if delivered_at is not None:
+        return False
+    if has_movement:
+        return False
+    if not customs_complete:
+        return False
+    age_h = _hours_between(created_at, now)
+    if age_h is None or age_h < HISTORICAL_UNRESOLVED_HOURS:
+        return False
+    return True
 
 
 def _has_physical_movement(tracking: Dict[str, Any]) -> bool:
@@ -1233,7 +1322,12 @@ def project_logistics(
 
     active_in = [r for r in inbound_rows if r["classification"] == "active"]
     active_out = [r for r in outbound_rows if r["classification"] == "active"]
-    attention = [r for r in all_rows if r.get("needs_attention")]
+    historical = [r for r in all_rows if r["classification"] == "historical_unresolved"]
+    # Operational attention only (excludes historical residue)
+    attention = [
+        r for r in all_rows
+        if r.get("needs_attention") and r["classification"] in ("active", "exception")
+    ]
     delivered_today = []
     today_w = now.astimezone(POLAND_TZ).date()
     for r in all_rows:
@@ -1274,15 +1368,17 @@ def project_logistics(
         rows = [r for r in rows if r["direction"] == "outbound"]
 
     if view == "active":
+        # Operational active + live exceptions — historical residue excluded
         rows = [r for r in rows if r["classification"] in ("active", "exception")]
     elif view == "delivered":
-        # Transport Delivered only — customs/PZ complete is NOT delivered
         rows = [r for r in rows if r["classification"] == "delivered"]
     elif view == "attention":
-        rows = [r for r in rows if r.get("needs_attention")]
+        rows = [r for r in rows if r.get("needs_attention") and r["classification"] in ("active", "exception")]
+    elif view in ("historical", "unresolved", "historical_unresolved"):
+        rows = [r for r in rows if r["classification"] == "historical_unresolved"]
 
     if needs_attention_only:
-        rows = [r for r in rows if r.get("needs_attention")]
+        rows = [r for r in rows if r.get("needs_attention") and r["classification"] in ("active", "exception")]
 
     if stage:
         stage_l = stage.lower()
@@ -1348,17 +1444,27 @@ def project_logistics(
         },
         "data_quality_summary": data_quality_summary,
         "population_notes": {
-            "active_inbound": "AWB present and transport not Delivered/terminal (customs/PZ does not remove Active)",
+            "active_inbound": "operational transport-active (excludes historical_unresolved residue)",
             "active_outbound": "carrier AWB present, tracking not Delivered; booking state=complete is NOT delivered",
+            "historical_unresolved": (
+                "customs/PZ complete + no physical movement + no Delivered evidence "
+                f"+ created age ≥ {HISTORICAL_UNRESOLVED_HOURS / 24.0:.0f}d — audit/reporting only"
+            ),
             "avg_inbound_transit": "only physically delivered with valid start→delivered chronology",
             "avg_outbound_transit": "only physically delivered with authoritative pickup→delivered",
             "customs_complete_still_active": customs_complete_still_active,
         },
     }
 
+    operational_active = len(active_in) + len(active_out)
+    # Include live exceptions in operational active KPI (still need operator eyes)
+    operational_exceptions = sum(1 for r in all_rows if r["classification"] == "exception")
     kpis = {
+        "operational_active": operational_active + operational_exceptions,
         "active_inbound": len(active_in),
         "active_outbound": len(active_out),
+        "operational_exceptions": operational_exceptions,
+        "historical_unresolved": len(historical),
         "needs_attention": len(attention),
         "delivered_today": len(delivered_today),
         "avg_inbound_transit_hours": in_stats.get("average"),
