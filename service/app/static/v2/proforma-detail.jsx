@@ -18,7 +18,7 @@ const PROFORMA_TABS = [
   { id: 'lines',            label: 'Items'               },  // HTML "Items" = editable line items
   { id: 'source',           label: 'Source & Extraction' },  // HTML tab — Backend Pending
   { id: 'logistics',        label: 'Logistics'           },  // HTML tab — Backend Pending
-  { id: 'documents',        label: 'Documents'           },  // HTML tab — Backend Pending
+  { id: 'documents',        label: 'Documents'           },  // Aggregator hub (manifest API)
   { id: 'history',          label: 'Audit Trail'         },  // HTML "Audit Trail" = history
   { id: 'customer_mapping', label: 'Customer Mapping'    },  // EJ Extension
   { id: 'reservation',      label: 'Reservation'         },  // EJ Extension
@@ -4152,6 +4152,252 @@ function ImportClearanceLogisticsPanel({ batchId }) {
   );
 }
 
+// ── Shipment Document Hub (aggregator) ─────────────────────────────────────────
+// Consumes GET /api/v1/shipment-documents/draft/{id}/manifest. Does NOT invent
+// document authorities — Preview/Download only when the backend exposes real URLs
+// (or browser preview for packing/CMR). Groups: Commercial · Transport · DHL · Complete.
+function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOfficialProforma }) {
+  const [manifest, setManifest] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState(null);
+
+  const reload = React.useCallback(() => {
+    if (!draftId || !window.PzApi || !window.PzApi.getShipmentDocumentManifest) {
+      setLoading(false);
+      setErr('Manifest API unavailable');
+      return;
+    }
+    setLoading(true);
+    setErr(null);
+    window.PzApi.getShipmentDocumentManifest(draftId)
+      .then((r) => {
+        if (!r || r.ok === false) {
+          setErr((r && r.error) || 'Failed to load document manifest');
+          setManifest(null);
+          return;
+        }
+        setManifest(r.data || r);
+      })
+      .catch((e) => setErr((e && e.message) || String(e)))
+      .finally(() => setLoading(false));
+  }, [draftId]);
+
+  React.useEffect(() => { reload(); }, [reload]);
+
+  const DOC_META = {
+    draft_proforma: { name: 'Draft Proforma', groupHint: 'Estrella preview before post' },
+    official_proforma: { name: 'Official Proforma (wFirma)', groupHint: 'Posted fiscal PDF' },
+    invoice: { name: 'Invoice PDF (wFirma)', groupHint: 'After Convert' },
+    packing_list: { name: 'Commercial Packing List', groupHint: 'Browser preview' },
+    cmr: { name: 'CMR', groupHint: 'Transport document' },
+    dhl_label: { name: 'DHL Transport Label', groupHint: 'Attach to package' },
+    dhl_waybill: { name: 'DHL Waybill / Hand to Courier', groupHint: 'Courier handover' },
+    dhl_receipt: { name: 'DHL Shipment Receipt', groupHint: 'Operator/customer copy' },
+    dhl_commercial_package: { name: 'DHL Commercial / Customs Package', groupHint: 'Invoice + packing + CN23' },
+  };
+
+  const chipStyle = (status) => {
+    if (status === 'Generated') return { label: status, bg: 'var(--badge-green-bg)', c: 'var(--badge-green-text)' };
+    if (status === 'Historical unavailable') return { label: status, bg: 'var(--badge-amber-bg)', c: 'var(--badge-amber-text)' };
+    if (status === 'Failed' || status === 'Missing') return { label: status, bg: 'var(--badge-red-bg)', c: 'var(--badge-red-text)' };
+    return { label: status || 'Pending', bg: 'var(--badge-neutral-bg)', c: 'var(--badge-neutral-text)' };
+  };
+
+  const actBtn = {
+    padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)',
+    background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
+    cursor: 'pointer', textDecoration: 'none', display: 'inline-block', whiteSpace: 'nowrap',
+  };
+  const actBtnDisabled = { ...actBtn, opacity: 0.45, cursor: 'not-allowed' };
+
+  const openUrl = (url) => {
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const renderDocCard = (d) => {
+    const meta = DOC_META[d.document_type] || { name: d.document_type, groupHint: d.authority };
+    const chip = chipStyle(d.status);
+    const browserPreview = d.reason === 'browser_preview';
+    const previewClick = () => {
+      if (browserPreview && (d.document_type === 'packing_list' || d.document_type === 'cmr')) {
+        onOpenPreview && onOpenPreview(d.document_type === 'packing_list' ? 'packing' : 'cmr');
+        return;
+      }
+      if (d.preview_url) openUrl(d.preview_url);
+    };
+    const downloadClick = () => {
+      if (d.document_type === 'official_proforma' && onDownloadOfficialProforma) {
+        onDownloadOfficialProforma();
+        return;
+      }
+      if (d.download_url) openUrl(d.download_url);
+    };
+    const canPreview = d.preview_available || browserPreview;
+    const canDownload = !!d.download_available && !!d.download_url;
+
+    return (
+      <div key={d.document_type} data-testid={`pf-doc-row-${d.document_type}`}
+        style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, boxShadow: '0 1px 2px var(--shadow)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>{meta.name}</span>
+          <span style={{ padding: '2px 8px', borderRadius: 4, background: chip.bg, color: chip.c, fontSize: 10, fontWeight: 700 }}
+            data-testid={`pf-doc-status-${d.document_type}`}>{chip.label}</span>
+          {d.required_for_complete_package ? (
+            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Required for Complete Package</span>
+          ) : null}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>
+          Authority: {d.authority}{d.reference ? ` · ${d.reference}` : ''}
+          {d.generated_at ? ` · ${d.generated_at}` : ''}
+        </div>
+        {d.reason && d.reason !== 'browser_preview' ? (
+          <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }} data-testid={`pf-doc-pending-${d.document_type}`}>
+            {d.reason}
+          </div>
+        ) : null}
+        <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+          {canPreview ? (
+            <button type="button" onClick={previewClick} data-testid={`pf-doc-${d.document_type}-preview`} style={actBtn}>
+              ◫ Preview
+            </button>
+          ) : null}
+          {canDownload ? (
+            <a href={d.download_url} download data-testid={`pf-doc-${d.document_type}-download`} style={actBtn}
+              onClick={(e) => { if (d.document_type === 'official_proforma' && onDownloadOfficialProforma) { e.preventDefault(); downloadClick(); } }}>
+              ↓ Download
+            </a>
+          ) : null}
+          {!canPreview && !canDownload ? (
+            <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999, opacity: 0.55 }}
+              data-testid={`pf-doc-unavailable-${d.document_type}`}>Not available</span>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
+  const renderGroup = (title, docs, testid) => (
+    <div data-testid={testid} style={{ marginBottom: 22 }}>
+      <PfSectionLabel>{title}</PfSectionLabel>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+        {(docs || []).map(renderDocCard)}
+      </div>
+    </div>
+  );
+
+  const delivery = manifest && manifest.delivery_confirmation;
+  const deliveryBanner = () => {
+    if (!delivery) return null;
+    const st = delivery.operator_status;
+    let label = 'Delivery confirmation';
+    let tone = { bg: 'var(--badge-neutral-bg)', c: 'var(--badge-neutral-text)' };
+    if (st === 'awaiting_customer') {
+      label = 'Awaiting customer confirmation';
+      tone = { bg: 'var(--badge-amber-bg)', c: 'var(--badge-amber-text)' };
+    } else if (st === 'confirmed_good') {
+      label = 'Delivered — confirmed in good condition ✓';
+      tone = { bg: 'var(--badge-green-bg)', c: 'var(--badge-green-text)' };
+    } else if (st === 'issue_reported') {
+      label = 'Delivery issue reported ⚠';
+      tone = { bg: 'var(--badge-red-bg)', c: 'var(--badge-red-text)' };
+    }
+    return (
+      <div data-testid="pf-doc-delivery-status" style={{ marginBottom: 22, padding: 16, borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13.5, fontWeight: 700 }}>Customer delivery confirmation</span>
+          <span style={{ padding: '2px 8px', borderRadius: 4, background: tone.bg, color: tone.c, fontSize: 10, fontWeight: 700 }}>{label}</span>
+        </div>
+        {delivery.awb ? <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>AWB {delivery.awb}</div> : null}
+        {st === 'issue_reported' ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text)' }} data-testid="pf-doc-delivery-issue">
+            <div><strong>Categories:</strong> {(delivery.issue_categories || []).join(', ') || '—'}</div>
+            {delivery.comments ? <div style={{ marginTop: 4 }}><strong>Customer note:</strong> {delivery.comments}</div> : null}
+            {delivery.responded_at ? <div style={{ marginTop: 4, color: 'var(--text-3)' }}>Reported {delivery.responded_at}</div> : null}
+            {(delivery.evidence_ids || []).length > 0 ? (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }} data-testid="pf-doc-delivery-evidence">
+                {delivery.evidence_ids.map((eid) => (
+                  <a key={eid}
+                    href={window.PzApi.deliveryEvidenceUrl(draftId, eid)}
+                    target="_blank" rel="noopener"
+                    data-testid={`pf-doc-delivery-evidence-${eid}`}
+                    style={{ ...actBtn, padding: '4px 8px' }}>
+                    Evidence #{eid}
+                  </a>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {st === 'confirmed_good' && delivery.responded_at ? (
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>Confirmed {delivery.responded_at}</div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const cp = manifest && manifest.groups && manifest.groups.complete_package;
+  const tracking = manifest && manifest.tracking;
+
+  if (loading) {
+    return <div data-testid="pf-detail-documents" style={{ padding: 16, color: 'var(--text-3)' }}>Loading document hub…</div>;
+  }
+  if (err) {
+    return (
+      <div data-testid="pf-detail-documents">
+        <div style={{ padding: 12, color: 'var(--badge-amber-text)', fontSize: 12 }} data-testid="pf-doc-hub-error">{err}</div>
+        <button type="button" onClick={reload} style={actBtn} data-testid="pf-doc-hub-retry">Retry</button>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="pf-detail-documents">
+      <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 14, lineHeight: 1.5 }}>
+        Document &amp; delivery hub — each card shows the real authority. No document is fabricated.
+        {tracking && tracking.awb ? ` Outbound AWB ${tracking.awb} (Unified Tracking).` : ''}
+      </div>
+      {deliveryBanner()}
+      {renderGroup('Commercial', manifest.groups.commercial, 'pf-doc-group-commercial')}
+      {renderGroup('Transport', manifest.groups.transport, 'pf-doc-group-transport')}
+      {renderGroup('DHL / Carrier', manifest.groups.carrier, 'pf-doc-group-carrier')}
+
+      <div data-testid="pf-doc-group-complete" style={{ marginBottom: 22 }}>
+        <PfSectionLabel>Complete Shipment Package</PfSectionLabel>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Download Complete Shipment Package</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+            Deterministic ZIP of authoritative files (official fiscal PDF, packing list, DHL label/waybill/receipt). Available only when every required document is ready.
+          </div>
+          {cp && cp.ready && cp.download_url ? (
+            <a href={cp.download_url} download data-testid="pf-doc-complete-package-download" style={actBtn}>
+              ↓ Download Complete Package
+            </a>
+          ) : (
+            <button type="button" disabled data-testid="pf-doc-complete-package-disabled" style={actBtnDisabled}
+              title={(cp && cp.missing && cp.missing.join('; ')) || 'Not ready'}>
+              Download Complete Package
+            </button>
+          )}
+          {cp && !cp.ready && cp.missing && cp.missing.length ? (
+            <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 8 }} data-testid="pf-doc-complete-package-missing">
+              Missing: {cp.missing.join('; ')}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <DocumentsRegistry batchId={batchId} />
+    </div>
+  );
+}
+
 // ── Documents registry (reuse-only) ─────────────────────────────────────────────
 // Lists the REAL documents recorded for this shipment (purchase/sales invoice,
 // packing lists) with their extraction/review state. Reuses:
@@ -6941,192 +7187,18 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             </div>
           );
         })()}
-        {activeTab === 'documents' && (() => {
-          // REUSE-ONLY read manifest (Wave 4 Item 13). Lists the documents this
-          // proforma draft can produce, each with its REAL availability state and
-          // the EXISTING action to obtain it. No new endpoint, authority, fetch,
-          // or write path — reuses handleDownloadPdf (proforma PDF), the Print
-          // Preview modal (CMR / Packing List), and in-component draft state.
-          // Existing Print/Download flows are preserved, not replaced.
-          const _openPreview = (t) => { setPreviewDocType(t); setShowPreview(true); };
-          // Local do-not-use flag: primary downloads become archived audit
-          // copies (?archived=true) — never a courier-facing action.
-          const _dnu = !!(carrierShipment && carrierShipment.do_not_use);
-          const _dnuBadge = _dnu ? 'DO NOT USE — duplicate/unused label' : null;
-          const _dhlAction = (href, label, testid) => {
-            if (!href) return null;
-            return _dnu
-              ? { label: 'Archived duplicate label', href: `${href}?archived=true`, testid }
-              : { label, href, testid };
-          };
-          const _proformaNo  = liveDraft.wfirma_proforma_fullnumber || (draft && draft.wfirma_proforma_fullnumber) || '';
-          const _invoiceNo   = invoiceProjection.invoiceNumber || (invoiceProjection.invoiceId ? String(invoiceProjection.invoiceId) : '');
-          const _docs = [
-            {
-              key: 'proforma', name: 'Proforma PDF',
-              authority: _proformaNo ? `wFirma proforma ${_proformaNo}` : 'wFirma proforma document',
-              available: canPrint,
-              action: canPrint ? { label: '↓ Download', onClick: handleDownloadPdf, testid: 'pf-doc-proforma-download' } : null,
-              // Print preview (A4 HTML snapshot) — reuse GET /proforma/draft/{id}/preview.html.
-              // Local render, never calls wFirma → available even before posting.
-              secondaryAction: (draft && draft.id) ? { label: '◫ Print preview', onClick: () => { const a = document.createElement('a'); a.href = `/api/v1/proforma/draft/${draft.id}/preview.html`; a.target = '_blank'; a.rel = 'noopener'; document.body.appendChild(a); a.click(); document.body.removeChild(a); }, testid: 'pf-doc-proforma-preview' } : null,
-              pending: canPrint ? null : 'PDF available after this draft is posted to wFirma (⇪ Post to wFirma). Print preview works now.',
-            },
-            {
-              key: 'cmr', name: 'CMR (transport)',
-              authority: cmrPreviewData.cmr_no || 'CMR document (generated)',
-              available: true,
-              action: { label: '◫ Preview', onClick: () => _openPreview('cmr'), testid: 'pf-doc-cmr-preview' },
-              pending: null,
-            },
-            {
-              key: 'packing', name: 'Packing List',
-              authority: 'Packing list (generated)',
-              available: true,
-              action: { label: '◫ Preview', onClick: () => _openPreview('packing'), testid: 'pf-doc-packing-preview' },
-              pending: null,
-            },
-            {
-              key: 'invoice', name: 'Invoice PDF',
-              authority: _invoiceNo ? `wFirma invoice ${_invoiceNo}` : 'wFirma invoice document',
-              available: false,
-              action: null,
-              pending: alreadyConverted
-                ? `Invoice ${_invoiceNo || 'created'} — the PDF is served by wFirma; the app does not expose an invoice-PDF download endpoint yet.`
-                : 'Available after Convert to Invoice (toolbar).',
-            },
-            {
-              key: 'dhl_label', name: 'DHL Transport Label',
-              authority: carrierShipment && carrierShipment.tracking_ref
-                ? `AWB ${carrierShipment.tracking_ref} · attach to package`
-                : 'DHL transport label — attach to package (carrier label store)',
-              available: !!(carrierShipment && carrierShipment.label_download_url),
-              badge: _dnuBadge,
-              action: _dhlAction(carrierShipment && carrierShipment.label_download_url,
-                                 '↓ Download Label', 'pf-doc-dhl-label-download'),
-              pending: (carrierShipment && carrierShipment.label_download_url) ? null
-                : (carrierShipment
-                    ? (carrierShipment.saved_labels_exist
-                        ? 'AWB recorded before the reference store — labels are saved on the server; ask ops or rebook to link one here.'
-                        : 'No saved label for this shipment.')
-                    : 'Available after a DHL AWB is generated (⚡ AWB Generate).'),
-            },
-            {
-              key: 'dhl_waybill', name: 'DHL Waybill Doc — Hand to Courier',
-              authority: carrierShipment && carrierShipment.tracking_ref
-                ? `AWB ${carrierShipment.tracking_ref} · hand to courier at pickup`
-                : 'DHL waybill document — hand to courier at pickup',
-              available: !!(carrierShipment && carrierShipment.waybill_doc_download_url),
-              badge: _dnuBadge,
-              action: _dhlAction(carrierShipment && carrierShipment.waybill_doc_download_url,
-                                 '↓ Download Waybill', 'pf-doc-dhl-waybill-download'),
-              pending: (carrierShipment && carrierShipment.waybill_doc_download_url) ? null
-                : (carrierShipment
-                    ? 'No waybill document saved for this shipment (bookings before waybill-doc support, or DHL did not return one).'
-                    : 'Available after a DHL AWB is generated (⚡ AWB Generate).'),
-            },
-            {
-              key: 'dhl_receipt', name: 'DHL Shipment Receipt',
-              authority: carrierShipment && carrierShipment.tracking_ref
-                ? `AWB ${carrierShipment.tracking_ref} · operator/customer receipt`
-                : 'DHL shipment receipt — operator/customer copy',
-              available: !!(carrierShipment && carrierShipment.shipment_receipt_download_url),
-              badge: _dnuBadge,
-              action: _dhlAction(carrierShipment && carrierShipment.shipment_receipt_download_url,
-                                 '↓ Download Receipt', 'pf-doc-dhl-receipt-download'),
-              pending: (carrierShipment && carrierShipment.shipment_receipt_download_url) ? null
-                : (carrierShipment
-                    ? 'No shipment receipt saved for this shipment (bookings before receipt support, or DHL did not return one).'
-                    : 'Available after a DHL AWB is generated (⚡ AWB Generate).'),
-            },
-            {
-              key: 'dhl_documents', name: 'DHL Commercial Documents',
-              authority: 'Commercial invoice + packing list + CN23 package',
-              available: !!(carrierShipment && carrierShipment.documents_available),
-              action: (carrierShipment && carrierShipment.commercial_documents_url)
-                ? { label: '↓ Download', href: carrierShipment.commercial_documents_url, testid: 'pf-doc-dhl-documents-download' }
-                : null,
-              pending: (carrierShipment && carrierShipment.documents_available) ? null
-                : 'Not available yet — document packages are generated on demand (⚙ label-package) and are not persisted for download yet.',
-            },
-          ];
-          // Wireframe doc-card grid: icon + name + state chip + authority line +
-          // actions. Same _docs manifest, actions, and testids — presentation only.
-          const _icons = {
-            proforma: '🧾', cmr: '🚚', packing: '📄', invoice: '🧾',
-            dhl_label: '🏷', dhl_waybill: '📦', dhl_receipt: '🧾', dhl_documents: '⬇',
-          };
-          const _chip = (d) => d.available
-            ? { label: 'Generated', bg: 'var(--badge-green-bg)', c: 'var(--badge-green-text)' }
-            : { label: 'Pending',   bg: 'var(--badge-neutral-bg)', c: 'var(--badge-neutral-text)' };
-          const _actBtn = { padding: '6px 12px', fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', textDecoration: 'none', display: 'inline-block', whiteSpace: 'nowrap' };
-          return (
-            <div data-testid="pf-detail-documents">
-              <PfSectionLabel>Generated documents</PfSectionLabel>
-              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12, lineHeight: 1.5 }}>
-                Read-only manifest — each card shows the real document authority and the existing action to view or download it. No document is fabricated.
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14 }}>
-                {_docs.map((d) => {
-                  const chip = _chip(d);
-                  return (
-                    <div key={d.key} data-testid={`pf-doc-row-${d.key}`}
-                      style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, display: 'flex', alignItems: 'flex-start', gap: 14, boxShadow: '0 1px 2px var(--shadow)' }}>
-                      <div style={{ fontSize: 28, lineHeight: 1 }}>{_icons[d.key] || '📄'}</div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>{d.name}</span>
-                          <span style={{ padding: '2px 8px', borderRadius: 4, background: chip.bg, color: chip.c, fontSize: 10, fontWeight: 700 }}>{chip.label}</span>
-                        </div>
-                        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>{d.authority}</div>
-                        {d.badge ? (
-                          <div style={{ display: 'inline-block', marginTop: 4, padding: '2px 8px', borderRadius: 4, fontSize: 10.5, fontWeight: 700, background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', border: '1px solid var(--badge-red-border)' }}
-                            data-testid={`pf-doc-dnu-${d.key}`}>
-                            {d.badge}
-                          </div>
-                        ) : null}
-                        {d.pending ? (
-                          <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }} data-testid={`pf-doc-pending-${d.key}`}>
-                            <strong>Backend Pending:</strong> {d.pending}
-                          </div>
-                        ) : null}
-                        <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-                          {d.secondaryAction ? (
-                            <button onClick={d.secondaryAction.onClick} data-testid={d.secondaryAction.testid} style={_actBtn}>
-                              {d.secondaryAction.label}
-                            </button>
-                          ) : null}
-                          {d.action ? (
-                            d.action.href ? (
-                              <a href={d.action.href} download data-testid={d.action.testid} style={_actBtn}>
-                                {d.action.label}
-                              </a>
-                            ) : (
-                              <button onClick={d.action.onClick} data-testid={d.action.testid} style={_actBtn}>
-                                {d.action.label}
-                              </button>
-                            )
-                          ) : (!d.secondaryAction ? (
-                            <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 999, opacity: 0.45 }} data-testid={`pf-doc-unavailable-${d.key}`}>{d.key.startsWith('dhl_') ? 'Not available yet' : 'Not available'}</span>
-                          ) : null)}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Real shipment-document registry (reuse-only, batch-scoped) */}
-              <div style={{ marginTop: 20 }}>
-                <DocumentsRegistry batchId={liveDraft.batch_id || (draft && draft.batch_id)} />
-              </div>
-
-              {/* A2: read-only reconciliation report (presentation over the stable endpoint) */}
-              <ReconciliationPanel draft={draft} />
-              <ManualLinkPanel draft={draft} draftHook={draftHook} />
-            </div>
-          );
-        })()}
+        {activeTab === 'documents' && (
+          <div>
+            <ShipmentDocumentHub
+              draftId={draft && draft.id}
+              batchId={liveDraft.batch_id || (draft && draft.batch_id)}
+              onOpenPreview={(t) => { setPreviewDocType(t); setShowPreview(true); }}
+              onDownloadOfficialProforma={handleDownloadPdf}
+            />
+            <ReconciliationPanel draft={draft} />
+            <ManualLinkPanel draft={draft} draftHook={draftHook} />
+          </div>
+        )}
         {activeTab === 'customer_mapping' && (
           <ProformaCustomerMappingTab customer={customer} />
         )}

@@ -155,7 +155,12 @@ def queue_email(
     # batch_id, file absent, parse error) it allows the enqueue.  This
     # matches the documented semantics of check_send_allowed and avoids
     # blocking legitimate queueing for batches whose metadata is missing.
-    if batch_id:
+    # Allowlist: the customer delivery-confirmation email fires BECAUSE the
+    # OUTBOUND shipment was delivered — it is the opposite of an inbound-customs
+    # follow-up, which is what shipment_delivered_guard suppresses. Skipping the
+    # delivered guard for this one email_type lets the "confirm receipt" link
+    # reach the customer AFTER delivery; every other email_type stays guarded.
+    if batch_id and email_type != "customer_delivery_confirmation":
         try:
             from .shipment_delivered_guard import check_send_allowed as _ssa
             _g = _ssa(batch_id)

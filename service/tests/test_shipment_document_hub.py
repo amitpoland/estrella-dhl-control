@@ -1,0 +1,450 @@
+"""
+test_shipment_document_hub.py — Shipment Document Hub backend.
+
+Covers the manifest aggregator, the label-package persistence resolver, the
+complete-package ZIP route, and the public customer delivery-confirmation flow
+(notification idempotency + activation boundary, token expiry/replay, receipt
+submission, evidence validation + scoped access, and the structural guarantee
+that the public path performs no fiscal writes).
+"""
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.config import settings
+from app.services import proforma_invoice_link_db as pildb
+from app.services import delivery_confirmation_db as dcdb
+from app.services import delivery_confirmation_service as dcs
+from app.services import shipment_document_manifest as sdm
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+BATCH = "BATCH-9158478722-2026"
+AWB = "7712345678"
+
+_SAMPLE_PDF = b"%PDF-1.4\n%hub test\n%%EOF\n"
+
+
+def _auth_headers():
+    return {"X-API-KEY": settings.api_key or "test-key"}
+
+
+def _proforma_db(tmp_path) -> Path:
+    return tmp_path / "proforma_links.db"
+
+
+def _carrier_db(tmp_path) -> Path:
+    return tmp_path / "carrier" / "carrier_shipments.db"
+
+
+def _seed_draft(tmp_path, *, batch=BATCH, client="ACME", lines=True,
+                contractor_id="", proforma_id=None, invoice_id=None):
+    db = _proforma_db(tmp_path)
+    line_rows = (
+        [{"product_code": "RG-1", "design_no": "RG-1", "qty": 1,
+          "unit_price": 10.0, "currency": "EUR"}] if lines else []
+    )
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db, batch_id=batch, client_name=client, currency="EUR",
+        lines=line_rows, client_contractor_id=contractor_id,
+    )
+    if proforma_id or invoice_id:
+        with sqlite3.connect(str(db)) as c:
+            if proforma_id:
+                c.execute("UPDATE proforma_drafts SET wfirma_proforma_id=?, "
+                          "wfirma_proforma_fullnumber=? WHERE id=?",
+                          (proforma_id, "PRO 1/2026", draft.id))
+            if invoice_id:
+                c.execute("UPDATE proforma_drafts SET wfirma_invoice_id=?, "
+                          "wfirma_invoice_number=? WHERE id=?",
+                          (invoice_id, "WDT 1/2026", draft.id))
+    return pildb.get_draft_by_id(db, draft.id)
+
+
+def _seed_shipment(tmp_path, *, batch=BATCH, tracking_ref=AWB, client_ref="ACME",
+                   created_at="2026-08-08T10:00:00.000Z"):
+    from app.services.carrier.persistence import shipment_db
+    cdb = _carrier_db(tmp_path)
+    cdb.parent.mkdir(parents=True, exist_ok=True)
+    shipment_db.init_db(cdb)
+    with sqlite3.connect(str(cdb)) as c:
+        c.execute(
+            "INSERT INTO carrier_shipments "
+            "(idempotency_key, batch_id, mode, state, client_ref, tracking_ref, created_at) "
+            "VALUES (?, ?, 'shadow', 'complete', ?, ?, ?)",
+            (f"idem-{tracking_ref}", batch, client_ref, tracking_ref, created_at),
+        )
+
+
+def _write_dhl_doc(tmp_path, kind_subdir, batch, awb):
+    d = tmp_path / "carrier" / kind_subdir
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{batch}-{awb}.pdf").write_bytes(_SAMPLE_PDF)
+
+
+def _build(tmp_path, draft_id):
+    return sdm.build_manifest(
+        draft_id, storage_root=tmp_path,
+        proforma_db=_proforma_db(tmp_path), carrier_db=_carrier_db(tmp_path),
+    )
+
+
+def _find(entries, doc_type):
+    for e in entries:
+        if e["document_type"] == doc_type:
+            return e
+    return None
+
+
+@pytest.fixture()
+def client(tmp_path):
+    from app.main import app
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        with TestClient(app, raise_server_exceptions=True) as c:
+            yield c
+
+
+# ── 1. Draft proforma uses Estrella preview, not wFirma ─────────────────────────
+
+def test_draft_proforma_uses_estrella_preview(tmp_path):
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path)
+        m = _build(tmp_path, d.id)
+    entry = _find(m["groups"]["commercial"], "draft_proforma")
+    assert entry["authority"] == "Estrella"
+    assert entry["status"] == "Generated"
+    assert entry["preview_url"] == f"/api/v1/proforma/draft/{d.id}/preview.html"
+    assert "document.pdf" not in (entry["preview_url"] or "")
+    assert entry["download_available"] is False
+
+
+# ── 2. Posted proforma exposes official wFirma PDF URL ──────────────────────────
+
+def test_posted_proforma_exposes_official_pdf(tmp_path):
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
+        m = _build(tmp_path, d.id)
+    entry = _find(m["groups"]["commercial"], "official_proforma")
+    assert entry["authority"] == "wFirma"
+    assert entry["status"] == "Generated"
+    assert entry["download_url"] == f"/api/v1/proforma/{BATCH}/ACME/document.pdf"
+    assert entry["download_available"] is True
+
+
+# ── 3. Invoice pending until wfirma_invoice_id ──────────────────────────────────
+
+def test_invoice_pending_until_invoice_id(tmp_path):
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
+        m1 = _build(tmp_path, d.id)
+        inv = _find(m1["groups"]["commercial"], "invoice")
+        assert inv["status"] == "Pending"
+        assert inv["download_available"] is False
+
+        d2 = _seed_draft(tmp_path, client="BETA", proforma_id="WF-PROF-2",
+                         invoice_id="WF-INV-9")
+        m2 = _build(tmp_path, d2.id)
+    inv2 = _find(m2["groups"]["commercial"], "invoice")
+    assert inv2["status"] == "Generated"
+    assert inv2["download_url"] == f"/api/v1/proforma/draft/{d2.id}/invoice.pdf"
+
+
+# ── 4. Client-scoped — no cross-client AWB leak ─────────────────────────────────
+
+def test_client_scoped_no_cross_client_leak(tmp_path):
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d_a = _seed_draft(tmp_path, client="ACME")
+        _seed_draft(tmp_path, client="BETA")   # same batch, second client
+        # A shipment booked only for BETA.
+        _seed_shipment(tmp_path, client_ref="BETA")
+        m = _build(tmp_path, d_a.id)   # manifest for ACME
+    assert m["awb"] is None, "ACME's manifest must not show BETA's AWB"
+    assert m["tracking"]["awb"] is None
+
+
+# ── 5. Historical unavailable waybill when AWB exists but file missing ──────────
+
+def test_historical_unavailable_waybill(tmp_path):
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path)
+        _seed_shipment(tmp_path, client_ref="ACME")   # AWB booked, no files saved
+        m = _build(tmp_path, d.id)
+    assert m["awb"] == AWB
+    wb = _find(m["groups"]["carrier"], "dhl_waybill")
+    assert wb["status"] == "Historical unavailable"
+    assert wb["reason"]
+
+
+# ── 6. Label package persistence resolver (client-scoped preference) ────────────
+
+def test_doc_package_file_client_scoped_resolution(tmp_path):
+    from app.api.routes_carrier_actions import _doc_package_file
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        pkg_dir = tmp_path / "carrier" / "doc_packages"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        # Client-scoped file present → preferred.
+        (pkg_dir / f"{BATCH}__ACME.pdf").write_bytes(_SAMPLE_PDF)
+        got = _doc_package_file(BATCH, "ACME")
+        assert got is not None and got.name == f"{BATCH}__ACME.pdf"
+        # Legacy batch-only fallback for an unknown client.
+        (pkg_dir / f"{BATCH}.zip").write_bytes(b"PK\x03\x04zip")
+        legacy = _doc_package_file(BATCH, "NOBODY")
+        assert legacy is not None and legacy.name == f"{BATCH}.zip"
+
+
+# ── 7. Complete package blocked when mandatory missing ──────────────────────────
+
+def test_complete_package_blocked_when_missing(tmp_path, client):
+    d = _seed_draft(tmp_path)   # lines yes, not posted, no AWB
+    m = _build(tmp_path, d.id)
+    cp = m["groups"]["complete_package"]
+    assert cp["ready"] is False
+    assert cp["missing"]
+    r = client.get(
+        f"/api/v1/shipment-documents/draft/{d.id}/complete-package",
+        headers=_auth_headers(),
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "COMPLETE_PACKAGE_NOT_READY"
+    assert r.json()["detail"]["missing"]
+
+
+# ── 8. Complete package ZIP ready when all present ──────────────────────────────
+
+def test_complete_package_zip_ready(tmp_path, client, monkeypatch):
+    d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
+    _seed_shipment(tmp_path, client_ref="ACME")
+    _write_dhl_doc(tmp_path, "labels", BATCH, AWB)
+    _write_dhl_doc(tmp_path, "waybill_docs", BATCH, AWB)
+
+    m = _build(tmp_path, d.id)
+    assert m["groups"]["complete_package"]["ready"] is True
+
+    from app.services import wfirma_client
+    from app.services.carrier import doc_package
+    monkeypatch.setattr(wfirma_client, "fetch_invoice_pdf", lambda _id: _SAMPLE_PDF)
+    monkeypatch.setattr(doc_package, "_load_company_profile", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "_load_proforma_draft", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "_resolve_customer_from_batch", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "render_packing_list_pdf",
+                        lambda *a, **k: b"%PDF-1.4 packing %%EOF")
+
+    r = client.get(
+        f"/api/v1/shipment-documents/draft/{d.id}/complete-package",
+        headers=_auth_headers(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/zip"
+    assert r.headers["cache-control"].startswith("no-store")
+    import io, zipfile
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    names = zf.namelist()
+    assert any("proforma" in n for n in names)
+    assert any("packing" in n for n in names)
+    assert any("label" in n for n in names)
+
+
+# ── 9. Delivered triggers exactly one notification (idempotent) ─────────────────
+
+def test_delivered_triggers_single_notification(tmp_path, monkeypatch):
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        "app.services.email_service.queue_email",
+        lambda **kw: (calls.__setitem__("n", calls["n"] + 1) or "email-id"),
+    )
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "customer_delivery_confirmation_enabled", True), \
+         patch.object(settings, "customer_delivery_confirmation_activated_at",
+                      "2026-01-01T00:00:00.000Z"):
+        r1 = dcs.maybe_notify_outbound_delivered(
+            AWB, draft_id=1, batch_id=BATCH, client_name="ACME",
+            delivered=True, carrier_delivered_at="2026-08-08T12:00:00Z",
+            booking_created_at="2026-08-01T00:00:00.000Z",
+            customer_email="buyer@example.com", customer_name="ACME",
+        )
+        r2 = dcs.maybe_notify_outbound_delivered(
+            AWB, draft_id=1, batch_id=BATCH, client_name="ACME",
+            delivered=True, carrier_delivered_at="2026-08-08T12:00:00Z",
+            booking_created_at="2026-08-01T00:00:00.000Z",
+            customer_email="buyer@example.com", customer_name="ACME",
+        )
+    assert r1["notified"] is True
+    assert r2["notified"] is False and r2["reason"] == "already_notified"
+    assert calls["n"] == 1
+
+
+# ── 10. Historical delivered before activation does NOT notify ──────────────────
+
+def test_historical_delivered_before_activation_not_notified(tmp_path, monkeypatch):
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        "app.services.email_service.queue_email",
+        lambda **kw: (calls.__setitem__("n", calls["n"] + 1) or "email-id"),
+    )
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "customer_delivery_confirmation_enabled", True), \
+         patch.object(settings, "customer_delivery_confirmation_activated_at",
+                      "2026-08-05T00:00:00.000Z"):
+        res = dcs.maybe_notify_outbound_delivered(
+            AWB, draft_id=1, batch_id=BATCH, client_name="ACME",
+            delivered=True, carrier_delivered_at="2026-08-08T12:00:00Z",
+            booking_created_at="2026-07-01T00:00:00.000Z",   # BEFORE activation
+            customer_email="buyer@example.com",
+        )
+    assert res["notified"] is False
+    assert res["reason"] == "activation_boundary"
+    assert calls["n"] == 0
+
+
+def _mint_token(tmp_path, *, expires_delta_days=30, awb=AWB, draft_id=1):
+    db = tmp_path / "delivery_confirmations.db"
+    token = "test-token-" + str(draft_id)
+    import hashlib
+    th = hashlib.sha256(token.encode()).hexdigest()
+    exp = (datetime.now(timezone.utc) + timedelta(days=expires_delta_days)).strftime(
+        "%Y-%m-%dT%H:%M:%fZ")
+    dcdb.create_receipt_token_row(
+        db, token_hash=th, awb=awb, draft_id=draft_id, batch_id=BATCH,
+        client_name="ACME", customer_name="ACME", expires_at=exp,
+    )
+    return token
+
+
+# ── 11. Token expiry + replay 409 ───────────────────────────────────────────────
+
+def test_token_expiry_and_replay(tmp_path):
+    with patch.object(settings, "storage_root", tmp_path):
+        # Expired token → 410.
+        expired = _mint_token(tmp_path, expires_delta_days=-1, draft_id=11)
+        with pytest.raises(dcs.ReceiptError) as e1:
+            dcs.submit_receipt(expired, condition="good")
+        assert e1.value.status == 410
+
+        # Fresh token → first submit ok, replay → 409.
+        tok = _mint_token(tmp_path, draft_id=12)
+        ok = dcs.submit_receipt(tok, condition="good")
+        assert ok["ok"] is True
+        with pytest.raises(dcs.ReceiptError) as e2:
+            dcs.submit_receipt(tok, condition="good")
+        assert e2.value.status == 409
+
+
+# ── 12. Good condition receipt ──────────────────────────────────────────────────
+
+def test_good_condition_receipt(tmp_path):
+    with patch.object(settings, "storage_root", tmp_path):
+        tok = _mint_token(tmp_path, draft_id=20)
+        res = dcs.submit_receipt(tok, condition="good",
+                                 categories=["goods_damaged"], comments="thanks")
+    assert res["ok"] is True
+    assert res["condition"] == "good"
+    # A clean receipt carries no issue categories even if some were sent.
+    assert res["issue_categories"] == []
+
+
+# ── 13. Damage report with photo validation (reject exe, oversized) ─────────────
+
+def test_damage_report_photo_validation(tmp_path):
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    with patch.object(settings, "storage_root", tmp_path):
+        tok = _mint_token(tmp_path, draft_id=30)
+        res = dcs.submit_receipt(
+            tok, condition="issue", categories=["goods_damaged"],
+            files=[{"filename": "p.png", "content_type": "image/png", "content": png}],
+        )
+        assert res["ok"] is True and res["evidence_saved"] == 1
+
+        # Executable masquerading as an image → rejected.
+        tok2 = _mint_token(tmp_path, draft_id=31)
+        with pytest.raises(dcs.ReceiptError) as e_exe:
+            dcs.submit_receipt(
+                tok2, condition="issue",
+                files=[{"filename": "x.png", "content_type": "image/png",
+                        "content": b"MZ\x90\x00 this is a PE exe"}],
+            )
+        assert e_exe.value.status == 422
+
+        # Oversized image → rejected, and the token is NOT consumed.
+        tok3 = _mint_token(tmp_path, draft_id=32)
+        big = b"\x89PNG\r\n\x1a\n" + b"\x00" * (5 * 1024 * 1024 + 10)
+        with pytest.raises(dcs.ReceiptError) as e_big:
+            dcs.submit_receipt(
+                tok3, condition="issue",
+                files=[{"filename": "big.png", "content_type": "image/png",
+                        "content": big}],
+            )
+        assert e_big.value.status == 413
+        # Token still usable (validation happens before the token is claimed).
+        ok = dcs.submit_receipt(tok3, condition="good")
+        assert ok["ok"] is True
+
+
+# ── 14. Unauthorized / cross-draft evidence access blocked ──────────────────────
+
+def test_evidence_access_scoped_and_authed(tmp_path, client):
+    # Seed a receipt + evidence for draft 40.
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    tok = _mint_token(tmp_path, draft_id=40)
+    dcs.submit_receipt(tok, condition="issue", categories=["goods_damaged"],
+                       files=[{"filename": "a.png", "content_type": "image/png",
+                               "content": png}])
+    db = tmp_path / "delivery_confirmations.db"
+    receipt = dcdb.get_receipt_for_draft(db, 40)
+    ev = dcdb.list_evidence_for_receipt(db, receipt["id"])[0]
+
+    # Correct draft → 200.
+    ok = client.get(
+        f"/api/v1/shipment-documents/draft/40/delivery/evidence/{ev['id']}",
+        headers=_auth_headers(),
+    )
+    assert ok.status_code == 200
+    assert ok.headers["content-type"].startswith("image/")
+
+    # Wrong draft id for the same evidence → 404 (scope guard).
+    wrong = client.get(
+        f"/api/v1/shipment-documents/draft/999/delivery/evidence/{ev['id']}",
+        headers=_auth_headers(),
+    )
+    assert wrong.status_code == 404
+
+
+def test_evidence_requires_auth_when_api_key_set(tmp_path):
+    from app.main import app
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None), \
+         patch.object(settings, "api_key", "secret-key"), \
+         patch.object(settings, "environment", "prod"):
+        with TestClient(app, raise_server_exceptions=True) as c:
+            r = c.get("/api/v1/shipment-documents/draft/1/delivery/evidence/1")
+    assert r.status_code == 401
+
+
+# ── 15. Public receipt path performs no fiscal writes (structural) ──────────────
+
+def test_public_receipt_no_fiscal_writes_structural():
+    src = Path(dcs.__file__).read_text(encoding="utf-8")
+    forbidden = [
+        "wfirma_client",
+        "create_invoice", "create_pz", "create_product", "create_proforma",
+        "invoices/add", "invoices/edit",
+        "inventory", "reservation_db", "wfirma_reservation",
+    ]
+    for token in forbidden:
+        assert token not in src, (
+            f"delivery_confirmation_service must not reference {token!r} — "
+            "the public receipt path must never mutate fiscal / inventory state"
+        )

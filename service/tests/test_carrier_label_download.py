@@ -360,15 +360,20 @@ class TestTabSourcePins:
         assert "loadCarrierShipment" in src
 
     def test_documents_tab_dhl_label_row(self):
+        # Documents hub consumes the shipment-document manifest; DHL label is
+        # keyed as document_type "dhl_label" with a dynamic testid.
         src = self._src()
-        assert "'dhl_label'" in src or '"dhl_label"' in src
-        assert "pf-doc-dhl-label-download" in src
+        assert "ShipmentDocumentHub" in src
+        assert "dhl_label" in src
+        assert "getShipmentDocumentManifest" in src
 
     def test_documents_tab_commercial_docs_conditional(self):
+        # Commercial package is now the manifest entry dhl_commercial_package
+        # (persisted Path-DOC), not a hard-coded documents_available ternary.
         src = self._src()
-        assert "'dhl_documents'" in src or '"dhl_documents"' in src
-        assert "documents_available" in src
-        assert "Not available yet" in src
+        assert "dhl_commercial_package" in src
+        assert "pf-doc-group-carrier" in src
+        assert "complete_package" in src or "Complete Shipment Package" in src
 
     def test_box_types_come_from_backend_authority(self):
         src = self._src()

@@ -575,5 +575,22 @@ class Settings(BaseSettings):
     conflict_resolution_auto_use_defaults: bool = Field(default=False)
     conflict_posting_blocker:              bool = Field(default=False)
 
+    # ── Customer delivery confirmation (Shipment Document Hub) ───────────────
+    # Public "confirm receipt / report damage" flow the customer opens from an
+    # emailed link after their OUTBOUND shipment is delivered by DHL. All three
+    # default to a NON-active posture:
+    #   customer_delivery_confirmation_enabled — master switch. When False, no
+    #     delivery-confirmation email is ever queued (maybe_notify is a no-op).
+    #   customer_delivery_confirmation_activated_at — ISO-8601 activation
+    #     boundary. Empty string means "not activated" → NEVER mass-notify
+    #     historical deliveries. Only shipments booked at/after this timestamp
+    #     (or whose notification record was created after it) may be notified.
+    #   public_base_url — external origin used to build the public receipt link
+    #     (e.g. https://pz.estrellajewels.eu). Empty → link building falls back
+    #     to fastapi_public_url.
+    customer_delivery_confirmation_enabled:     bool = Field(default=False)
+    customer_delivery_confirmation_activated_at: str = Field(default="")
+    public_base_url:                             str = Field(default="")
+
 
 settings = Settings()

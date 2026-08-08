@@ -159,6 +159,17 @@ import re as _re
 
 _SAFE_REF = _re.compile(r"^[A-Za-z0-9_-]{4,64}$")
 _SAFE_BATCH = _re.compile(r"^[A-Za-z0-9_-]{4,128}$")
+_SAFE_CLIENT_SUB = _re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _safe_client(client_name: Optional[str]) -> str:
+    """Filesystem-safe client token for client-scoped package filenames.
+
+    Collapses any run of non-[A-Za-z0-9_-] to a single underscore and caps
+    length. Empty/blank → "" (caller falls back to the batch-only filename).
+    """
+    s = _SAFE_CLIENT_SUB.sub("_", (client_name or "").strip()).strip("_")
+    return s[:64]
 
 
 def _carrier_root() -> Path:
@@ -230,19 +241,28 @@ def _batch_has_any_label(batch_id: str) -> bool:
     return any(labels_dir.glob(f"{batch_id}-*.pdf"))
 
 
-def _doc_package_file(batch_id: str) -> Optional[Path]:
+def _doc_package_file(batch_id: str, client_name: Optional[str] = None) -> Optional[Path]:
     """Saved commercial-document package for the batch, if one exists.
 
-    Path-DOC currently streams packages without saving; this lights up
-    automatically if/when packages are persisted under doc_packages/.
+    create_label_package now PERSISTS the assembled package under
+    doc_packages/ (in addition to streaming it), so this resolves the saved
+    file. Client-scoped packages are written as ``{batch_id}__{safe_client}.ext``;
+    when ``client_name`` is supplied we prefer that file and fall back to the
+    legacy batch-only ``{batch_id}.ext`` (packages written before client scope).
+    Path-confined; never returns a file outside doc_packages/.
     """
     if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
         return None
     pkg_dir = (_carrier_root() / "doc_packages").resolve()
     if not pkg_dir.is_dir():
         return None
-    for ext in ("pdf", "zip"):
-        candidate = (pkg_dir / f"{batch_id}.{ext}").resolve()
+    names: List[str] = []
+    safe_client = _safe_client(client_name)
+    if safe_client:
+        names += [f"{batch_id}__{safe_client}.pdf", f"{batch_id}__{safe_client}.zip"]
+    names += [f"{batch_id}.pdf", f"{batch_id}.zip"]
+    for name in names:
+        candidate = (pkg_dir / name).resolve()
         if candidate.parent == pkg_dir and candidate.is_file():
             return candidate
     return None
@@ -987,7 +1007,10 @@ class LabelPackageBody(BaseModel):
         "Receiver address: ship_to_* primary; bill_to_* fallback + advisory. "
         "Soft gaps (blank address, zero weight) are returned as advisories "
         "and do NOT block generation. "
-        "422 {gaps:[...]} when mandatory inputs are missing."
+        "422 {gaps:[...]} when mandatory inputs are missing. "
+        "The assembled package is PERSISTED under doc_packages/ "
+        "({batch}__{client}.pdf|zip) as well as streamed, so it is downloadable "
+        "afterwards and appears in the Shipment Document Hub manifest."
     ),
 )
 async def create_label_package(
@@ -1070,7 +1093,28 @@ async def create_label_package(
             },
         )
 
-    # LabelPackageResult
+    # LabelPackageResult — PERSIST the assembled package so it is downloadable
+    # later (GET /{batch_id}/documents) and visible to the Shipment Document Hub
+    # manifest, THEN stream it. Persistence is best-effort: a write failure must
+    # never break the streaming response the operator is waiting on. Client-
+    # scoped filename ({batch}__{safe_client}.ext) when a client is known, so
+    # two clients in the same batch never overwrite each other's package;
+    # otherwise the legacy batch-only filename.
+    try:
+        pkg_ext = "zip" if "zip" in (result.content_type or "").lower() else "pdf"
+        pkg_dir = _carrier_root() / "doc_packages"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        safe_client = _safe_client(inputs.client_name)
+        pkg_name = (
+            f"{batch_id}__{safe_client}.{pkg_ext}" if safe_client
+            else f"{batch_id}.{pkg_ext}"
+        )
+        (pkg_dir / pkg_name).write_bytes(result.content)
+    except Exception as _persist_exc:
+        logger.warning(
+            "label-package persist failed for batch %s: %s", batch_id, _persist_exc,
+        )
+
     headers = {"Content-Disposition": f'attachment; filename="{result.filename}"'}
     if result.advisories:
         # Surface advisories in a custom header (JSON-encoded list)

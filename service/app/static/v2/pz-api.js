@@ -1885,6 +1885,25 @@
     // All routes are the EXISTING backend document authority (routes_upload.py,
     // routes_dashboard.py, routes_dhl_clearance.py) — no new endpoints.
 
+    // GET /api/v1/shipment-documents/draft/{draft_id}/manifest
+    // Aggregator read-model for the Proforma Documents hub. Transport only —
+    // does not invent document authorities (Lesson F).
+    getShipmentDocumentManifest: (draftId) =>
+      _get(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/manifest`),
+
+    // GET /api/v1/shipment-documents/draft/{draft_id}/complete-package
+    // Direct download URL for the authoritative ZIP (when ready).
+    completeShipmentPackageUrl: (draftId) =>
+      `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/complete-package`,
+
+    // GET /api/v1/shipment-documents/draft/{draft_id}/delivery
+    getShipmentDeliveryConfirmation: (draftId) =>
+      _get(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/delivery`),
+
+    // Evidence image URL (auth required; scoped to this draft).
+    deliveryEvidenceUrl: (draftId, evidenceId) =>
+      `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/delivery/evidence/${encodeURIComponent(evidenceId)}`,
+
     // GET /api/v1/upload/shipment/{batch_id}/documents
     // Canonical document manifest. Each row carries the identity contract:
     // document_id, document_type, authority, is_generated, is_current,
