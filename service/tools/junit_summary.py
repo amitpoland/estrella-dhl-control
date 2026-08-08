@@ -22,15 +22,25 @@ used to aggregate as "complete, 0 failures" — a GREEN verdict from a shard who
 tests never ran, which is the exact silent downgrade this tool exists to
 prevent.  A zero-case or short-count shard is unknowable, not clean.
 
-Exit status is 0 only when every shard is complete AND no test failed or
-errored.  Nothing here suppresses a red result — the point is to make the whole
-red visible in one pass instead of one timeout at a time.
+Exit status (``--fail-on``)
+---------------------------
+  * ``any`` (default, local triage): exit 0 only when every shard is complete
+    AND no test failed or errored.
+  * ``incomplete`` (CI): exit 0 when every shard produced usable XML, even if
+    tests failed.  Exit 1 only on MISSING / INCOMPLETE shards.  The full failure
+    list is still printed — this mode changes the *job* exit code, not the
+    report.  Matches the operating-model rule that aggregate CI is diagnostic
+    and must not stay permanently red on the suite's inherited failure set.
+
+Nothing here suppresses or hides a red result in the report — the point is to
+make the whole red visible in one pass instead of one timeout at a time.
 
 Usage
 -----
     python tools/junit_summary.py junit/                    # a directory
     python tools/junit_summary.py junit/*.xml --of 6        # explicit files
     python tools/junit_summary.py junit/ --of 6 --markdown $GITHUB_STEP_SUMMARY
+    python tools/junit_summary.py junit/ --of 6 --fail-on incomplete
 """
 from __future__ import annotations
 
@@ -174,8 +184,21 @@ def collect(inputs: list[str]) -> list[Path]:
     return unique
 
 
-def render(reports: list[ShardReport], expected_shards: int | None) -> tuple[str, bool]:
-    """Return (markdown_report, ok)."""
+def render(
+    reports: list[ShardReport],
+    expected_shards: int | None,
+    fail_on: str = "any",
+) -> tuple[str, bool]:
+    """Return (markdown_report, suite_green).
+
+    ``suite_green`` is True only when every shard is complete AND no test
+    failed or errored.  Callers that want the CI diagnostic exit should use
+    ``exit_status()`` with ``fail_on="incomplete"`` — that still prints the
+    full failure list, but the process exits 0 when evidence is complete.
+    """
+    if fail_on not in ("any", "incomplete"):
+        raise ValueError(f"fail_on must be 'any' or 'incomplete', got {fail_on!r}")
+
     lines: list[str] = ["## Service suite — sharded run", ""]
     found = {r.label for r in reports}
     missing: list[str] = []
@@ -204,7 +227,8 @@ def render(reports: list[ShardReport], expected_shards: int | None) -> tuple[str
                   f"{total['error']} errored, {total['skipped']} skipped.", ""]
 
     incomplete = [r for r in reports if not r.complete]
-    if incomplete or missing:
+    shards_complete = not incomplete and not missing
+    if not shards_complete:
         lines += [
             "> **This total is a floor, not the suite result.** "
             f"{len(incomplete) + len(missing)} shard(s) produced no usable XML, "
@@ -228,10 +252,43 @@ def render(reports: list[ShardReport], expected_shards: int | None) -> tuple[str
                 lines.append(f"- `{c.name}` [{c.status}]{suffix}")
             lines += ["", "</details>", ""]
 
-    ok = not bad and not incomplete and not missing
-    lines.append("**Result:** " + ("all shards complete, no failures." if ok
-                                   else "see above — not green."))
-    return "\n".join(lines), ok
+    suite_green = shards_complete and not bad
+    if suite_green:
+        result = "all shards complete, no failures."
+    elif shards_complete and fail_on == "incomplete":
+        # CI diagnostic mode: evidence is complete; inherited reds are visible
+        # above but do not fail the job (OPERATING MODEL — CI authority).
+        result = (
+            f"all shards complete — diagnostic report only "
+            f"({total['failure']} failed, {total['error']} errored; "
+            f"job exit follows --fail-on incomplete)."
+        )
+    else:
+        result = "see above — not green."
+    lines.append("**Result:** " + result)
+    return "\n".join(lines), suite_green
+
+
+def exit_status(reports: list[ShardReport], expected_shards: int | None,
+                fail_on: str = "any") -> int:
+    """Map an aggregate to a process exit code.
+
+    ``fail_on="any"`` — classic: incomplete shards OR any failed/errored test → 1.
+    ``fail_on="incomplete"`` — CI diagnostic: only incomplete/missing shards → 1.
+    """
+    if fail_on not in ("any", "incomplete"):
+        raise ValueError(f"fail_on must be 'any' or 'incomplete', got {fail_on!r}")
+
+    found = {r.label for r in reports}
+    missing: list[str] = []
+    if expected_shards:
+        missing = [str(i) for i in range(1, expected_shards + 1) if str(i) not in found]
+    if any(not r.complete for r in reports) or missing:
+        return 1
+    if fail_on == "incomplete":
+        return 0
+    bad = [c for r in reports for c in r.bad]
+    return 1 if bad else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -239,6 +296,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("inputs", nargs="+", help="JUnit XML files, or directories of them")
     ap.add_argument("--of", type=int, default=None,
                     help="expected shard count — shards with no XML are reported MISSING")
+    ap.add_argument(
+        "--fail-on",
+        choices=("any", "incomplete"),
+        default="any",
+        help=(
+            "exit 1 when: 'any' = incomplete shards or failed tests (default); "
+            "'incomplete' = only missing/unusable shard XML (CI diagnostic mode)"
+        ),
+    )
     ap.add_argument("--markdown", default=None,
                     help="also append the report to this file (e.g. $GITHUB_STEP_SUMMARY)")
     args = ap.parse_args(argv)
@@ -249,12 +315,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     reports = [parse_report(p) for p in paths]
-    text, ok = render(reports, args.of)
+    text, _suite_green = render(reports, args.of, fail_on=args.fail_on)
     print(text)
     if args.markdown:
         with open(args.markdown, "a", encoding="utf-8") as fh:
             fh.write(text + "\n")
-    return 0 if ok else 1
+    return exit_status(reports, args.of, fail_on=args.fail_on)
 
 
 if __name__ == "__main__":

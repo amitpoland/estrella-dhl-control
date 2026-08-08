@@ -413,6 +413,50 @@ def test_all_green_shards_produce_a_green_aggregate(tmp_path):
     text, ok = junit_summary.render(reports, expected_shards=1)
     assert ok, text
     assert "no failures" in text
+    assert junit_summary.exit_status(reports, 1, fail_on="any") == 0
+    assert junit_summary.exit_status(reports, 1, fail_on="incomplete") == 0
+
+
+def test_fail_on_incomplete_exits_zero_when_shards_complete_with_failures(tmp_path):
+    """CI diagnostic mode: inherited reds must not fail the Actions job.
+
+    The standing service-suite red set (~600 failures) is documented and tracked
+    outside CI. Permanently exiting 1 on those reds made every push look broken
+    and contradicted the operating-model rule that aggregate CI is diagnostic.
+    ``--fail-on incomplete`` keeps the full failure report and only fails the
+    job when evidence itself is missing.
+    """
+    (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
+    reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
+    text, suite_green = junit_summary.render(
+        reports, expected_shards=1, fail_on="incomplete")
+    assert not suite_green, "suite_green still means zero failures"
+    assert "diagnostic report only" in text
+    assert "Failures by file" in text and "test_bad" in text
+    assert junit_summary.exit_status(reports, 1, fail_on="any") == 1
+    assert junit_summary.exit_status(reports, 1, fail_on="incomplete") == 0
+
+
+def test_fail_on_incomplete_still_fails_on_missing_shard(tmp_path):
+    """Diagnostic mode must not hide a lost shard — that is the honesty rule."""
+    (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
+    reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
+    assert junit_summary.exit_status(reports, 2, fail_on="incomplete") == 1
+    text, _ = junit_summary.render(reports, expected_shards=2, fail_on="incomplete")
+    assert "MISSING" in text
+
+
+def test_fail_on_incomplete_still_fails_on_truncated_shard(tmp_path):
+    p = tmp_path / "junit-shard-1.xml"
+    p.write_text(_GOOD_XML[: len(_GOOD_XML) // 2], encoding="utf-8")
+    reports = [junit_summary.parse_report(p)]
+    assert junit_summary.exit_status(reports, 1, fail_on="incomplete") == 1
+
+
+def test_cli_fail_on_incomplete_matches_exit_status(tmp_path):
+    (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
+    assert junit_summary.main([str(tmp_path), "--of", "1", "--fail-on", "incomplete"]) == 0
+    assert junit_summary.main([str(tmp_path), "--of", "1", "--fail-on", "any"]) == 1
 
 
 def test_failures_are_grouped_by_file(tmp_path):

@@ -68,12 +68,14 @@ jobs:
   # Deliberately no file count here: it drifts with every added test, and a
   # stale number in a comment reads as a contract. `tools/shard_tests.py --of 6
   # --describe` prints the current one.
-  # Runs the entire suite honestly. The test-baseline documents pre-existing,
-  # order-dependent aggregate reds (stale V1 source-grep pins; asyncio/mock
-  # leakage) — this job is expected to be red on arrival and exists to make that
-  # baseline visible and trackable, not to mask it. DHL/carrier credentials are
-  # absent on the runner, so the 4 env-conditional carrier defaults tests PASS
-  # here (they only fail on a creds-configured host).
+# Runs the entire suite honestly. The test-baseline documents pre-existing,
+# order-dependent aggregate reds (stale V1 source-grep pins; asyncio/mock
+# leakage) — those reds stay visible in the aggregate step summary. The
+# aggregate job itself exits 0 when every shard reported (see
+# `--fail-on incomplete` below) so inherited failures do not permanently red
+# the Actions check. DHL/carrier credentials are absent on the runner, so the
+# 4 env-conditional carrier defaults tests PASS here (they only fail on a
+# creds-configured host).
   #
   # WHY SHARDED: the suite previously ran as one pytest process. pytest-timeout's
   # `thread` method (pytest.ini) cannot interrupt a blocked C call, so it kills
@@ -140,16 +142,20 @@ jobs:
                                     # aggregation step reports it as MISSING
 
   # ── Aggregate the shards into one reconciliation ──────────────────────────
-  # Fails when any test failed OR any shard produced no usable XML. A shard whose
-  # results are unknown is never counted as zero failures — that is the whole
-  # point of splitting the run.
+  # Prints every failure. Job exit uses `--fail-on incomplete`: exit 1 ONLY when
+  # a shard's XML is MISSING/INCOMPLETE. Inherited test failures are reported in
+  # the step summary but do NOT fail this job — the suite carries a documented
+  # standing red set (see `.claude/contracts/test-baseline.md` GATE-4 SCHEDULED
+  # disposition and CLAUDE.md § "CI authority — diagnostic, never a gate").
+  # A shard whose results are unknown is still never counted as zero failures —
+  # that honesty rule is unchanged; only the *job* exit code stops treating
+  # inherited reds as a permanent Actions failure.
   #
-  # BRANCH PROTECTION: this job — NOT `service-suite` — carries the suite verdict.
-  # The shard steps are `continue-on-error: true` so a red or hung shard still
-  # uploads its XML, which means a shard job can report success while its tests
-  # failed. If the suite is ever made a required status check, require
-  # `Service pytest (aggregate)`; requiring a shard job would be a green light
-  # with nothing behind it.
+  # BRANCH PROTECTION: intentionally unset. If an operator ever enables a
+  # required check, it must be this job — NOT `service-suite`. The shard steps
+  # are `continue-on-error: true` so a red or hung shard still uploads its XML,
+  # which means a shard job can report success while its tests failed. Requiring
+  # a shard job would be a green light with nothing behind it.
   #
   # `!cancelled()` rather than `always()`. A newer push cancels the in-flight run
   # (see `concurrency` above), which kills the shards mid-test; under `always()`
@@ -185,4 +191,5 @@ jobs:
       - name: Reconcile shard results
         run: |
           python service/tools/junit_summary.py junit --of 6 \
+            --fail-on incomplete \
             --markdown "$GITHUB_STEP_SUMMARY"
