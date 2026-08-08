@@ -56,162 +56,376 @@ function Pill({ children, tone = 'neutral', small }) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// DHL Hub — read-only observer (Sprint 31)
+// DHL Logistics Control Tower — read-only presentation / analytics
 // ────────────────────────────────────────────────────────────────────────────
-// Wires the V2 shell `page === 'dhl'` route to live DHL authority. This is a
-// VISIBILITY-ONLY surface — Lane A / Lane B / Task Scheduler remain the sole
-// automation actors. The Hub renders truth produced by the backend; it never
-// mutates server state in any way.
-//
-// Allowed endpoints (exactly 4 — and nothing else):
-//   GET /api/v1/dhl/followup-automation/status     — automation status projection
-//   GET /api/v1/dhl/followup-automation/shipments  — DHL shipment rows (projector)
-//   GET /api/v1/dhl/auto-scan-status               — Lane A inbox-scanner health (DhlScanStatus)
-//   GET /api/v1/dhl/daily-summary                  — daily DHL operations (DhlDailySummary)
-//
-// Note: the brief originally summarised the first two without the router
-// prefix segment "followup-automation". The actual registered prefix in
-// routes_dhl_followup_status.py is the followup-automation subpath, so the
-// canonical paths include that segment. Authority owner unchanged
-// (dhl_followup_status_projector); only the URL shape was corrected.
-//
-// Composes the existing live cards:
-//   window.DhlScanStatus    (service/app/static/v2/dhl-scan-status.jsx)
-//   window.DhlDailySummary  (service/app/static/v2/dhl-daily-summary.jsx)
-//
-// Retired (P3) by this sprint: DhlClearancePipeline, DhlEmailInbox,
-// EmailDetailModal, SadDocsTable, and the inline mock arrays.
-// Those components held write-implying affordances that this observer must
-// never expose; see the brief at .claude/campaigns/atlas-v2/sprint-31-dhl-hub.md
-// §4 for the exhaustive forbidden list.
+// Canonical route: page === 'dhl' → DhlCustomsPage (name preserved; Lesson M).
+// Authority: inbound audit/clearance + outbound carrier/tracking + delivery
+// confirmation. Page never mutates workflow. Projection:
+//   GET /api/v1/dhl/logistics/projection
+// Automation health (secondary tab) still uses the existing observer GETs.
 // ════════════════════════════════════════════════════════════════════════════
 
 function DhlCustomsPage({ onViewShipment }) {
-  // Live data from the 4 allowed GET endpoints.
-  const [statusData,    setStatusData]    = React.useState(null);
-  const [statusLoading, setStatusLoading] = React.useState(true);
-  const [statusError,   setStatusError]   = React.useState(null);
-
-  const [shipData,    setShipData]    = React.useState(null);
-  const [shipLoading, setShipLoading] = React.useState(true);
-  const [shipError,   setShipError]   = React.useState(null);
-
-  // Re-render key forces the embedded DhlScanStatus + DhlDailySummary cards to
-  // re-mount on a passive Reload (they auto-fetch on mount). Zero server side-effect.
+  const [mainTab, setMainTab] = React.useState('logistics'); // logistics | automation
+  const [view, setView] = React.useState('active'); // active | delivered | attention
+  const [direction, setDirection] = React.useState('all'); // all | inbound | outbound
+  const [q, setQ] = React.useState('');
+  const [stage, setStage] = React.useState('');
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+  const [selected, setSelected] = React.useState(null);
   const [reloadKey, setReloadKey] = React.useState(0);
+  const [autoStatus, setAutoStatus] = React.useState(null);
+  const [autoOpen, setAutoOpen] = React.useState(false);
 
-  const loadStatus = React.useCallback(() => {
-    setStatusLoading(true); setStatusError(null);
+  const loadProjection = React.useCallback(() => {
+    setLoading(true); setError(null);
+    const params = { view, direction };
+    if (q.trim()) params.q = q.trim();
+    if (stage.trim()) params.stage = stage.trim();
+    const api = window.PzApi && window.PzApi.getDhlLogisticsProjection;
+    const req = api
+      ? api(params)
+      : window.EstrellaShared.apiFetch('/api/v1/dhl/logistics/projection?' + new URLSearchParams(params).toString());
+    Promise.resolve(req)
+      .then((d) => { setData(d && d.data !== undefined && d.ok !== undefined ? d.data : d); setLoading(false); })
+      .catch((e) => { setError((e && e.message) || String(e)); setLoading(false); });
+  }, [view, direction, q, stage]);
+
+  React.useEffect(() => { if (mainTab === 'logistics') loadProjection(); }, [loadProjection, mainTab]);
+
+  React.useEffect(() => {
+    if (mainTab !== 'automation') return;
     window.EstrellaShared.apiFetch('/api/v1/dhl/followup-automation/status')
-      .then(d => { setStatusData(d); setStatusLoading(false); })
-      .catch(e => { setStatusError((e && e.message) || String(e)); setStatusLoading(false); });
-  }, []);
+      .then((d) => setAutoStatus(d))
+      .catch(() => setAutoStatus(null));
+  }, [mainTab, reloadKey]);
 
-  const loadShipments = React.useCallback(() => {
-    setShipLoading(true); setShipError(null);
-    window.EstrellaShared.apiFetch('/api/v1/dhl/followup-automation/shipments')
-      .then(d => { setShipData(d); setShipLoading(false); })
-      .catch(e => { setShipError((e && e.message) || String(e)); setShipLoading(false); });
-  }, []);
+  const kpis = (data && data.kpis) || {};
+  const rows = (data && data.rows) || [];
+  const analytics = (data && data.analytics) || {};
 
-  React.useEffect(() => { loadStatus();    }, [loadStatus]);
-  React.useEffect(() => { loadShipments(); }, [loadShipments]);
+  const exportCsv = () => {
+    const params = { view, direction };
+    if (q.trim()) params.q = q.trim();
+    if (stage.trim()) params.stage = stage.trim();
+    if (window.PzApi && window.PzApi.exportDhlLogisticsCsv) {
+      window.PzApi.exportDhlLogisticsCsv(params);
+    }
+  };
 
-  // Passive client-side reload: re-issues the same 4 GETs. No POST, no server
-  // side-effect. Brief §3 permits this only with a non-mutating label.
-  const reloadAll = React.useCallback(() => {
-    loadStatus();
-    loadShipments();
-    setReloadKey(k => k + 1);
-  }, [loadStatus, loadShipments]);
-
-  // Normalise the projector shipment rows. We render whatever fields the
-  // projector emits without inventing semantics; if shape changes, the
-  // operator sees the raw projector output rather than stale assumptions.
-  const ships = (shipData && (shipData.shipments || shipData.rows || shipData.items)) || [];
+  const fmt = (v) => (v == null || v === '') ? '—' : String(v);
+  const fmtHours = (h) => (h == null ? '—' : (Math.round(h * 10) / 10) + 'h');
+  const toneFor = (row) => {
+    if (row.needs_attention) return 'red';
+    if (row.direction === 'inbound') return 'blue';
+    if (row.classification === 'delivered' || row.classification === 'completed') return 'green';
+    return 'amber';
+  };
 
   return (
-    <div data-testid="dhl-hub-root" style={{ padding: '20px 32px', overflowY: 'auto', flex: 1 }}>
-      {/* Reload-all bar (passive client-side; zero server side-effect) */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <button
-          data-testid="dhl-hub-reload"
-          onClick={reloadAll}
-          disabled={statusLoading || shipLoading}
-          style={{
-            background: 'transparent', border: '1px solid var(--border)', borderRadius: 4,
-            padding: '4px 10px', fontSize: 11, color: 'var(--text-2)',
-            cursor: (statusLoading || shipLoading) ? 'default' : 'pointer',
-          }}
-        >↻ Reload</button>
-      </div>
-
-      {/* Row 1: Lane A scanner health + daily operations report (existing live cards) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 380px) 1fr', gap: 16, marginBottom: 20 }}>
-        <div data-testid="dhl-hub-scan-card">
-          {window.DhlScanStatus
-            ? React.createElement(window.DhlScanStatus, { key: 'scan-' + reloadKey })
-            : <div style={{ padding: 12, fontSize: 11, color: 'var(--text-3)' }}>Scanner card unavailable.</div>}
+    <div data-testid="dhl-tower-root" style={{ padding: '20px 24px', overflowY: 'auto', flex: 1, minWidth: 0 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>DHL Logistics</div>
+          <h1 style={{ margin: '4px 0 0', fontSize: 22, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>Control Tower</h1>
+          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4, lineHeight: 1.4 }}>
+            Read-only operational tracking · Europe/Warsaw · inbound clearance + outbound carrier authorities
+          </div>
         </div>
-        <div data-testid="dhl-hub-summary-card">
-          {window.DhlDailySummary
-            ? React.createElement(window.DhlDailySummary, { key: 'sum-' + reloadKey })
-            : <div style={{ padding: 12, fontSize: 11, color: 'var(--text-3)' }}>Daily summary card unavailable.</div>}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button data-testid="dhl-tower-export" onClick={exportCsv} style={_dhlBtnStyle()}>Export CSV</button>
+          <button data-testid="dhl-tower-reload" onClick={() => { loadProjection(); setReloadKey((k) => k + 1); }} disabled={loading} style={_dhlBtnStyle()}>↻ Reload</button>
         </div>
       </div>
 
-      {/* Panel: DHL automation status (/dhl/status) */}
-      <DhlPanel
-        title="DHL automation status"
-        subtitle="Live projection from dhl_followup_status_projector — Lane A / Lane B authority"
-        testid="dhl-hub-status-panel"
-      >
-        {statusLoading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
-        {statusError   && <div style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{statusError}</div>}
-        {statusData && (
-          <DhlJsonReadout data={statusData} testid="dhl-hub-status-readout" />
-        )}
-        <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-3)' }}>
-          Read-only. No write calls are made from this panel.
-        </div>
-      </DhlPanel>
+      <Tabs
+        active={mainTab}
+        onChange={setMainTab}
+        tabs={[
+          { id: 'logistics', label: 'Logistics' },
+          { id: 'automation', label: 'Automation Health' },
+        ]}
+      />
 
-      {/* Panel: DHL shipment rows (/dhl/shipments) */}
-      <DhlPanel
-        title="DHL shipment queue"
-        subtitle="Projector rows — read-only visibility into the active DHL workflow"
-        testid="dhl-hub-shipments-panel"
-      >
-        {shipLoading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
-        {shipError   && <div style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{shipError}</div>}
-        {shipData && (
-          <DhlShipmentsTable rows={ships} onViewShipment={onViewShipment} testid="dhl-hub-shipments-table" />
-        )}
-        <div style={{ marginTop: 10, fontSize: 10, color: 'var(--text-3)' }}>
-          Read-only. No write calls are made from this panel.
-        </div>
-      </DhlPanel>
+      {mainTab === 'logistics' && (
+        <div data-testid="dhl-tower-logistics">
+          <div className="grid-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
+            <StatTile label="Active inbound" value={fmt(kpis.active_inbound)} sub="Logistics-active only" onClick={() => { setDirection('inbound'); setView('active'); }} />
+            <StatTile label="Active outbound" value={fmt(kpis.active_outbound)} sub="Carrier AWB not delivered" accent="var(--accent)" onClick={() => { setDirection('outbound'); setView('active'); }} />
+            <StatTile label="Needs attention" value={fmt(kpis.needs_attention)} sub="Exception / aged stage" accent="var(--badge-red-text)" onClick={() => setView('attention')} />
+            <StatTile label="Delivered today" value={fmt(kpis.delivered_today)} sub="Warsaw calendar day" accent="var(--badge-green-text)" onClick={() => setView('delivered')} />
+            <StatTile label="Avg inbound transit" value={fmtHours(kpis.avg_inbound_transit_hours)} sub={kpis.inbound_transit_median_hours != null ? ('Median ' + fmtHours(kpis.inbound_transit_median_hours)) : 'Need ≥3 completed'} />
+            <StatTile label="Avg outbound transit" value={fmtHours(kpis.avg_outbound_transit_hours)} sub={kpis.outbound_transit_median_hours != null ? ('Median ' + fmtHours(kpis.outbound_transit_median_hours)) : 'Need ≥3 delivered'} />
+          </div>
 
-      {/* Authority statement */}
-      <div style={{
-        marginTop: 8, padding: '12px 16px', background: 'var(--bg-subtle)',
-        border: '1px solid var(--border)', borderRadius: 8,
-        fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5,
-      }}>
-        <strong style={{ color: 'var(--text-2)' }}>Observer only.</strong>{' '}
-        Lane A · Lane B · Task Scheduler remain the sole DHL automation authority.
-        This surface is read-only — no write actions, no workflow triggers, no automation controls.{' '}
-        <strong style={{ color: 'var(--text-2)' }}>Endpoints:</strong>{' '}
-        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/dhl/followup-automation/status</code> ·{' '}
-        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/dhl/followup-automation/shipments</code> ·{' '}
-        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/dhl/auto-scan-status</code> ·{' '}
-        <code style={{ fontFamily: 'monospace', background: 'var(--card)', padding: '1px 5px', borderRadius: 3 }}>/api/v1/dhl/daily-summary</code>.
-      </div>
+          {kpis.orch_active_but_logistics_terminal > 0 && (
+            <div data-testid="dhl-tower-orch-residue" style={{
+              marginBottom: 14, padding: '10px 14px', borderRadius: 8,
+              border: '1px solid var(--border)', background: 'var(--bg-subtle)',
+              fontSize: 12, color: 'var(--text-2)', lineHeight: 1.45,
+            }}>
+              <strong style={{ color: 'var(--badge-amber-text)' }}>Reporting correction:</strong>{' '}
+              {kpis.orch_active_but_logistics_terminal} of {kpis.orch_active_inbound} follow-up “active” rows are logistics
+              completed/delivered (customs/PZ). They are excluded from Active here — follow-up automation authority unchanged.
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <Tabs
+              active={view}
+              onChange={setView}
+              style={{ marginBottom: 0, borderBottom: 'none', flex: '1 1 auto' }}
+              tabs={[
+                { id: 'active', label: 'Active', count: (kpis.active_inbound || 0) + (kpis.active_outbound || 0) },
+                { id: 'delivered', label: 'Delivered / Completed' },
+                { id: 'attention', label: 'Needs Attention', count: kpis.needs_attention },
+              ]}
+            />
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14, alignItems: 'center' }}>
+            {['all', 'inbound', 'outbound'].map((d) => (
+              <button key={d} data-testid={'dhl-tower-dir-' + d} onClick={() => setDirection(d)} style={{
+                ..._dhlBtnStyle(),
+                background: direction === d ? 'var(--accent)' : 'transparent',
+                color: direction === d ? '#fff' : 'var(--text-2)',
+                borderColor: direction === d ? 'var(--accent)' : 'var(--border)',
+              }}>{d === 'all' ? 'All' : d === 'inbound' ? 'Inbound' : 'Outbound'}</button>
+            ))}
+            <input
+              data-testid="dhl-tower-search"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="AWB / client / supplier / batch"
+              style={{
+                flex: '1 1 180px', minWidth: 140, maxWidth: 320, padding: '6px 10px',
+                border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)',
+                color: 'var(--text)', fontSize: 12,
+              }}
+            />
+            <input
+              data-testid="dhl-tower-stage"
+              value={stage}
+              onChange={(e) => setStage(e.target.value)}
+              placeholder="Stage / status filter"
+              style={{
+                flex: '0 1 160px', minWidth: 120, padding: '6px 10px',
+                border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)',
+                color: 'var(--text)', fontSize: 12,
+              }}
+            />
+          </div>
+
+          {loading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading logistics projection…</div>}
+          {error && <div data-testid="dhl-tower-error" style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{error}</div>}
+
+          {!loading && !error && (
+            <div data-testid="dhl-tower-table-wrap" style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card)' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 920 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                    {['Dir', 'Party', 'AWB', 'Booked', 'Stage', 'Stage age', 'Total', 'Status', 'Latest', 'Exception'].map((h) => (
+                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length === 0 && (
+                    <tr><td colSpan={10} style={{ padding: 16, color: 'var(--text-3)' }}>No shipments match these filters.</td></tr>
+                  )}
+                  {rows.map((r) => (
+                    <tr
+                      key={(r.direction || '') + ':' + (r.awb || '') + ':' + (r.batch_id || '')}
+                      data-testid={'dhl-tower-row-' + (r.awb || 'x')}
+                      onClick={() => setSelected(r)}
+                      style={{ borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer' }}
+                    >
+                      <td style={{ padding: '8px 10px' }}><Pill tone={toneFor(r)} small>{r.direction}</Pill></td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.party)}</td>
+                      <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.awb)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_dhlShortTs(r.created_at_warsaw)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.current_stage_label)}</td>
+                      <td style={{ padding: '8px 10px', color: r.needs_attention ? 'var(--badge-red-text)' : 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.stage_age_human || fmtHours(r.stage_age_hours))}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.total_elapsed_human || fmtHours(r.total_elapsed_hours))}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.current_status)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.latest_event)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--badge-red-text)', whiteSpace: 'nowrap' }}>{fmt(r.exception)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {analytics.stage_duration_samples && Object.keys(analytics.stage_duration_samples).length > 0 && (
+            <div data-testid="dhl-tower-analytics" style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Stage duration analytics</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+                Median / P90 only when n≥3 real transitions. Longer than historical range ≠ invented SLA “late”.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                {Object.keys(analytics.stage_duration_samples).slice(0, 12).map((sid) => {
+                  const s = analytics.stage_duration_samples[sid];
+                  return (
+                    <div key={sid} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)' }}>{sid}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>n={s.n} · avg {fmtHours(s.average)}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>median {fmtHours(s.median)} · p90 {fmtHours(s.p90)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {mainTab === 'automation' && (
+        <div data-testid="dhl-tower-automation">
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 380px) 1fr', gap: 16, marginBottom: 20 }} className="dhl-auto-grid">
+            <div data-testid="dhl-hub-scan-card">
+              {window.DhlScanStatus
+                ? React.createElement(window.DhlScanStatus, { key: 'scan-' + reloadKey })
+                : <div style={{ padding: 12, fontSize: 11, color: 'var(--text-3)' }}>Scanner card unavailable.</div>}
+            </div>
+            <div data-testid="dhl-hub-summary-card">
+              {window.DhlDailySummary
+                ? React.createElement(window.DhlDailySummary, { key: 'sum-' + reloadKey })
+                : <div style={{ padding: 12, fontSize: 11, color: 'var(--text-3)' }}>Daily summary card unavailable.</div>}
+            </div>
+          </div>
+          <DhlPanel title="Follow-up automation status" subtitle="Lane A / Lane B projector — observer only" testid="dhl-hub-status-panel">
+            {autoStatus ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 12 }}>
+                <StatTile label="Status" value={fmt(autoStatus.status_label || autoStatus.status)} />
+                <StatTile label="Active (orch)" value={fmt(autoStatus.active_shipments)} sub="Follow-up predicate — not logistics Active" />
+                <StatTile label="Monitoring" value={fmt(autoStatus.monitoring)} />
+                <StatTile label="Eligible now" value={fmt(autoStatus.eligible_now)} />
+              </div>
+            ) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+            <button data-testid="dhl-tower-raw-toggle" onClick={() => setAutoOpen((v) => !v)} style={{ ..._dhlBtnStyle(), marginBottom: 8 }}>
+              {autoOpen ? 'Hide' : 'Show'} raw diagnostics JSON
+            </button>
+            {autoOpen && autoStatus && <DhlJsonReadout data={autoStatus} testid="dhl-hub-status-readout" />}
+          </DhlPanel>
+        </div>
+      )}
+
+      {selected && (
+        <DhlTowerDrawer
+          row={selected}
+          onClose={() => setSelected(null)}
+          onViewShipment={onViewShipment}
+        />
+      )}
     </div>
   );
 }
 
-// ── DHL Hub primitives (private to DhlCustomsPage) ──────────────────────────
+function _dhlBtnStyle() {
+  return {
+    background: 'transparent', border: '1px solid var(--border)', borderRadius: 6,
+    padding: '6px 12px', fontSize: 11, color: 'var(--text-2)', cursor: 'pointer',
+  };
+}
+
+function _dhlShortTs(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso).slice(0, 16);
+    return d.toLocaleString('pl-PL', { timeZone: 'Europe/Warsaw', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch (e) { return String(iso).slice(0, 16); }
+}
+
+function DhlTowerDrawer({ row, onClose, onViewShipment }) {
+  const milestones = row.milestones || [];
+  return (
+    <div data-testid="dhl-tower-drawer" style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 80,
+      display: 'flex', justifyContent: 'flex-end',
+    }} onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 'min(480px, 100%)', height: '100%', background: 'var(--card)',
+          borderLeft: '1px solid var(--border)', overflowY: 'auto', padding: 20,
+          boxShadow: '-8px 0 24px var(--shadow)',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 12 }}>
+          <div>
+            <Pill tone={row.direction === 'inbound' ? 'blue' : 'amber'}>{row.direction}</Pill>
+            <div style={{ fontFamily: 'monospace', fontSize: 16, fontWeight: 700, marginTop: 8 }}>{row.awb}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>{row.party || '—'} · {row.current_status || '—'}</div>
+          </div>
+          <button data-testid="dhl-tower-drawer-close" onClick={onClose} style={_dhlBtnStyle()}>Close</button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16, fontSize: 12 }}>
+          <div><span style={{ color: 'var(--text-3)' }}>Stage</span><div>{row.current_stage_label || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Stage age</span><div>{row.stage_age_human || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Total elapsed</span><div>{row.total_elapsed_human || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Location</span><div>{row.current_location || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Delivered</span><div>{_dhlShortTs(row.delivered_at_warsaw)}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Received by</span><div>{row.received_by || '—'}</div></div>
+        </div>
+
+        {row.direction === 'outbound' && (
+          <div style={{ marginBottom: 16, padding: 12, background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Notifications / receipt</div>
+            <div>DHL email requested: {row.dhl_email_requested == null ? '—' : String(row.dhl_email_requested)}</div>
+            <div>DHL SMS requested: {row.dhl_sms_requested == null ? '—' : String(row.dhl_sms_requested)}</div>
+            <div>Estrella confirmation: {row.estrella_delivery_confirmation || '—'}</div>
+            <div>Customer response: {row.customer_response || '—'}</div>
+            {window.EJOutboundTrackingCard && row.awb && (
+              <div style={{ marginTop: 12 }} data-testid="dhl-tower-outbound-card">
+                {React.createElement(window.EJOutboundTrackingCard, {
+                  awb: row.awb,
+                  batchId: row.batch_id,
+                  carrier: 'DHL',
+                  draftId: row.draft_id,
+                  testIdRoot: 'dhl-tower-ej-track',
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Timeline</div>
+        <div data-testid="dhl-tower-timeline">
+          {milestones.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No authoritative milestone timestamps.</div>}
+          {milestones.map((m, i) => (
+            <div key={i} style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+              <div style={{ width: 10, flex: '0 0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent)' }} />
+                {i < milestones.length - 1 && <div style={{ width: 2, flex: 1, background: 'var(--border)', marginTop: 2 }} />}
+              </div>
+              <div style={{ flex: 1, minWidth: 0, paddingBottom: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{m.label}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{_dhlShortTs(m.timestamp_warsaw)} · {m.authority || '—'}</div>
+                {m.location && <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{m.location}</div>}
+                {m.duration_from_previous_human && (
+                  <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 2 }}>+{m.duration_from_previous_human} from previous</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {row.batch_id && onViewShipment && (
+          <button
+            data-testid="dhl-tower-open-batch"
+            onClick={() => onViewShipment(row.batch_id)}
+            style={{ ..._dhlBtnStyle(), marginTop: 8, width: '100%' }}
+          >Open shipment batch</button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function DhlPanel({ title, subtitle, testid, children }) {
   return (
@@ -229,73 +443,15 @@ function DhlPanel({ title, subtitle, testid, children }) {
   );
 }
 
-// Read-only JSON readout — pretty-print whatever the projector emits without
-// inventing semantics. Sprint 30 used a similar pattern for unfamiliar payloads.
 function DhlJsonReadout({ data, testid }) {
   return (
     <pre data-testid={testid} style={{
       margin: 0, padding: '12px 14px', background: 'var(--bg-subtle)',
       border: '1px solid var(--border)', borderRadius: 6,
-      fontSize: 11, color: 'var(--text)',
       overflowX: 'auto', maxHeight: 360, overflowY: 'auto',
       whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-      fontFamily: 'monospace', lineHeight: 1.5,
+      fontFamily: 'monospace', lineHeight: 1.5, fontSize: 11,
     }}>{JSON.stringify(data, null, 2)}</pre>
-  );
-}
-
-// Defensive renderer: accepts an array of projector rows, picks a stable
-// column set from common fields, and renders read-only. No row actions.
-function DhlShipmentsTable({ rows, onViewShipment, testid }) {
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No DHL shipments in the projector output.</div>;
-  }
-  // Pick a column set from the first row's actual keys (caps at 8 for layout).
-  const pick = ['batch_id', 'awb', 'carrier', 'status', 'state', 'waiting_for', 'updated_at', 'next_action'];
-  const present = pick.filter(k => Object.prototype.hasOwnProperty.call(rows[0], k));
-  const cols = present.length > 0 ? present : Object.keys(rows[0]).slice(0, 8);
-
-  return (
-    <div style={{ overflowX: 'auto', maxHeight: 360, overflowY: 'auto' }} data-testid={testid}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-        <thead>
-          <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-            {cols.map(h => (
-              <th key={h} style={{
-                padding: '6px 10px', textAlign: 'left',
-                fontWeight: 700, color: 'var(--text-3)',
-                letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 10,
-              }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 200).map((r, i) => (
-            <tr key={r.batch_id || r.id || i} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-              {cols.map(c => {
-                const v = r[c];
-                const display = v == null ? '—' :
-                  typeof v === 'object' ? JSON.stringify(v) :
-                  String(v);
-                return (
-                  <td key={c} style={{
-                    padding: '5px 10px',
-                    fontFamily: c === 'batch_id' || c === 'awb' ? 'monospace' : undefined,
-                    color: 'var(--text-2)',
-                    maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{display}</td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {rows.length > 200 && (
-        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
-          Showing first 200 of {rows.length}.
-        </div>
-      )}
-    </div>
   );
 }
 

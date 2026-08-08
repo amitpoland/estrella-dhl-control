@@ -1223,6 +1223,35 @@
     getDhlFollowupStatus: () =>
       _get(`${BASE}/dhl/followup-automation/status`),
 
+    // GET /api/v1/dhl/logistics/projection — Control Tower read-only projection
+    getDhlLogisticsProjection: (params = {}) => {
+      const qs = new URLSearchParams();
+      Object.keys(params || {}).forEach((k) => {
+        const v = params[k];
+        if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+      });
+      const q = qs.toString();
+      return _get(`${BASE}/dhl/logistics/projection${q ? '?' + q : ''}`);
+    },
+
+    // GET /api/v1/dhl/logistics/shipments/{awb}
+    getDhlLogisticsShipment: (awb) =>
+      _get(`${BASE}/dhl/logistics/shipments/${encodeURIComponent(awb)}`),
+
+    // GET /api/v1/dhl/logistics/export/csv — filtered CSV download
+    exportDhlLogisticsCsv: (params = {}) => {
+      const qs = new URLSearchParams();
+      Object.keys(params || {}).forEach((k) => {
+        const v = params[k];
+        if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+      });
+      const q = qs.toString();
+      return _download(
+        `${BASE}/dhl/logistics/export/csv${q ? '?' + q : ''}`,
+        'dhl_logistics_export.csv',
+      );
+    },
+
     // ── DHL live tracking (carrier status) — read ───────────────────
     // GET /api/v1/tracking/{tracking_no}?carrier=&batch_id=&refresh=
     // Authority: tracking_service.get_tracking_status. Caches per-batch; gated by
