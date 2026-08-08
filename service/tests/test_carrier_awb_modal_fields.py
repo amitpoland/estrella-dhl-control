@@ -41,6 +41,7 @@ def _req(**overrides) -> ShipmentRequest:
         currency="EUR",
         weight_kg=1.5,
         dimensions={"length_cm": 30, "width_cm": 20, "height_cm": 10},
+        incoterm="EXW",
     )
     defaults.update(overrides)
     return ShipmentRequest(**defaults)
@@ -338,6 +339,7 @@ def test_shipment_request_body_forwards_product_code(client):
     original callable at route registration — a module-attribute patch is invisible to DI.
     shipper_account is supplied in the body so the 422 gate at line 142 is satisfied
     regardless of whether DHL_EXPRESS_ACCOUNT_NUMBER is set in the environment.
+    Incoterm is resolved via draft→CM (patched here); never invented as DAP.
     """
     from app.main import app
     from app.api.routes_carrier_actions import _get_coordinator
@@ -354,25 +356,31 @@ def test_shipment_request_body_forwards_product_code(client):
 
     app.dependency_overrides[_get_coordinator] = lambda: mock_coord
     try:
-        resp = client.post(
-            "/api/v1/carrier/BATCH-001/shipment",
-            headers={"X-API-Key": "test"},
-            json={
-                "shipper_account": "TEST-001",
-                "recipient_address": {"name": "T", "street": "S", "city": "C",
-                                      "postal_code": "00", "country_code": "PL"},
-                "declared_value": 100.0,
-                "currency": "USD",
-                "weight_kg": 1.0,
-                "dimensions": {"length_cm": 10, "width_cm": 10, "height_cm": 10},
-                "product_code": "Y",
-                "description": "Silver bracelets",
-                "customer_reference": "PRO/042/2026",
-                "shipment_reference": "BATCH-001",
-                "receiver_vat_id": "GB123",
-                "receiver_eori": "GB987",
-            },
-        )
+        with patch(
+            "app.api.routes_carrier_actions._resolve_booking_incoterm",
+            return_value={"value": "EXW", "source": "customer_master"},
+        ):
+            resp = client.post(
+                "/api/v1/carrier/BATCH-001/shipment",
+                headers={"X-API-Key": "test"},
+                json={
+                    "shipper_account": "TEST-001",
+                    "recipient_address": {
+                        "name": "T", "street": "S", "city": "C",
+                        "postal_code": "00", "country_code": "PL",
+                    },
+                    "declared_value": 100.0,
+                    "currency": "USD",
+                    "weight_kg": 1.0,
+                    "dimensions": {"length_cm": 10, "width_cm": 10, "height_cm": 10},
+                    "product_code": "Y",
+                    "description": "Silver bracelets",
+                    "customer_reference": "PRO/042/2026",
+                    "shipment_reference": "BATCH-001",
+                    "receiver_vat_id": "GB123",
+                    "receiver_eori": "GB987",
+                },
+            )
     finally:
         app.dependency_overrides.pop(_get_coordinator, None)
 
@@ -387,6 +395,7 @@ def test_shipment_request_body_forwards_product_code(client):
     assert req_arg.receiver_vat_id == "GB123"
     assert req_arg.receiver_eori == "GB987"
     assert req_arg.currency == "USD"
+    assert req_arg.incoterm == "EXW"
 
 
 # ── GET /api/v1/carrier/services — all 5 product codes present ────────────────

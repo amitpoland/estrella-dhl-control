@@ -77,6 +77,8 @@ def _make_request(
         weight_kg=weight_kg,
         dimensions={"length_cm": 20, "width_cm": 15, "height_cm": 10},
         product_code=product_code,
+        # Explicit fixture — production never invents; tests must supply resolved value.
+        incoterm="DAP",
     )
 
 
@@ -691,6 +693,7 @@ class TestEuCustomsDeclarable:
             product_code="U",
             customer_reference="REF-EU-1",
             receiver_vat_id="LT100001738313",
+            incoterm="DAP",
         )
         body = _build_shipment_body(req, self._fake_settings())
         assert body["customerReferences"] == [{"value": "REF-EU-1", "typeCode": "CU"}]

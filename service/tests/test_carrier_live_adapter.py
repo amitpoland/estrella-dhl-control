@@ -60,6 +60,7 @@ def _make_request(batch_id: str = "BATCH-001") -> ShipmentRequest:
         currency="EUR",
         weight_kg=5.0,
         dimensions={"length_cm": 30, "width_cm": 20, "height_cm": 10},
+        incoterm="DAP",
     )
 
 
@@ -301,6 +302,7 @@ class TestRegistrationNumbers:
             dimensions={"length_cm": 20, "width_cm": 15, "height_cm": 10},
             receiver_eori=eori,
             receiver_vat_id=vat,
+            incoterm="DAP",
         )
 
     def _get_body(self, request, tmp_path):
@@ -372,6 +374,7 @@ class TestCustomerReferences:
             dimensions={"length_cm": 10, "width_cm": 10, "height_cm": 10},
             customer_reference=customer_ref,
             shipment_reference=shipment_ref,
+            incoterm="DAP",
         )
 
     def test_aao_never_emitted(self, tmp_path):

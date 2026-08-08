@@ -222,7 +222,7 @@ function SOCreate() {
             <div style={{ fontWeight:700, fontSize:12, color:'var(--text)', marginBottom:8 }}>Service</div>
             <F label="Carrier" value="DHL Express  ·  FedEx IP  ·  FedEx IE"/>
             <F label="Service level" value="Worldwide Express · Economy Select" hint="Live rate query · API required"/>
-            <F label="Incoterm" value="DAP · DDP · CIP"/>
+            <F label="Incoterm" value="EXW · FCA · DAP · DDP · CIP (catalogue)"/>
             <F label="Insurance" value="Declared value · KUKE-linked" hint="Pulled from client KYC"/>
           </div>
           {/* Customs */}

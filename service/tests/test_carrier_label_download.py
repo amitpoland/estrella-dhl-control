@@ -316,6 +316,7 @@ class TestShipmentLogisticsContract:
             declared_value=43.0, currency="EUR", weight_kg=0.3,
             dimensions={"length_cm": 25, "width_cm": 20, "height_cm": 3},
             product_code="P",
+            incoterm="DAP",
         )
         rates = MagicMock(); rates.is_success = True
         rates.json.return_value = {"products": [{"productCode": "U"}, {"productCode": "K"}]}

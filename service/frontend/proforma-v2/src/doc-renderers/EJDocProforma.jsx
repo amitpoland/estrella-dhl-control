@@ -134,7 +134,7 @@ function EJDocCarrierRow({ carrier }) {
       </div>
       <div style={{ padding: "10px 12px", borderRight: "1px solid var(--ej-line)" }}>
         <div style={{ fontSize: 8, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--ej-mute)", fontWeight: 600, marginBottom: 3 }}>Incoterm</div>
-        <div style={{ fontSize: 11, fontWeight: 600 }}>{carrier.incoterm || "DAP"}</div>
+        <div style={{ fontSize: 11, fontWeight: 600 }}>{carrier.incoterm || "—"}</div>
       </div>
       <div style={{ padding: "10px 12px" }}>
         <div style={{ fontSize: 8, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--ej-mute)", fontWeight: 600, marginBottom: 3 }}>Shipment ref</div>

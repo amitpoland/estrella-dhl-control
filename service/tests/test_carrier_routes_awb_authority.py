@@ -19,6 +19,15 @@ from app.auth.dependencies import get_current_user
 from app.core.security import require_api_key
 
 
+@pytest.fixture(autouse=True)
+def _incoterm_resolved_for_shipment_posts(monkeypatch):
+    """AWB authority tests — supply resolved Incoterm so INCOTERM_UNSET does not mask address tests."""
+    monkeypatch.setattr(
+        "app.api.routes_carrier_actions._resolve_booking_incoterm",
+        lambda **kwargs: {"value": "DAP", "source": "customer_master"},
+    )
+
+
 def _logistics_user():
     # POST /shipment is role-gated (require_role -> get_current_user, PR #1002).
     return {"id": 1, "email": "t@test.internal", "role": "logistics",

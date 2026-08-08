@@ -342,6 +342,46 @@ class ShipmentRequestBody(BaseModel):
     client_ref: Optional[str] = None          # per-client shipment scope (draft client_name);
                                               # scopes idempotency key + row to one client so
                                               # two clients in the same batch never share an AWB
+    # Optional echo only — server re-resolves from draft → CM; never invents.
+    incoterm: Optional[str] = None
+
+
+def _resolve_booking_incoterm(
+    *,
+    storage_root,
+    batch_id: str,
+    client_ref: Optional[str],
+) -> dict:
+    """Authority for DHL booking Incoterm: saved draft → CM default → unset.
+
+    Never invents DAP/EXW. Returns ``{"value", "source"}`` from
+    ``commercial_authority.resolve_incoterm``.
+    """
+    from pathlib import Path as _Path
+    from ..services.commercial_authority import resolve_incoterm
+    from ..services import proforma_invoice_link_db as pildb
+    from ..services import customer_master_db as cmdb
+
+    draft_incoterm = None
+    cm_default = None
+    cid = None
+    client_name = (client_ref or "").strip() or None
+    pf_db = _Path(storage_root) / "proforma_links.db"
+    if client_name and pf_db.exists():
+        draft = pildb.get_draft(pf_db, batch_id, client_name)
+        if draft is not None:
+            draft_incoterm = getattr(draft, "incoterm", None)
+            cid = (getattr(draft, "client_contractor_id", None) or "").strip() or None
+    if cid:
+        cm_path = _Path(storage_root) / "customer_master.sqlite"
+        if cm_path.exists():
+            try:
+                cm = cmdb.get_customer(cm_path, cid)
+                if cm is not None:
+                    cm_default = getattr(cm, "default_incoterm", None)
+            except Exception:
+                cm_default = None
+    return resolve_incoterm(draft_incoterm, cm_default)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -616,6 +656,31 @@ def create_shipment(
         # Flag OFF = today's behavior unchanged (Condition 2)
         carrier_address = body.recipient_address
 
+    # Incoterm: draft → Customer Master → unset. Never invent DAP.
+    incoterm_res = _resolve_booking_incoterm(
+        storage_root=settings.storage_root,
+        batch_id=batch_id,
+        client_ref=body.client_ref,
+    )
+    resolved_incoterm = (incoterm_res.get("value") or "").strip().upper() or None
+    if not resolved_incoterm:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": (
+                    "Incoterm is unset for this client. Set Customer Master."
+                    "default_incoterm or save an Incoterm on the proforma draft "
+                    "before booking DHL. The platform will not invent DAP."
+                ),
+                "code": "INCOTERM_UNSET",
+                "incoterm_source": incoterm_res.get("source") or "unset",
+                "guidance": (
+                    "Open Client Master → Default Incoterm, or edit the draft "
+                    "Incoterm field, then retry AWB booking."
+                ),
+            },
+        )
+
     request = ShipmentRequest(
         batch_id=batch_id,
         shipper_account=shipper_account,
@@ -633,6 +698,7 @@ def create_shipment(
         receiver_eori=body.receiver_eori,
         box_type_code=body.box_type_code,
         client_ref=(body.client_ref or None),
+        incoterm=resolved_incoterm,
     )
     try:
         result = coordinator.create_shipment(request, operator=operator)
@@ -979,6 +1045,14 @@ async def create_label_package(
         receiver_eori  = (body.receiver_eori or "").strip() or None,
         client_name    = (body.client_name or "").strip() or None,
     )
+    # Fill blank Incoterm from draft → CM authority (never invent DAP).
+    if not inputs.incoterm and inputs.client_name:
+        _ires = _resolve_booking_incoterm(
+            storage_root=_settings.storage_root,
+            batch_id=batch_id,
+            client_ref=inputs.client_name,
+        )
+        inputs.incoterm = (_ires.get("value") or None)
 
     result = assemble_label_package(
         batch_id     = batch_id,

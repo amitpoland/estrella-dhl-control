@@ -38,6 +38,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+
+@pytest.fixture(autouse=True)
+def _incoterm_resolved_for_shipment_posts(monkeypatch):
+    """Operator attribution route tests — supply resolved Incoterm (never invent in prod)."""
+    monkeypatch.setattr(
+        "app.api.routes_carrier_actions._resolve_booking_incoterm",
+        lambda **kwargs: {"value": "DAP", "source": "customer_master"},
+    )
+
+
 from app.api.routes_carrier_actions import (
     _clean_operator,
     _get_carrier_config,
@@ -79,6 +89,7 @@ def _req(batch_id: str = "BATCH-OP", **over) -> ShipmentRequest:
         currency="USD",
         weight_kg=0.5,
         dimensions={"length": 15, "width": 10, "height": 5},
+        incoterm="DAP",
     )
     kw.update(over)
     return ShipmentRequest(**kw)
