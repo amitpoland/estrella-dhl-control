@@ -326,11 +326,11 @@ function DashboardKanban({ onNav, onOpenNewShipment, onOpenSearch, onViewShipmen
   };
 
   return (
-    <div data-testid="dashboard-kanban" style={{ flex: 1, overflowY: 'auto', padding: '20px 32px 40px' }}>
+    <div data-testid="dashboard-kanban" className="atlas-content-pad" style={{ flex: 1, overflowY: 'auto' }}>
       {/* Quick-start CTA strip */}
       <div style={{ marginBottom: 18 }}>
         <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Start a workflow</div>
-        <div className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        <div className="quick-flow-grid responsive-grid-4">
           {QUICK_FLOWS.map(f => (
             <button key={f.id} data-testid={'quick-flow-' + f.id} onClick={() => {
                 if (f.id === 'outbound') onOpenNewShipment && onOpenNewShipment();
@@ -338,15 +338,15 @@ function DashboardKanban({ onNav, onOpenNewShipment, onOpenSearch, onViewShipmen
                 else if (f.id === 'inbound') onNav && onNav('shipments');
                 else if (f.id === 'pz') onNav && onNav('shipments');
               }}
-              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', background: f.bg, border: '1px solid ' + f.border, borderRadius: 8, cursor: 'pointer', textAlign: 'left', transition: 'transform 0.15s, box-shadow 0.15s', fontFamily: 'inherit' }}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', background: f.bg, border: '1px solid ' + f.border, borderRadius: 8, cursor: 'pointer', textAlign: 'left', transition: 'transform 0.15s, box-shadow 0.15s', fontFamily: 'inherit', minWidth: 0 }}
               onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 4px 12px var(--shadow)'; }}
               onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}>
-              <span style={{ fontSize: 22 }}>{f.icon}</span>
+              <span style={{ fontSize: 22, flexShrink: 0 }}>{f.icon}</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>{f.label}</div>
                 <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{f.hint}</div>
               </div>
-              <span style={{ fontSize: 14, color: f.color }}>{'→'}</span>
+              <span style={{ fontSize: 14, color: f.color, flexShrink: 0 }}>{'→'}</span>
             </button>
           ))}
         </div>
@@ -365,7 +365,7 @@ function DashboardKanban({ onNav, onOpenNewShipment, onOpenSearch, onViewShipmen
       {!loading && !error && (
         <>
           {/* Compact KPI strip — derived from live batches */}
-          <div data-testid="dashboard-kpi-strip" className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 18 }}>
+          <div data-testid="dashboard-kpi-strip" className="kpi-strip-grid" style={{ marginBottom: 18 }}>
             <CompactKpi label="Active" value={active.length} hint="in pipeline" />
             <CompactKpi label="Urgent" value={urgentCount} hint="needs attention now" accent="var(--badge-red-text)" />
             <CompactKpi label="Awaiting DHL" value={awaitingDhl} hint="email not received" accent="var(--badge-amber-text)" />
@@ -384,12 +384,12 @@ function DashboardKanban({ onNav, onOpenNewShipment, onOpenSearch, onViewShipmen
           {rows.length > 0 && (
             <>
               {/* Pipeline header */}
-              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
-                <div>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ minWidth: 0, flex: '1 1 180px' }}>
                   <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>Pipeline</h2>
                   <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-3)' }}>Each shipment shown in its current stage — click a card to open detail</p>
                 </div>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                   {onOpenSearch && (
                     <button data-testid="dashboard-search-btn" onClick={onOpenSearch} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-subtle)', border: '1px solid var(--border)', color: 'var(--text-2)', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
                       {'⌕'} Search <span style={{ fontFamily: 'monospace', padding: '0px 5px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 3, fontSize: 9.5 }}>{'⌘'}K</span>
@@ -401,8 +401,8 @@ function DashboardKanban({ onNav, onOpenNewShipment, onOpenSearch, onViewShipmen
                 </div>
               </div>
 
-              {/* Kanban board */}
-              <div data-testid="kanban-board" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(220px, 1fr))', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
+              {/* Kanban board — horizontal scroll on narrow screens */}
+              <div data-testid="kanban-board" className="kanban-board">
                 {KANBAN_LANES.map(lane => (
                   <KanbanLane key={lane.id} lane={lane} cards={byLane[lane.id]} onCardClick={handleCardClick} />
                 ))}

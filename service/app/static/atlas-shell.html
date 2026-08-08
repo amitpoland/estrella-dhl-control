@@ -52,21 +52,20 @@
       --badge-purple-bg: #160E28; --badge-purple-text: #AA88EE; --badge-purple-border: #341860;
       --badge-accent-bg: #1E2808; --badge-accent-text: #D4AA5C; --badge-accent-border: #5A4A18;
     }
-    .sidebar-desktop { display: flex; }
-    .mobile-hamburger { display: none; }
-    /* Tablet — matches Estrella Dashboard.html baseline */
+    .sidebar-desktop { display: flex; flex-shrink: 0; }
+    .mobile-hamburger { display: none !important; }
+    .atlas-page-header { padding: 24px 32px 0; }
+    /* Tablet — drawer nav, full-width content */
     @media (max-width: 900px) {
       .sidebar-desktop { display: none !important; }
       .mobile-hamburger { display: flex !important; }
-      [style*="padding: '24px 32px'"] { padding: 14px 16px !important; }
+      .atlas-topbar { padding: 0 12px !important; gap: 8px !important; }
+      .atlas-page-header { padding: 16px 16px 0 !important; }
+      .topbar-search-kbd, .topbar-new-shipment-label { display: none !important; }
     }
-    /* Phone — matches Estrella Dashboard.html baseline */
+    /* Phone */
     @media (max-width: 600px) {
       .docs-grid { grid-template-columns: 1fr !important; }
-      [style*="grid-template-columns: repeat(4, 1fr)"],
-      [style*="grid-template-columns: repeat(3, 1fr)"],
-      [style*="grid-template-columns: repeat(2, 1fr)"],
-      [style*="grid-template-columns: 1fr 1fr"],
       .responsive-grid-4, .responsive-grid-3, .responsive-grid-2 { grid-template-columns: 1fr !important; }
       input[placeholder*="Search"] { max-width: 140px !important; }
     }
