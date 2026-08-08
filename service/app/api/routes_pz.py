@@ -1420,10 +1420,21 @@ async def download_source_file(batch_id: str, category: str, filename: str) -> F
 
 @router.get("/files/{batch_id}/{filename}", dependencies=[_auth])
 async def download_file(batch_id: str, filename: str) -> FileResponse:
-    if "/" in filename or ".." in filename:
-        raise HTTPException(status_code=400, detail="Invalid filename.")
-
-    file_path = settings.storage_root / "outputs" / batch_id / filename
+    # Resolved-path containment: the request-controlled batch_id + filename must
+    # resolve strictly inside their authorized batch directory. This mirrors the
+    # canonical pattern in routes_upload._safe_document_path and is stronger than
+    # a substring ("..") guard — it also blocks percent-encoded traversal
+    # (e.g. batch_id "%2e%2e" -> ".."), drive-relative/UNC paths, and symlinks.
+    outputs_root = (settings.storage_root / "outputs").resolve()
+    batch_dir = (settings.storage_root / "outputs" / batch_id).resolve()
+    file_path = (batch_dir / filename).resolve()
+    try:
+        batch_dir.relative_to(outputs_root)   # batch_id must not escape outputs/
+        file_path.relative_to(batch_dir)      # filename must not escape its batch dir
+    except (ValueError, OSError):
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+    if batch_dir == outputs_root:             # batch_id "." / "" collapses to outputs root
+        raise HTTPException(status_code=400, detail="Invalid file path.")
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found.")
 
