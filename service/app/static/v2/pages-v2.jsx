@@ -159,23 +159,55 @@ function DhlCustomsPage({ onViewShipment }) {
       {mainTab === 'logistics' && (
         <div data-testid="dhl-tower-logistics">
           <div className="grid-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
-            <StatTile label="Active inbound" value={fmt(kpis.active_inbound)} sub="Logistics-active only" onClick={() => { setDirection('inbound'); setView('active'); }} />
-            <StatTile label="Active outbound" value={fmt(kpis.active_outbound)} sub="Carrier AWB not delivered" accent="var(--accent)" onClick={() => { setDirection('outbound'); setView('active'); }} />
-            <StatTile label="Needs attention" value={fmt(kpis.needs_attention)} sub="Exception / aged stage" accent="var(--badge-red-text)" onClick={() => setView('attention')} />
-            <StatTile label="Delivered today" value={fmt(kpis.delivered_today)} sub="Warsaw calendar day" accent="var(--badge-green-text)" onClick={() => setView('delivered')} />
-            <StatTile label="Avg inbound transit" value={fmtHours(kpis.avg_inbound_transit_hours)} sub={kpis.inbound_transit_median_hours != null ? ('Median ' + fmtHours(kpis.inbound_transit_median_hours)) : 'Need ≥3 completed'} />
-            <StatTile label="Avg outbound transit" value={fmtHours(kpis.avg_outbound_transit_hours)} sub={kpis.outbound_transit_median_hours != null ? ('Median ' + fmtHours(kpis.outbound_transit_median_hours)) : 'Need ≥3 delivered'} />
+            <StatTile label="Active Inbound" value={fmt(kpis.active_inbound)} sub="Transport not delivered" onClick={() => { setDirection('inbound'); setView('active'); }} />
+            <StatTile label="Active Outbound" value={fmt(kpis.active_outbound)} sub="AWB not delivered" accent="var(--accent)" onClick={() => { setDirection('outbound'); setView('active'); }} />
+            <StatTile label="Needs Attention" value={fmt(kpis.needs_attention)} sub="Exception / no movement 12h+" accent="var(--badge-red-text)" onClick={() => setView('attention')} />
+            <StatTile label="Delivered Today" value={fmt(kpis.delivered_today)} sub="Warsaw · in + out" accent="var(--badge-green-text)" onClick={() => setView('delivered')} />
+            <StatTile
+              label="Avg Inbound Transit"
+              value={fmt(kpis.avg_inbound_transit_human || fmtHours(kpis.avg_inbound_transit_hours))}
+              sub={kpis.inbound_transit_n ? ('Based on ' + kpis.inbound_transit_n + ' delivered') : 'No valid samples'}
+            />
+            <StatTile
+              label="Avg Outbound Transit"
+              value={fmt(kpis.avg_outbound_transit_human || fmtHours(kpis.avg_outbound_transit_hours))}
+              sub={kpis.outbound_transit_n ? ('Based on ' + kpis.outbound_transit_n + ' delivered') : 'No valid samples'}
+            />
           </div>
 
-          {kpis.orch_active_but_logistics_terminal > 0 && (
-            <div data-testid="dhl-tower-orch-residue" style={{
+          {(() => {
+            const dq = analytics.data_quality_summary || {};
+            const dqTotal = (dq.tracking_evidence_missing || 0)
+              + (dq.invalid_timestamp_order || 0)
+              + (dq.delivered_without_timestamp || 0)
+              + (dq.missing_party_identity || 0);
+            if (!dqTotal) return null;
+            return (
+              <div data-testid="dhl-tower-dq-panel" style={{
+                marginBottom: 14, padding: '10px 14px', borderRadius: 8,
+                border: '1px solid var(--border)', background: 'var(--bg-subtle)',
+                fontSize: 12, color: 'var(--text-2)', lineHeight: 1.45,
+              }}>
+                <strong style={{ color: 'var(--text)' }}>Data quality</strong>
+                <span style={{ color: 'var(--text-3)' }}> · reporting warnings (not shipment exceptions)</span>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 6 }}>
+                  <span>Tracking evidence missing: {dq.tracking_evidence_missing || 0}</span>
+                  <span>Invalid timestamp order: {dq.invalid_timestamp_order || 0}</span>
+                  <span>Delivered without timestamp: {dq.delivered_without_timestamp || 0}</span>
+                  <span>No party identity: {dq.missing_party_identity || 0}</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {kpis.customs_complete_still_active > 0 && (
+            <div data-testid="dhl-tower-customs-active" style={{
               marginBottom: 14, padding: '10px 14px', borderRadius: 8,
               border: '1px solid var(--border)', background: 'var(--bg-subtle)',
               fontSize: 12, color: 'var(--text-2)', lineHeight: 1.45,
             }}>
-              <strong style={{ color: 'var(--badge-amber-text)' }}>Reporting correction:</strong>{' '}
-              {kpis.orch_active_but_logistics_terminal} of {kpis.orch_active_inbound} follow-up “active” rows are logistics
-              completed/delivered (customs/PZ). They are excluded from Active here — follow-up automation authority unchanged.
+              <strong style={{ color: 'var(--badge-amber-text)' }}>Customs complete ≠ transport delivered:</strong>{' '}
+              {kpis.customs_complete_still_active} inbound row(s) still Active on transport while customs/PZ is complete.
             </div>
           )}
 
@@ -186,7 +218,7 @@ function DhlCustomsPage({ onViewShipment }) {
               style={{ marginBottom: 0, borderBottom: 'none', flex: '1 1 auto' }}
               tabs={[
                 { id: 'active', label: 'Active', count: (kpis.active_inbound || 0) + (kpis.active_outbound || 0) },
-                { id: 'delivered', label: 'Delivered / Completed' },
+                { id: 'delivered', label: 'Delivered' },
                 { id: 'attention', label: 'Needs Attention', count: kpis.needs_attention },
               ]}
             />
@@ -230,10 +262,10 @@ function DhlCustomsPage({ onViewShipment }) {
 
           {!loading && !error && (
             <div data-testid="dhl-tower-table-wrap" style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card)' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 920 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 960 }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-                    {['Dir', 'Party', 'AWB', 'Booked', 'Stage', 'Stage age', 'Total', 'Status', 'Latest', 'Exception'].map((h) => (
+                    {['Dir', 'Party', 'AWB', 'Created', 'Current Status', 'Location', 'Stage Age', 'Total Transit', 'Expected', 'Attention'].map((h) => (
                       <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
@@ -253,12 +285,18 @@ function DhlCustomsPage({ onViewShipment }) {
                       <td style={{ padding: '8px 10px', color: 'var(--text)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.party)}</td>
                       <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.awb)}</td>
                       <td style={{ padding: '8px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_dhlShortTs(r.created_at_warsaw)}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.current_stage_label)}</td>
-                      <td style={{ padding: '8px 10px', color: r.needs_attention ? 'var(--badge-red-text)' : 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.stage_age_human || fmtHours(r.stage_age_hours))}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.total_elapsed_human || fmtHours(r.total_elapsed_hours))}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.current_status)}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.latest_event)}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--badge-red-text)', whiteSpace: 'nowrap' }}>{fmt(r.exception)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text)', fontWeight: 600, whiteSpace: 'nowrap' }}>{fmt(r.transport_status || r.current_status)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.current_location)}</td>
+                      <td style={{ padding: '8px 10px', color: r.needs_attention ? 'var(--badge-red-text)' : 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.stage_age_human)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.total_elapsed_human)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_dhlShortTs(r.expected_delivery_warsaw)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--badge-red-text)', whiteSpace: 'nowrap', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {r.needs_attention
+                          ? ((r.attention_reasons || []).map((a) => (
+                              a === 'no_carrier_movement_12h' ? 'No carrier movement for 12h+' : a
+                            )).join('; ') || 'Yes')
+                          : '—'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -266,26 +304,35 @@ function DhlCustomsPage({ onViewShipment }) {
             </div>
           )}
 
-          {analytics.stage_duration_samples && Object.keys(analytics.stage_duration_samples).length > 0 && (
-            <div data-testid="dhl-tower-analytics" style={{ marginTop: 18 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Stage duration analytics</div>
-              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
-                Median / P90 only when n≥3 real transitions. Longer than historical range ≠ invented SLA “late”.
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-                {Object.keys(analytics.stage_duration_samples).slice(0, 12).map((sid) => {
-                  const s = analytics.stage_duration_samples[sid];
-                  return (
-                    <div key={sid} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)' }}>{sid}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>n={s.n} · avg {fmtHours(s.average)}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>median {fmtHours(s.median)} · p90 {fmtHours(s.p90)}</div>
+          {(() => {
+            const inboundT = analytics.fixed_transitions_inbound || {};
+            const outboundT = analytics.fixed_transitions_outbound || {};
+            const cards = []
+              .concat(Object.keys(inboundT).map((k) => ({ ...inboundT[k], scope: 'Inbound' })))
+              .concat(Object.keys(outboundT).map((k) => ({ ...outboundT[k], scope: 'Outbound' })))
+              .filter((s) => s && s.n > 0);
+            if (!cards.length) return null;
+            return (
+              <div data-testid="dhl-tower-analytics" style={{ marginTop: 18 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Fixed transition times</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+                  Each card uses the same start→end pair only. Samples with missing or inverted timestamps are excluded.
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+                  {cards.slice(0, 12).map((s) => (
+                    <div key={s.id} title={'Median ' + (s.median_human || '—') + ' · P90 ' + (s.p90_human || '—')} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{s.scope}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{s.label}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 8 }}>Typical: {fmt(s.typical_human)}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Average: {fmt(s.average_human)}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-2)' }}>90% within: {fmt(s.p90_human)}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>Based on {s.n} shipment{s.n === 1 ? '' : 's'}</div>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
@@ -372,12 +419,14 @@ function DhlTowerDrawer({ row, onClose, onViewShipment }) {
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16, fontSize: 12 }}>
-          <div><span style={{ color: 'var(--text-3)' }}>Stage</span><div>{row.current_stage_label || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Transport</span><div>{row.transport_status || row.current_status || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Customs</span><div>{row.customs_status || '—'}</div></div>
           <div><span style={{ color: 'var(--text-3)' }}>Stage age</span><div>{row.stage_age_human || '—'}</div></div>
-          <div><span style={{ color: 'var(--text-3)' }}>Total elapsed</span><div>{row.total_elapsed_human || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Total transit</span><div>{row.total_elapsed_human || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Booking→delivery</span><div>{row.booking_to_delivery_human || '—'}</div></div>
           <div><span style={{ color: 'var(--text-3)' }}>Location</span><div>{row.current_location || '—'}</div></div>
           <div><span style={{ color: 'var(--text-3)' }}>Delivered</span><div>{_dhlShortTs(row.delivered_at_warsaw)}</div></div>
-          <div><span style={{ color: 'var(--text-3)' }}>Received by</span><div>{row.received_by || '—'}</div></div>
+          <div><span style={{ color: 'var(--text-3)' }}>Workflow</span><div>{row.business_workflow_status || '—'}</div></div>
         </div>
 
         {row.direction === 'outbound' && (

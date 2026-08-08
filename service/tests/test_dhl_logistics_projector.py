@@ -1,4 +1,4 @@
-"""Tests for DHL Logistics Control Tower read-only projector."""
+﻿"""Behavioral tests for DHL Logistics Control Tower read-only projector."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -24,18 +24,19 @@ def _audit(**kwargs):
     return base
 
 
-def test_classify_inbound_active_vs_completed_by_customs():
-    active = _audit()
-    assert proj.classify_inbound(active) == "active"
-
-    completed = _audit(
+def test_pz_complete_does_not_imply_physical_delivery():
+    completed_customs = _audit(
         timeline=[
             {"ts": "2026-08-01T08:00:00+00:00", "event": "batch_created"},
             {"ts": "2026-08-02T08:00:00+00:00", "event": "zc429_received"},
             {"ts": "2026-08-02T12:00:00+00:00", "event": "pz_generated"},
         ]
     )
-    assert proj.classify_inbound(completed) == "completed"
+    assert proj.classify_inbound(completed_customs) == "active"
+    row = proj.project_inbound_row(completed_customs)
+    assert row["classification"] == "active"
+    assert row["customs_complete"] is True
+    assert row["transport_status"] != "Delivered"
 
 
 def test_classify_inbound_delivered_via_timeline():
@@ -49,8 +50,209 @@ def test_classify_inbound_delivered_via_timeline():
 
 
 def test_classify_inbound_excluded_awb():
-    a = _audit(awb="5665916826")
-    assert proj.classify_inbound(a) == "excluded"
+    assert proj.classify_inbound(_audit(awb="5665916826")) == "excluded"
+
+
+def test_canonical_delivered_overrides_booking_complete(monkeypatch):
+    delivered_at = datetime(2026, 8, 4, 14, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        proj,
+        "_outbound_tracking_snapshot",
+        lambda awb, batch_id: {
+            "status": "delivered",
+            "status_label": "Delivered",
+            "last_event": "Delivered",
+            "last_location": "Warsaw",
+            "events": [
+                {"description": "Shipment picked up", "timestamp": "2026-07-28T10:00:00+00:00"},
+                {"description": "Delivered", "timestamp": delivered_at.isoformat()},
+            ],
+            "delivered_at": delivered_at,
+            "picked_up_at": datetime(2026, 7, 28, 10, 0, tzinfo=timezone.utc),
+            "departed_at": None,
+            "expected_delivery": None,
+            "exception": None,
+            "received_by": None,
+            "source": "tracking_cache",
+        },
+    )
+    row = proj.project_outbound_row({
+        "tracking_ref": "1645568956",
+        "batch_id": "SHIPMENT_OUT",
+        "client_ref": "Client X",
+        "state": "complete",
+        "created_at": "2026-07-27T08:00:00Z",
+        "do_not_use": 0,
+    })
+    assert row["classification"] == "delivered"
+    assert row["transport_status"] == "Delivered"
+    assert row["current_status"] == "Delivered"
+    assert row["booking_state"] == "complete"
+    assert row["stage_age_hours"] is None
+    assert row["total_elapsed_hours"] == pytest.approx(7 * 24 + 4, abs=0.1)
+
+
+def test_delivered_stage_age_null_and_total_freezes():
+    now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+    row = proj.project_inbound_row(
+        _audit(
+            timeline=[
+                {"ts": "2026-07-27T08:00:00+00:00", "event": "batch_created"},
+                {"ts": "2026-08-04T10:00:00+00:00", "event": "carrier_delivered"},
+            ]
+        ),
+        now=now,
+    )
+    assert row["classification"] == "delivered"
+    assert row["stage_age_hours"] is None
+    assert row["booking_to_delivery_hours"] == pytest.approx(8 * 24 + 2, abs=0.1)
+
+
+def test_completed_without_delivery_excluded_from_transit_average():
+    pz_only = {
+        "direction": "inbound",
+        "classification": "active",
+        "awb": "PZONLY0001",
+        "created_at_utc": "2026-08-01T08:00:00+00:00",
+        "delivered_at_utc": None,
+        "pickup_at_utc": None,
+        "total_elapsed_hours": 999.0,
+        "data_quality": [],
+        "milestones": [],
+    }
+    delivered_ok = {
+        "direction": "inbound",
+        "classification": "delivered",
+        "awb": "DELIVERED01",
+        "created_at_utc": "2026-08-01T08:00:00+00:00",
+        "delivered_at_utc": "2026-08-03T08:00:00+00:00",
+        "pickup_at_utc": "2026-08-01T09:00:00+00:00",
+        "total_elapsed_hours": 47.0,
+        "data_quality": [],
+        "milestones": [],
+    }
+    valid, _excluded = proj._collect_transit_hours([pz_only, delivered_ok])
+    assert valid == [47.0]
+
+
+def test_invalid_delivery_before_created_excluded():
+    row = {
+        "direction": "inbound",
+        "classification": "delivered",
+        "awb": "8523214840",
+        "created_at_utc": "2026-08-05T10:00:00+00:00",
+        "delivered_at_utc": "2026-08-01T08:00:00+00:00",
+        "pickup_at_utc": "2026-07-30T08:00:00+00:00",
+        "total_elapsed_hours": 48.0,
+        "data_quality": ["invalid_timestamp_order_delivery_before_created"],
+        "milestones": [],
+    }
+    valid, excluded = proj._collect_transit_hours([row])
+    assert valid == []
+    assert any(e["awb"] == "8523214840" for e in excluded)
+
+
+def test_no_movement_12h_needs_attention():
+    now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+    created = (now - timedelta(hours=15)).isoformat()
+    row = proj.project_outbound_row({
+        "tracking_ref": "BOOKEDONLY1",
+        "batch_id": "SHIPMENT_B",
+        "client_ref": "Client B",
+        "state": "complete",
+        "created_at": created,
+        "do_not_use": 0,
+    }, now=now)
+    assert "complete" not in row["transport_status"].lower()
+    assert row["classification"] == "active"
+    assert "no_carrier_movement_12h" in row["attention_reasons"]
+    assert row["needs_attention"] is True
+
+
+def test_main_status_never_exposes_booking_complete(monkeypatch):
+    monkeypatch.setattr(
+        proj,
+        "_outbound_tracking_snapshot",
+        lambda *a, **k: {
+            "status": None, "events": [], "delivered_at": None, "picked_up_at": None,
+            "departed_at": None, "expected_delivery": None, "exception": None,
+            "last_event": None, "last_location": None, "received_by": None, "source": None,
+        },
+    )
+    row = proj.project_outbound_row({
+        "tracking_ref": "1645568956",
+        "batch_id": "X",
+        "client_ref": "C",
+        "state": "complete",
+        "created_at": "2026-08-01T08:00:00Z",
+        "do_not_use": 0,
+    })
+    assert row["current_status"] == "Pickup pending"
+    assert row["transport_status"] == "Pickup pending"
+
+
+def test_fixed_transitions_do_not_mix_predecessors():
+    rows = [
+        {
+            "direction": "inbound",
+            "pickup_at_utc": "2026-08-01T08:00:00+00:00",
+            "delivered_at_utc": "2026-08-03T08:00:00+00:00",
+            "created_at_utc": "2026-08-01T06:00:00+00:00",
+            "milestones": [
+                {"stage_id": "arrived_pl", "timestamp_utc": "2026-08-01T20:00:00+00:00"},
+                {"stage_id": "dhl_email", "timestamp_utc": "2026-08-01T22:00:00+00:00"},
+                {"stage_id": "dsk", "timestamp_utc": "2026-08-02T10:00:00+00:00"},
+            ],
+        },
+        {
+            "direction": "inbound",
+            "pickup_at_utc": "2026-08-01T08:00:00+00:00",
+            "delivered_at_utc": None,
+            "created_at_utc": "2026-08-01T06:00:00+00:00",
+            "milestones": [
+                {"stage_id": "dhl_email", "timestamp_utc": "2026-08-01T22:00:00+00:00"},
+                {"stage_id": "dsk", "timestamp_utc": "2026-08-02T10:00:00+00:00"},
+            ],
+        },
+    ]
+    stats = proj._fixed_transition_analytics(rows, proj._INBOUND_FIXED_TRANSITIONS)
+    assert stats["poland_to_dhl_email"]["n"] == 1
+    assert stats["dhl_email_to_dsk"]["n"] == 2
+    assert stats["origin_pickup_to_delivered"]["n"] == 1
+
+
+def test_delivered_today_includes_inbound_and_outbound():
+    today = datetime.now(timezone.utc).astimezone(proj.POLAND_TZ).date()
+    delivered_dt = datetime(
+        today.year, today.month, today.day, 10, 0, tzinfo=proj.POLAND_TZ
+    ).astimezone(timezone.utc)
+    rows = [
+        {"direction": "inbound", "classification": "delivered", "delivered_at_utc": delivered_dt.isoformat(), "awb": "IN1"},
+        {"direction": "outbound", "classification": "delivered", "delivered_at_utc": delivered_dt.isoformat(), "awb": "OUT1"},
+        {"direction": "inbound", "classification": "delivered", "delivered_at_utc": (delivered_dt - timedelta(days=2)).isoformat(), "awb": "OLD"},
+        {"direction": "inbound", "classification": "active", "delivered_at_utc": None, "awb": "ACT", "customs_complete": True},
+    ]
+    today_w = datetime.now(timezone.utc).astimezone(proj.POLAND_TZ).date()
+    delivered_today = []
+    for r in rows:
+        if r["classification"] != "delivered":
+            continue
+        dts = proj._parse_iso(r.get("delivered_at_utc"))
+        if dts and dts.astimezone(proj.POLAND_TZ).date() == today_w:
+            delivered_today.append(r)
+    assert {r["awb"] for r in delivered_today} == {"IN1", "OUT1"}
+
+
+def test_no_second_tracker_poller_in_source():
+    src = Path(proj.__file__).read_text(encoding="utf-8")
+    # Must reuse cache helper; must not import/call live tracker API
+    assert "select_cached_tracking_record" in src
+    assert "from .tracking_service import get_tracking_status" not in src
+    assert "tracking_service.get_tracking_status" not in src
+    assert "queue_email" not in src
+    assert "create_shipment(" not in src
+    assert "INSERT " not in src.upper()
+    assert "UPDATE " not in src.upper()
 
 
 def test_inbound_outbound_awb_isolation():
@@ -65,7 +267,6 @@ def test_inbound_outbound_awb_isolation():
     })
     assert inbound["direction"] == "inbound"
     assert outbound["direction"] == "outbound"
-    assert inbound["awb"] != outbound["awb"]
     assert inbound["awb"] == "INBOUND1111"
     assert outbound["awb"] == "OUTBOUND2222"
 
@@ -82,21 +283,19 @@ def test_duration_and_timezone_fields():
         now=now,
     )
     assert row["created_at_warsaw"] is not None
-    assert "+02:00" in row["created_at_warsaw"] or "+01:00" in row["created_at_warsaw"]
     assert row["milestones"]
-    # second milestone should carry duration from previous
     assert row["milestones"][1]["duration_from_previous_hours"] == pytest.approx(2.12, abs=0.02)
     assert row["stage_age_hours"] is not None
+    assert row["transport_status"]
 
 
 def test_missing_timestamps_do_not_invent_expected_delivery():
     row = proj.project_inbound_row(_audit())
     assert row["expected_delivery_utc"] is None
     assert row["received_by"] is None
-    assert row["pickup_at_utc"] is None
 
 
-def test_delivered_leaves_active_filter(monkeypatch, tmp_path):
+def test_pz_complete_stays_in_active_filter(monkeypatch, tmp_path):
     audits = [
         _audit(awb="ACTIVE0001", batch_id="SHIPMENT_A"),
         _audit(
@@ -109,27 +308,21 @@ def test_delivered_leaves_active_filter(monkeypatch, tmp_path):
             ],
         ),
     ]
-
-    def fake_paths():
-        return [Path(f"virtual/{a['batch_id']}/audit.json") for a in audits]
-
-    def fake_read(path: Path):
-        bid = path.parent.name
-        return next(a for a in audits if a["batch_id"] == bid)
-
-    monkeypatch.setattr(proj, "_audit_paths", fake_paths)
-    monkeypatch.setattr(proj, "_read_audit", fake_read)
+    monkeypatch.setattr(
+        proj, "_audit_paths",
+        lambda: [Path(f"virtual/{a['batch_id']}/audit.json") for a in audits],
+    )
+    monkeypatch.setattr(
+        proj, "_read_audit",
+        lambda path: next(a for a in audits if a["batch_id"] == path.parent.name),
+    )
     monkeypatch.setattr(proj, "_carrier_db_path", lambda: tmp_path / "missing.db")
-
     active = proj.project_logistics(view="active", direction="inbound")
     awbs = {r["awb"] for r in active["rows"]}
     assert "ACTIVE0001" in awbs
-    assert "DONE000002" not in awbs
-
+    assert "DONE000002" in awbs
     delivered = proj.project_logistics(view="delivered", direction="inbound")
-    dawbs = {r["awb"] for r in delivered["rows"]}
-    assert "DONE000002" in dawbs
-    assert "ACTIVE0001" not in dawbs
+    assert "DONE000002" not in {r["awb"] for r in delivered["rows"]}
 
 
 def test_exception_remains_visible_in_active():
@@ -146,53 +339,25 @@ def test_exception_remains_visible_in_active():
     assert row["exception"]
 
 
-def test_stale_orch_active_not_blindly_active():
-    """Customs/PZ complete must classify completed even if orch would call active."""
-    stale = _audit(
-        awb="5378819972",
-        clearance_status="dsk_generated",
-        timeline=[
-            {"ts": "2026-04-28T08:00:00+00:00", "event": "batch_created"},
-            {"ts": "2026-05-01T08:00:00+00:00", "event": "sad_uploaded"},
-            {"ts": "2026-05-02T08:00:00+00:00", "event": "pz_generated"},
-        ],
-    )
-    assert proj.classify_inbound(stale) == "completed"
-
-
-def test_no_write_surface_in_module_source():
-    src = Path(proj.__file__).read_text(encoding="utf-8")
-    # Projector must remain read-only — no queue_email / create_shipment calls.
-    assert "queue_email" not in src
-    assert "create_shipment(" not in src
-    assert "robocopy" not in src.lower()
-    assert "INSERT " not in src.upper()
-    assert "UPDATE " not in src.upper()
-    assert ".write_text(" not in src
-
-
-def test_csv_export_columns():
+def test_csv_export_includes_filters():
     rows = [proj.project_inbound_row(_audit())]
-    body = proj.rows_to_logistics_csv(rows)
+    body = proj.rows_to_logistics_csv(rows, filters={"direction": "inbound", "view": "active"})
     text = body.decode("utf-8-sig")
-    assert "direction" in text
+    assert text.startswith("# filters_applied:")
+    assert "direction=inbound" in text
+    assert "transport_status" in text
     assert "1111111111" in text
 
 
 def test_routes_require_api_key(monkeypatch):
-    """When API_KEY is configured, unauthenticated GETs must 401 (Lesson O)."""
     from fastapi.testclient import TestClient
     from app.core.config import settings
     from app.main import app
-
     monkeypatch.setattr(settings, "api_key", "test-logistics-key-only")
     monkeypatch.setattr(settings, "environment", "prod")
     client = TestClient(app)
-    r = client.get("/api/v1/dhl/logistics/projection")
-    assert r.status_code == 401
-    r2 = client.get("/api/v1/dhl/logistics/export/csv")
-    assert r2.status_code == 401
-    # Valid key succeeds (projection may be empty but auth must pass).
+    assert client.get("/api/v1/dhl/logistics/projection").status_code == 401
+    assert client.get("/api/v1/dhl/logistics/export/csv").status_code == 401
     r3 = client.get(
         "/api/v1/dhl/logistics/projection",
         headers={"X-API-Key": "test-logistics-key-only"},

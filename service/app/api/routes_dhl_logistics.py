@@ -83,7 +83,10 @@ def export_logistics_csv(
         date_from=date_from,
         date_to=date_to,
     )
-    body = projector.rows_to_logistics_csv(payload.get("rows") or [])
+    body = projector.rows_to_logistics_csv(
+        payload.get("rows") or [],
+        filters=payload.get("filters_applied"),
+    )
     fname = f"dhl_logistics_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
     return Response(
         content=body,
