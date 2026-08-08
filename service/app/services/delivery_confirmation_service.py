@@ -212,7 +212,9 @@ def maybe_notify_outbound_delivered(
         return {"notified": False, "reason": "no_customer_email", "awb": awb}
 
     # Idempotency anchor — first delivered event for this AWB inserts the row.
-    # Failed queue may retry once the failed row is cleared (same AWB).
+    # Failed status is sticky: do NOT auto-retry from tracking refresh / webhook
+    # loops (that would mint a new token and re-spam the customer). Operator
+    # resend can call reset_failed_notification_for_retry explicitly later.
     row, created = dcdb.create_notification_if_absent(
         db,
         awb=awb,
@@ -223,19 +225,10 @@ def maybe_notify_outbound_delivered(
         activation_cutoff_ok=activation_cutoff_ok,
     )
     if not created:
-        if row and (row.get("status") or "") == "failed":
-            if dcdb.reset_failed_notification_for_retry(db, awb):
-                row, created = dcdb.create_notification_if_absent(
-                    db,
-                    awb=awb,
-                    draft_id=draft_id,
-                    batch_id=batch_id,
-                    client_name=client_name or customer_name,
-                    email_to=email_to,
-                    activation_cutoff_ok=activation_cutoff_ok,
-                )
-        if not created:
-            return {"notified": False, "reason": "already_notified", "awb": awb}
+        status = (row or {}).get("status") or ""
+        if status == "failed":
+            return {"notified": False, "reason": "notification_failed", "awb": awb}
+        return {"notified": False, "reason": "already_notified", "awb": awb}
 
     # Mint the opaque public token + persist its hash.
     token = secrets.token_urlsafe(32)
@@ -304,7 +297,16 @@ def _delivery_email_bodies(
     who = escape(customer_name or "Customer")
     awb_e = escape(awb)
     link_e = escape(link)
-    when = escape((carrier_delivered_at or "").strip()[:32]) if carrier_delivered_at else ""
+    when_raw = (carrier_delivered_at or "").strip()
+    when_disp = ""
+    if when_raw:
+        try:
+            when_disp = datetime.fromisoformat(
+                when_raw.replace("Z", "+00:00")
+            ).strftime("%d %b %Y %H:%M UTC")
+        except Exception:
+            when_disp = when_raw[:32]
+    when = escape(when_disp)
     when_row = (
         f'<tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">Delivered</td>'
         f'<td style="padding:4px 0;font-size:13px;font-weight:600;color:#1c1a17;">{when}</td></tr>'

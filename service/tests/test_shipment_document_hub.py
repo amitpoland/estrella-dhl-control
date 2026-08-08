@@ -432,14 +432,13 @@ def test_delivered_triggers_single_notification(tmp_path, monkeypatch):
     assert calls["n"] == 1
 
 
-def test_failed_notification_can_retry(tmp_path, monkeypatch):
+def test_failed_notification_does_not_auto_retry(tmp_path, monkeypatch):
+    """Failed queue must stay sticky — no re-spam from tracking/webhook loops."""
     calls = {"n": 0}
 
     def _queue(**kw):
         calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("smtp down")
-        return "email-id-2"
+        raise RuntimeError("smtp down")
 
     monkeypatch.setattr("app.services.email_service.queue_email", _queue)
     with patch.object(settings, "storage_root", tmp_path), \
@@ -448,20 +447,20 @@ def test_failed_notification_can_retry(tmp_path, monkeypatch):
                       "2026-01-01T00:00:00.000Z"), \
          patch.object(settings, "public_base_url", "https://pz.example.test"):
         r1 = dcs.maybe_notify_outbound_delivered(
-            "AWB-FAIL-RETRY", draft_id=9, batch_id=BATCH, client_name="ACME",
+            "AWB-FAIL-STICKY", draft_id=9, batch_id=BATCH, client_name="ACME",
             delivered=True, carrier_delivered_at="2026-08-08T12:00:00Z",
             booking_created_at="2026-08-01T00:00:00.000Z",
             customer_email="buyer@example.com", customer_name="ACME",
         )
         r2 = dcs.maybe_notify_outbound_delivered(
-            "AWB-FAIL-RETRY", draft_id=9, batch_id=BATCH, client_name="ACME",
+            "AWB-FAIL-STICKY", draft_id=9, batch_id=BATCH, client_name="ACME",
             delivered=True, carrier_delivered_at="2026-08-08T12:00:00Z",
             booking_created_at="2026-08-01T00:00:00.000Z",
             customer_email="buyer@example.com", customer_name="ACME",
         )
     assert r1["notified"] is False and r1["reason"] == "email_queue_failed"
-    assert r2["notified"] is True
-    assert calls["n"] == 2
+    assert r2["notified"] is False and r2["reason"] == "notification_failed"
+    assert calls["n"] == 1
 
 
 def test_delivery_email_redesign_has_cta_and_plaintext(tmp_path):
