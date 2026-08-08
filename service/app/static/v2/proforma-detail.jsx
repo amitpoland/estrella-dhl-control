@@ -3330,7 +3330,7 @@ function ProformaPartyCards({
                     .filter(Boolean).join(' · ')
                 : (liveDraft.wfirma_payment_method || '—')
             } />
-            <InfoRow label="Incoterm" value={liveDraft.incoterm || '—'} />
+            <InfoRow label="Incoterm" value={liveDraft.incoterm_resolved || liveDraft.incoterm || '—'} />
           </div>
         </div>
       </div>
@@ -5073,7 +5073,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     },
     lines,
     paymentTerms: paymentTermsDisplay,
-    incoterm:     liveDraft.incoterm || '—',
+    incoterm:     liveDraft.incoterm_resolved || liveDraft.incoterm || '—',
     // sale_date: API returns from payment_terms_json.saledate; fallback to rawPt.saledate
     // for operator-edited payment_terms that include the wFirma XML key.
     sale_date: liveDraft.sale_date || (rawPt && typeof rawPt === 'object' && rawPt.saledate) || null,
@@ -5211,7 +5211,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       ? {
           awb: (carrierShipment && carrierShipment.tracking_ref) || null,
           batch_ref: liveDraft.batch_id,
-          incoterm: liveDraft.incoterm || 'DAP',
+          incoterm: liveDraft.incoterm_resolved || liveDraft.incoterm || null,
         } : null,
     // EUR first — the document currency leads; sort is stable for the rest.
     // Backend returns flat iban_eur/iban_usd/iban_pln/swift/bank_name fields (not bank_accounts[]).
@@ -5505,7 +5505,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       service:     _transport.service || '—',
       tracking_url: _transport.tracking_url,
       status:      _transport.status,
-      incoterm:    liveDraft.incoterm || 'DAP',
+      incoterm:    liveDraft.incoterm_resolved || liveDraft.incoterm || null,
       // FIX #2: origin = sender city + country name (e.g. "Warszawa, Poland")
       origin:      [
         (companyProfile && companyProfile.postal_city) || null,

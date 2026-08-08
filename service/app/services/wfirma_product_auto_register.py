@@ -356,13 +356,38 @@ def _register_one(
         )
         return out
 
+    # 3b. Eligibility: canonical PL + EN commercial description must exist
+    #     in product_descriptions before a live goods/add. Prevents create
+    #     from a stale/non-authority generator fallback (same class as
+    #     STALE_AUTHORITY_REFUSED on the PZ resolve path).
+    try:
+        _pd = ddb.get_product_description(product_code) or {}
+    except Exception:
+        _pd = {}
+    _pl = (
+        str(_pd.get("name_pl") or "").strip()
+        or str(_pd.get("description_pl") or "").strip()
+    )
+    _en = (
+        str(_pd.get("description_en") or "").strip()
+        or str(description_en or "").strip()
+    )
+    if not _pl or not _en:
+        out["status"] = "blocked"
+        out["error"]  = (
+            "canonical PL/EN commercial description not established for "
+            f"{product_code} — promote product_descriptions before wFirma "
+            "create (not a sales-price issue)"
+        )
+        return out
+
     # 4. Build payload via description_engine (locked block) and create.
     try:
         from . import description_engine as deng
         block = deng.get_description_block(
             product_code   = product_code,
             item_type      = item_type,
-            description_en = description_en,
+            description_en = description_en or _en,
         )
     except Exception as exc:
         out["status"] = "blocked"
@@ -578,3 +603,137 @@ def ensure_products_for_batch(
         out["blocked"], out["failed"],
     )
     return out
+
+
+def adopt_exact_product_code(
+    product_code: str,
+    *,
+    wfirma_product_id: str = "",
+    product_name_pl: str = "",
+    unit: str = "szt.",
+) -> Dict[str, Any]:
+    """Reuse an existing wFirma good for ``product_code`` — mirror-first.
+
+    LOCAL AUTHORITY ONLY (no wFirma write). Uses ``register_product_identity``
+    so Proforma readiness (mirror read) and the transitional cache stay in
+    sync. Idempotent. Never invents ``wfirma_product_id``.
+    """
+    pc = (product_code or "").strip()
+    wid = (wfirma_product_id or "").strip()
+    if not pc:
+        return {"ok": False, "product_code": pc, "error": "product_code required"}
+    if not wid:
+        try:
+            local = wfdb.get_product(pc) or {}
+        except Exception:
+            local = {}
+        wid = (local.get("wfirma_product_id") or "").strip()
+        product_name_pl = product_name_pl or (local.get("product_name_pl") or "")
+        unit = unit or (local.get("unit") or "szt.")
+    if not wid:
+        return {
+            "ok": False, "product_code": pc,
+            "error": "no wfirma_product_id to adopt — refuse invent",
+        }
+    from . import reservation_db as _rdb
+    rdb_path = _reservation_db_path()
+    _rdb.init_reservation_db(rdb_path)
+    _reg = _rdb.register_product_identity(
+        rdb_path,
+        wfirma_id=wid,
+        product_code=pc,
+        name=product_name_pl or "",
+        cache_kwargs=dict(
+            product_code=pc,
+            wfirma_product_id=wid,
+            product_name_pl=product_name_pl or "",
+            unit=unit or "szt.",
+            vat_rate="23",
+            sync_status="matched",
+        ),
+    )
+    if _reg.get("collision"):
+        return {
+            "ok": False,
+            "product_code": pc,
+            "wfirma_product_id": wid,
+            "error": (
+                f"mirror collision: wfirma_id {wid} owned by "
+                f"{_reg.get('owner')!r}"
+            ),
+        }
+    return {
+        "ok": True,
+        "product_code": pc,
+        "wfirma_product_id": wid,
+        "action": "adopted",
+        "wfirma_untouched": True,
+    }
+
+
+def converge_products_for_batch(
+    batch_id: str,
+    *,
+    operator: str = "system",
+    auto_adopt_exact: bool = True,
+) -> Dict[str, Any]:
+    """Early product-registration converge for a batch.
+
+    Lifecycle (idempotent, search-first, no duplicate goods):
+      1. ``ensure_products_for_batch(dry_run=False)`` — local matched fast-path,
+         wFirma search, create-once when ``WFIRMA_CREATE_PRODUCT_ALLOWED`` and
+         canonical PL/EN descriptions exist, else honest ``blocked``.
+      2. When ``auto_adopt_exact``: every ``pending_adoption`` (exact
+         ``product_code`` hit in wFirma) is reused via
+         :func:`adopt_exact_product_code` (mirror + cache matched).
+
+    Does not invent ``wfirma_product_id``. Concurrent re-runs stay
+    ``existing_mapped`` after the first successful converge.
+    """
+    scan = ensure_products_for_batch(
+        batch_id, dry_run=False, operator=operator,
+    )
+    adopted: List[Dict[str, Any]] = []
+    adopt_failed: List[Dict[str, Any]] = []
+    if auto_adopt_exact:
+        for res in list(scan.get("results") or []):
+            st = res.get("status") or ""
+            pc = (res.get("product_code") or "").strip()
+            wid = (res.get("wfirma_product_id") or "").strip()
+            if st == "pending_adoption" and pc and wid:
+                try:
+                    ar = adopt_exact_product_code(
+                        pc,
+                        wfirma_product_id=wid,
+                        product_name_pl=res.get("wfirma_name") or "",
+                        unit=res.get("wfirma_unit") or "szt.",
+                    )
+                except Exception as exc:
+                    ar = {"ok": False, "product_code": pc, "error": str(exc)[:200]}
+                if ar.get("ok"):
+                    res["status"] = "existing_mapped"
+                    adopted.append(ar)
+                    scan["pending_adoption"] = max(
+                        0, int(scan.get("pending_adoption") or 0) - 1,
+                    )
+                    scan["existing_mapped"] = int(
+                        scan.get("existing_mapped") or 0
+                    ) + 1
+                else:
+                    adopt_failed.append(ar)
+    scan["auto_adopted"] = adopted
+    scan["auto_adopt_failed"] = adopt_failed
+    scan["ok"] = (
+        int(scan.get("failed") or 0) == 0
+        and int(scan.get("blocked") or 0) == 0
+        and not adopt_failed
+    )
+    # Surface a single honest blocked reason when create is disabled.
+    if int(scan.get("blocked") or 0) > 0:
+        blocked_errs = sorted({
+            (r.get("error") or "").strip()
+            for r in (scan.get("results") or [])
+            if (r.get("status") or "") == "blocked" and (r.get("error") or "").strip()
+        })
+        scan["blocked_reasons"] = blocked_errs
+    return scan

@@ -94,7 +94,7 @@ def run_product_master_sync(
             1 for r in packing_rows if not str(r.get("product_code") or "").strip()
         )
         desc = _safe_descriptions(batch_id, dry_run=True)
-        mirror = _safe_mirror_preview(batch_id)
+        mirror = _safe_mirror_dry_run(batch_id)
         return {
             "batch_id":    batch_id,
             "dry_run":     True,
@@ -138,9 +138,12 @@ def run_product_master_sync(
     desc = _safe_descriptions(batch_id, dry_run=False)
     errors.extend(str(e) for e in (desc.get("errors") or []))
 
-    # 4. wFirma goods MIRROR — preview/match only, never creates.
-    mirror = _safe_mirror_preview(batch_id)
+    # 4. wFirma goods converge (search → reuse; create if flag + PL/EN ready).
+    mirror = _safe_product_converge(batch_id)
     errors.extend(str(e) for e in (mirror.get("errors") or []))
+    for br in (mirror.get("blocked_reasons") or []):
+        if br:
+            errors.append(str(br))
 
     duration_ms = int((time.time() - started) * 1000)
     last_error = errors[0] if errors else ""
@@ -185,13 +188,27 @@ def _safe_descriptions(batch_id: str, *, dry_run: bool) -> Dict[str, Any]:
         return {"errors": [f"descriptions: {exc}"]}
 
 
-def _safe_mirror_preview(batch_id: str) -> Dict[str, Any]:
-    """wFirma goods mirror in DRY-RUN — search/match only, zero create calls."""
+def _safe_mirror_dry_run(batch_id: str) -> Dict[str, Any]:
+    """Dry-run search/match only — zero wFirma writes, zero local adopt."""
     from . import wfirma_product_auto_register as auto
     try:
         return auto.ensure_products_for_batch(batch_id, dry_run=True)
     except Exception as exc:
-        log.warning("[product_master_sync] mirror preview failed: %s", exc)
+        log.warning("[product_master_sync] mirror dry-run failed: %s", exc)
+        return {"errors": [f"mirror: {exc}"]}
+
+
+def _safe_product_converge(batch_id: str) -> Dict[str, Any]:
+    """Live converge after descriptions: search → reuse exact code;
+    create only when WFIRMA_CREATE_PRODUCT_ALLOWED + canonical PL/EN exist.
+    """
+    from . import wfirma_product_auto_register as auto
+    try:
+        return auto.converge_products_for_batch(
+            batch_id, operator="product_master_sync", auto_adopt_exact=True,
+        )
+    except Exception as exc:
+        log.warning("[product_master_sync] product converge failed: %s", exc)
         return {"errors": [f"mirror: {exc}"]}
 
 

@@ -76,6 +76,10 @@ class CustomerMaster:
     preferred_export_invoice_series_id: Optional[str] = None  # non-EU export invoice series
     preferred_payment_method:           Optional[str] = None  # transfer|cash|card|compensation
     vat_mode:                           Optional[int] = None  # 222 | 228 | 229
+    # Commercial default Incoterm (DAP/EXW/…) — advisory source for Proforma
+    # drafts when the draft's own saved incoterm is blank. Validated against
+    # master_data.incoterms at the route layer. Never invents a value.
+    default_incoterm:                   Optional[str] = None
 
     # Freight defaults
     freight_service_id:      Optional[str] = "13002743"   # wFirma good_id (Fedex Courier)
@@ -428,6 +432,8 @@ def init_db(db_path: Path) -> None:
             # Phase 4B Wave 3b-2 — soft-delete lifecycle columns.
             ("active",                    "INTEGER NOT NULL DEFAULT 1"),
             ("deleted_at",                "TEXT"),
+            # Commercial Incoterm default for Proforma draft hierarchy
+            ("default_incoterm",          "TEXT"),
         ])
 
 
@@ -502,6 +508,9 @@ def _row_to_customer(row: sqlite3.Row) -> CustomerMaster:
         preferred_export_invoice_series_id = _row_get(row, "preferred_export_invoice_series_id"),
         preferred_payment_method           = _row_get(row, "preferred_payment_method"),
         vat_mode                      = _row_get(row, "vat_mode"),
+        default_incoterm              = (
+            (str(_row_get(row, "default_incoterm") or "").strip().upper() or None)
+        ),
         freight_service_id            = _row_get(row, "freight_service_id", "13002743"),
         freight_last_amount           = _str_to_dec(_row_get(row, "freight_last_amount")),
         freight_avg_amount            = _str_to_dec(_row_get(row, "freight_avg_amount")),
@@ -618,6 +627,9 @@ def upsert_customer(db_path: Path, c: CustomerMaster) -> int:
         "preferred_export_invoice_series_id": c.preferred_export_invoice_series_id,
         "preferred_payment_method":           c.preferred_payment_method,
         "vat_mode":                     int(c.vat_mode) if c.vat_mode is not None else None,
+        "default_incoterm": (
+            (str(c.default_incoterm or "").strip().upper() or None)
+        ),
         "freight_service_id":           c.freight_service_id,
         "freight_last_amount":          _dec_to_str(c.freight_last_amount),
         "freight_avg_amount":           _dec_to_str(c.freight_avg_amount),

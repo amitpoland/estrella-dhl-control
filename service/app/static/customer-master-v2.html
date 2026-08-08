@@ -993,6 +993,9 @@
                       testId="field-payment-method" />
                     <Field label="Default Currency" name="default_currency" value={form.default_currency} onChange={setField} hint="e.g. EUR, PLN, USD" testId="field-currency" />
                     <Field label="Payment Terms (days)" name="payment_terms_days" value={form.payment_terms_days} onChange={(n,v) => setField(n, v ? parseInt(v) : null)} type="number" testId="field-payment-terms" />
+                    <SelectField label="Default Incoterm" name="default_incoterm" value={form.default_incoterm || ''} onChange={setField}
+                      options={[{value:'',label:'— not set —'},{value:'EXW',label:'EXW'},{value:'FCA',label:'FCA'},{value:'CPT',label:'CPT'},{value:'CIP',label:'CIP'},{value:'DAP',label:'DAP'},{value:'DPU',label:'DPU'},{value:'DDP',label:'DDP'},{value:'FAS',label:'FAS'},{value:'FOB',label:'FOB'},{value:'CFR',label:'CFR'},{value:'CIF',label:'CIF'}]}
+                      testId="field-default-incoterm" />
                     <Field label="Proforma Series ID" name="preferred_proforma_series_id" value={form.preferred_proforma_series_id} onChange={setField} testId="field-proforma-series" />
                     <Field label="Invoice Series ID" name="preferred_invoice_series_id" value={form.preferred_invoice_series_id} onChange={setField} testId="field-invoice-series" />
                     <Field label="Language ID" name="default_language_id" value={form.default_language_id} onChange={setField} testId="field-language-id" />

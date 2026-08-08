@@ -140,6 +140,7 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "preferred_export_invoice_series_id":   c.preferred_export_invoice_series_id,
         "preferred_payment_method":             c.preferred_payment_method,
         "vat_mode":                      c.vat_mode,
+        "default_incoterm":              c.default_incoterm,
         # Freight
         "freight_service_id":            c.freight_service_id,
         "freight_last_amount":           _dec_or_none(c.freight_last_amount),
@@ -281,6 +282,7 @@ _OPTIONAL_STR_FIELDS = frozenset({
     "default_currency",
     # Invoice/payment defaults (Campaign 9)
     "preferred_payment_method",
+    "default_incoterm",
 })
 
 
@@ -385,6 +387,46 @@ def _parse_body(
                 f"Allowed values: {sorted(_ALLOWED_PAYMENT_METHODS)}"
             ),
         )
+
+    # Incoterm default — uppercase + optional catalogue check (advisory codes
+    # list in master_data.incoterms). Unknown codes are rejected so Proforma
+    # never inherits a free-text invent.
+    _inc = body.get("default_incoterm")
+    if _inc is not None:
+        _inc_s = str(_inc).strip().upper()
+        if not _inc_s:
+            body["default_incoterm"] = None
+        else:
+            body["default_incoterm"] = _inc_s
+            try:
+                from ..services import master_data_db as _mdb
+                from ..core.config import settings as _cfg
+                _md_path = _cfg.storage_root / "master_data.sqlite"
+                if _md_path.exists() and _mdb.get_incoterm(_md_path, _inc_s) is None:
+                    # Catalogue present but code absent — still allow common
+                    # ICC codes so a fresh DB without seed data does not block
+                    # CM saves; only reject obviously malformed tokens.
+                    import re as _re
+                    if not _re.fullmatch(r"[A-Z]{3}", _inc_s):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"default_incoterm {_inc_s!r} is not a valid "
+                                "3-letter Incoterm code"
+                            ),
+                        )
+            except HTTPException:
+                raise
+            except Exception:
+                import re as _re
+                if not _re.fullmatch(r"[A-Z]{3}", _inc_s):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"default_incoterm {_inc_s!r} is not a valid "
+                            "3-letter Incoterm code"
+                        ),
+                    )
 
     # Default insurance_enabled to True
     body.setdefault("insurance_enabled", True)
