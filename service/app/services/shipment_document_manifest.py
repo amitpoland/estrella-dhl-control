@@ -218,14 +218,20 @@ def build_manifest(
         ))
 
     # packing_list — Estrella Commercial Packing List (same model as Preview).
-    # ZIP / Path-DOC bytes = commercial_packing_list presentation adapter
-    # (NOT the retired simplified packing.db sheet).
+    # Standalone Download + ZIP / Path-DOC bytes =
+    # commercial_packing_list presentation adapter (NOT a second renderer).
+    packing_download_url = (
+        f"/api/v1/shipment-documents/draft/{int(draft_id)}/packing-list.pdf"
+        if has_lines else None
+    )
     commercial.append(_entry(
         "packing_list", "Estrella", GENERATED if has_lines else MISSING,
         reference=None,
         generated_at=draft.created_at if has_lines else None,
-        preview_available=has_lines, download_available=False,
+        preview_available=has_lines,
+        download_available=bool(has_lines),
         preview_url=None,   # browser preview via existing _openPreview('packing')
+        download_url=packing_download_url,
         required_for_complete_package=has_lines,
         reason="browser_preview" if has_lines else "Draft has no commercial lines.",
     ))

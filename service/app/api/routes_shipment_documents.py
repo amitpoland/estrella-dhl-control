@@ -4,6 +4,10 @@ Shipment Document Hub API + public customer delivery-confirmation.
 Operator surface (all ``require_api_key``):
   GET  /api/v1/shipment-documents/draft/{draft_id}/manifest
        Aggregated document manifest for a draft's shipment (read-only).
+  GET  /api/v1/shipment-documents/draft/{draft_id}/packing-list.pdf
+       Standalone Commercial Packing List PDF — same
+       ``commercial_packing_list`` / ``doc_package.render_packing_list_pdf``
+       authority used by Complete Package and Path-DOC (Lesson-G no-store).
   GET  /api/v1/shipment-documents/draft/{draft_id}/complete-package
        One ZIP of authoritative bytes (wFirma PDFs + packing list + DHL files).
        422 {missing:[...]} when the package is not ready. Lesson-G no-store.
@@ -84,6 +88,93 @@ def get_manifest(draft_id: int, _auth: None = Depends(require_api_key)) -> JSONR
     return JSONResponse(manifest)
 
 
+# ── Operator: Commercial Packing List PDF (standalone download) ──────────────────
+
+
+def _render_commercial_packing_list_pdf(draft_id: int) -> tuple[bytes, str]:
+    """Return (pdf_bytes, filename) from the ONE commercial packing authority.
+
+    Reuses ``doc_package.render_packing_list_pdf`` → ``commercial_packing_list``.
+    No second field mapping or renderer.
+    """
+    from ..services import proforma_invoice_link_db as pildb
+    from ..services.carrier import doc_package
+
+    storage_root = _storage_root()
+    draft = pildb.get_draft_by_id(_proforma_db(), int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+
+    batch_id = (draft.batch_id or "").strip()
+    client_name = (draft.client_name or "").strip()
+    if not batch_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Draft has no batch_id — cannot render packing list.",
+                "code": "PACKING_LIST_NO_BATCH",
+            },
+        )
+
+    try:
+        company = doc_package._load_company_profile(storage_root)
+        pdraft = doc_package._load_proforma_draft(batch_id, client_name, storage_root)
+        customer = doc_package._resolve_customer_from_batch(
+            batch_id, client_name, storage_root,
+        )
+        packing_pdf = doc_package.render_packing_list_pdf(
+            batch_id, storage_root, company, customer, pdraft or draft,
+        )
+    except Exception as exc:
+        log.warning("packing-list.pdf render failed for draft %s: %s", draft_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "Failed to render Commercial Packing List PDF.",
+                "code": "PACKING_LIST_RENDER_FAILED",
+                "detail": str(exc),
+            },
+        ) from exc
+
+    if not packing_pdf or len(packing_pdf) < 10:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Commercial Packing List has no lines to export.",
+                "code": "PACKING_LIST_EMPTY",
+            },
+        )
+
+    prof_ref = (
+        getattr(draft, "wfirma_proforma_fullnumber", None)
+        or getattr(draft, "wfirma_proforma_id", None)
+        or f"draft-{draft_id}"
+    )
+    safe_ref = str(prof_ref).replace("/", "-").replace("\\", "-").replace(" ", "_")
+    return packing_pdf, f"packing-list-{safe_ref}.pdf"
+
+
+@router.get("/draft/{draft_id}/packing-list.pdf")
+def get_packing_list_pdf(
+    draft_id: int, _auth: None = Depends(require_api_key),
+) -> Response:
+    """Standalone Commercial Packing List PDF download.
+
+    Same bytes authority as Complete Package ZIP ``packing-list.pdf`` and
+    Path-DOC label-package — ``commercial_packing_list`` via
+    ``doc_package.render_packing_list_pdf``. Lesson-G no-store.
+    """
+    packing_pdf, filename = _render_commercial_packing_list_pdf(int(draft_id))
+    return Response(
+        content=packing_pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            **_NO_STORE_HEADERS,
+        },
+    )
+
+
 # ── Operator: complete package ZIP ───────────────────────────────────────────────
 
 
@@ -101,7 +192,6 @@ def get_complete_package(
     from ..services import shipment_document_manifest as sdm
     from ..services import proforma_invoice_link_db as pildb
     from ..services import wfirma_client
-    from ..services.carrier import doc_package
     from ..api.routes_carrier_actions import _shipment_doc_file
 
     storage_root = _storage_root()
@@ -131,7 +221,6 @@ def get_complete_package(
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
 
     batch_id = (draft.batch_id or "").strip()
-    client_name = (draft.client_name or "").strip()
     awb = manifest.get("awb")
 
     buf = io.BytesIO()
@@ -148,15 +237,8 @@ def get_complete_package(
                     raise RuntimeError("wFirma returned an empty PDF")
                 zf.writestr(f"{fiscal_label}-{fiscal_id}.pdf", pdf)
 
-            # 2. Packing list — rendered by the EXISTING authority.
-            company = doc_package._load_company_profile(storage_root)
-            pdraft = doc_package._load_proforma_draft(batch_id, client_name, storage_root)
-            customer = doc_package._resolve_customer_from_batch(
-                batch_id, client_name, storage_root,
-            )
-            packing_pdf = doc_package.render_packing_list_pdf(
-                batch_id, storage_root, company, customer, pdraft or draft,
-            )
+            # 2. Packing list — SAME helper / authority as standalone download.
+            packing_pdf, _fname = _render_commercial_packing_list_pdf(int(draft_id))
             if packing_pdf:
                 zf.writestr("packing-list.pdf", packing_pdf)
 

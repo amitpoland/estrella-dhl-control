@@ -319,6 +319,90 @@ def test_complete_package_zip_ready(tmp_path, client, monkeypatch):
     assert any("label" in n for n in names)
 
 
+# ── 8b. Standalone Commercial Packing List PDF download ─────────────────────────
+
+def test_packing_list_manifest_exposes_download(tmp_path):
+    """Documents hub must offer Download via the commercial packing-list.pdf route."""
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path)
+        m = _build(tmp_path, d.id)
+    entry = _find(m["groups"]["commercial"], "packing_list")
+    assert entry["status"] == "Generated"
+    assert entry["preview_available"] is True
+    assert entry["download_available"] is True
+    assert entry["download_url"] == (
+        f"/api/v1/shipment-documents/draft/{d.id}/packing-list.pdf"
+    )
+
+
+def test_packing_list_pdf_download_reuses_commercial_renderer(tmp_path, client, monkeypatch):
+    """Standalone download must call doc_package.render_packing_list_pdf only."""
+    d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
+    from app.services.carrier import doc_package
+    calls = {"n": 0}
+
+    def _fake_render(*_a, **_k):
+        calls["n"] += 1
+        return b"%PDF-1.4 commercial packing %%EOF"
+
+    monkeypatch.setattr(doc_package, "_load_company_profile", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "_load_proforma_draft", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "_resolve_customer_from_batch", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "render_packing_list_pdf", _fake_render)
+
+    r = client.get(
+        f"/api/v1/shipment-documents/draft/{d.id}/packing-list.pdf",
+        headers=_auth_headers(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.headers["cache-control"].startswith("no-store")
+    assert r.content.startswith(b"%PDF")
+    assert "packing-list" in (r.headers.get("content-disposition") or "").lower()
+    assert calls["n"] == 1
+
+
+def test_packing_list_download_and_zip_share_same_render_path(tmp_path, client, monkeypatch):
+    """Standalone PDF and Complete Package ZIP packing-list.pdf are the same authority."""
+    d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
+    _seed_shipment(tmp_path, client_ref="ACME")
+    _write_dhl_doc(tmp_path, "labels", BATCH, AWB)
+    _write_dhl_doc(tmp_path, "waybill_docs", BATCH, AWB)
+
+    from app.services import wfirma_client
+    from app.services.carrier import doc_package
+    marker = b"%PDF-1.4 SAME-COMMERCIAL-PACKING %%EOF"
+    monkeypatch.setattr(wfirma_client, "fetch_invoice_pdf", lambda _id: _SAMPLE_PDF)
+    monkeypatch.setattr(doc_package, "_load_company_profile", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "_load_proforma_draft", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "_resolve_customer_from_batch", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "render_packing_list_pdf", lambda *a, **k: marker)
+
+    r_pdf = client.get(
+        f"/api/v1/shipment-documents/draft/{d.id}/packing-list.pdf",
+        headers=_auth_headers(),
+    )
+    r_zip = client.get(
+        f"/api/v1/shipment-documents/draft/{d.id}/complete-package",
+        headers=_auth_headers(),
+    )
+    assert r_pdf.status_code == 200
+    assert r_zip.status_code == 200
+    assert r_pdf.content == marker
+    import io, zipfile
+    zf = zipfile.ZipFile(io.BytesIO(r_zip.content))
+    assert zf.read("packing-list.pdf") == marker
+
+
+def test_hub_ui_wires_packing_list_download_testid():
+    jsx = Path(__file__).resolve().parents[1] / "app" / "static" / "v2" / "proforma-detail.jsx"
+    src = jsx.read_text(encoding="utf-8")
+    assert "pf-doc-${d.document_type}-download" in src
+    assert "packing_list" in src
+    assert "onOpenPreview" in src and "packing" in src
+
+
 # ── 9. Delivered triggers exactly one notification (idempotent) ─────────────────
 
 def test_delivered_triggers_single_notification(tmp_path, monkeypatch):
