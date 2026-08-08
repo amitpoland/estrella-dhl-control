@@ -356,6 +356,9 @@ def test_converge_create_once_when_allowed_and_pl_en_ready(storage, monkeypatch)
         storage / "reservation_queue.db", "EJL/26-27/493-3",
     )
     assert (mirror or {}).get("wfirma_id") == "888001"
+    pm = rdb.get_product_master(storage / "reservation_queue.db", "EJL/26-27/493-3")
+    assert pm is not None
+    assert pm.get("status") == "mapped"
 
 
 def test_converge_blocks_create_without_pl_en(storage, monkeypatch):
