@@ -34,7 +34,7 @@ _NO_STORE_HEADERS = {
 @router.get("/projection", dependencies=[_auth])
 def get_logistics_projection(
     direction: str = Query("all", pattern="^(all|inbound|outbound)$"),
-    view: str = Query("active", pattern="^(active|delivered|attention|all)$"),
+    view: str = Query("active", pattern="^(active|delivered|attention|historical|all)$"),
     q: Optional[str] = Query(None, max_length=120),
     stage: Optional[str] = Query(None, max_length=80),
     needs_attention_only: bool = Query(False),
@@ -66,7 +66,7 @@ def get_logistics_shipment(awb: str) -> JSONResponse:
 @router.get("/export/csv", dependencies=[_auth])
 def export_logistics_csv(
     direction: str = Query("all", pattern="^(all|inbound|outbound)$"),
-    view: str = Query("active", pattern="^(active|delivered|attention|all)$"),
+    view: str = Query("active", pattern="^(active|delivered|attention|historical|all)$"),
     q: Optional[str] = Query(None, max_length=120),
     stage: Optional[str] = Query(None, max_length=80),
     needs_attention_only: bool = Query(False),

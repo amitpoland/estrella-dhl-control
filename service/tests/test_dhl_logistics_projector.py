@@ -339,6 +339,182 @@ def test_exception_remains_visible_in_active():
     assert row["exception"]
 
 
+def test_historical_unresolved_requires_full_combination(monkeypatch):
+    """Stale + no movement + customs/PZ complete → residue; age alone does not."""
+    now = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+    stale_created = (now - timedelta(days=95)).isoformat()
+    monkeypatch.setattr(
+        proj,
+        "_inbound_tracking_snapshot",
+        lambda *a, **k: {
+            "status": None, "events": [], "delivered_at": None, "picked_up_at": None,
+            "departed_at": None, "expected_delivery": None, "exception": None,
+            "last_event": None, "last_location": None, "received_by": None, "source": None,
+            "arrived_pl_at": None,
+        },
+    )
+    residue = _audit(
+        awb="OLDRESIDUE1",
+        batch_id="SHIPMENT_RESIDUE",
+        timeline=[
+            {"ts": stale_created, "event": "batch_created"},
+            {"ts": (now - timedelta(days=90)).isoformat(), "event": "zc429_received"},
+            {"ts": (now - timedelta(days=89)).isoformat(), "event": "pz_generated"},
+        ],
+    )
+    row = proj.project_inbound_row(residue, now=now)
+    assert row["classification"] == "historical_unresolved"
+    assert row["transport_status"] != "Delivered"
+    assert row["needs_attention"] is False
+    assert row["customs_complete"] is True
+
+    # Age alone (customs not complete) must stay operational active.
+    old_open = _audit(
+        awb="OLDOPEN0001",
+        batch_id="SHIPMENT_OLD_OPEN",
+        timeline=[
+            {"ts": stale_created, "event": "batch_created"},
+            {"ts": (now - timedelta(days=94)).isoformat(), "event": "dhl_email_received"},
+        ],
+        clearance_status="dsk_generated",
+    )
+    open_row = proj.project_inbound_row(old_open, now=now)
+    assert open_row["classification"] == "active"
+    assert open_row["customs_complete"] is False
+
+
+def test_movement_keeps_row_operational_not_historical(monkeypatch):
+    now = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+    stale_created = (now - timedelta(days=95)).isoformat()
+    monkeypatch.setattr(
+        proj,
+        "_inbound_tracking_snapshot",
+        lambda *a, **k: {
+            "status": "in_customs",
+            "events": [
+                {"description": "Arrived at facility", "timestamp": (now - timedelta(days=2)).isoformat()},
+            ],
+            "delivered_at": None,
+            "picked_up_at": now - timedelta(days=3),
+            "departed_at": now - timedelta(days=2),
+            "expected_delivery": None,
+            "exception": None,
+            "last_event": "Customs clearance",
+            "last_location": "PL",
+            "received_by": None,
+            "source": "tracking_cache",
+            "arrived_pl_at": now - timedelta(days=2),
+        },
+    )
+    row = proj.project_inbound_row(
+        _audit(
+            awb="5831878861",
+            batch_id="SHIPMENT_LIVE",
+            timeline=[
+                {"ts": stale_created, "event": "batch_created"},
+                {"ts": (now - timedelta(days=90)).isoformat(), "event": "pz_generated"},
+            ],
+        ),
+        now=now,
+    )
+    assert row["classification"] == "active"
+    assert row["transport_status"] == "In Customs"
+
+
+def test_historical_excluded_from_active_and_attention_kpis(tmp_path, monkeypatch):
+    now = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+    stale = (now - timedelta(days=98)).isoformat()
+    fresh = (now - timedelta(days=3)).isoformat()
+    monkeypatch.setattr(proj, "_now_utc", lambda: now)
+
+    def _snap(awb, batch_id=None, audit=None):
+        empty = {
+            "status": None, "events": [], "delivered_at": None, "picked_up_at": None,
+            "departed_at": None, "expected_delivery": None, "exception": None,
+            "last_event": None, "last_location": None, "received_by": None, "source": None,
+            "arrived_pl_at": None,
+        }
+        if awb == "5831878861":
+            return {
+                **empty,
+                "status": "in_customs",
+                "picked_up_at": now - timedelta(days=1),
+                "events": [{"description": "In transit", "timestamp": fresh}],
+                "last_event": "In customs",
+                "source": "tracking_cache",
+            }
+        return empty
+
+    monkeypatch.setattr(proj, "_inbound_tracking_snapshot", _snap)
+    audits = [
+        _audit(
+            awb="5831878861",
+            batch_id="SHIPMENT_OP",
+            timeline=[
+                {"ts": fresh, "event": "batch_created"},
+                {"ts": fresh, "event": "dhl_email_received"},
+            ],
+        ),
+        _audit(
+            awb="OLDRESIDUE7",
+            batch_id="SHIPMENT_HIST",
+            timeline=[
+                {"ts": stale, "event": "batch_created"},
+                {"ts": (now - timedelta(days=90)).isoformat(), "event": "zc429_received"},
+                {"ts": (now - timedelta(days=89)).isoformat(), "event": "pz_generated"},
+            ],
+        ),
+    ]
+    monkeypatch.setattr(
+        proj, "_audit_paths",
+        lambda: [Path(f"virtual/{a['batch_id']}/audit.json") for a in audits],
+    )
+    monkeypatch.setattr(
+        proj, "_read_audit",
+        lambda path: next(a for a in audits if a["batch_id"] == path.parent.name),
+    )
+    monkeypatch.setattr(proj, "_carrier_db_path", lambda: tmp_path / "missing.db")
+
+    active = proj.project_logistics(view="active", direction="inbound")
+    hist = proj.project_logistics(view="historical", direction="inbound")
+    assert "5831878861" in {r["awb"] for r in active["rows"]}
+    assert "OLDRESIDUE7" not in {r["awb"] for r in active["rows"]}
+    assert "OLDRESIDUE7" in {r["awb"] for r in hist["rows"]}
+    assert active["kpis"]["historical_unresolved"] == 1
+    assert active["kpis"]["active_inbound"] == 1
+    assert active["kpis"]["operational_active"] >= 1
+    # Residue must not inflate Needs Attention
+    assert all(r["awb"] != "OLDRESIDUE7" for r in active["rows"] if r.get("needs_attention"))
+
+
+def test_historical_unresolved_uses_timeline_fallback_when_batch_created_missing(monkeypatch):
+    """Missing batch_created must not strand customs-complete residue as Operational Active."""
+    now = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        proj,
+        "_inbound_tracking_snapshot",
+        lambda *a, **k: {
+            "status": None, "events": [], "delivered_at": None, "picked_up_at": None,
+            "departed_at": None, "expected_delivery": None, "exception": None,
+            "last_event": None, "last_location": None, "received_by": None, "source": None,
+            "arrived_pl_at": None,
+        },
+    )
+    audit = {
+        "batch_id": "SHIPMENT_6876258325_2026-04_871248dc",
+        "awb": "6876258325",
+        "clearance_status": "pz_generated",
+        "timeline": [
+            {"ts": "2026-04-27T09:24:44+00:00", "event": "shipment_rechecked"},
+            {"ts": "2026-05-04T08:45:44+00:00", "event": "pz_generated"},
+        ],
+    }
+    row = proj.project_inbound_row(audit, now=now)
+    assert row["classification"] == "historical_unresolved"
+    assert row["created_at_utc"] is not None
+    assert row["needs_attention"] is False
+
+
 def test_csv_export_includes_filters():
     rows = [proj.project_inbound_row(_audit())]
     body = proj.rows_to_logistics_csv(rows, filters={"direction": "inbound", "view": "active"})

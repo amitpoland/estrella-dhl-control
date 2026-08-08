@@ -67,7 +67,7 @@ function Pill({ children, tone = 'neutral', small }) {
 
 function DhlCustomsPage({ onViewShipment }) {
   const [mainTab, setMainTab] = React.useState('logistics'); // logistics | automation
-  const [view, setView] = React.useState('active'); // active | delivered | attention
+  const [view, setView] = React.useState('active'); // active | delivered | attention | historical
   const [direction, setDirection] = React.useState('all'); // all | inbound | outbound
   const [q, setQ] = React.useState('');
   const [stage, setStage] = React.useState('');
@@ -125,11 +125,16 @@ function DhlCustomsPage({ onViewShipment }) {
   const fmt = (v) => (v == null || v === '') ? '—' : String(v);
   const fmtHours = (h) => (h == null ? '—' : (Math.round(h * 10) / 10) + 'h');
   const toneFor = (row) => {
+    if (row.classification === 'historical_unresolved') return 'amber';
     if (row.needs_attention) return 'red';
     if (row.direction === 'inbound') return 'blue';
-    if (row.classification === 'delivered' || row.classification === 'completed') return 'green';
+    if (row.classification === 'delivered') return 'green';
     return 'amber';
   };
+
+  const operationalActive = (kpis.operational_active != null)
+    ? kpis.operational_active
+    : ((kpis.active_inbound || 0) + (kpis.active_outbound || 0) + (kpis.operational_exceptions || 0));
 
   return (
     <div data-testid="dhl-tower-root" style={{ padding: '20px 24px', overflowY: 'auto', flex: 1, minWidth: 0 }}>
@@ -159,10 +164,10 @@ function DhlCustomsPage({ onViewShipment }) {
       {mainTab === 'logistics' && (
         <div data-testid="dhl-tower-logistics">
           <div className="grid-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
-            <StatTile label="Active Inbound" value={fmt(kpis.active_inbound)} sub="Transport not delivered" onClick={() => { setDirection('inbound'); setView('active'); }} />
-            <StatTile label="Active Outbound" value={fmt(kpis.active_outbound)} sub="AWB not delivered" accent="var(--accent)" onClick={() => { setDirection('outbound'); setView('active'); }} />
+            <StatTile label="Operational Active" value={fmt(operationalActive)} sub={'In ' + fmt(kpis.active_inbound) + ' · Out ' + fmt(kpis.active_outbound) + (kpis.operational_exceptions ? (' · Exc ' + kpis.operational_exceptions) : '')} onClick={() => { setDirection('all'); setView('active'); }} />
             <StatTile label="Needs Attention" value={fmt(kpis.needs_attention)} sub="Exception / no movement 12h+" accent="var(--badge-red-text)" onClick={() => setView('attention')} />
             <StatTile label="Delivered Today" value={fmt(kpis.delivered_today)} sub="Warsaw · in + out" accent="var(--badge-green-text)" onClick={() => setView('delivered')} />
+            <StatTile label="Historical Unresolved" value={fmt(kpis.historical_unresolved)} sub="Customs done · no movement · stale" accent="var(--badge-amber-text)" onClick={() => setView('historical')} />
             <StatTile
               label="Avg Inbound Transit"
               value={fmt(kpis.avg_inbound_transit_human || fmtHours(kpis.avg_inbound_transit_hours))}
@@ -200,14 +205,14 @@ function DhlCustomsPage({ onViewShipment }) {
             );
           })()}
 
-          {kpis.customs_complete_still_active > 0 && (
-            <div data-testid="dhl-tower-customs-active" style={{
+          {kpis.historical_unresolved > 0 && view === 'active' && (
+            <div data-testid="dhl-tower-historical-note" style={{
               marginBottom: 14, padding: '10px 14px', borderRadius: 8,
               border: '1px solid var(--border)', background: 'var(--bg-subtle)',
               fontSize: 12, color: 'var(--text-2)', lineHeight: 1.45,
             }}>
-              <strong style={{ color: 'var(--badge-amber-text)' }}>Customs complete ≠ transport delivered:</strong>{' '}
-              {kpis.customs_complete_still_active} inbound row(s) still Active on transport while customs/PZ is complete.
+              <strong style={{ color: 'var(--badge-amber-text)' }}>Historical Unresolved:</strong>{' '}
+              {kpis.historical_unresolved} customs-complete row(s) with no carrier movement are kept for audit under the Historical tab — not counted as Operational Active.
             </div>
           )}
 
@@ -217,9 +222,10 @@ function DhlCustomsPage({ onViewShipment }) {
               onChange={setView}
               style={{ marginBottom: 0, borderBottom: 'none', flex: '1 1 auto' }}
               tabs={[
-                { id: 'active', label: 'Active', count: (kpis.active_inbound || 0) + (kpis.active_outbound || 0) },
-                { id: 'delivered', label: 'Delivered' },
+                { id: 'active', label: 'Operational Active', count: operationalActive },
                 { id: 'attention', label: 'Needs Attention', count: kpis.needs_attention },
+                { id: 'delivered', label: 'Delivered' },
+                { id: 'historical', label: 'Historical Unresolved', count: kpis.historical_unresolved },
               ]}
             />
           </div>
