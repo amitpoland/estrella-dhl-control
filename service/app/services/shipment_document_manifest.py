@@ -12,6 +12,8 @@ links. It is strictly an aggregator: it invents NO new Proforma / Invoice / CMR
   * DHL label / waybill / receipt   → files saved at booking under the carrier
                                        document store (same existence checks as
                                        routes_carrier_actions).
+  * DHL ePOD                        → MyDHL proof-of-delivery PDF (optional;
+                                       persisted under carrier/epods/).
   * Commercial package              → the persisted Path-DOC package.
   * Tracking                        → a thin pointer; the UI keeps using the
                                        existing tracking API.
@@ -287,6 +289,40 @@ def build_manifest(
                 ),
             ))
 
+    # dhl_epod — MyDHL electronic proof of delivery (carrier evidence; optional).
+    # Never required for Complete Package — DHL only returns ePOD for certain
+    # delivered shipments. Separate from customer delivery confirmation.
+    if not awb:
+        carrier.append(_entry(
+            "dhl_epod", "DHL", PENDING,
+            preview_available=False, download_available=False,
+            required_for_complete_package=False,
+            reason="No AWB booked for this client yet.",
+        ))
+    else:
+        epod_present = _shipment_doc_file("epod", batch_id, awb) is not None
+        if epod_present:
+            url = f"/api/v1/carrier/{b_enc}/epod/{quote(awb, safe='')}"
+            carrier.append(_entry(
+                "dhl_epod", "DHL", GENERATED,
+                reference=awb,
+                preview_available=True, download_available=True,
+                preview_url=url, download_url=url,
+                required_for_complete_package=False,
+            ))
+        else:
+            carrier.append(_entry(
+                "dhl_epod", "DHL", PENDING,
+                reference=awb,
+                preview_available=False, download_available=False,
+                required_for_complete_package=False,
+                reason=(
+                    "MyDHL ePOD is available only for certain delivered shipments. "
+                    "Fetch via POST /api/v1/carrier/{batch}/epod/{awb}/fetch after "
+                    "delivery, or wait for the outbound-delivery hook."
+                ),
+            ))
+
     # dhl_commercial_package — the persisted Path-DOC package.
     pkg = _doc_package_file(batch_id, client_name) if batch_id else None
     if pkg is not None:
@@ -308,6 +344,7 @@ def build_manifest(
         ))
 
     # ── Complete package readiness ─────────────────────────────────────────────
+    # ePOD and CMR are intentionally optional — neither blocks readiness.
     complete_package = _build_complete_package(
         draft_id=draft.id,
         posted=posted, converted=converted, has_lines=has_lines,

@@ -160,11 +160,13 @@ def get_complete_package(
             if packing_pdf:
                 zf.writestr("packing-list.pdf", packing_pdf)
 
-            # 3. DHL files from disk (already saved at booking).
+            # 3. DHL files from disk (label/waybill/receipt at booking; ePOD
+            # after delivery). ePOD is include-if-present — never required.
             if awb:
                 for kind, name in (("label", "dhl-label.pdf"),
                                    ("waybill-doc", "dhl-waybill.pdf"),
-                                   ("receipt", "dhl-receipt.pdf")):
+                                   ("receipt", "dhl-receipt.pdf"),
+                                   ("epod", "dhl-epod.pdf")):
                     doc = _shipment_doc_file(kind, batch_id, awb)
                     if doc is not None:
                         zf.writestr(name, doc.read_bytes())

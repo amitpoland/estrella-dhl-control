@@ -241,6 +241,73 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             simulated=False,
         )
 
+    def fetch_electronic_pod(
+        self,
+        tracking_ref: str,
+        *,
+        content: str = "epod-summary",
+    ) -> Optional[bytes]:
+        """Fetch MyDHL electronic proof of delivery for a delivered AWB.
+
+        Official REST (not DHL24 SOAP):
+          GET {api}/mydhlapi[/test]/shipments/{awb}/proof-of-delivery
+              ?content=epod-summary[&shipperAccountNumber=…]
+
+        MyDHL returns ePOD only for *certain* delivered shipments. 404 / empty
+        → None (honest unavailable). Auth/network/5xx → log + None (best-effort;
+        never raises into the outbound delivery hook).
+        """
+        ref = (tracking_ref or "").strip()
+        if not ref:
+            return None
+        try:
+            self._check_credentials()
+        except Exception as exc:
+            log.warning("ePOD skipped — credentials unavailable: %s", exc)
+            return None
+
+        params: dict = {"content": content or "epod-summary"}
+        if self._config.account_number:
+            params["shipperAccountNumber"] = self._config.account_number
+
+        url = (
+            f"{self._config.api_url.rstrip('/')}"
+            f"{self._api_path()}/shipments/{ref}/proof-of-delivery"
+        )
+        try:
+            with httpx.Client(
+                auth=httpx.BasicAuth(self._config.api_key, self._config.api_secret),
+                timeout=30.0,
+            ) as client:
+                resp = client.get(url, params=params)
+        except Exception as exc:
+            log.warning("ePOD HTTP failed for awb=%s: %s", ref, exc)
+            return None
+
+        if resp.status_code == 404:
+            log.info("ePOD not available for awb=%s (404)", ref)
+            return None
+        if not resp.is_success:
+            log.warning(
+                "ePOD fetch failed for awb=%s status=%s body=%s",
+                ref, resp.status_code, (resp.text or "")[:200],
+            )
+            return None
+
+        # Raw PDF body (some gateways) or JSON with base64 documents.
+        ctype = (resp.headers.get("content-type") or "").lower()
+        raw = resp.content or b""
+        if raw[:4] == b"%PDF":
+            return raw
+        if "pdf" in ctype and raw:
+            return raw
+        try:
+            data = resp.json()
+        except Exception:
+            log.warning("ePOD response was not PDF/JSON for awb=%s", ref)
+            return None
+        return _extract_epod_pdf_bytes(data)
+
     # ── private guards ────────────────────────────────────────────────────────
 
     def _check_allowlist(self, batch_id: str) -> None:
@@ -275,6 +342,38 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
                 "DHL Express live mode requires both DHL_EXPRESS_API_KEY and "
                 "DHL_EXPRESS_API_SECRET to be set."
             )
+
+
+def _extract_epod_pdf_bytes(data: object) -> Optional[bytes]:
+    """Pull base64 PDF bytes from a MyDHL ePOD JSON body (several shapes)."""
+    if not isinstance(data, dict):
+        return None
+    candidates = []
+    docs = data.get("documents")
+    if isinstance(docs, list):
+        for doc in docs:
+            if isinstance(doc, dict) and doc.get("content"):
+                candidates.append(doc.get("content"))
+    for key in ("content", "document", "pdf", "file"):
+        if data.get(key):
+            candidates.append(data.get(key))
+    nested = data.get("document")
+    if isinstance(nested, dict) and nested.get("content"):
+        candidates.append(nested.get("content"))
+
+    for item in candidates:
+        if isinstance(item, (bytes, bytearray)):
+            blob = bytes(item)
+        elif isinstance(item, str):
+            try:
+                blob = base64.b64decode(item)
+            except Exception:
+                continue
+        else:
+            continue
+        if blob[:4] == b"%PDF":
+            return blob
+    return None
 
 
 # ── product discovery ─────────────────────────────────────────────────────────

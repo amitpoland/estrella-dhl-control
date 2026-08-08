@@ -90,6 +90,14 @@ def on_outbound_tracking_update(
         client_ref = (row.get("client_ref") or "").strip() or None
         booking_created_at = row.get("created_at")
 
+        # Best-effort MyDHL ePOD persist — never blocks customer notify.
+        try:
+            from .carrier.epod_service import ensure_epod_persisted
+            if batch_id:
+                ensure_epod_persisted(str(batch_id), awb)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("outbound hook ePOD persist failed: %s", exc)
+
         # Resolve the draft for this (batch, client) — needed for the customer
         # email + draft-scoped notification record.
         draft_id = None

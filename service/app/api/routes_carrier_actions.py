@@ -184,6 +184,7 @@ _SHIPMENT_DOC_KINDS = {
     "label":       ("labels",            "AWB"),
     "waybill-doc": ("waybill_docs",      "WAYBILL"),
     "receipt":     ("shipment_receipts", "RECEIPT"),
+    "epod":        ("epods",             "EPOD"),
 }
 
 
@@ -220,6 +221,7 @@ def _shipment_doc_urls(batch_id: str, tracking_ref: Optional[str]) -> dict:
         "label_download_url": None,
         "waybill_doc_download_url": None,
         "shipment_receipt_download_url": None,
+        "epod_download_url": None,
     }
     if not tracking_ref or not isinstance(tracking_ref, str):
         return urls
@@ -229,6 +231,8 @@ def _shipment_doc_urls(batch_id: str, tracking_ref: Optional[str]) -> dict:
         urls["waybill_doc_download_url"] = f"/api/v1/carrier/{batch_id}/waybill-doc/{tracking_ref}"
     if _shipment_doc_file("receipt", batch_id, tracking_ref):
         urls["shipment_receipt_download_url"] = f"/api/v1/carrier/{batch_id}/receipt/{tracking_ref}"
+    if _shipment_doc_file("epod", batch_id, tracking_ref):
+        urls["epod_download_url"] = f"/api/v1/carrier/{batch_id}/epod/{tracking_ref}"
     return urls
 
 
@@ -1215,6 +1219,72 @@ def download_shipment_receipt(
 ) -> Response:
     """Serve the shipment receipt PDF saved at AWB creation time."""
     return _serve_shipment_doc("receipt", batch_id, tracking_ref, archived=archived)
+
+
+@router.get(
+    "/{batch_id}/epod/{tracking_ref}",
+    summary="Download the saved MyDHL electronic proof of delivery (ePOD)",
+)
+def download_epod(
+    batch_id: str,
+    tracking_ref: str,
+    _auth: None = Depends(require_api_key),
+) -> Response:
+    """Serve a persisted MyDHL ePOD PDF (carrier proof — not customer receipt).
+
+    Does not apply label do-not-use blocking: ePOD is a post-delivery evidence
+    document, not a print-to-courier label.
+    """
+    doc = _shipment_doc_file("epod", batch_id, tracking_ref)
+    if doc is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No saved ePOD for batch {batch_id!r} AWB {tracking_ref!r}.",
+        )
+    return Response(
+        content=doc.read_bytes(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="EPOD-{tracking_ref}.pdf"',
+            **_NO_STORE_HEADERS,
+        },
+    )
+
+
+@router.post(
+    "/{batch_id}/epod/{tracking_ref}/fetch",
+    summary="Fetch MyDHL ePOD and persist it (best-effort)",
+)
+def fetch_epod(
+    batch_id: str,
+    tracking_ref: str,
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Operator-triggered ePOD pull. Idempotent; 404 when MyDHL has no ePOD."""
+    from ..services.carrier.epod_service import ensure_epod_persisted, epod_file_path
+
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        raise HTTPException(status_code=400, detail="invalid batch_id")
+    if not (isinstance(tracking_ref, str) and _SAFE_REF.match(tracking_ref)):
+        raise HTTPException(status_code=400, detail="invalid tracking_ref")
+
+    path = ensure_epod_persisted(batch_id, tracking_ref)
+    if path is None:
+        # Distinguish "already checked / still missing" from bad input.
+        if epod_file_path(batch_id, tracking_ref) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "MyDHL ePOD is not available for this AWB "
+                    "(not delivered yet, account not entitled, or fetch failed)."
+                ),
+            )
+    return JSONResponse({
+        "ok": True,
+        "batch_id": batch_id,
+        "tracking_ref": tracking_ref,
+        "download_url": f"/api/v1/carrier/{batch_id}/epod/{tracking_ref}",
+    })
 
 
 @router.get(

@@ -4193,6 +4193,7 @@ function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOffici
     dhl_label: { name: 'DHL Transport Label', groupHint: 'Attach to package' },
     dhl_waybill: { name: 'DHL Waybill / Hand to Courier', groupHint: 'Courier handover' },
     dhl_receipt: { name: 'DHL Shipment Receipt', groupHint: 'Operator/customer copy' },
+    dhl_epod: { name: 'DHL ePOD (carrier proof)', groupHint: 'MyDHL electronic POD — not customer receipt' },
     dhl_commercial_package: { name: 'DHL Commercial / Customs Package', groupHint: 'Invoice + packing + CN23' },
   };
 

@@ -287,9 +287,10 @@ def test_delivered_triggers_single_notification(tmp_path, monkeypatch):
     assert calls["n"] == 1
 
 
-# ── 10. Historical delivered before activation does NOT notify ──────────────────
+# ── 10. Delivery before activation does NOT notify (delivery-time gate) ─────────
 
 def test_historical_delivered_before_activation_not_notified(tmp_path, monkeypatch):
+    """Activation uses carrier_delivered_at when present (not booking date)."""
     calls = {"n": 0}
     monkeypatch.setattr(
         "app.services.email_service.queue_email",
@@ -301,13 +302,36 @@ def test_historical_delivered_before_activation_not_notified(tmp_path, monkeypat
                       "2026-08-05T00:00:00.000Z"):
         res = dcs.maybe_notify_outbound_delivered(
             AWB, draft_id=1, batch_id=BATCH, client_name="ACME",
-            delivered=True, carrier_delivered_at="2026-08-08T12:00:00Z",
-            booking_created_at="2026-07-01T00:00:00.000Z",   # BEFORE activation
+            delivered=True,
+            carrier_delivered_at="2026-08-01T12:00:00Z",  # BEFORE activation
+            booking_created_at="2026-08-08T00:00:00.000Z",  # after — must not win
             customer_email="buyer@example.com",
         )
     assert res["notified"] is False
     assert res["reason"] == "activation_boundary"
     assert calls["n"] == 0
+
+
+def test_delivery_after_activation_notifies_even_if_booked_earlier(tmp_path, monkeypatch):
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        "app.services.email_service.queue_email",
+        lambda **kw: (calls.__setitem__("n", calls["n"] + 1) or "email-id"),
+    )
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "customer_delivery_confirmation_enabled", True), \
+         patch.object(settings, "customer_delivery_confirmation_activated_at",
+                      "2026-08-05T00:00:00.000Z"), \
+         patch.object(settings, "public_base_url", "https://pz.example.test"):
+        res = dcs.maybe_notify_outbound_delivered(
+            "7712345699", draft_id=1, batch_id=BATCH, client_name="ACME",
+            delivered=True,
+            carrier_delivered_at="2026-08-08T12:00:00Z",  # AFTER activation
+            booking_created_at="2026-07-01T00:00:00.000Z",  # before — ignored
+            customer_email="buyer@example.com",
+        )
+    assert res["notified"] is True
+    assert calls["n"] == 1
 
 
 def _mint_token(tmp_path, *, expires_delta_days=30, awb=AWB, draft_id=1):
@@ -448,3 +472,80 @@ def test_public_receipt_no_fiscal_writes_structural():
             f"delivery_confirmation_service must not reference {token!r} — "
             "the public receipt path must never mutate fiscal / inventory state"
         )
+
+
+# ── 16. MyDHL ePOD — persist, manifest, optional ZIP include ────────────────────
+
+def test_epod_extract_and_persist(tmp_path, monkeypatch):
+    import base64
+    from app.services.carrier.adapters.live import _extract_epod_pdf_bytes
+    from app.services.carrier import epod_service
+
+    encoded = base64.b64encode(_SAMPLE_PDF).decode()
+    assert _extract_epod_pdf_bytes({"documents": [{"content": encoded}]}) == _SAMPLE_PDF
+    assert _extract_epod_pdf_bytes({"content": "not-pdf"}) is None
+
+    class _Fake:
+        def fetch_electronic_pod(self, tracking_ref, content="epod-summary"):
+            return _SAMPLE_PDF
+
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None), \
+         patch.object(settings, "carrier_api_status", "live"), \
+         patch("app.services.carrier.factory.get_adapter", lambda cfg: _Fake()):
+        path = epod_service.ensure_epod_persisted(BATCH, AWB)
+        assert path is not None and path.is_file()
+        assert path.read_bytes() == _SAMPLE_PDF
+        # Idempotent — second call returns same file without re-fetch.
+        again = epod_service.ensure_epod_persisted(BATCH, AWB)
+        assert again == path
+
+
+def test_epod_manifest_and_complete_package_optional(tmp_path, client, monkeypatch):
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
+        _seed_shipment(tmp_path, client_ref="ACME")
+        m0 = _build(tmp_path, d.id)
+        ep0 = _find(m0["groups"]["carrier"], "dhl_epod")
+        assert ep0["status"] == "Pending"
+        assert ep0["required_for_complete_package"] is False
+
+        _write_dhl_doc(tmp_path, "labels", BATCH, AWB)
+        _write_dhl_doc(tmp_path, "waybill_docs", BATCH, AWB)
+        _write_dhl_doc(tmp_path, "epods", BATCH, AWB)
+        m1 = _build(tmp_path, d.id)
+        ep1 = _find(m1["groups"]["carrier"], "dhl_epod")
+        assert ep1["status"] == "Generated"
+        assert ep1["download_url"] == f"/api/v1/carrier/{BATCH}/epod/{AWB}"
+        assert m1["groups"]["complete_package"]["ready"] is True
+
+    from app.services import wfirma_client
+    from app.services.carrier import doc_package
+    monkeypatch.setattr(wfirma_client, "fetch_invoice_pdf", lambda _id: _SAMPLE_PDF)
+    monkeypatch.setattr(doc_package, "_load_company_profile", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "_load_proforma_draft", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "_resolve_customer_from_batch", lambda *a, **k: None)
+    monkeypatch.setattr(doc_package, "render_packing_list_pdf",
+                        lambda *a, **k: b"%PDF-1.4 packing %%EOF")
+
+    r = client.get(
+        f"/api/v1/shipment-documents/draft/{d.id}/complete-package",
+        headers=_auth_headers(),
+    )
+    assert r.status_code == 200, r.text
+    import io, zipfile
+    names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+    assert "dhl-epod.pdf" in names
+
+
+def test_cmr_never_required_for_complete_package(tmp_path):
+    """CMR authority remains browser JSX — no server PDF, never a package blocker."""
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "carrier_storage_root", None):
+        d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
+        _seed_shipment(tmp_path, client_ref="ACME")
+        m = _build(tmp_path, d.id)
+    cmr = _find(m["groups"]["transport"], "cmr")
+    assert cmr["required_for_complete_package"] is False
+    assert cmr["download_available"] is False
