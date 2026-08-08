@@ -217,8 +217,9 @@ def build_manifest(
             reason="No wFirma invoice yet — convert the proforma to an invoice first.",
         ))
 
-    # packing_list — Estrella browser preview; complete-package bytes come from
-    # doc_package.render_packing_list_pdf at ZIP build time (not a new authority).
+    # packing_list — Estrella Commercial Packing List (same model as Preview).
+    # ZIP / Path-DOC bytes = commercial_packing_list presentation adapter
+    # (NOT the retired simplified packing.db sheet).
     commercial.append(_entry(
         "packing_list", "Estrella", GENERATED if has_lines else MISSING,
         reference=None,

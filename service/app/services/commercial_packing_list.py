@@ -1,0 +1,651 @@
+"""
+commercial_packing_list.py — ONE Commercial Packing List document authority.
+
+Canonical document model matches the Proforma Documents tab Preview
+(`packingListData` in proforma-detail.jsx → ``EJPackingList``):
+
+  * Row authority = draft billed ``editable_lines`` (never batch packing.db)
+  * Commercial fields = Sales Packing / draft only
+  * Physical gross/net = draft then purchase packing enrich
+    (``commercial_authority.attach_physical_weights_to_lines``)
+  * Descriptions / origin = draft values, with the same Product Master /
+    product_descriptions fill-in used by GET /proforma/draft/{id}
+  * Missing values stay honestly blank ("—") — never invented
+
+The PDF renderer is a presentation/export adapter over that model for
+server-side ZIP / Path-DOC package assembly. It must NOT invent a second
+field mapping or a simplified packing sheet.
+"""
+from __future__ import annotations
+
+import io
+import json
+import logging
+import os
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+log = logging.getLogger(__name__)
+
+
+def _repo_root() -> Path:
+    # service/app/services → repo root (description_grammar lives at root)
+    return Path(__file__).resolve().parents[3]
+
+
+def _item_category_label(item_type: str) -> str:
+    """Map item_type token → human category (Ring / Pendant / …).
+
+    Uses root ``description_grammar`` — the same canonical EN table the platform
+    already owns. Never invents a parallel category vocabulary.
+    """
+    root = str(_repo_root())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        from description_grammar import ITEM_TYPE_EN, canonical_item_type
+    except Exception:
+        return (item_type or "").strip()
+    key = canonical_item_type(item_type or "")
+    if key and key in ITEM_TYPE_EN:
+        return ITEM_TYPE_EN[key]
+    return (item_type or "").strip()
+
+
+def _party(
+    *,
+    name: str = "",
+    addr: str = "",
+    city: str = "",
+    zip_code: str = "",
+    country: str = "",
+    vat: str = "",
+    email: str = "",
+    phone: str = "",
+) -> Dict[str, str]:
+    return {
+        "name": name or "",
+        "addr": addr or "",
+        "city": city or "",
+        "zip": zip_code or "",
+        "country": country or "",
+        "vat": vat or "",
+        "email": email or "",
+        "phone": phone or "",
+    }
+
+
+def _seller_from_company(company: Any) -> Dict[str, str]:
+    if company is None:
+        return _party()
+    return _party(
+        name=getattr(company, "legal_name", None) or "",
+        addr=getattr(company, "street", None) or "",
+        city=getattr(company, "postal_city", None) or "",
+        country=getattr(company, "country", None) or "",
+        vat=getattr(company, "vat_eu", None) or getattr(company, "nip", None) or "",
+        email=getattr(company, "email", None) or "",
+        phone=getattr(company, "phone", None) or "",
+    )
+
+
+def _buyer_shipto_from_customer(
+    customer: Any,
+    delivery_addr: Optional[Dict[str, str]] = None,
+) -> tuple:
+    """Return (buyer, shipto) party dicts from Customer Master helpers."""
+    buyer = _party()
+    shipto = _party()
+    if customer is None and not delivery_addr:
+        return buyer, shipto
+    try:
+        from .customer_master import resolve_billing_address, resolve_delivery_address
+    except Exception:
+        resolve_billing_address = None  # type: ignore
+        resolve_delivery_address = None  # type: ignore
+
+    if customer is not None and resolve_billing_address is not None:
+        bill = resolve_billing_address(customer)
+        buyer = _party(
+            name=bill.get("name", ""),
+            addr=bill.get("street", ""),
+            city=bill.get("city", ""),
+            zip_code=bill.get("postal_code", ""),
+            country=bill.get("country", ""),
+            email=bill.get("email", ""),
+            phone=bill.get("phone", ""),
+            vat=getattr(customer, "vat_number", None)
+            or getattr(customer, "nip", None)
+            or "",
+        )
+        if delivery_addr is None and resolve_delivery_address is not None:
+            delivery_addr = resolve_delivery_address(customer)
+
+    if delivery_addr:
+        shipto = _party(
+            name=delivery_addr.get("name", "") or buyer.get("name", ""),
+            addr=delivery_addr.get("street", ""),
+            city=delivery_addr.get("city", ""),
+            zip_code=delivery_addr.get("postal_code", "") or delivery_addr.get("zip", ""),
+            country=delivery_addr.get("country", ""),
+            email=delivery_addr.get("email", ""),
+            phone=delivery_addr.get("phone", ""),
+        )
+    elif buyer.get("name"):
+        shipto = dict(buyer)
+    return buyer, shipto
+
+
+def _enrich_draft_lines(
+    batch_id: str,
+    lines: List[Dict[str, Any]],
+    storage_root: Path,
+) -> List[Dict[str, Any]]:
+    """Apply the same read-time enrichments GET /proforma/draft uses.
+
+    Description + origin from product_descriptions / Product Master; physical
+    weights via commercial_authority. Never invents missing SKUs or prices.
+    """
+    out = [dict(ln) for ln in (lines or [])]
+    try:
+        from .master_data_db import (
+            get_product_local,
+            normalize_origin_country,
+        )
+    except Exception as exc:
+        log.debug("commercial packing enrich imports failed: %s", exc)
+        get_product_local = None  # type: ignore
+        normalize_origin_country = None  # type: ignore
+
+    # product_descriptions live in documents.db — read directly so we do not
+    # depend on document_db module-level path init (request-scoped).
+    desc_db = storage_root / "documents.db"
+    desc_conn = None
+    if desc_db.exists():
+        try:
+            desc_conn = sqlite3.connect(str(desc_db))
+            desc_conn.row_factory = sqlite3.Row
+        except Exception as exc:
+            log.debug("documents.db open failed: %s", exc)
+            desc_conn = None
+
+    try:
+        for ln in out:
+            pc = str(ln.get("product_code") or "").strip()
+            if not pc:
+                continue
+            if desc_conn is not None:
+                try:
+                    row = desc_conn.execute(
+                        "SELECT * FROM product_descriptions WHERE product_code=?",
+                        (pc,),
+                    ).fetchone()
+                    row = dict(row) if row else {}
+                except Exception:
+                    row = {}
+                if row:
+                    for src, dst in (
+                        ("item_type", "item_type"),
+                        ("name_pl", "name_pl"),
+                        ("description_pl", "description_pl"),
+                        ("description_en", "description_en"),
+                    ):
+                        if not str(ln.get(dst) or "").strip():
+                            v = str(row.get(src) or "").strip()
+                            if v:
+                                ln[dst] = v
+            if get_product_local is not None and normalize_origin_country is not None:
+                try:
+                    md_db = storage_root / "master_data.sqlite"
+                    if not str(ln.get("origin") or "").strip():
+                        pl = get_product_local(md_db, pc) if md_db.exists() else None
+                        oc = None
+                        if pl is not None:
+                            oc = normalize_origin_country(
+                                getattr(pl, "origin_country", None)
+                            )
+                        if oc:
+                            ln["origin"] = oc
+                    else:
+                        _norm = normalize_origin_country(ln.get("origin"))
+                        if _norm:
+                            ln["origin"] = _norm
+                except Exception as exc:
+                    log.debug("origin enrich failed for %s: %s", pc, exc)
+    finally:
+        if desc_conn is not None:
+            try:
+                desc_conn.close()
+            except Exception:
+                pass
+
+    try:
+        from .commercial_authority import attach_physical_weights_to_lines
+        out = attach_physical_weights_to_lines(batch_id or "", out)
+    except Exception as exc:
+        log.debug("physical-weight enrich failed: %s", exc)
+    return out
+
+
+def build_commercial_packing_document(
+    *,
+    draft: Any,
+    storage_root: Path,
+    company: Any = None,
+    customer: Any = None,
+    delivery_addr: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Build the canonical Commercial Packing List document model.
+
+    Shape mirrors frontend ``packingListData`` / ``EJPackingList`` contract.
+    """
+    storage_root = Path(storage_root)
+    raw_lines: List[Dict[str, Any]] = []
+    if draft is not None:
+        try:
+            raw = getattr(draft, "editable_lines_json", None)
+            if raw is None and isinstance(draft, dict):
+                raw = draft.get("editable_lines_json")
+                if not raw and isinstance(draft.get("editable_lines"), list):
+                    raw_lines = list(draft["editable_lines"])
+            if not raw_lines and raw:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                raw_lines = list(parsed or [])
+        except Exception as exc:
+            log.warning("commercial packing: editable_lines parse failed: %s", exc)
+            raw_lines = []
+
+    batch_id = ""
+    if draft is not None:
+        batch_id = str(getattr(draft, "batch_id", None) or (draft.get("batch_id") if isinstance(draft, dict) else "") or "")
+
+    lines = _enrich_draft_lines(batch_id, raw_lines, storage_root)
+
+    currency = "EUR"
+    if draft is not None:
+        currency = (
+            getattr(draft, "currency", None)
+            or (draft.get("currency") if isinstance(draft, dict) else None)
+            or "EUR"
+        )
+
+    doc_ref = ""
+    if draft is not None:
+        doc_ref = (
+            getattr(draft, "wfirma_proforma_fullnumber", None)
+            or (draft.get("wfirma_proforma_fullnumber") if isinstance(draft, dict) else None)
+            or getattr(draft, "wfirma_proforma_id", None)
+            or (draft.get("wfirma_proforma_id") if isinstance(draft, dict) else None)
+            or ""
+        )
+    invoice_ref = None
+    if draft is not None:
+        inv = (
+            getattr(draft, "wfirma_invoice_number", None)
+            or (draft.get("wfirma_invoice_number") if isinstance(draft, dict) else None)
+            or ""
+        )
+        invoice_ref = str(inv).strip() or None
+
+    issued_date = ""
+    if draft is not None:
+        issued_date = str(
+            getattr(draft, "issue_date", None)
+            or getattr(draft, "commercial_issue_date", None)
+            or (draft.get("issue_date") if isinstance(draft, dict) else None)
+            or ""
+        ).strip()
+
+    seller = _seller_from_company(company)
+    buyer, shipto = _buyer_shipto_from_customer(customer, delivery_addr)
+
+    rows: List[Dict[str, Any]] = []
+    for i, ln in enumerate(lines, 1):
+        qty = 0.0
+        try:
+            qty = float(ln.get("qty") or ln.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        unit_price = 0.0
+        try:
+            unit_price = float(ln.get("unit_price") or 0)
+        except (TypeError, ValueError):
+            unit_price = 0.0
+        metal = str(ln.get("metal") or "")
+        kt = str(ln.get("karat") or (metal.split("/")[0] if metal else "") or "").strip()
+        col = str(
+            ln.get("metal_color") or (metal.split("/")[1] if "/" in metal else "") or ""
+        ).strip()
+        try:
+            dia = float(ln.get("diamond_weight") or 0)
+        except (TypeError, ValueError):
+            dia = 0.0
+        try:
+            cwt = float(ln.get("color_weight") or 0)
+        except (TypeError, ValueError):
+            cwt = 0.0
+        try:
+            gw = float(ln.get("gross_weight") or 0)
+        except (TypeError, ValueError):
+            gw = 0.0
+        try:
+            nw = float(ln.get("net_weight") or 0)
+        except (TypeError, ValueError):
+            nw = 0.0
+
+        rows.append({
+            "sr": i,
+            "ctg": _item_category_label(str(ln.get("item_type") or "")),
+            "client_po": str(ln.get("client_po") or "").strip(),
+            "product_code": str(ln.get("product_code") or "").strip() or "—",
+            "design": str(ln.get("design_no") or "").strip() or "—",
+            "description_en": str(ln.get("description_en") or "").strip(),
+            "description_pl": str(ln.get("description_pl") or "").strip(),
+            "kt": kt,
+            "col": col,
+            "quality": str(ln.get("quality_string") or "").strip(),
+            "dia_wt": dia if dia > 0 else None,
+            "col_wt": cwt if cwt > 0 else None,
+            "gross_wt": gw if gw > 0 else None,
+            "net_wt": nw if nw > 0 else None,
+            "qty": int(qty) if qty == int(qty) else qty,
+            "unit_price": unit_price,
+            "total_value": unit_price * qty,
+            "size": str(ln.get("size") or "").strip(),
+            "origin": str(ln.get("origin") or "").strip() or "—",
+        })
+
+    grand_total = sum(float(r["total_value"] or 0) for r in rows)
+    total_qty = sum(float(r["qty"] or 0) for r in rows)
+
+    return {
+        "doc_ref": doc_ref or "—",
+        "invoice_ref": invoice_ref,
+        "issued_date": issued_date,
+        "seller": seller,
+        "shipto": shipto,
+        "buyer": buyer,
+        "currency": currency or "EUR",
+        "rows": rows,
+        "grand_total": grand_total,
+        "total_qty": total_qty,
+        "batch_id": batch_id,
+        "authority": "commercial_packing_list",
+    }
+
+
+def _register_fonts() -> tuple:
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        import reportlab as _rl
+
+        reg_name, bold_name = "EJCommercialPack", "EJCommercialPack-Bold"
+        if reg_name in pdfmetrics.getRegisteredFontNames():
+            return reg_name, bold_name
+        _rl_font_dir = os.path.join(os.path.dirname(_rl.__file__), "fonts")
+        candidates = [
+            (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
+            (r"C:\Windows\Fonts\DejaVuSans.ttf", r"C:\Windows\Fonts\DejaVuSans-Bold.ttf"),
+            (
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            ),
+            (
+                os.path.join(_rl_font_dir, "Vera.ttf"),
+                os.path.join(_rl_font_dir, "VeraBd.ttf"),
+            ),
+        ]
+        for reg, bold in candidates:
+            if os.path.exists(reg) and os.path.exists(bold):
+                try:
+                    pdfmetrics.registerFont(TTFont(reg_name, reg))
+                    pdfmetrics.registerFont(TTFont(bold_name, bold))
+                    return reg_name, bold_name
+                except Exception:
+                    continue
+        return "Helvetica", "Helvetica-Bold"
+    except ImportError:
+        return "Helvetica", "Helvetica-Bold"
+
+
+def _fmt_money(v: Any) -> str:
+    if v is None:
+        return "—"
+    try:
+        return f"{float(v):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_wt(v: Any) -> str:
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if n <= 0:
+        return "—"
+    return f"{n:.4f}"
+
+
+def render_commercial_packing_list_pdf(document: Dict[str, Any]) -> bytes:
+    """Presentation adapter: Commercial Packing List model → landscape PDF bytes.
+
+    Column set matches ``EJPackingList`` — not the retired simplified sheet.
+    """
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            Paragraph,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
+        )
+    except ImportError as exc:
+        raise RuntimeError(f"ReportLab unavailable: {exc}") from exc
+
+    font, font_bold = _register_fonts()
+    styles = getSampleStyleSheet()
+    H1 = ParagraphStyle(
+        "CPL_H1", parent=styles["Normal"], fontName=font_bold, fontSize=14, leading=17,
+    )
+    H2 = ParagraphStyle(
+        "CPL_H2", parent=styles["Normal"], fontName=font_bold, fontSize=8, leading=10,
+        textColor=colors.HexColor("#0B3D2E"),
+    )
+    TXT = ParagraphStyle(
+        "CPL_TXT", parent=styles["Normal"], fontName=font, fontSize=7, leading=9,
+    )
+    SML = ParagraphStyle(
+        "CPL_SML", parent=styles["Normal"], fontName=font, fontSize=6.5, leading=8,
+        textColor=colors.HexColor("#64748B"),
+    )
+    CELL = ParagraphStyle(
+        "CPL_CELL", parent=styles["Normal"], fontName=font, fontSize=6, leading=7.5,
+    )
+    CELL_B = ParagraphStyle(
+        "CPL_CELL_B", parent=styles["Normal"], fontName=font_bold, fontSize=6, leading=7.5,
+    )
+
+    buf = io.BytesIO()
+    page = landscape(A4)
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=page,
+        leftMargin=8 * mm,
+        rightMargin=8 * mm,
+        topMargin=8 * mm,
+        bottomMargin=8 * mm,
+    )
+    story: List[Any] = []
+
+    d = document or {}
+    cur = d.get("currency") or "EUR"
+    rows = d.get("rows") or []
+
+    story.append(Paragraph("Commercial Packing List", H2))
+    story.append(Paragraph("Packing List", H1))
+    story.append(Paragraph(str(d.get("doc_ref") or "—"), TXT))
+    if d.get("invoice_ref"):
+        story.append(Paragraph(f"Invoice · {d['invoice_ref']}", SML))
+    story.append(Spacer(1, 3 * mm))
+
+    seller = d.get("seller") or {}
+    shipto = d.get("shipto") or {}
+
+    def _party_block(title: str, p: Dict[str, str]) -> List[Any]:
+        lines = [Paragraph(f"<b>{title}</b>", CELL_B)]
+        if p.get("name"):
+            lines.append(Paragraph(p["name"], CELL_B))
+        if p.get("addr"):
+            lines.append(Paragraph(p["addr"], CELL))
+        loc = " ".join(x for x in (p.get("zip"), p.get("city")) if x)
+        if loc or p.get("country"):
+            lines.append(Paragraph(
+                f"{loc}{', ' + p['country'] if p.get('country') else ''}", CELL,
+            ))
+        if p.get("vat"):
+            lines.append(Paragraph(f"VAT EU · {p['vat']}", SML))
+        return lines
+
+    party_tbl = Table(
+        [[_party_block("1  Seller · Exporter", seller),
+          _party_block("2  Consignee · Ship-To", shipto)]],
+        colWidths=[140 * mm, 140 * mm],
+    )
+    party_tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#0B3D2E")),
+        ("LINEBEFORE", (1, 0), (1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(party_tbl)
+    story.append(Spacer(1, 3 * mm))
+
+    meta = (
+        f"Date: {d.get('issued_date') or '—'}   "
+        f"Proforma: {d.get('doc_ref') or '—'}   "
+        f"Invoice: {d.get('invoice_ref') or 'Pending conversion'}   "
+        f"Currency: {cur}   "
+        f"Lines: {len(rows)}   "
+        f"Total Qty: {d.get('total_qty') if d.get('total_qty') is not None else sum(float(r.get('qty') or 0) for r in rows)}   "
+        f"Grand Total: {cur} {_fmt_money(d.get('grand_total'))}"
+    )
+    story.append(Paragraph(meta, SML))
+    story.append(Spacer(1, 2 * mm))
+
+    headers = [
+        "Sr", "Category", "Client PO", "Product Code", "Design",
+        "Product Description (EN / PL)", "Kt", "Col", "Quality",
+        "Dia Wt (ct)", "Col Wt (ct)", "Gross Wt (g)", "Net Wt (g)",
+        "Qty", f"Value ({cur})", "Total Value", "Size", "Origin",
+    ]
+    data: List[List[Any]] = [[Paragraph(h, CELL_B) for h in headers]]
+
+    for r in rows:
+        desc_parts = []
+        if r.get("description_en"):
+            desc_parts.append(str(r["description_en"]))
+        if r.get("description_pl"):
+            desc_parts.append(f"<i>{r['description_pl']}</i>")
+        desc = "<br/>".join(desc_parts) if desc_parts else "—"
+        data.append([
+            Paragraph(str(r.get("sr") or ""), CELL),
+            Paragraph(str(r.get("ctg") or "—"), CELL),
+            Paragraph(str(r.get("client_po") or "—"), CELL),
+            Paragraph(str(r.get("product_code") or "—"), CELL),
+            Paragraph(str(r.get("design") or "—"), CELL_B),
+            Paragraph(desc, CELL),
+            Paragraph(str(r.get("kt") or "—"), CELL),
+            Paragraph(str(r.get("col") or "—"), CELL),
+            Paragraph(str(r.get("quality") or "—"), CELL),
+            Paragraph(_fmt_wt(r.get("dia_wt")), CELL),
+            Paragraph(_fmt_wt(r.get("col_wt")), CELL),
+            Paragraph(_fmt_wt(r.get("gross_wt")), CELL),
+            Paragraph(_fmt_wt(r.get("net_wt")), CELL),
+            Paragraph(str(r.get("qty") if r.get("qty") is not None else "—"), CELL_B),
+            Paragraph(_fmt_money(r.get("unit_price")), CELL),
+            Paragraph(_fmt_money(r.get("total_value")), CELL_B),
+            Paragraph(str(r.get("size") or "—"), CELL),
+            Paragraph(str(r.get("origin") or "—"), CELL),
+        ])
+
+    # Footer totals row
+    total_qty = d.get("total_qty")
+    if total_qty is None:
+        total_qty = sum(float(r.get("qty") or 0) for r in rows)
+    data.append([
+        Paragraph(f"{len(rows)} design(s)", CELL_B),
+        "", "", "", "", "", "", "", "", "", "", "", "",
+        Paragraph(str(total_qty), CELL_B),
+        "",
+        Paragraph(f"{cur} {_fmt_money(d.get('grand_total'))}", CELL_B),
+        "", "",
+    ])
+
+    # Approximate landscape column widths (sum ≈ 280mm usable)
+    col_ws = [
+        8*mm, 16*mm, 18*mm, 22*mm, 24*mm, 42*mm, 10*mm, 8*mm, 14*mm,
+        14*mm, 14*mm, 14*mm, 14*mm, 10*mm, 16*mm, 18*mm, 12*mm, 12*mm,
+    ]
+    tbl = Table(data, colWidths=col_ws, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0B3D2E")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), font_bold),
+        ("FONTSIZE", (0, 0), (-1, -1), 6),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2),
+         [colors.white, colors.HexColor("#FAFBFC")]),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FBF8F1")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E2E8F0")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 1.5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 1.5),
+        ("SPAN", (0, -1), (2, -1)),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph(
+        f"Issued under the authority of Proforma {d.get('doc_ref') or '—'}. "
+        "Value authority: commercial sales price. Not for customs valuation. "
+        f"Currency: {cur} · {d.get('issued_date') or '—'} · "
+        f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC",
+        SML,
+    ))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def render_packing_list_pdf_from_authorities(
+    *,
+    batch_id: str,
+    storage_root: Path,
+    company: Any,
+    customer: Any,
+    draft: Any,
+    delivery_addr: Optional[Dict[str, str]] = None,
+) -> bytes:
+    """Public entry used by Path-DOC / Complete Package — always commercial model."""
+    document = build_commercial_packing_document(
+        draft=draft,
+        storage_root=storage_root,
+        company=company,
+        customer=customer,
+        delivery_addr=delivery_addr,
+    )
+    if not document.get("batch_id"):
+        document["batch_id"] = batch_id
+    return render_commercial_packing_list_pdf(document)

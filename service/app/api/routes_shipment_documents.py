@@ -94,7 +94,7 @@ def get_complete_package(
     """Build a ZIP of the authoritative shipment documents.
 
     Bytes come only from authorities: wFirma PDFs (fetched read-only), the
-    packing list rendered by the existing ``render_packing_list_pdf``, and the
+    Commercial Packing List (``commercial_packing_list`` presentation adapter), and the
     DHL label/waybill files saved at booking. 422 with a ``missing`` list when
     the package is not ready.
     """
