@@ -108,66 +108,62 @@ window.EstrellaShared = {
   @keyframes spin { to { transform: rotate(360deg); } }
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent, #c9a456); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
 
-  /* ── Responsive — tablet (≤1100px) */
-  @media (max-width: 1100px) {
-    /* Stat tile rows: 4 → 2 cols */
-    [data-screen-label="Shipment Detail"] [style*="repeat(4, 1fr)"],
-    .responsive-grid-4 { grid-template-columns: repeat(2, 1fr) !important; }
-    /* Two-col panel grids → 1 col */
-    [data-screen-label="Shipment Detail"] [style*="grid-template-columns: 1fr 1fr"],
-    .responsive-grid-2 { grid-template-columns: 1fr !important; }
-    /* Tighter padding */
-    [data-screen-label="Shipment Detail"] > div[style*="padding: '24px 32px'"],
-    .responsive-page-padding { padding: 16px 18px !important; }
+  /* Shell: desktop sidebar visible by default; hamburger hidden until tablet */
+  .sidebar-desktop { display: flex; flex-shrink: 0; }
+  .mobile-hamburger { display: none !important; }
+  .mobile-nav-drawer { display: none; }
+  .atlas-page-header { padding: 24px 32px 0; }
+  .atlas-content-pad { padding: 20px 32px 40px; }
+  .quick-flow-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .kpi-strip-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .kanban-board {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(220px, 1fr));
+    gap: 12px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
   }
 
-  /* ── Tablet & narrower (≤900px) */
+  /* ── Responsive — tablet (≤1100px) */
+  @media (max-width: 1100px) {
+    [data-screen-label="Shipment Detail"] [style*="repeat(4, 1fr)"],
+    .responsive-grid-4 { grid-template-columns: repeat(2, 1fr) !important; }
+    [data-screen-label="Shipment Detail"] [style*="grid-template-columns: 1fr 1fr"],
+    .responsive-grid-2 { grid-template-columns: 1fr !important; }
+    .responsive-page-padding { padding: 16px 18px !important; }
+    .quick-flow-grid { grid-template-columns: repeat(2, 1fr) !important; }
+    .kpi-strip-grid { grid-template-columns: repeat(3, 1fr) !important; }
+  }
+
+  /* ── Tablet & narrower (≤900px) — drawer nav, full-width content */
   @media (max-width: 900px) {
     .sidebar-desktop { display: none !important; }
     .mobile-hamburger { display: flex !important; }
-    /* Page-level padding everywhere */
-    [style*="padding: '24px 32px'"], [style*="padding:'24px 32px'"] { padding: 14px 16px !important; }
-    /* Sub-header & workflow strip */
-    [style*="padding: '16px 32px'"] { padding: 12px 16px !important; gap: 12px !important; flex-wrap: wrap !important; }
-    [style*="padding: '20px 32px 0'"] { padding: 14px 12px 0 !important; overflow-x: auto !important; }
-    /* Tab bars allow horizontal scroll */
-    [style*="borderBottom: '1px solid var(--border)'"][style*="display: 'flex'"][style*="gap: 4"] {
-      overflow-x: auto !important; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch;
-    }
-    /* Tables: horizontal scroll wrapper via card */
+    .mobile-nav-drawer { display: flex !important; }
+    .atlas-topbar { padding: 0 12px !important; gap: 8px !important; }
+    .atlas-page-header { padding: 16px 16px 0 !important; }
+    .atlas-content-pad { padding: 14px 16px 32px !important; }
+    .topbar-user-meta,
+    .topbar-user-caret,
+    .topbar-search-kbd { display: none !important; }
+    .topbar-new-shipment { padding: 7px 10px !important; }
+    .topbar-new-shipment-label { display: none !important; }
+    .quick-flow-grid { grid-template-columns: repeat(2, 1fr) !important; }
+    .kpi-strip-grid { grid-template-columns: repeat(2, 1fr) !important; }
     table { display: block !important; overflow-x: auto !important; white-space: nowrap !important; -webkit-overflow-scrolling: touch; }
-    /* Inline stat divider lines hide */
-    [style*="width: 1, height: 32"], [style*="width: 1px"][style*="height: 32px"] { display: none !important; }
   }
 
   /* ── Phone (≤600px) */
   @media (max-width: 600px) {
     .docs-grid { grid-template-columns: 1fr !important; }
-    /* All multi-col grids collapse to 1 col */
-    [style*="grid-template-columns: repeat(4, 1fr)"],
-    [style*="grid-template-columns: repeat(3, 1fr)"],
-    [style*="grid-template-columns: repeat(2, 1fr)"],
-    [style*="grid-template-columns: 1fr 1fr"],
-    .responsive-grid-4, .responsive-grid-3, .responsive-grid-2 { grid-template-columns: 1fr !important; }
-    /* Typography downsizes a touch */
-    [data-screen-label="Shipment Detail"] [style*="fontSize: 16"] { font-size: 14px !important; }
-    [data-screen-label="Shipment Detail"] [style*="fontSize: 22"],
-    [data-screen-label="Shipment Detail"] [style*="fontSize: 20"] { font-size: 18px !important; }
-    /* Workflow stage labels: shrink */
-    [data-screen-label="Shipment Detail"] [style*="fontSize: 10"][style*="fontWeight"] { font-size: 9px !important; }
-    /* Buttons stack */
-    [style*="display: 'flex'"][style*="flexWrap: 'wrap'"][style*="gap: 8"] > button,
-    [style*="display: 'flex'"][style*="flexWrap: 'wrap'"][style*="gap: 10"] > button {
-      flex: 1 1 calc(50% - 4px) !important; min-width: 0 !important;
-    }
-    /* Page header: vertical stack */
-    [style*="display: 'flex'"][style*="justifyContent: 'space-between'"][style*="alignItems: 'center'"] {
-      flex-wrap: wrap !important; gap: 10px !important;
-    }
-    /* Top-bar search shrinks */
+    .responsive-grid-4, .responsive-grid-3, .responsive-grid-2,
+    .quick-flow-grid { grid-template-columns: 1fr !important; }
+    .kpi-strip-grid { grid-template-columns: 1fr 1fr !important; }
+    .atlas-page-header h1 { font-size: 20px !important; }
+    .topbar-notify { display: none !important; }
+    .topbar-search-label { font-size: 11px !important; }
     input[placeholder*="Search"] { max-width: 140px !important; }
-    /* Sub-header inner items wrap nicely */
-    [data-screen-label="Shipment Detail"] > div:first-of-type > div { min-width: 0 !important; }
   }
 
   /* ── Estrella Brand Theme — Ink Navy / Bone / Champagne (refined) */
@@ -419,6 +415,35 @@ function App() {
   const [showNewShipment, setShowNewShipment] = React.useState(false);
   const [showApiChecklist, setShowApiChecklist] = React.useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
+  // JS breakpoint (≤900px) — do not rely on CSS fighting inline display:flex.
+  const [isNarrow, setIsNarrow] = React.useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches
+  );
+  React.useEffect(() => {
+    const mql = window.matchMedia('(max-width: 900px)');
+    const onChange = (e) => {
+      setIsNarrow(e.matches);
+      if (!e.matches) setMobileSidebarOpen(false);
+    };
+    setIsNarrow(mql.matches);
+    if (mql.addEventListener) mql.addEventListener('change', onChange);
+    else mql.addListener(onChange);
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+      else mql.removeListener(onChange);
+    };
+  }, []);
+  React.useEffect(() => {
+    if (!mobileSidebarOpen) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e) => { if (e.key === 'Escape') setMobileSidebarOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [mobileSidebarOpen]);
   const [viewerDoc, setViewerDoc] = React.useState(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [proformaDraft, setProformaDraft] = React.useState(null);
@@ -557,40 +582,53 @@ function App() {
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
 
-      {/* Desktop Sidebar */}
-      <div className="sidebar-desktop" style={{ display: 'flex', flexShrink: 0 }}>
-        <Sidebar
-          active={activeNav}
-          onNav={handleNav}
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(v => !v)}
-        />
-      </div>
+      {/* Desktop Sidebar — unmounted on narrow viewports so it cannot steal width */}
+      {!isNarrow && (
+        <div className="sidebar-desktop" data-testid="sidebar-desktop">
+          <Sidebar
+            active={activeNav}
+            onNav={handleNav}
+            collapsed={sidebarCollapsed}
+            onToggle={() => setSidebarCollapsed(v => !v)}
+          />
+        </div>
+      )}
 
-      {/* Mobile overlay */}
-      {mobileSidebarOpen && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex' }}>
-          <div style={{ flex: 1, background: 'rgba(0,0,0,0.5)' }} onClick={() => setMobileSidebarOpen(false)} />
-          <div style={{ width: 220, background: '#18160F', height: '100%', overflowY: 'auto', flexShrink: 0 }}>
+      {/* Mobile / tablet drawer — slides in from the left */}
+      {isNarrow && mobileSidebarOpen && (
+        <div
+          className="mobile-nav-drawer"
+          data-testid="mobile-nav-drawer"
+          style={{ position: 'fixed', inset: 0, zIndex: 300, display: 'flex' }}
+        >
+          <div
+            style={{
+              width: 'min(280px, 86vw)', height: '100%', overflowY: 'auto', flexShrink: 0,
+              background: 'var(--sidebar-bg)', boxShadow: '8px 0 24px var(--shadow-heavy)',
+              animation: 'fadeIn 0.18s ease-out',
+            }}
+          >
             <Sidebar active={activeNav} onNav={handleNav} collapsed={false} onToggle={() => setMobileSidebarOpen(false)} />
           </div>
+          <div
+            data-testid="mobile-nav-backdrop"
+            style={{ flex: 1, background: 'var(--overlay)' }}
+            onClick={() => setMobileSidebarOpen(false)}
+          />
         </div>
       )}
 
       {/* Main */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
         <div style={{ position: 'relative', flexShrink: 0 }}>
-          <TopBar onNewShipment={() => setShowNewShipment(true)} onToggleDark={() => setIsDark(d => !d)} isDark={isDark} onOpenSearch={() => setSearchOpen(true)} />
+          <TopBar
+            onNewShipment={() => setShowNewShipment(true)}
+            onToggleDark={() => setIsDark(d => !d)}
+            isDark={isDark}
+            onOpenSearch={() => setSearchOpen(true)}
+            onOpenMenu={isNarrow ? (() => setMobileSidebarOpen(true)) : undefined}
+          />
           <OperationalStatusStrip />
-          <button
-            className="mobile-hamburger"
-            onClick={() => setMobileSidebarOpen(true)}
-            style={{
-              display: 'none', position: 'absolute', left: 12, top: '50%',
-              transform: 'translateY(-50%)', background: 'none', border: 'none',
-              cursor: 'pointer', fontSize: 20, alignItems: 'center',
-            }}
-          >☰</button>
         </div>
 
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: '#F2F0EB' }}>
