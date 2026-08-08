@@ -347,21 +347,7 @@ function PiKanban({ toast, reload }) {
         ))}
       </div>
 
-      {/* Upload packing list — DC-12 — Wave-4 gated (no POST /api/v1/pi/upload-packing-list) */}
-      <div
-        data-testid="documents-hub-pi-upload-gated"
-        style={{ marginTop: 12, padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, display: 'flex', gap: 10, alignItems: 'center' }}
-      >
-        <button
-          data-testid="documents-hub-btn-upload-packing-list"
-          disabled
-          title="DC-12 · Wave-4: requires POST /api/v1/pi/upload-packing-list (not yet deployed)"
-          style={{ padding: '6px 14px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11.5, fontWeight: 600, cursor: 'not-allowed', opacity: 0.55 }}
-        >
-          ⬆ Upload packing list
-        </button>
-        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>DC-12 · Backend pending — POST /api/v1/pi/upload-packing-list (Wave-4)</span>
-      </div>
+      {/* DC-12 Upload lives once in the DocumentsHub toolbar (canonical). */}
     </div>
   );
 }
@@ -999,18 +985,8 @@ function DocumentsHubPage() {
       data-testid="documents-hub-root"
       style={{ flex: 1, overflow: 'auto', padding: '16px 32px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}
     >
-      {/* Header — DC-1 (3 tabs), DC-16 (Export CSV disabled) */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 4 }}>
-            Documents Hub
-          </div>
-          <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
-            Full create / edit / delete / view / download
-          </div>
-        </div>
-
-        {/* DC-16 — Export CSV (disabled, per wireframe bundle 99c0e873 App.jsx template line 666) */}
+      {/* Toolbar — DC-16 Export CSV (disabled with reason). Title lives in shell PageHeader. */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <button
           data-testid="documents-hub-btn-export-csv"
           disabled
@@ -1018,7 +994,7 @@ function DocumentsHubPage() {
           style={{
             padding: '7px 14px', borderRadius: 6, border: '1px solid var(--border)',
             background: 'var(--card)', color: 'var(--text-3)', fontSize: 12,
-            fontWeight: 600, cursor: 'not-allowed', opacity: 0.7,
+            fontWeight: 600, cursor: 'not-allowed', opacity: 0.7, minHeight: 36,
           }}
         >
           ⬇ Export CSV
@@ -1082,9 +1058,6 @@ function DocumentsHubPage() {
           data-testid={`documents-hub-toolbar-${tab.toLowerCase()}`}
           style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}
         >
-          {/* Upload packing list — DC-12 — Wave-4 gated for both tabs */}
-          {/* (also shown inside PiKanban/PzKanban per-tab; this is the canonical toolbar position) */}
-
           {/* + New Proforma — PI tab — NAVIGATE to /v2/proforma (§D canonical owner) */}
           {tab === 'PI' && (
             <a
@@ -1113,19 +1086,38 @@ function DocumentsHubPage() {
             </button>
           )}
 
-          {/* Upload packing list — DC-12 — Wave-4 gated */}
-          <button
-            data-testid={`documents-hub-btn-upload-${tab.toLowerCase()}`}
-            disabled
-            title={`DC-12 · Upload packing list — Wave-4: requires POST /api/v1/${tab.toLowerCase()}/upload-packing-list (not yet deployed)`}
-            style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 12, fontWeight: 600, cursor: 'not-allowed', opacity: 0.55 }}
-          >
-            ⬆ Upload packing list
-          </button>
+          {/* DC-12 Upload packing list — single toolbar control (Lesson-M honest-disabled) */}
+          {tab === 'PI' ? (
+            <>
+              <button
+                data-testid="documents-hub-btn-upload-packing-list"
+                disabled
+                title="DC-12 · Upload packing list — Wave-4: requires POST /api/v1/pi/upload-packing-list (not yet deployed)"
+                style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 12, fontWeight: 600, cursor: 'not-allowed', opacity: 0.55, minHeight: 36 }}
+              >
+                ⬆ Upload packing list
+              </button>
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                DC-12 · Backend pending — POST /api/v1/pi/upload-packing-list (Wave-4)
+              </span>
+            </>
+          ) : (
+            <>
+              <button
+                data-testid={`documents-hub-btn-upload-${tab.toLowerCase()}`}
+                disabled
+                title={`DC-12 · Upload packing list — Wave-4: requires POST /api/v1/${tab.toLowerCase()}/upload-packing-list (not yet deployed)`}
+                style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 12, fontWeight: 600, cursor: 'not-allowed', opacity: 0.55, minHeight: 36 }}
+              >
+                ⬆ Upload packing list
+              </button>
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                DC-12 · Backend pending — POST /api/v1/{tab.toLowerCase()}/upload-packing-list (Wave-4)
+              </span>
+            </>
+          )}
 
-          {/* DC-14 CreateModal — Wave-4 gated */}
-          {/* CreateModal is intentionally absent: Parse & create draft requires the same missing endpoints (DC-12) */}
-          {/* Lesson-M honest pending note rendered via disabled Upload button above */}
+          {/* DC-14 CreateModal — Wave-4 gated; same missing endpoints as DC-12 */}
         </div>
       )}
 

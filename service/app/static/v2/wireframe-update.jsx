@@ -95,7 +95,7 @@ function OperationalStatusStrip() {
   }, []);
 
   // Derive items from live data
-  const _dot = s => s === 'ok' ? '#22A06B' : s === 'warn' ? '#D4A853' : s === 'down' ? '#C0321A' : '#8A9AB0';
+  const _dot = s => s === 'ok' ? 'var(--badge-green-text)' : s === 'warn' ? 'var(--badge-amber-text, var(--accent))' : s === 'down' ? 'var(--badge-red-text)' : 'var(--text-3)';
   const _ago = iso => {
     if (!iso) return null;
     const ms = Date.now() - new Date(iso).getTime();

@@ -108,6 +108,25 @@ window.EstrellaShared = {
   @keyframes spin { to { transform: rotate(360deg); } }
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent, #c9a456); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
 
+  /* Shared a11y — focus rings (ui-ux-pro-max / EJ_OVERRIDES) */
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
   /* ── Responsive — tablet (≤1100px) */
   @media (max-width: 1100px) {
     /* Stat tile rows: 4 → 2 cols */
@@ -124,7 +143,9 @@ window.EstrellaShared = {
   /* ── Tablet & narrower (≤900px) */
   @media (max-width: 900px) {
     .sidebar-desktop { display: none !important; }
-    .mobile-hamburger { display: flex !important; }
+    .mobile-hamburger { display: inline-flex !important; }
+    .topbar-user-meta { display: none !important; }
+    .topbar-header { padding-left: 8px !important; padding-right: 12px !important; gap: 8px !important; }
     /* Page-level padding everywhere */
     [style*="padding: '24px 32px'"], [style*="padding:'24px 32px'"] { padding: 14px 16px !important; }
     /* Sub-header & workflow strip */
@@ -134,8 +155,12 @@ window.EstrellaShared = {
     [style*="borderBottom: '1px solid var(--border)'"][style*="display: 'flex'"][style*="gap: 4"] {
       overflow-x: auto !important; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch;
     }
-    /* Tables: horizontal scroll wrapper via card */
-    table { display: block !important; overflow-x: auto !important; white-space: nowrap !important; -webkit-overflow-scrolling: touch; }
+    /* Tables: keep table layout; scroll the nearest wrapping parent */
+    .table-scroll, [data-table-scroll],
+    [data-testid*="table"],
+    div:has(> table) {
+      overflow-x: auto !important; -webkit-overflow-scrolling: touch; max-width: 100%;
+    }
     /* Inline stat divider lines hide */
     [style*="width: 1, height: 32"], [style*="width: 1px"][style*="height: 32px"] { display: none !important; }
   }
@@ -567,11 +592,11 @@ function App() {
         />
       </div>
 
-      {/* Mobile overlay */}
+      {/* Mobile drawer — tokenized surface (not absolute hamburger over TopBar) */}
       {mobileSidebarOpen && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex' }}>
-          <div style={{ flex: 1, background: 'rgba(0,0,0,0.5)' }} onClick={() => setMobileSidebarOpen(false)} />
-          <div style={{ width: 220, background: '#18160F', height: '100%', overflowY: 'auto', flexShrink: 0 }}>
+        <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex' }} role="dialog" aria-modal="true" aria-label="Navigation menu">
+          <div style={{ flex: 1, background: 'var(--overlay)' }} onClick={() => setMobileSidebarOpen(false)} />
+          <div style={{ width: 220, background: 'var(--sidebar-bg)', height: '100%', overflowY: 'auto', flexShrink: 0 }}>
             <Sidebar active={activeNav} onNav={handleNav} collapsed={false} onToggle={() => setMobileSidebarOpen(false)} />
           </div>
         </div>
@@ -579,21 +604,18 @@ function App() {
 
       {/* Main */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        <div style={{ position: 'relative', flexShrink: 0 }}>
-          <TopBar onNewShipment={() => setShowNewShipment(true)} onToggleDark={() => setIsDark(d => !d)} isDark={isDark} onOpenSearch={() => setSearchOpen(true)} />
+        <div style={{ flexShrink: 0 }}>
+          <TopBar
+            onNewShipment={() => setShowNewShipment(true)}
+            onToggleDark={() => setIsDark(d => !d)}
+            isDark={isDark}
+            onOpenSearch={() => setSearchOpen(true)}
+            onOpenMobileNav={() => setMobileSidebarOpen(true)}
+          />
           <OperationalStatusStrip />
-          <button
-            className="mobile-hamburger"
-            onClick={() => setMobileSidebarOpen(true)}
-            style={{
-              display: 'none', position: 'absolute', left: 12, top: '50%',
-              transform: 'translateY(-50%)', background: 'none', border: 'none',
-              cursor: 'pointer', fontSize: 20, alignItems: 'center',
-            }}
-          >☰</button>
         </div>
 
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: '#F2F0EB' }}>
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
 
           {/* MOCK badge — shown for every un-wired page (Sprint 1, Phase 3) */}
           {!viewerDoc && <MockBanner page={page} />}
@@ -639,7 +661,7 @@ function App() {
           {!viewerDoc && page === 'detail' && selectedShipment && (
             <>
               <div style={{ padding: '20px 32px 0', flexShrink: 0 }}>
-                <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: '#18160F' }}>Shipment Detail</h1>
+                <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: 'var(--text)' }}>Shipment Detail</h1>
               </div>
               <ShipmentDetailPage shipment={selectedShipment} onBack={() => { setPage('shipments'); setActiveNav('shipments'); }} />
             </>
@@ -726,9 +748,7 @@ function App() {
           {/* Documents Hub — full CRUD for every document type */}
           {!viewerDoc && page === 'documents' && (
             <>
-              <PageHeader title="Documents" subtitle="Unified workspace for every document the system creates · Proforma · Invoice · PZ · Order · Customs · Shipping · Email. Full create / edit / delete / view / download."
-                actions={<Btn variant="outline" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>⬇ Export CSV</Btn>}
-              />
+              <PageHeader title="Documents" subtitle="Unified workspace for every document the system creates · Proforma · Invoice · PZ · Order · Customs · Shipping · Email. Full create / edit / delete / view / download." />
               <DocumentsHubPage />
             </>
           )}
@@ -748,7 +768,7 @@ function App() {
           {!viewerDoc && page === 'proforma' && (
             <>
               <PageHeader title="Pro Forma" subtitle="Draft pro forma invoices · Convert to invoice when ready"
-                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => handleNav('proforma_search')}>Search All Drafts</Btn><Btn variant="outline" small>↓ Export CSV</Btn></div>}
+                actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => handleNav('proforma_search')}>Search All Drafts</Btn><Btn variant="outline" small disabled title="Export CSV — not yet wired on this list (no download endpoint)">↓ Export CSV</Btn></div>}
               />
               <ProformaListPage onDrill={handleProformaDrill} />
             </>

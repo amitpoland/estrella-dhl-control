@@ -700,12 +700,9 @@ function OverviewTab({ d, shipment, sadUploaded, pzGenerated, pzExported, replyS
         {/* Shipment intake diagnostics — authority: batch_detail via IntakeDiagnosticsCard */}
         <PanelCard title="Shipment intake" subtitle="Lifecycle, artifacts &amp; blocking reason" status={shipment.carrier || 'Intake'}>
           <IntakeDiagnosticsCard batchId={shipment.batch_id} />
-          <div style={{ padding: '0 20px 16px' }}>
-            <button onClick={() => setActiveTab('dhl')} data-testid="ov-shipment-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
-          </div>
         </PanelCard>
 
-        {/* DHL clearance */}
+        {/* DHL clearance — tab switch lives in Next operator action / Next actions (single CTA authority) */}
         <PanelCard title="DHL Clearance" subtitle="Email correspondence + reply" status={replySent ? 'Reply Sent' : (dhlEmailReceived ? 'DHL Email Received' : 'Awaiting DHL Email')}>
           <InfoBlock rows={[
             { label: 'Total Invoice CIF', value: _fmtUsd(d.cifUsd) },
@@ -713,9 +710,6 @@ function OverviewTab({ d, shipment, sadUploaded, pzGenerated, pzExported, replyS
             { label: 'DHL Email',         value: dhlEmailReceived ? 'Received ✓' : 'Awaiting' },
             { label: 'Reply Status',      value: replySent ? 'Sent ✓' : 'Not sent' },
           ]} />
-          <div style={{ padding: '0 20px 16px' }}>
-            <button onClick={() => setActiveTab('dhl')} data-testid="ov-clearance-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
-          </div>
         </PanelCard>
 
         {/* Customs */}
@@ -726,9 +720,6 @@ function OverviewTab({ d, shipment, sadUploaded, pzGenerated, pzExported, replyS
             { label: 'Clearance Date', value: _fmtDate(d.clearanceDate) },
             { label: 'Customs Agent',  value: _dash(d.customsAgent) },
           ]} />
-          <div style={{ padding: '0 20px 16px' }}>
-            <button onClick={() => setActiveTab('dhl')} data-testid="ov-customs-open-dhl" style={navLinkStyle()}>Open DHL / Customs →</button>
-          </div>
         </PanelCard>
 
         {/* PZ / accounting */}
