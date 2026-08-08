@@ -251,7 +251,7 @@ function EJCMRClassic({ cmrData }) {
             {carrier && (
               <>
                 <span className="ej-pill ej-pill-green" style={{ marginRight: 4 }}>
-                  {carrier.incoterm || "DAP"}
+                  {carrier.incoterm || "—"}
                 </span>
                 {carrier.insurance && (
                   <div style={{ marginTop: 4, color: "#64748B", fontSize: 9 }}>
@@ -303,7 +303,7 @@ function EJCMRModern({ cmrData }) {
             <span className="ej-pill ej-pill-green">SHIPMENT</span>
             <span className="ej-pill">CMR</span>
             {carrier && (
-              <span className="ej-pill ej-pill-gold">{carrier.incoterm || "DAP"}</span>
+              <span className="ej-pill ej-pill-gold">{carrier.incoterm || "—"}</span>
             )}
           </div>
         </div>
@@ -371,7 +371,7 @@ function EJCMRModern({ cmrData }) {
               ["Gross weight", carrier.weight_kg ? `${carrier.weight_kg} kg` : "—"],
               ["Dimensions", carrier.dim_cm ? `${carrier.dim_cm} cm` : "—"],
               ["Insurance", carrier.insurance || "—"],
-              ["Incoterm",  carrier.incoterm || "DAP"],
+              ["Incoterm",  carrier.incoterm || "—"],
             ].map(([k, v], i) => (
               <div key={k} style={{ padding: "10px 12px", borderRight: i < 4 ? "1px solid #E2E8F0" : "none" }}>
                 <div className="ej-eyebrow">{k}</div>

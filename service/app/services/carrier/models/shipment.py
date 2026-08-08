@@ -50,6 +50,9 @@ class ShipmentRequest:
     # CMR. Optional/nullable: legacy rows and callers that omit it behave
     # exactly as before (the idempotency key is unchanged when it is absent).
     client_ref: Optional[str] = None
+    # Commercial Incoterm — MUST come from resolve_incoterm(draft → CM → unset).
+    # Never invent DAP/EXW here. Live adapter blocks when this is blank.
+    incoterm: Optional[str] = None
 
 
 @dataclass

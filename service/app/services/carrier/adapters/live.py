@@ -107,6 +107,16 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
                 "form or in Customer Master for this client."
             )
 
+        # Incoterm authority: saved draft → Customer Master default → unset.
+        # Never invent DAP. Operator must set CM.default_incoterm or draft.incoterm.
+        _incoterm = (getattr(request, "incoterm", None) or "").strip().upper()
+        if not _incoterm:
+            raise CarrierGateError(
+                "Incoterm is required for DHL Express booking but is unset. "
+                "Set Customer Master.default_incoterm or save an Incoterm on the "
+                "proforma draft, then retry. The platform will not invent DAP."
+            )
+
         from ....core.config import settings
         import datetime
 
@@ -489,11 +499,16 @@ def _build_shipment_body(
             "isCustomsDeclarable": is_dutiable,
             "declaredValue": request.declared_value,
             "declaredValueCurrency": request.currency,
-            "incoterm": "DAP",
+            # Resolved upstream (draft → CM → unset). Never invent DAP/EXW.
+            "incoterm": (request.incoterm or "").strip().upper(),
             "unitOfMeasurement": "metric",
             "description": request.description or "Jewellery",
         },
     }
+    if not body["content"]["incoterm"]:
+        raise CarrierGateError(
+            "Incoterm missing on ShipmentRequest — refuse to invent DAP for DHL."
+        )
 
     # Customer / shipment references
     refs = []

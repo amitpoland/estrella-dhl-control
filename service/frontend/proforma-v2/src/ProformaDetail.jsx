@@ -2379,7 +2379,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     // batch_id is a system reference, not a DHL tracking number — never show it as AWB.
     // EJDocCarrierRow renders "AWB pending" when awb is null.
     carrier:  liveDraft.batch_id
-      ? { awb: null, batch_ref: liveDraft.batch_id, incoterm: liveDraft.incoterm || 'DAP' } : null,
+      ? { awb: null, batch_ref: liveDraft.batch_id, incoterm: liveDraft.incoterm_resolved || liveDraft.incoterm || '—' } : null,
     // EUR first — the document currency leads; sort is stable for the rest.
     // Backend returns flat iban_eur/iban_usd/iban_pln/swift/bank_name fields (not bank_accounts[]).
     // Adapt here so EJDocBank receives a normalised array regardless of future schema changes.
@@ -2545,7 +2545,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       name:        'DHL Express',
       awb:         liveDraft.batch_id,
       service:     'EXPRESS WORLDWIDE',
-      incoterm:    liveDraft.incoterm || 'DAP',
+      incoterm:    liveDraft.incoterm_resolved || liveDraft.incoterm || '—',
       // FIX #2: origin = sender city + country name (e.g. "Warszawa, Poland")
       origin:      [
         (companyProfile && companyProfile.postal_city) || null,
