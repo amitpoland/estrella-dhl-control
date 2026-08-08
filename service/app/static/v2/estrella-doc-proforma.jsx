@@ -308,6 +308,21 @@ function EJCompanyFooter() {
 // VARIANT A — CLASSIC
 // Tall masthead, green/gold band header, formal party blocks, full table
 // ═══════════════════════════════════════════════════════════════════════════════
+function _ejVatBlock(d, netGoods, chargesSubtotal) {
+  // ONE VAT authority from docData (draft-resolved). Never hardcode WDT.
+  const taxable = (typeof d.net_taxable === "number")
+    ? d.net_taxable
+    : (netGoods + chargesSubtotal);
+  const vatAmount = (typeof d.vat_amount === "number") ? d.vat_amount : 0;
+  const gross = (typeof d.gross_total === "number")
+    ? d.gross_total
+    : (taxable + vatAmount);
+  const label = d.vat_label || "VAT TBD";
+  const lineTax = d.vat_line_label || label;
+  const pill = d.vat_pill || label;
+  return { taxable, vatAmount, gross, label, lineTax, pill };
+}
+
 function EJProformaClassic({ docData }) {
   const d = docData || {};
   const lines = d.lines || [];
@@ -323,7 +338,8 @@ function EJProformaClassic({ docData }) {
   const _chargesSubtotal = (typeof d.charges_total === "number")
     ? d.charges_total
     : chargesPresent.filter(c => (c.currency || cur) === cur).reduce((s, c) => s + (Number(c.amount) || 0), 0);
-  const grandTotal = totalEur + _chargesSubtotal;
+  const vat = _ejVatBlock(d, totalEur, _chargesSubtotal);
+  const grandTotal = vat.gross;
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -414,7 +430,7 @@ function EJProformaClassic({ docData }) {
                 <td>{l.origin || "—"}</td>
                 <td className="ej-r ej-num">{l.qty}</td>
                 <td className="ej-r ej-num">{Number(l.unitEur || 0).toFixed(2)}</td>
-                <td className="ej-c">0% WDT</td>
+                <td className="ej-c">{vat.lineTax}</td>
                 <td className="ej-r ej-num" style={{ fontWeight: 600 }}>{Number(l.netEur || 0).toFixed(2)}</td>
               </tr>
             ))}
@@ -437,11 +453,15 @@ function EJProformaClassic({ docData }) {
               </div>
             ))}
             <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 10 }}>
-              <span>VAT (0% WDT)</span>
-              <span className="ej-mono">0.00</span>
+              <span>Net taxable · {cur}</span>
+              <span className="ej-mono">{vat.taxable.toFixed(2)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 10 }}>
+              <span>VAT ({vat.label})</span>
+              <span className="ej-mono">{vat.vatAmount.toFixed(2)}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 12px", background: "#0B3D2E", color: "#fff", fontSize: 12, fontWeight: 700 }}>
-              <span>{grandTotal > totalEur ? "Total incl. freight & insurance" : "Total due"}</span>
+              <span>{vat.vatAmount > 0 ? "Gross / Total due" : (grandTotal > totalEur ? "Total incl. freight & insurance" : "Total due")}</span>
               <span className="ej-mono">{cur} {grandTotal.toFixed(2)}</span>
             </div>
             {totalPln !== null && (
@@ -489,7 +509,8 @@ function EJProformaModern({ docData }) {
   const _chargesSubtotal = (typeof d.charges_total === "number")
     ? d.charges_total
     : chargesPresent.filter(c => (c.currency || cur) === cur).reduce((s, c) => s + (Number(c.amount) || 0), 0);
-  const grandTotal = totalEur + _chargesSubtotal;
+  const vat = _ejVatBlock(d, totalEur, _chargesSubtotal);
+  const grandTotal = vat.gross;
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -502,7 +523,7 @@ function EJProformaModern({ docData }) {
           <div style={{ display: "flex", gap: 6 }}>
             <span className="ej-pill ej-pill-green">PRO FORMA</span>
             <span className="ej-pill">{cur}</span>
-            <span className="ej-pill">WDT 0%</span>
+            <span className="ej-pill">{vat.pill}</span>
           </div>
         </div>
 
@@ -606,9 +627,9 @@ function EJProformaModern({ docData }) {
         }}>
           {[
             ["Items",      lines.length,               false],
-            ["Subtotal",   `${cur} ${totalEur.toFixed(2)}`,false],
-            ["VAT",        "0% WDT · 0.00",             false],
-            [grandTotal > totalEur ? "Total incl. charges" : "Total due", `${cur} ${grandTotal.toFixed(2)}`, true],
+            ["Net",   `${cur} ${vat.taxable.toFixed(2)}`,false],
+            ["VAT",        `${vat.label} · ${vat.vatAmount.toFixed(2)}`,             false],
+            [vat.vatAmount > 0 ? "Gross / Total due" : (grandTotal > totalEur ? "Total incl. charges" : "Total due"), `${cur} ${grandTotal.toFixed(2)}`, true],
           ].map(([k, v, hi], i) => (
             <div key={k} style={{
               padding: "12px 14px",
@@ -675,7 +696,8 @@ function EJProformaBold({ docData }) {
   const _chargesSubtotal = (typeof d.charges_total === "number")
     ? d.charges_total
     : chargesPresent.filter(c => (c.currency || cur) === cur).reduce((s, c) => s + (Number(c.amount) || 0), 0);
-  const grandTotal = totalEur + _chargesSubtotal;
+  const vat = _ejVatBlock(d, totalEur, _chargesSubtotal);
+  const grandTotal = vat.gross;
   const totalPln = typeof d.total_pln === "number" ? d.total_pln : null;
 
   return (
@@ -769,11 +791,13 @@ function EJProformaBold({ docData }) {
         <div style={{ marginBottom: 18, padding: 16, background: "#FBF8F1", borderLeft: "4px solid #C9A24B", borderRadius: 4 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
             <div>
-              <div className="ej-eyebrow ej-eyebrow-gold">{grandTotal > totalEur ? "Total incl. freight & insurance · WDT 0% intra-EU" : "Total due · WDT 0% intra-EU"}</div>
+              <div className="ej-eyebrow ej-eyebrow-gold">{vat.vatAmount > 0 ? `Gross / Total due · ${vat.label}` : (grandTotal > totalEur ? `Total incl. freight & insurance · ${vat.label}` : `Total due · ${vat.label}`)}</div>
               <div style={{ fontSize: 32, fontWeight: 700, color: "#0B3D2E", lineHeight: 1, marginTop: 4 }}>
                 {cur} {grandTotal.toFixed(2)}
               </div>
               <div data-ej-charges="1" style={{ fontSize: 9.5, color: "#475569", marginTop: 4, display: "flex", gap: 14 }}>
+                <span>Net {cur} {vat.taxable.toFixed(2)}</span>
+                <span>VAT ({vat.label}) {vat.vatAmount.toFixed(2)}</span>
                 <span>Goods {cur} {totalEur.toFixed(2)}</span>
                 {charges.map(c => (
                   <span key={c.type} data-ej-charge={c.type}>

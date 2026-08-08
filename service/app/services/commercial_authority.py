@@ -405,6 +405,186 @@ def promote_and_enrich_batch_drafts(
     }
 
 
+def physical_weight_index(batch_id: str) -> Dict[str, Dict[str, float]]:
+    """product_code → per-unit gross/net grams from packing, else invoice lines."""
+    from . import document_db as ddb
+    from . import packing_db as pdb
+
+    idx: Dict[str, Dict[str, float]] = {}
+
+    def _put(code: str, ug: float, un: float) -> None:
+        pc = str(code or "").strip()
+        if not pc or pc in idx:
+            return
+        if ug <= 0 and un <= 0:
+            return
+        idx[pc] = {"unit_gross": ug, "unit_net": un}
+
+    for pl in (pdb.get_packing_lines_for_batch(batch_id) or []):
+        try:
+            g = float(pl.get("gross_weight") or 0)
+            n = float(pl.get("net_weight") or 0)
+            q = float(pl.get("quantity") or pl.get("qty") or 0)
+        except (TypeError, ValueError):
+            continue
+        if g <= 0 and n <= 0:
+            continue
+        if q and q > 1:
+            _put(pl.get("product_code"), g / q, n / q)
+        else:
+            _put(pl.get("product_code"), g, n)
+
+    for inv in (ddb.get_invoice_lines_for_batch(batch_id) or []):
+        pc = str(inv.get("product_code") or "").strip()
+        if not pc or pc in idx:
+            continue
+        try:
+            g = float(inv.get("gross_weight") or 0)
+            n = float(inv.get("net_weight") or 0)
+            q = float(inv.get("quantity") or 0)
+        except (TypeError, ValueError):
+            continue
+        if (g <= 0 and n <= 0) or q <= 0:
+            continue
+        _put(pc, g / q, n / q)
+    return idx
+
+
+def attach_physical_weights_to_lines(
+    batch_id: str,
+    lines: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Fill blank line gross_weight/net_weight from purchase authority."""
+    idx = physical_weight_index(batch_id)
+    if not idx:
+        return list(lines or [])
+    out: List[Dict[str, Any]] = []
+    for ln in (lines or []):
+        row = dict(ln)
+        pc = str(row.get("product_code") or "").strip()
+        src = idx.get(pc)
+        if not src:
+            out.append(row)
+            continue
+        try:
+            qty = float(row.get("qty") or row.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if qty <= 0:
+            qty = 1.0
+        if not _truthy(row.get("gross_weight")) and src["unit_gross"] > 0:
+            row["gross_weight"] = round(src["unit_gross"] * qty, 4)
+        if not _truthy(row.get("net_weight")) and src["unit_net"] > 0:
+            row["net_weight"] = round(src["unit_net"] * qty, 4)
+        out.append(row)
+    return out
+
+
+def seed_draft_vat_from_customer(
+    proforma_db: Path,
+    draft_id: int,
+    *,
+    customer_master_db: Path,
+    contractor_id: str = "",
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Freeze normalized VAT on an editable draft from Customer Master."""
+    from . import customer_master_db as cmdb
+    from . import proforma_invoice_link_db as pildb
+    from . import wfirma_client as wfc
+
+    d = pildb.get_draft_by_id(proforma_db, int(draft_id))
+    if d is None:
+        return {"ok": False, "draft_id": draft_id, "error": "not_found"}
+    if (d.draft_state or "") not in ("draft", "editing", "post_failed", ""):
+        return {
+            "ok": False, "draft_id": draft_id,
+            "error": "locked_state", "state": d.draft_state,
+        }
+
+    existing = wfc.normalize_stored_vat(d.vat_code)
+    has_ctx = bool(str(d.vat_context or "").strip())
+    raw_mode_stored = str(d.vat_code or "").strip().isdigit()
+    if existing.get("ok") and has_ctx and not raw_mode_stored and not force:
+        return {
+            "ok": True, "draft_id": draft_id, "skipped": "already_normalized",
+            "vat_code": d.vat_code, "vat_context": d.vat_context,
+        }
+
+    cid = str(contractor_id or d.client_contractor_id or "").strip()
+    cm = cmdb.get_customer(customer_master_db, cid) if cid else None
+    if cm is None:
+        if existing.get("ok"):
+            pildb.freeze_draft_vat_context(
+                proforma_db, int(draft_id),
+                vat_context=existing["vat_context"],
+                vat_code=existing["vat_code"],
+                decision_source=d.decision_source or "derived",
+            )
+            return {
+                "ok": True, "draft_id": draft_id,
+                "vat_code": existing["vat_code"],
+                "vat_context": existing["vat_context"],
+                "source": "normalize_existing",
+            }
+        return {"ok": False, "draft_id": draft_id, "error": "no_customer_master"}
+
+    try:
+        resolved = wfc.resolve_vat_context_from_master(cm)
+    except ValueError as exc:
+        return {"ok": False, "draft_id": draft_id, "error": str(exc)}
+    if resolved.get("blocked"):
+        return {
+            "ok": False, "draft_id": draft_id, "error": "blocked",
+            "reason": resolved.get("blocked_reason"),
+        }
+    code = resolved.get("vat_code")
+    ctx = resolved.get("context")
+    src = resolved.get("decision_source") or "derived"
+    pildb.freeze_draft_vat_context(
+        proforma_db, int(draft_id),
+        vat_context=str(ctx), vat_code=str(code), decision_source=str(src),
+    )
+    return {
+        "ok": True, "draft_id": draft_id,
+        "vat_code": code, "vat_context": ctx,
+        "decision_source": src, "source": "customer_master",
+    }
+
+
+def repair_editable_drafts_vat(
+    proforma_db: Path,
+    *,
+    customer_master_db: Path,
+    draft_ids: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """Normalize VAT on editable drafts (never posted/converted)."""
+    import sqlite3 as _sql
+
+    results: List[Dict[str, Any]] = []
+    if draft_ids:
+        targets = [int(x) for x in draft_ids]
+    else:
+        targets: List[int] = []
+        if Path(proforma_db).exists():
+            with _sql.connect(str(proforma_db)) as con:
+                rows = con.execute(
+                    "SELECT id FROM proforma_drafts "
+                    "WHERE draft_state IN ('draft','editing','post_failed')"
+                ).fetchall()
+            targets = [int(r[0]) for r in rows]
+    for did in targets:
+        results.append(
+            seed_draft_vat_from_customer(
+                Path(proforma_db), did,
+                customer_master_db=Path(customer_master_db),
+                force=True,
+            )
+        )
+    ok_n = sum(1 for r in results if r.get("ok"))
+    return {"ok": True, "repaired": ok_n, "total": len(results), "results": results}
+
+
 def seed_blank_draft_incoterms(
     batch_id: str,
     *,
@@ -476,7 +656,9 @@ def converge_batch_draft_authority(
     4. Optionally reset editable drafts from refreshed sales rows
     5. Converge wFirma product mappings (search → reuse / create-if-allowed)
     6. Seed blank draft Incoterm from Customer Master default
+    7. Seed/normalize VAT from Customer Master on editable drafts
     """
+    from ..core.config import settings
     from . import document_db as ddb
     from . import proforma_invoice_link_db as pildb
 
@@ -487,6 +669,8 @@ def converge_batch_draft_authority(
         batch_id, proforma_db=proforma_db, operator=operator,
     )
     resets: List[Dict[str, Any]] = []
+    vat_seeds: List[Dict[str, Any]] = []
+    cm_path = Path(settings.storage_root) / "customer_master.sqlite"
     if reset_editable and Path(proforma_db).exists():
         # Re-reset after product_code persist so dropped JR00819-class lines
         # re-enter editable_lines. Enrich already ran; reset re-resolves name_pl.
@@ -506,9 +690,39 @@ def converge_batch_draft_authority(
                         Path(proforma_db), d2.id, operator,
                         d2.updated_at, ddb.get_product_description,
                     )
+                    vat_seeds.append(
+                        seed_draft_vat_from_customer(
+                            Path(proforma_db), int(d2.id),
+                            customer_master_db=cm_path,
+                            contractor_id=str(d2.client_contractor_id or ""),
+                            force=False,
+                        )
+                    )
             except Exception as exc:
                 resets[-1]["enrich_error"] = str(exc)[:200]
     out["draft_resets"] = resets
+    # Always normalize VAT on editable drafts (even when reset_editable=False).
+    # Birth path and Apply-Customer both land here; raw vat_mode ids must not linger.
+    if Path(proforma_db).exists():
+        for d in pildb.list_drafts_for_batch(Path(proforma_db), batch_id):
+            if (d.draft_state or "") not in ("draft", "editing", "post_failed", ""):
+                continue
+            if any(int(v.get("draft_id") or 0) == int(d.id) for v in vat_seeds):
+                continue
+            try:
+                vat_seeds.append(
+                    seed_draft_vat_from_customer(
+                        Path(proforma_db), int(d.id),
+                        customer_master_db=cm_path,
+                        contractor_id=str(d.client_contractor_id or ""),
+                        force=False,
+                    )
+                )
+            except Exception as exc:
+                vat_seeds.append({
+                    "ok": False, "draft_id": d.id, "error": str(exc)[:200],
+                })
+    out["vat_seeds"] = vat_seeds
 
     # After PL/EN descriptions exist, converge wFirma goods mapping via the
     # existing auto-register authority (search-first; create only when allowed).

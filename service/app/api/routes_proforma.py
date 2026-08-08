@@ -5713,11 +5713,15 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                     v = (pm.get("item_type") or "").strip()
                     if v:
                         ln["item_type"] = v
-            # Origin enrichment — shared Product Master authority (ISO code).
-            # Never overwrite an operator-supplied origin; only fill when blank.
-            # Never invent origin for SKUs absent from Product Master.
+            # Origin enrichment — Product Master authority (ISO code).
+            # Prefer product_local; fall back to reservation product_master
+            # (live Product Master store). Never invent missing SKUs.
             if not (ln.get("origin") or "").strip():
                 oc = _pl_origin_index.get(pc) or _pl_origin_index.get(pc.casefold())
+                if not oc:
+                    pm = pm_index.get(pc)
+                    if pm:
+                        oc = normalize_origin_country(pm.get("origin_country"))
                 if oc:
                     ln["origin"] = oc
             else:
@@ -5728,6 +5732,15 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                     ln["origin"] = _norm
     except Exception as exc:
         log.warning("draft %s read-time enrichment failed (non-fatal): %s",
+                    draft_id, exc)
+    # Physical gross/net — purchase packing first, else invoice_lines unit×qty.
+    try:
+        from ..services import commercial_authority as _ca
+        full["editable_lines"] = _ca.attach_physical_weights_to_lines(
+            d.batch_id or "", full.get("editable_lines") or [],
+        )
+    except Exception as exc:
+        log.warning("draft %s physical-weight enrich failed (non-fatal): %s",
                     draft_id, exc)
     # Phase C — annotate each line with the customer-facing invoice line-name
     # authority (wFirma goods name) so the editor shows what will actually
@@ -6300,25 +6313,30 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
         cust = {"wfirma_customer_id": "", "resolved_wfirma_name": "",
                 "match_strategy": "none", "found": False}
 
-    # ── VAT context label (document-level, same for all lines) ────────────────
-    try:
-        _cust_country = cust.get("country") or ""
-        _cust_vat     = cust.get("vat_id") or ""
-        _vat_decision = wfirma_client.decide_proforma_vat_context(
-            _cust_country, _cust_vat
-        )
-        _vat_label = {
-            "domestic": "23% VAT",
-            "wdt":      "0% (WDT)",
-            "export":   "0% (EXP)",
-            "blocked":  "VAT TBD",
-        }.get(_vat_decision.get("context", ""), "VAT TBD")
-    except Exception:
-        # Fallback: simple heuristic when decide_proforma_vat_context fails
-        if (d.currency or "") == "EUR" and cust.get("wfirma_customer_id"):
-            _vat_label = "0% (WDT/EXP)"
-        else:
-            _vat_label = "23% VAT"
+    # ── VAT — draft authority (normalized), else country resolve ──────────────
+    _vat_totals = wfirma_client.compute_document_vat_totals(
+        0.0,
+        vat_code=getattr(d, "vat_code", None),
+        vat_context=getattr(d, "vat_context", None),
+    )
+    if not _vat_totals.get("ok"):
+        try:
+            _cust_country = cust.get("country") or ""
+            _cust_vat     = cust.get("vat_id") or ""
+            _vat_decision = wfirma_client.decide_proforma_vat_context(
+                _cust_country, _cust_vat
+            )
+            _vat_totals = wfirma_client.compute_document_vat_totals(
+                0.0,
+                vat_code=_vat_decision.get("vat_code"),
+                vat_context=_vat_decision.get("context"),
+            )
+        except Exception:
+            _vat_totals = {
+                "label": "VAT TBD", "rate": 0.0, "rate_pct": 0,
+                "vat_code": None, "vat_context": "blocked", "ok": False,
+            }
+    _vat_label = _vat_totals.get("label") or "VAT TBD"
 
     # Totals — additive only; no engine calls.
     def _num(x):
@@ -6330,7 +6348,13 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
     # only, from the draft snapshot), never a local re-sum.
     charges_total = commercial_charge_authority.resolve_commercial_charges(
         d.currency or "", charges)["service_charge_subtotal"]
-    grand_total = lines_total + charges_total
+    _taxable = lines_total + charges_total
+    _vat_totals = wfirma_client.compute_document_vat_totals(
+        _taxable,
+        vat_code=_vat_totals.get("vat_code") or getattr(d, "vat_code", None),
+        vat_context=_vat_totals.get("vat_context") or getattr(d, "vat_context", None),
+    )
+    grand_total = float(_vat_totals.get("gross") or _taxable)
 
     # ── PLN reference total ────────────────────────────────────────────────────
     _pln_total_html = ""
@@ -6720,9 +6744,11 @@ def get_proforma_draft_preview_html(draft_id: int) -> HTMLResponse:
 
   <div class="totals">
     <dl>
-      <dt>Lines total:</dt><dd>{lines_total:.2f}</dd>
+      <dt>Lines total (net):</dt><dd>{lines_total:.2f}</dd>
       <dt>Service charges:</dt><dd>{charges_total:.2f}</dd>
-      <dt class="grand">Grand total:</dt><dd class="grand">{grand_total:.2f} {_safe(d.currency)}</dd>
+      <dt>Net taxable:</dt><dd>{float(_vat_totals.get('net') or _taxable):.2f}</dd>
+      <dt>VAT ({_safe(_vat_label)}):</dt><dd>{float(_vat_totals.get('vat_amount') or 0):.2f}</dd>
+      <dt class="grand">Gross / Total due:</dt><dd class="grand">{grand_total:.2f} {_safe(d.currency)}</dd>
       {_pln_total_html}
       {_fx_info_html}
     </dl>

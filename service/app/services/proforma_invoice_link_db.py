@@ -4109,11 +4109,21 @@ def apply_customer_commercial_to_draft(
     if "invoice_language_id" in updates and updates["invoice_language_id"] is not None:
         new_pt["invoice_language_id"] = str(updates["invoice_language_id"])
 
-    # ── Compute new vat_code / decision_source ────────────────────────────
+    # ── Compute new vat_code / vat_context / decision_source ──────────────
+    # Normalize wFirma vat_mode integers (222/228/229) → 23/WDT/EXP.
+    # Bare mode ids broke Preview/PDF (hardcoded WDT) and VatInsurancePanel labels.
     new_vat_code = d.vat_code          # default: unchanged
+    new_vat_context = d.vat_context
     new_decision_source = d.decision_source
     if "vat_mode" in updates and updates["vat_mode"] is not None:
-        new_vat_code = str(updates["vat_mode"])
+        from . import wfirma_client as _wfc
+        _norm = _wfc.normalize_stored_vat(updates["vat_mode"])
+        if not _norm.get("ok"):
+            raise ValueError(
+                f"vat_mode={updates['vat_mode']!r} has no known mapping"
+            )
+        new_vat_code = _norm["vat_code"]
+        new_vat_context = _norm["vat_context"]
         new_decision_source = "operator_vat_mode"
 
     # ── Compute new service_charges (upsert freight / insurance) ─────────
@@ -4225,6 +4235,7 @@ def apply_customer_commercial_to_draft(
             for k in ("method", "days", "invoice_language_id")
         },
         "vat_code": new_vat_code,
+        "vat_context": new_vat_context,
         "incoterm": new_incoterm,
         "freight": next(
             (c for c in new_charges if c.get("charge_type") == "freight"), None
@@ -4241,7 +4252,7 @@ def apply_customer_commercial_to_draft(
     sets: List[str] = [
         "draft_state=?", "updated_at=?",
         "payment_terms_json=?", "service_charges_json=?",
-        "vat_code=?", "decision_source=?",
+        "vat_code=?", "vat_context=?", "decision_source=?",
         "incoterm=?",
     ]
     args: List[Any] = [
@@ -4249,6 +4260,7 @@ def apply_customer_commercial_to_draft(
         json.dumps(new_pt, ensure_ascii=False, sort_keys=True),
         json.dumps(new_charges, ensure_ascii=False, sort_keys=True),
         new_vat_code,
+        new_vat_context,
         new_decision_source,
         new_incoterm,
     ]
