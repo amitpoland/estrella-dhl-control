@@ -1083,97 +1083,25 @@ function _trackingStatusTone(label) {
 }
 
 function DhlTrackingCard({ batchId, awb, reloadNonce }) {
-  const [tracking, setTracking] = React.useState(null);
-  const [loading, setLoading]   = React.useState(true);
-  const [refreshing, setRefreshing] = React.useState(false);
-
-  const load = React.useCallback(async (refresh) => {
-    if (!awb) { setLoading(false); return; }
-    if (refresh) { setRefreshing(true); await window.PzApi.refreshDhlTracking(awb, batchId); }
-    const r = await window.PzApi.getDhlTracking(awb, batchId);
-    setTracking(r.ok ? r.data : { available: false, ok: false, status: 'error', message: r.error });
-    setLoading(false); setRefreshing(false);
-  }, [awb, batchId]);
-
-  React.useEffect(() => { let c = false; setLoading(true); load(false); return () => { c = true; }; }, [load, reloadNonce]);
-
-  const Field = ({ label, value, mono, span }) => (
-    <div style={{ gridColumn: span ? '1 / -1' : undefined, minWidth: 0 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: mono ? 'ui-monospace, monospace' : 'inherit', lineHeight: 1.35, wordBreak: 'break-word' }}>{value}</div>
-    </div>
-  );
-
-  let body;
-  if (!awb) {
-    body = <div style={{ fontSize: 13, color: 'var(--text-2)' }}>No AWB on this shipment — carrier tracking unavailable.</div>;
-  } else if (loading) {
-    body = <div style={{ fontSize: 13, color: 'var(--text-2)' }}>Loading carrier tracking…</div>;
-  } else if (!tracking || tracking.available === false) {
-    const reason = (tracking && (tracking.message || tracking.status)) || 'no data returned';
-    body = (
-      <div data-testid="dhl-tracking-unavailable" style={{ fontSize: 13, color: 'var(--badge-amber-text)', lineHeight: 1.45 }}>
-        Tracking unavailable — {reason}.
-        {tracking && tracking.last_update && (
-          <span style={{ color: 'var(--text-3)' }}> Last cached: {_fmtDate(tracking.last_update, true)}.</span>
-        )}
-      </div>
-    );
-  } else {
-    const statusLabel = tracking.status_label || tracking.status || '—';
-    const tone = _trackingStatusTone(statusLabel);
-    body = (
-      <div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-          <span data-testid="dhl-tracking-status-badge" style={{
-            display: 'inline-flex', alignItems: 'center', padding: '5px 12px', borderRadius: 999,
-            background: tone.bg, color: tone.fg, border: '1px solid ' + tone.bd,
-            fontSize: 12, fontWeight: 700, letterSpacing: '0.02em',
-          }}>{statusLabel}</span>
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Carrier tracking · independent of clearance</span>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '14px 20px' }}>
-          <Field label="AWB" value={_dash(tracking.tracking_no || awb)} mono />
-          <Field label="Carrier" value={_dash(tracking.carrier)} />
-          <Field label="Current status" value={_dash(statusLabel)} />
-          <Field label="Event time" value={tracking.last_update ? _fmtDate(tracking.last_update, true) : '—'} mono />
-          <Field label="Location" value={_dash(tracking.last_location)} />
-          <Field label="Latest event" value={_dash(_eventText(tracking.last_event))} span />
-          {tracking.arrived_warehouse != null && (
-            <Field label="At warehouse" value={tracking.arrived_warehouse ? 'Yes' : 'No'} />
-          )}
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--border-subtle)' }}>
-          {tracking.tracking_url && (
-            <a href={tracking.tracking_url} target="_blank" rel="noopener noreferrer" data-testid="dhl-tracking-url"
-              style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 700 }}>Open carrier tracking ↗</a>
-          )}
-          <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
-            Source: {_dash(tracking.source)} · GET /api/v1/tracking/&#123;awb&#125;
-          </span>
-        </div>
+  // Consolidated with Proforma Logistics — one outbound tracking presentation
+  // (estrella-outbound-tracking.jsx). Still uses GET /api/v1/tracking/{awb}.
+  const Card = window.EJOutboundTrackingCard;
+  if (!Card) {
+    return (
+      <div data-testid="dhl-tracking-card" style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--text-3)' }}>
+        Outbound tracking card unavailable (shared component not loaded).
       </div>
     );
   }
-
   return (
-    <div data-testid="dhl-tracking-card" style={{
-      margin: '0 0 12px', padding: '16px 18px', borderRadius: 10,
-      background: 'var(--card)', border: '1px solid var(--border)',
-      boxShadow: '0 1px 2px var(--shadow)',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>DHL Live Tracking</div>
-          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>Carrier movement only — not clearance workflow state</div>
-        </div>
-        <Btn variant="outline" small disabled={!awb || refreshing || loading}
-          onClick={() => load(true)} data-testid="dhl-tracking-refresh"
-          title="Refresh carrier tracking from the backend (no page reload)">
-          {refreshing ? '… Refreshing' : '↻ Refresh'}
-        </Btn>
-      </div>
-      {body}
+    <div data-testid="dhl-tracking-card" style={{ margin: '0 0 12px' }}>
+      <Card
+        awb={awb}
+        batchId={batchId}
+        carrier="DHL"
+        reloadNonce={reloadNonce}
+        testIdRoot="dhl-tracking"
+      />
     </div>
   );
 }

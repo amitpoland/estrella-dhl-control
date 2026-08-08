@@ -432,6 +432,52 @@ def test_delivered_triggers_single_notification(tmp_path, monkeypatch):
     assert calls["n"] == 1
 
 
+def test_failed_notification_can_retry(tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    def _queue(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("smtp down")
+        return "email-id-2"
+
+    monkeypatch.setattr("app.services.email_service.queue_email", _queue)
+    with patch.object(settings, "storage_root", tmp_path), \
+         patch.object(settings, "customer_delivery_confirmation_enabled", True), \
+         patch.object(settings, "customer_delivery_confirmation_activated_at",
+                      "2026-01-01T00:00:00.000Z"), \
+         patch.object(settings, "public_base_url", "https://pz.example.test"):
+        r1 = dcs.maybe_notify_outbound_delivered(
+            "AWB-FAIL-RETRY", draft_id=9, batch_id=BATCH, client_name="ACME",
+            delivered=True, carrier_delivered_at="2026-08-08T12:00:00Z",
+            booking_created_at="2026-08-01T00:00:00.000Z",
+            customer_email="buyer@example.com", customer_name="ACME",
+        )
+        r2 = dcs.maybe_notify_outbound_delivered(
+            "AWB-FAIL-RETRY", draft_id=9, batch_id=BATCH, client_name="ACME",
+            delivered=True, carrier_delivered_at="2026-08-08T12:00:00Z",
+            booking_created_at="2026-08-01T00:00:00.000Z",
+            customer_email="buyer@example.com", customer_name="ACME",
+        )
+    assert r1["notified"] is False and r1["reason"] == "email_queue_failed"
+    assert r2["notified"] is True
+    assert calls["n"] == 2
+
+
+def test_delivery_email_redesign_has_cta_and_plaintext(tmp_path):
+    html, text = dcs._delivery_email_bodies(
+        "ACME", AWB, "https://pz.example.test/receipt/tok",
+        carrier_delivered_at="2026-08-08T12:00:00Z",
+    )
+    assert "Your Estrella shipment has been delivered" in html
+    assert "Confirm delivery condition" in html
+    assert "https://pz.example.test/receipt/tok" in html
+    assert "<script" not in html.lower()
+    assert "Your Estrella shipment has been delivered" in text
+    assert "https://pz.example.test/receipt/tok" in text
+    assert "AWB" in text and AWB in text
+
+
 # ── 10. Delivery before activation does NOT notify (delivery-time gate) ─────────
 
 def test_historical_delivered_before_activation_not_notified(tmp_path, monkeypatch):

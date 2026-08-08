@@ -26,6 +26,7 @@ from app.services.carrier.adapters.live import (
     DhlExpressLiveAdapter,
     _build_receiver_details,
     _build_shipment_body,
+    _build_shipment_notifications,
 )
 from app.services.carrier.factory import CarrierConfig
 from app.services.carrier.models.shipment import CarrierGateError, ShipmentRequest
@@ -45,6 +46,7 @@ def _req(phone="+48123456789", email="ops@example.com", postal="00-001"):
         },
         declared_value=100.0, currency="EUR", weight_kg=1.0,
         dimensions={"length_cm": 10, "width_cm": 10, "height_cm": 10},
+        incoterm="DAP",
     )
 
 
@@ -97,6 +99,39 @@ class TestReceiverDetailsBuilder:
         assert "" not in contact.values()
         assert "postalCode" not in postal
         assert "email" not in contact
+
+
+# ── MyDHL shipmentNotification (carrier email/SMS) ────────────────────────────
+
+
+class TestShipmentNotificationRequest:
+    """Official MyDHL Create Shipment ``shipmentNotification`` — not Estrella receipt."""
+
+    def test_email_notification_requested_when_recipient_email_present(self):
+        body = _build_shipment_body(_req(), _fake_settings())
+        assert "shipmentNotification" in body
+        types = {n["typeCode"] for n in body["shipmentNotification"]}
+        assert "email" in types
+        email_n = next(n for n in body["shipmentNotification"] if n["typeCode"] == "email")
+        assert email_n["receiverId"] == "ops@example.com"
+        assert email_n["languageCode"] == "eng"
+
+    def test_sms_notification_only_for_e164_plus_phone(self):
+        notes = _build_shipment_notifications(_req(phone="+48123456789").recipient_address)
+        sms = [n for n in notes if n["typeCode"] == "sms"]
+        assert len(sms) == 1
+        assert sms[0]["receiverId"] == "+48123456789"
+
+    def test_no_notification_block_without_email_or_e164(self):
+        # Local phone without '+' → no SMS; blank email → no email entry.
+        notes = _build_shipment_notifications(
+            _req(phone="512795550", email="").recipient_address,
+        )
+        assert notes == []
+        body = _build_shipment_body(
+            _req(phone="512795550", email=""), _fake_settings(),
+        )
+        assert "shipmentNotification" not in body
 
 
 # ── adapter: fail fast before DHL ─────────────────────────────────────────────

@@ -356,6 +356,24 @@ def mark_sent(email_id: str, error: Optional[str] = None) -> None:
         except Exception as _e:
             log.debug("Email Evidence mark_sent hook failed (non-fatal): %s", _e)
 
+    # Delivery-confirmation notification status (best-effort; never raises).
+    if matched and (matched.get("email_type") or "") == "customer_delivery_confirmation":
+        try:
+            from . import delivery_confirmation_db as _dcdb
+            from pathlib import Path as _Path
+            _db = _Path(settings.storage_root) / "delivery_confirmations.db"
+            _row = _dcdb.get_notification_by_email_id(_db, email_id)
+            if _row and _row.get("awb"):
+                if error:
+                    _dcdb.mark_notification_failed(_db, _row["awb"], reason=str(error))
+                else:
+                    _dcdb.mark_notification_sent(
+                        _db, _row["awb"],
+                        sent_at=matched.get("sent_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    )
+        except Exception as _e:
+            log.debug("delivery confirmation mark_sent hook failed (non-fatal): %s", _e)
+
 
 def get_pending_emails() -> list[dict]:
     """Return all emails with status='pending'."""
