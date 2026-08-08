@@ -46,6 +46,7 @@ const ENTITY_COLUMNS = {
     { key: 'country',               label: 'Country' },
     { key: 'nip',                   label: 'NIP / VAT ID', mono: true },
     { key: 'default_currency',      label: 'Currency' },
+    { key: 'default_incoterm',      label: 'Incoterm' },
     { key: 'bill_to_contractor_id', label: 'wFirma ID', mono: true, mapping: true },
     { key: 'last_wfirma_sync_at',   label: 'Last wFirma sync', timestamp: true },
     { key: 'active',                label: 'Active', toggle: true },
@@ -2052,6 +2053,9 @@ function MasterPage() {
                 </div>
               )}
               <ScanStatusPanel status={scanStatus} onRefresh={loadScanStatus} />
+              {typeof CustomerIncotermPanel === 'function' && (
+                <CustomerIncotermPanel />
+              )}
             </div>
           )}
 
