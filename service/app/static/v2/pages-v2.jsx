@@ -81,7 +81,7 @@ function DhlCustomsPage({ onViewShipment }) {
   const [isAdmin, setIsAdmin] = React.useState(false);
 
   React.useEffect(() => {
-    window.EstrellaShared.apiFetch('/api/v1/auth/me')
+    window.EstrellaShared.apiFetch('/auth/me')
       .then((u) => setIsAdmin(u && u.role === 'admin'))
       .catch(() => setIsAdmin(false));
   }, []);
