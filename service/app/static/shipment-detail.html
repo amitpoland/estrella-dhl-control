@@ -7906,24 +7906,29 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                 // value_usd payload always falls through to the resolved CIF.
                 const _dskBlocked = !_decResolved;
 
-                // DHL reply state
+                // DHL reply state — authority is audit.reply_package (Build via
+                // /dsk/email-package). dhl_reply_package is the outbound queue
+                // record. NEVER treat agency_reply_package as DHL-package proof.
+                const _rp      = audit.reply_package || {};
                 const _drp     = audit.dhl_reply_package || {};
                 const _drpStatus = _drp.status || (
                   dhlClearance === 'reply_sent' ? 'sent'
                     : dhlClearance === 'reply_queued' ? 'queued'
                     : ''
                 );
-                const _drpBuilt   = !!(_drp.email_id || _drp.queue_id || _drpStatus);
+                const _drpBuilt   = !!(_rp.to || _drp.email_id || _drp.queue_id || _drpStatus);
                 const _drpQueued  = _drpStatus === 'queued';
                 const _drpSent    = _drpStatus === 'sent';
                 const _drpQid     = _drp.email_id || _drp.queue_id || '';
 
-                // Agency state (only when high-value path)
+                // Agency state — separate authority (agency_reply_package only)
                 const _isAgency = (_dec.clearance_path || '') === 'external_agency_clearance';
                 const _arp      = audit.agency_reply_package || {};
                 const _arpQueued = _arp.status === 'queued';
                 const _arpSent   = _arp.status === 'sent';
+                const _arpBuilt  = !!(_arp.status || _arp.queue_id || _arp.email_id);
                 const _arpQid    = _arp.queue_id || _arp.email_id || '';
+                const _agencyOnlySplit = _arpBuilt && !_rp.to;
 
                 // DHL API state — read from latest tracking probe.
                 // Modes: disabled (no creds) | failed (call errored) | active | manual.
@@ -8114,32 +8119,26 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                         </Btn>
                       )}
 
-                      {/* Agency stage chip — read-only when queued/sent */}
-                      {_isAgency && (
-                        <>
-                          {_arpSent ? (
-                            <span style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
-                              background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)',
-                              border: '1px solid var(--badge-green-border)', fontWeight: 600 }}>
-                              ✓ Agency sent
-                            </span>
-                          ) : _arpQueued ? (
-                            <span style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
-                              background: 'var(--badge-amber-bg)', color: 'var(--badge-amber-text)',
-                              border: '1px solid var(--badge-amber-border)', fontWeight: 600 }}>
-                              ⏳ Agency queued
-                            </span>
-                          ) : (
-                            <Btn variant={_pdReady ? 'gold' : 'outline'} disabled={!!busy.agencyEmail || !_pdReady}
-                              title={!_pdReady ? 'Generate Polish Description first' : 'Build & queue agency clearance email package'}
-                              onClick={() => doAction('agencyEmail', 'Agency Email Package',
-                                () => apiFetch(`/api/v1/agency/email-package/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
-                              {busy.agencyEmail ? '⟳ Building…' : '📨 Build Agency Email'}
-                            </Btn>
-                          )}
-                        </>
+                      {/* Agency stage chip — separate authority from DHL reply_package */}
+                      <span data-testid="agency-package-status-v1" style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                        background: 'var(--bg-subtle)', color: 'var(--text-2)',
+                        border: '1px solid var(--border-subtle)', fontWeight: 600 }}>
+                        Agency Package: {_arpSent ? 'Sent' : (_arpBuilt ? 'Built' : 'Pending')}
+                      </span>
+                      {_isAgency && !_arpBuilt && (
+                        <Btn variant={_pdReady ? 'gold' : 'outline'} disabled={!!busy.agencyEmail || !_pdReady}
+                          title={!_pdReady ? 'Generate Polish Description first' : 'Build & queue agency clearance email package'}
+                          onClick={() => doAction('agencyEmail', 'Agency Email Package',
+                            () => apiFetch(`/api/v1/agency/email-package/${encodeURIComponent(batchId)}`, { method: 'POST' }))}>
+                          {busy.agencyEmail ? '⟳ Building…' : '📨 Build Agency Email'}
+                        </Btn>
                       )}
                     </div>
+                    {_agencyOnlySplit && (
+                      <div data-testid="agency-dhl-package-split-note-v1" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+                        Agency package exists. DHL reply package has not been built yet.
+                      </div>
+                    )}
                     {dhlSendReplyResult && dhlSendReplyResult.status === 'skipped' && (dhlSendReplyResult.stage === 'milestone_skip' || (dhlSendReplyResult.reason && dhlSendReplyResult.reason.startsWith('milestone_skip:'))) && (
                       <div data-testid="dhl-reply-skip-msg" style={{ marginTop: 6, fontSize: 11, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
                         Skipped: already progressed (SAD/PZ/Completed)

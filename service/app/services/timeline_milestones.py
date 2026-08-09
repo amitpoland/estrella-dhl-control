@@ -57,13 +57,15 @@ never advertises coverage it does not have.
                    fallback backfills historical shipments generated before the
                    combined endpoint learned to emit the event (Slice 2A.1).
   * reply pkg    → events ``dhl_reply_package_auto_built`` /
-                   ``dhl_self_clearance_reply_auto_built`` /
-                   ``agency_package_auto_built``, field fallback
-                   ``audit.reply_package`` / ``audit.agency_reply_package.status``.
-                   ``dsk_generated`` is NOT accepted here — a DSK existing does not
-                   prove a reply package was built (that would infer an earlier /
-                   parallel milestone from a later one). Real evidence is the
-                   ``reply_package`` field written by /dsk/email-package.
+                   ``dhl_self_clearance_reply_auto_built``, field fallback
+                   ``audit.reply_package`` ONLY.
+                   ``agency_package_auto_built`` / ``audit.agency_reply_package``
+                   are a SEPARATE authority (agency_package_generated) — never
+                   proof that the DHL reply package exists. ``dsk_generated`` is
+                   NOT accepted here. Real DHL evidence is ``reply_package``
+                   written by /dsk/email-package (required by send-reply).
+  * agency pkg   → event ``agency_package_auto_built``, field fallback
+                   ``audit.agency_reply_package.status``. Agency lane only.
   * dsk          → event ``dsk_generated`` (EV_DSK_GENERATED), field fallback
                    ``audit.dsk_filename``. Lane: DHL self-clearance only (the
                    agency lane builds an agency package instead) — but a genuinely
@@ -124,6 +126,7 @@ ALL_STATES: FrozenSet[str] = frozenset({
 # self or agency and the path is not in the milestone's lanes.
 _ALL_LANES: FrozenSet[str] = frozenset({PATH_DHL_SELF_CLEARANCE, PATH_AGENCY_CLEARANCE})
 _SELF_ONLY: FrozenSet[str] = frozenset({PATH_DHL_SELF_CLEARANCE})
+_AGENCY_ONLY: FrozenSet[str] = frozenset({PATH_AGENCY_CLEARANCE})
 
 
 def _cd(audit: Dict[str, Any]) -> Dict[str, Any]:
@@ -163,9 +166,16 @@ def _f_polish_desc(a: Dict[str, Any]) -> bool:
 
 
 def _f_reply_package(a: Dict[str, Any]) -> bool:
-    # /dsk/email-package writes reply_package; the agency auto-build writes
-    # agency_reply_package.status. A DSK existing is deliberately NOT evidence.
-    return bool(a.get("reply_package")) or bool((a.get("agency_reply_package") or {}).get("status"))
+    # DHL reply package authority ONLY — /dsk/email-package writes reply_package.
+    # agency_reply_package is a separate customs-agency authority and must never
+    # mark the DHL reply-package milestone complete (send-reply requires
+    # audit.reply_package with recipient "to").
+    return bool(a.get("reply_package"))
+
+
+def _f_agency_package(a: Dict[str, Any]) -> bool:
+    # Customs agency package authority — independent of DHL reply_package.
+    return bool((a.get("agency_reply_package") or {}).get("status"))
 
 
 def _f_dsk(a: Dict[str, Any]) -> bool:
@@ -279,7 +289,8 @@ _MILESTONES: List[Tuple[str, str, Tuple[str, ...], Optional[Callable[[Dict[str, 
     ("dhl_email_received",           "DHL clearance email received",    ("dhl_email_received",), _f_dhl_email_received, _ALL_LANES, False),
     ("polish_description_generated", "Polish description generated",    ("description_ready",), _f_polish_desc, _ALL_LANES, False),
     ("dsk_generated",                "DSK generated",                   ("dsk_generated",), _f_dsk, _SELF_ONLY, False),
-    ("reply_package_generated",      "Reply package prepared",          ("dhl_reply_package_auto_built", "dhl_self_clearance_reply_auto_built", "agency_package_auto_built"), _f_reply_package, _ALL_LANES, False),
+    ("reply_package_generated",      "DHL reply package prepared",      ("dhl_reply_package_auto_built", "dhl_self_clearance_reply_auto_built"), _f_reply_package, _ALL_LANES, False),
+    ("agency_package_generated",     "Agency package prepared",         ("agency_package_auto_built",), _f_agency_package, _AGENCY_ONLY, False),
     ("reply_sent",                   "Reply sent to DHL / agency",      ("reply_approved", "dsk_transfer_sent", "agency_email_sent"), None, _ALL_LANES, False),
     ("sad_imported",                 "SAD / ZC429 uploaded",            ("sad_uploaded", "zc429_received", "customs_docs_imported"), _f_sad_present, _ALL_LANES, False),
     ("customs_parsed",               "Customs values parsed",           ("agency_sad_parsed",), _f_customs_parsed, _ALL_LANES, False),
