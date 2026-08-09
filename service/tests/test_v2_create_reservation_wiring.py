@@ -77,8 +77,11 @@ def test_disabled_reason_is_canonical_backend_blocker(detail):
     # not read as a draft-line blocker.
     assert "reservationPreview.batch_blocking_reasons" in detail
     assert "reservationDoc && reservationDoc.blocking_reasons" in detail
-    # readiness derives from ready_to_create AND the draft's client doc.ready
-    assert "reservationPreview.ready_to_create && reservationDoc && reservationDoc.ready" in detail
+    # readiness derives from THIS draft doc.ready + infrastructure flags
+    # (batch-wide ready_to_create must not veto a single-client Create)
+    assert "reservationDoc && reservationDoc.ready" in detail
+    assert "reservationPreview.wfirma_configured" in detail
+    assert "reservationPreview.reservation_supported" in detail
 
 
 def test_no_request_when_blocked(detail):
@@ -106,7 +109,7 @@ def test_success_refreshes_all_three(detail):
     blk = detail[i:i + 1400]
     assert "loadReservationPreview();" in blk
     assert "reloadReadiness();" in blk
-    assert "draftHook && draftHook.refresh && draftHook.refresh();" in blk
+    assert "draftHook && draftHook.reload && draftHook.reload()" in blk
 
 
 def test_failure_shows_backend_error(detail):

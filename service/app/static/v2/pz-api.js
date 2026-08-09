@@ -663,6 +663,12 @@
     getReservationPreview: (batchId) =>
       _get(`${BASE}/wfirma/reservation-preview/${encodeURIComponent(batchId)}`),
 
+    // GET /api/v1/wfirma/reservations/dry-run?batch_id=&client_name=
+    // Pure dry-run — zero wFirma HTTP, zero local persist. Returns payload + XML.
+    dryRunReservation: (batchId, clientName) =>
+      _get(`${BASE}/wfirma/reservations/dry-run?batch_id=${encodeURIComponent(batchId)}`
+        + `&client_name=${encodeURIComponent(clientName)}`),
+
     // POST /api/v1/wfirma/reservations/create  { batch_id, client_name }
     // LIVE wFirma write — hard-gated by check_wfirma_config + per-draft GATE_* checks.
     // 200 → { ok:true, wfirma_reservation_id }; 409 → gate code; 502 → wFirma error.

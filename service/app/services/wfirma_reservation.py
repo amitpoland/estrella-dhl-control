@@ -1,45 +1,32 @@
 """
-wfirma_reservation.py — Read-only reservation preview builder.
+wfirma_reservation.py — Reservation readiness + dry-run payload builder.
 
-Produces a structured preview of what would be sent to wFirma as reservations,
-one per sales document (client), grouped at the invoice product_code level.
+Commercial authority (operator-locked 2026-08-09):
+  Draft Proforma.editable_lines_json is the commercial snapshot when present:
+  one reservation line per Draft line (design_no → product_code → qty/unit_price/
+  currency). Distinct Draft unit prices are NEVER aggregated away merely because
+  they share a wFirma product_code / good_id.
 
-Key schema rules (do NOT change these):
-  sales.product_code  = SKU / design code   (e.g. "CSTR07596")
-  packing.design_no   = SKU / design code   (matches sales.product_code)
-  packing.product_code = invoice line ref   (e.g. "EJL/26-27/015-6")  ← wFirma product
+Fallback (no Draft for the client, or per-SKU gap):
+  sales_packing_lines + v_sales_to_wfirma. Resolver keys by design_no. An already-
+  correct invoice-style product_code on the sales line is used as-is and must not
+  become UNMATCHED.
 
-wFirma product symbol MUST = packing.product_code (invoice line ref), NOT design_no.
-Design rows are internal trace only — never sent to wFirma.
+Stock gate (unchanged authority):
+  stock_ok = all packing scan_codes under the invoice product_code are
+  current_status='dispatched'. Warehouse receipt confirmation is ADVISORY only.
 
-Grouping:
-  sales_packing_line.product_code (SKU)
-    → packing_line.design_no  (same SKU)
-    → packing_line.product_code (invoice ref)
-    → invoice_line.rate_usd + currency
-
-One preview document per sales_document (client_name + client_ref).
-One reservation row per distinct invoice product_code within that document.
-
-Stock gate:
-  stock_ok = all design scan_codes under this invoice product_code have
-             current_status = 'dispatched' in warehouse
-
-Customer / product gate:
-  customer_match = client_name found in wfirma_customers with wfirma_customer_id set
-  product_match  = product_code found in wfirma_products with wfirma_product_id set
-
-ready_to_create (full gate):
-  audit clean AND stock dispatched AND customer name present AND customer matched
-  AND all products matched (or create_product_allowed) AND wFirma configured
-  AND reservation_supported (warehouse module enabled)
+Persistence:
+  get_reservation_preview(..., persist=True) upserts local drafts/lines for Create.
+  build_reservation_plan(..., persist=False) and dry_run_reservation() do not write.
 """
 from __future__ import annotations
 
 import json
 import re
 import sqlite3
-from collections import Counter, defaultdict
+from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..core.config import settings
@@ -50,20 +37,17 @@ from . import warehouse_db as wdb
 from . import warehouse_audit as waudit
 from . import wfirma_capabilities as wfc
 from . import wfirma_db as wfdb
-from . import customer_identity_resolver as _cir  # WF-3: canonical contractor.id resolver
+from . import customer_identity_resolver as _cir
+from . import wfirma_client as wfcli
 
 log = get_logger(__name__)
 
 _WS = re.compile(r"\s+")
+# Invoice / wFirma product symbols look like EJL/26-27/492-1 (slash-separated).
+_INVOICE_PC = re.compile(r".+/.+")
 
 
 def _filter_stub_doc(sdoc: dict) -> bool:
-    """Sprint-24 §4.1: return True if this sales_doc is a stub that should be filtered.
-
-    A stub has an empty client_name AND no sales_doc_no. These are auto-generated
-    placeholder rows produced during sync, not real drafts. Real unassigned drafts
-    have a doc_number even if client_name is empty; those are kept (return False).
-    """
     client = (sdoc.get("client_name") or "").strip()
     doc_no = (sdoc.get("sales_doc_no") or sdoc.get("client_ref") or "").strip()
     return not client and not doc_no
@@ -87,69 +71,186 @@ def _wcon() -> sqlite3.Connection:
     return con
 
 
-# ── Main preview ──────────────────────────────────────────────────────────────
+def _looks_like_invoice_product_code(pc: str) -> bool:
+    pc = (pc or "").strip()
+    if not pc or pc.upper().startswith("UNMATCHED:"):
+        return False
+    return bool(_INVOICE_PC.match(pc))
 
-def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
+
+def _product_matched(inv_pc: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    if not inv_pc or inv_pc.startswith("UNMATCHED:") or wfdb._db_path is None:
+        return False, None
+    prod = wfdb.get_product(inv_pc)
+    ok = bool(
+        prod
+        and prod.get("wfirma_product_id")
+        and prod.get("sync_status") == "matched"
+    )
+    return ok, prod
+
+
+def _resolve_inv_pc(
+    *,
+    design_no: str,
+    product_code: str,
+    draft_map: Dict[str, str],
+    sales_to_pc: Dict[Tuple[str, str], Optional[str]],
+    doc_id: str,
+    known_invoice_pcs: Optional[Set[str]] = None,
+) -> str:
+    """Resolve to invoice/wFirma product_code. Never invent mappings.
+
+    Order:
+      1. Explicit product_code already matched in wfirma_products (keep as-is —
+         invoice-style codes like EJL/26-27/492-1 must never become UNMATCHED)
+      2. Draft map by design_no (then by product_code key)
+      3. v_sales_to_wfirma by design_no / product_code (sales SKU → packing invoice ref)
+      4. product_code that already appears as a packing/invoice product_code symbol
+      5. UNMATCHED:<sales SKU>
+
+    Do NOT treat every slash-containing string as an invoice product_code —
+    sales SKUs like WR/SKU-ALPHA also contain slashes and must go through the
+    packing map (step 3), not short-circuit as canonical symbols.
     """
-    Return a wFirma reservation preview for all sales documents in *batch_id*.
+    pc_raw = (product_code or "").strip()
+    dn_raw = (design_no or "").strip()
+    dn_key = _norm(dn_raw)
+    pc_key = _norm(pc_raw)
 
-    Also persists drafts and lines to wfirma_db so they can be reviewed
-    before POST /reservations/create is called.
+    if pc_raw and not pc_raw.upper().startswith("UNMATCHED:"):
+        matched, _ = _product_matched(pc_raw)
+        if matched:
+            return pc_raw
 
-    Returns
-    -------
-    {
-        "batch_id":             str,
-        "audit_clean":          bool,
-        "wfirma_configured":    bool,
-        "reservation_supported": bool,
-        "ready_to_create":      bool,   # full gate — ALL conditions must be met
-        "blocking_reasons":     list[str],
-        "currency":             str,    # dominant currency from invoice_lines
-        "reservation_exists":   bool,   # True if any draft for this batch has status='created'
-        "reservation_id":       str | None,  # wfirma_reservation_id from first 'created' draft
-        "documents": [
-            {
-                "sales_doc_no":   str,
-                "client_name":    str,
-                "client_ref":     str,
-                "customer_ok":    bool,   # client_name is non-empty
-                "customer_match": bool,   # found in wfirma_customers with wfirma_customer_id
-                "ready":          bool,
-                "total_value":    float,
-                "blocking_reasons": list[str],
-                "rows": [
-                    {
-                        "product_code":  str,       # invoice ref = wFirma product symbol
-                        "quantity":      float,
-                        "unit_price":    float,
-                        "currency":      str,
-                        "stock_ok":      bool,      # all scan_codes dispatched
-                        "stock_status":  str,       # dispatched | received | missing
-                        "product_match": bool,      # found in wfirma_products
-                        "design_nos":    list[str], # traceability only
-                        "ready":         bool,
-                    }
-                ]
+    if dn_key and dn_key in draft_map:
+        return draft_map[dn_key]
+
+    if pc_key and pc_key in draft_map:
+        return draft_map[pc_key]
+
+    view_pc = (
+        sales_to_pc.get((doc_id, dn_key))
+        or sales_to_pc.get((doc_id, pc_key))
+        or ""
+    )
+    if view_pc:
+        return str(view_pc).strip()
+
+    # Already the invoice/packing symbol (e.g. sales line carries EJL/… directly)
+    # but not yet in wfirma_products — keep symbol so missing_product gate fires,
+    # not a false UNMATCHED rewrite of a correct code.
+    if (
+        pc_raw
+        and not pc_raw.upper().startswith("UNMATCHED:")
+        and known_invoice_pcs
+        and pc_raw in known_invoice_pcs
+    ):
+        return pc_raw
+
+    # Sales SKU with no packing/draft link → UNMATCHED (prefer product_code key)
+    sku_label = pc_raw or dn_raw or "UNKNOWN"
+    return f"UNMATCHED:{_norm(sku_label)}"
+
+
+def _load_draft_bundle(batch_id: str) -> Dict[str, Dict[str, Any]]:
+    """client_norm → {draft, lines, map design_no→product_code (first wins for fallback)}.
+
+    ``lines`` preserves every Draft commercial line (no price aggregation).
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        from .proforma_invoice_link_db import list_drafts_for_batch as _list_drafts
+        _pf_db = settings.storage_root / "proforma_links.db"
+        for draft in _list_drafts(_pf_db, batch_id):
+            cname = _norm(draft.client_name or "")
+            if not cname:
+                continue
+            try:
+                dlines = json.loads(draft.editable_lines_json or "[]") or []
+            except Exception:
+                dlines = []
+            dmap: Dict[str, str] = {}
+            for dl in dlines:
+                dn = _norm(str(dl.get("design_no") or ""))
+                pc = str(dl.get("product_code") or "").strip()
+                if dn and pc and dn not in dmap:
+                    dmap[dn] = pc
+            out[cname] = {
+                "draft": draft,
+                "lines": dlines,
+                "map": dmap,
+                "currency": (draft.currency or "").strip().upper(),
+                "proforma_draft_id": getattr(draft, "id", None),
             }
-        ]
+    except Exception as exc:
+        log.debug("wfirma_reservation: draft load failed (non-fatal): %s", exc)
+    return out
+
+
+def _row_from_commercial(
+    *,
+    line_index: int,
+    inv_pc: str,
+    qty: float,
+    unit_price: float,
+    currency: str,
+    design_no: str,
+    create_product_allowed: bool,
+    stock_status_fn,
+) -> Dict[str, Any]:
+    unmatched = inv_pc.startswith("UNMATCHED:")
+    st = "missing" if unmatched else stock_status_fn(inv_pc)
+    sok = st == "dispatched"
+    product_match, prod = _product_matched(inv_pc)
+    product_ok_for_ready = product_match or create_product_allowed
+    row_ready = (
+        sok
+        and not unmatched
+        and product_ok_for_ready
+        and qty > 0
+    )
+    return {
+        "line_index": line_index,
+        "product_code": inv_pc,
+        "quantity": qty,
+        "unit_price": unit_price,
+        "currency": currency,
+        "stock_ok": sok,
+        "stock_status": st,
+        "product_match": product_match,
+        "wfirma_product_id": (prod or {}).get("wfirma_product_id") or "",
+        "product_name_pl": (prod or {}).get("product_name_pl") or "",
+        "unit": (prod or {}).get("unit") or "szt.",
+        "design_no": design_no or "",
+        "design_nos": [design_no] if design_no else [],
+        "ready": row_ready,
+        "line_total": round(float(qty) * float(unit_price), 4),
     }
+
+
+def build_reservation_plan(
+    batch_id: str,
+    *,
+    client_name: Optional[str] = None,
+    persist: bool = False,
+) -> Dict[str, Any]:
+    """Build reservation readiness / commercial plan for a batch.
+
+    persist=False → pure local reads only (no wfirma_db draft upsert).
+    persist=True  → also upsert reservation drafts/lines for Create.
+    Optional client_name filters the documents list to one client.
     """
     empty = _empty_response(batch_id)
     if not _ready() or not batch_id:
         return empty
 
-    # ── 0. wFirma capability check ────────────────────────────────────────────
     caps = wfc.get_capabilities()
-    wfirma_configured    = caps["api_configured"]
+    wfirma_configured = caps["api_configured"]
     reservation_supported = caps["reservation_supported"]
-    create_product_allowed  = caps["create_product_allowed"]
+    create_product_allowed = caps["create_product_allowed"]
     create_customer_allowed = caps["create_customer_allowed"]
 
-    # ── 0b. Existing reservation lookup (read-only — never writes) ────────────
-    # Check wfirma_reservation_drafts for any draft that has already been
-    # successfully submitted (status='created').  This is set by Phase 3 create
-    # flow only; the preview never mutates status or wfirma_reservation_id.
     _existing_drafts: List[Dict[str, Any]] = (
         wfdb.list_reservation_drafts(batch_id) if wfdb._db_path is not None else []
     )
@@ -162,51 +263,17 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         _created_drafts[0]["wfirma_reservation_id"] if _created_drafts else None
     )
 
-    # ── 1. Sales documents ────────────────────────────────────────────────────
     sales_docs = ddb.get_sales_documents(batch_id)
     if not sales_docs:
         return empty
 
-    # ── 2. Sales packing lines, keyed by sales_document_id ───────────────────
     all_spl = ddb.get_sales_packing_lines(batch_id)
     spl_by_doc: Dict[str, List[Dict]] = defaultdict(list)
     for spl in all_spl:
         spl_by_doc[spl["sales_document_id"]].append(spl)
 
-    # ── 2b. Draft Proforma product_code authority (Phase B / C2) ──────────────
-    # When a ProformaDraft exists for this batch, its editable_lines_json is the
-    # commercial authority for product_code.  Draft.design_no (= sales SKU) maps
-    # to Draft.product_code (= invoice line ref = wFirma product symbol).
-    # v_sales_to_wfirma remains the fallback when no Draft exists for a client or
-    # when a sales SKU has no matching line in the Draft.
-    _draft_lines_by_client: Dict[str, Dict[str, str]] = {}
-    try:
-        from .proforma_invoice_link_db import list_drafts_for_batch as _list_drafts  # noqa: PLC0415
-        _pf_db = settings.storage_root / "proforma_links.db"
-        for _draft in _list_drafts(_pf_db, batch_id):
-            _cname = _norm(_draft.client_name or "")
-            if not _cname:
-                continue
-            try:
-                _dlines = json.loads(_draft.editable_lines_json or "[]") or []
-            except Exception:
-                continue
-            _map = _draft_lines_by_client.setdefault(_cname, {})
-            for _dl in _dlines:
-                _dn = _norm(str(_dl.get("design_no") or ""))
-                _pc = str(_dl.get("product_code") or "").strip()
-                if _dn and _pc and _dn not in _map:
-                    _map[_dn] = _pc
-    except Exception as _draft_exc:
-        log.debug(
-            "wfirma_reservation: draft product_code lookup failed (non-fatal): %s",
-            _draft_exc,
-        )
+    draft_bundle = _load_draft_bundle(batch_id)
 
-    # ── 3. Sales → wFirma product_code resolution (view fallback) ────────────
-    # Pulled from the read-only v_sales_to_wfirma view (document_db).
-    # Keyed by (sales_document_id, normalized sales_design_no).
-    # Used when no ProformaDraft line covers a particular SKU (step 2b fallback).
     sales_to_pc: Dict[Tuple[str, str], Optional[str]] = {}
     for v in ddb.query_sales_to_wfirma(batch_id):
         sales_to_pc[(
@@ -214,16 +281,20 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
             _norm(v["sales_design_no"] or ""),
         )] = v["wfirma_product_code"]
 
-    # inv_pc → scan_codes index is still needed for warehouse stock checks.
     packing_rows = pdb.get_packing_lines_for_batch(batch_id)
     inv_pc_scan_codes: Dict[str, List[str]] = defaultdict(list)
+    known_invoice_pcs: Set[str] = set()
     for pl in packing_rows:
         inv_pc = pl.get("product_code") or ""
-        sc     = pl.get("scan_code") or wdb.scan_code_for_packing_line(pl)
+        if inv_pc:
+            known_invoice_pcs.add(inv_pc)
+        sc = pl.get("scan_code") or wdb.scan_code_for_packing_line(pl)
         if inv_pc and sc and sc not in inv_pc_scan_codes[inv_pc]:
             inv_pc_scan_codes[inv_pc].append(sc)
 
-    # ── 4. Invoice lines: price + currency per invoice product_code ───────────
+    # Invoice price/currency — used ONLY on the sales-fallback path when a sales
+    # packing line carries no commercial price/currency of its own. Draft path
+    # never reads these (Draft editable lines are the commercial snapshot).
     inv_lines = ddb.get_invoice_lines_for_batch(batch_id)
     inv_price: Dict[str, float] = {}
     inv_currency: Dict[str, str] = {}
@@ -231,13 +302,11 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         pc = il.get("product_code") or ""
         if pc and pc not in inv_price:
             price = il.get("rate_usd") or il.get("unit_price") or 0
-            inv_price[pc]    = float(price)
+            inv_price[pc] = float(price)
             inv_currency[pc] = (il.get("currency") or "PLN").upper()
+        if pc:
+            known_invoice_pcs.add(pc)
 
-    currency_counts = Counter(inv_currency.values())
-    batch_currency  = currency_counts.most_common(1)[0][0] if currency_counts else "PLN"
-
-    # ── 5. Warehouse stock ────────────────────────────────────────────────────
     with _wcon() as con:
         wh_rows = con.execute(
             "SELECT scan_code, current_status FROM inventory_current_location WHERE batch_id=?",
@@ -258,21 +327,9 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
             return "received"
         return "missing"
 
-    def _stock_ok(inv_pc: str) -> bool:
-        return _stock_status(inv_pc) == "dispatched"
-
-    # ── 6. Audit gate ─────────────────────────────────────────────────────────
-    # Authority separation (2026-06-22): the warehouse scan audit (missing scans,
-    # scan-flow violations, orphan records) is a WAREHOUSE / physical-traceability
-    # signal. A wFirma *reservation* is SALES authority and is gated by per-line
-    # warehouse DISPATCH status (`stock_ok`), NOT by whole-batch scan completeness
-    # of the import packing list. Counting every unscanned import packing line as a
-    # reservation blocker conflated purchase-domain traceability with sales-domain
-    # readiness (the recurring "84 packing line(s) not yet scanned" defect on AWB
-    # 9158478722). These are now ADVISORIES — visible, never blocking.
     missing_scans = waudit.get_missing_scans(batch_id)
     invalid_flows = waudit.get_invalid_flows(batch_id)
-    orphans       = waudit.get_orphan_inventory(batch_id)
+    orphans = waudit.get_orphan_inventory(batch_id)
 
     batch_advisories: List[str] = []
     if missing_scans:
@@ -284,127 +341,164 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
         batch_advisories.append(f"{len(invalid_flows)} invalid scan flow(s) detected (advisory)")
     if orphans:
         batch_advisories.append(f"{len(orphans)} orphan warehouse record(s) (advisory)")
-
-    # `audit_clean` retained for response compatibility, but it NO LONGER gates
-    # `ready_to_create` — it is informational (true when no warehouse advisories).
     audit_clean = not bool(batch_advisories)
 
-    # Authority: INFRASTRUCTURE — these ARE legitimate batch blockers for a wFirma
-    # reservation create: without the API or the warehouse module the write cannot
-    # physically happen. They remain hard blockers.
     blocking_reasons: List[str] = []
     if not wfirma_configured:
-        blocking_reasons.append("wFirma API not configured (WFIRMA_API_LOGIN / PASSWORD / COMPANY_ID)")
+        blocking_reasons.append(
+            "wFirma API not configured (WFIRMA_API_LOGIN / PASSWORD / COMPANY_ID)"
+        )
     if wfirma_configured and not reservation_supported:
         blocking_reasons.append(
             "wFirma warehouse module not enabled "
             "(WFIRMA_WAREHOUSE_MODULE_ENABLED / WFIRMA_WAREHOUSE_ID)"
         )
 
-    # ── 7. Build per-document preview ─────────────────────────────────────────
-    # Sprint-24 §4.1: filter stub rows — empty client_name with no doc_number
-    # are auto-generated placeholders, not real drafts. Real unassigned drafts
-    # would have a doc_number; those are rendered with their doc_number as label.
+    client_filter = (client_name or "").strip()
     documents: List[Dict[str, Any]] = []
 
     for sdoc in sales_docs:
-        doc_id     = sdoc.get("id") or sdoc.get("document_id") or ""
-        client     = sdoc.get("client_name") or ""
+        doc_id = sdoc.get("id") or sdoc.get("document_id") or ""
+        client = sdoc.get("client_name") or ""
         client_ref = sdoc.get("client_ref") or ""
-        doc_no     = sdoc.get("sales_doc_no") or client_ref
-        # PR-2: authoritative contractor reference carried into reservation
-        # readiness (reference only — does not change ready_to_create gating).
+        doc_no = sdoc.get("sales_doc_no") or client_ref
         client_cid = str(sdoc.get("client_contractor_id") or "").strip()
 
-        # Filter: skip stub rows — empty client_name with no doc_number.
-        # Uses the named helper so the filter logic is unit-testable.
         if _filter_stub_doc(sdoc):
+            continue
+        if client_filter and client.strip() != client_filter:
             continue
 
         customer_ok = bool(client and client.strip())
-
-        # Customer mapping lookup (existing name-based path — unchanged)
-        cust_rec      = wfdb.get_customer(client) if wfdb._db_path is not None else None
+        cust_rec = wfdb.get_customer(client) if wfdb._db_path is not None else None
         customer_match = bool(
             cust_rec
             and cust_rec.get("wfirma_customer_id")
             and cust_rec.get("match_status") == "matched"
         )
-        # WF-3 Slice 2B-2 — id-first (parity-safe, additive): if the draft carries
-        # the operator-selected contractor.id and it resolves via the canonical
-        # identity authority, the customer is matched by id. This only STRENGTHENS
-        # the gate (id present in mirror/legacy but not matched by display name);
-        # it echoes the operator's own selection and never substitutes a different
-        # contractor. When no id is present or it does not resolve, the name-based
-        # customer_match above stands unchanged.
         if not customer_match and client_cid:
             try:
                 if _cir.resolve_by_contractor_id(client_cid) is not None:
                     customer_match = True
-            except Exception:  # never block preview readiness on the resolver
+            except Exception:
                 pass
 
-        # Aggregate sales rows → invoice product_code groups
-        group_qty: Dict[str, float]     = defaultdict(float)
-        group_dns: Dict[str, List[str]] = defaultdict(list)
+        bundle = draft_bundle.get(_norm(client))
+        draft_map = (bundle or {}).get("map") or {}
+        doc_currency = (bundle or {}).get("currency") or ""
+        commercial_source = "draft_proforma" if bundle and bundle.get("lines") else "sales_fallback"
 
-        doc_spl = spl_by_doc.get(doc_id, [])
-        for spl_row in doc_spl:
-            sku    = _norm(spl_row.get("product_code") or "")
-            _draft_map = _draft_lines_by_client.get(_norm(client), {})
-            inv_pc = _draft_map.get(sku) or sales_to_pc.get((doc_id, sku)) or ""
-            qty    = float(spl_row.get("quantity") or 0)
-            dn_raw = spl_row.get("design_no") or spl_row.get("product_code") or ""
-
-            if not inv_pc:
-                inv_pc = f"UNMATCHED:{sku}"
-
-            group_qty[inv_pc] += qty
-            if dn_raw and dn_raw not in group_dns[inv_pc]:
-                group_dns[inv_pc].append(dn_raw)
-
-        # Build rows
         rows: List[Dict[str, Any]] = []
-        for inv_pc, qty in sorted(group_qty.items()):
-            unmatched   = inv_pc.startswith("UNMATCHED:")
-            st          = "missing" if unmatched else _stock_status(inv_pc)
-            sok         = st == "dispatched"
-            unit_price  = 0.0 if unmatched else inv_price.get(inv_pc, 0.0)
-            currency    = batch_currency if unmatched else inv_currency.get(inv_pc, batch_currency)
 
-            # Product mapping lookup
-            prod_rec      = wfdb.get_product(inv_pc) if wfdb._db_path is not None else None
-            product_match = bool(
-                not unmatched
-                and prod_rec
-                and prod_rec.get("wfirma_product_id")
-                and prod_rec.get("sync_status") == "matched"
-            )
+        if commercial_source == "draft_proforma":
+            for i, dl in enumerate(bundle["lines"]):
+                dn = str(dl.get("design_no") or "").strip()
+                pc_hint = str(dl.get("product_code") or "").strip()
+                qty = float(dl.get("qty") if dl.get("qty") is not None else (dl.get("quantity") or 0))
+                unit_price = float(
+                    dl.get("unit_price") if dl.get("unit_price") is not None else (dl.get("price") or 0)
+                )
+                line_ccy = str(dl.get("currency") or doc_currency or "PLN").strip().upper()
+                if not doc_currency:
+                    doc_currency = line_ccy
+                inv_pc = _resolve_inv_pc(
+                    design_no=dn,
+                    product_code=pc_hint,
+                    draft_map=draft_map,
+                    sales_to_pc=sales_to_pc,
+                    doc_id=doc_id,
+                    known_invoice_pcs=known_invoice_pcs,
+                )
+                # Draft product_code is canonical when present and non-empty.
+                if pc_hint and not pc_hint.upper().startswith("UNMATCHED:"):
+                    inv_pc = pc_hint
+                rows.append(_row_from_commercial(
+                    line_index=i,
+                    inv_pc=inv_pc,
+                    qty=qty,
+                    unit_price=unit_price,
+                    currency=line_ccy or doc_currency or "PLN",
+                    design_no=dn,
+                    create_product_allowed=create_product_allowed,
+                    stock_status_fn=_stock_status,
+                ))
+        else:
+            # Sales fallback — preserve distinct unit prices (never merge different
+            # prices for the same product_code). Identical (pc, price, currency)
+            # lines may sum quantity. Price/currency fall back to invoice_lines
+            # only when the sales row itself carries none.
+            provisional: List[Dict[str, Any]] = []
+            for i, spl_row in enumerate(spl_by_doc.get(doc_id, [])):
+                dn = str(spl_row.get("design_no") or "").strip()
+                pc_hint = str(spl_row.get("product_code") or "").strip()
+                qty = float(spl_row.get("quantity") or 0)
+                unit_price = float(spl_row.get("unit_price") or 0)
+                line_ccy = str(spl_row.get("currency") or "").strip().upper()
+                inv_pc = _resolve_inv_pc(
+                    design_no=dn,
+                    product_code=pc_hint,
+                    draft_map=draft_map,
+                    sales_to_pc=sales_to_pc,
+                    doc_id=doc_id,
+                    known_invoice_pcs=known_invoice_pcs,
+                )
+                if not inv_pc.startswith("UNMATCHED:"):
+                    if unit_price <= 0 and inv_pc in inv_price:
+                        unit_price = inv_price[inv_pc]
+                    if not line_ccy and inv_pc in inv_currency:
+                        line_ccy = inv_currency[inv_pc]
+                if not line_ccy:
+                    line_ccy = doc_currency or "PLN"
+                if not doc_currency:
+                    doc_currency = line_ccy
+                provisional.append({
+                    "line_index": i,
+                    "inv_pc": inv_pc,
+                    "qty": qty,
+                    "unit_price": unit_price,
+                    "currency": line_ccy,
+                    "design_no": dn or pc_hint,
+                })
 
-            # Row is ready when:
-            #   stock dispatched + customer name + not unmatched
-            #   + product known (or creation is allowed)
-            product_ok_for_ready = product_match or create_product_allowed
-            row_ready = (
-                sok
-                and customer_ok
-                and not unmatched
-                and product_ok_for_ready
-            )
+            # Merge only identical commercial keys (same pc + unit_price + currency).
+            merged: Dict[Tuple[str, float, str], Dict[str, Any]] = {}
+            order: List[Tuple[str, float, str]] = []
+            for p in provisional:
+                key = (p["inv_pc"], float(p["unit_price"]), p["currency"])
+                if key not in merged:
+                    merged[key] = {
+                        "line_index": len(order),
+                        "inv_pc": p["inv_pc"],
+                        "qty": 0.0,
+                        "unit_price": p["unit_price"],
+                        "currency": p["currency"],
+                        "design_nos": [],
+                    }
+                    order.append(key)
+                merged[key]["qty"] += float(p["qty"])
+                dn = p["design_no"]
+                if dn and dn not in merged[key]["design_nos"]:
+                    merged[key]["design_nos"].append(dn)
 
-            rows.append({
-                "product_code":  inv_pc,
-                "quantity":      qty,
-                "unit_price":    unit_price,
-                "currency":      currency,
-                "stock_ok":      sok,
-                "stock_status":  st,
-                "product_match": product_match,
-                "design_nos":    group_dns.get(inv_pc, []),
-                "ready":         row_ready,
-            })
+            for key in order:
+                m = merged[key]
+                row = _row_from_commercial(
+                    line_index=m["line_index"],
+                    inv_pc=m["inv_pc"],
+                    qty=m["qty"],
+                    unit_price=m["unit_price"],
+                    currency=m["currency"],
+                    design_no=(m["design_nos"][0] if m["design_nos"] else ""),
+                    create_product_allowed=create_product_allowed,
+                    stock_status_fn=_stock_status,
+                )
+                row["design_nos"] = list(m["design_nos"])
+                rows.append(row)
 
-        total_value = sum(r["unit_price"] * r["quantity"] for r in rows)
+        if not doc_currency:
+            doc_currency = "PLN"
+
+        total_value = sum(float(r["line_total"]) for r in rows)
 
         doc_blocking: List[str] = []
         doc_advisories: List[str] = []
@@ -415,20 +509,18 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
                 f"customer {client!r} not matched in wfirma_customers "
                 f"(register via PUT /api/v1/wfirma/customers/<name>)"
             )
-        unmatched_rows  = [r for r in rows if r["product_code"].startswith("UNMATCHED:")]
-        missing_product = [r for r in rows if not r["product_match"] and not r["product_code"].startswith("UNMATCHED:")]
+
+        unmatched_rows = [r for r in rows if r["product_code"].startswith("UNMATCHED:")]
+        missing_product = [
+            r for r in rows
+            if not r["product_match"] and not r["product_code"].startswith("UNMATCHED:")
+        ]
+        # Unresolved required products BLOCK Create (honest gate — not advisory).
         if unmatched_rows:
-            # Authority: SALES advisory (2026-06-22). A sales SKU that does not
-            # resolve to an import packing line / wFirma product is a sales-data
-            # linkage gap — it is shown as an advisory, NOT a red fiscal blocker.
-            # The matched rows still drive readiness honestly (unmatched rows are
-            # not reservable, so the doc stays not-ready until linked), and the
-            # actual wFirma write is still hard-gated by GATE_PRODUCTS_NOT_MAPPED
-            # in wfirma_reservation_create. This separates sales-linkage signalling
-            # from fiscal blocking.
-            doc_advisories.append(
-                f"{len(unmatched_rows)} SKU(s) not yet linked to a wFirma product "
-                f"(sales-data advisory)"
+            codes = [r["product_code"] for r in unmatched_rows]
+            doc_blocking.append(
+                f"{len(unmatched_rows)} line(s) unresolved to a wFirma product: "
+                + ", ".join(codes[:5]) + ("…" if len(codes) > 5 else "")
             )
         if missing_product and not create_product_allowed:
             codes = [r["product_code"] for r in missing_product]
@@ -436,12 +528,17 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
                 f"{len(missing_product)} product(s) not in wfirma_products: "
                 + ", ".join(codes[:3]) + ("…" if len(codes) > 3 else "")
             )
-        no_stock = [r for r in rows if not r["stock_ok"] and not r["product_code"].startswith("UNMATCHED:")]
+        no_stock = [
+            r for r in rows
+            if not r["stock_ok"] and not r["product_code"].startswith("UNMATCHED:")
+        ]
         if no_stock:
             doc_blocking.append(
-                f"{len(no_stock)} product(s) not yet dispatched from warehouse"
+                f"{len(no_stock)} line(s) not yet dispatched from warehouse"
             )
 
+        # customer_ok is required for row.ready path via doc_ready; rows themselves
+        # do not encode customer_match so a customer miss still blocks the doc.
         doc_ready = (
             bool(rows)
             and not doc_blocking
@@ -450,67 +547,75 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
             and all(r["ready"] for r in rows)
         )
 
-        # Persist draft + lines to wfirma_db for later creation
-        if wfdb._db_path is not None:
+        if persist and wfdb._db_path is not None:
             try:
                 draft_id = wfdb.upsert_reservation_draft(
                     batch_id,
                     client,
                     client_ref=client_ref,
-                    currency=batch_currency,
+                    currency=doc_currency,
                     warehouse_id=settings.wfirma_warehouse_id,
                     ready_to_create=doc_ready,
                     client_contractor_id=client_cid,
                 )
-                for row in rows:
-                    wfdb.upsert_reservation_line(
-                        draft_id,
-                        row["product_code"],
-                        qty=row["quantity"],
-                        unit_price=row["unit_price"],
-                        currency=row["currency"],
-                        stock_ok=row["stock_ok"],
-                        product_ok=row["product_match"],
-                    )
+                wfdb.replace_reservation_lines(draft_id, [
+                    {
+                        "line_index": r["line_index"],
+                        "product_code": r["product_code"],
+                        "qty": r["quantity"],
+                        "unit_price": r["unit_price"],
+                        "currency": r["currency"],
+                        "stock_ok": r["stock_ok"],
+                        "product_ok": r["product_match"],
+                        "product_name_pl": r.get("product_name_pl") or "",
+                        "design_no": r.get("design_no") or "",
+                    }
+                    for r in rows
+                    if not r["product_code"].startswith("UNMATCHED:")
+                ])
             except Exception as exc:
                 log.warning("wfirma_db draft persist failed: %s", exc)
 
+        created_for_client = next(
+            (d for d in _created_drafts
+             if (d.get("client_name") or "").strip() == client.strip()),
+            None,
+        )
+
         documents.append({
-            "sales_doc_no":    doc_no,
-            "client_name":     client,
-            "client_ref":      client_ref,
-            # PR-2: contractor reference chain — the authoritative Customer
-            # Master identity bound at intake, carried through to reservation
-            # readiness. Reference only; readiness gating is unchanged.
+            "sales_doc_no": doc_no,
+            "client_name": client,
+            "client_ref": client_ref,
             "client_contractor_id": client_cid,
-            "contractor_resolved":  bool(client_cid),
-            "customer_ok":     customer_ok,
-            "customer_match":  customer_match,
-            "ready":           doc_ready,
-            "total_value":     round(total_value, 2),
+            "contractor_resolved": bool(client_cid),
+            "customer_ok": customer_ok,
+            "customer_match": customer_match,
+            "wfirma_customer_id": (
+                (cust_rec or {}).get("wfirma_customer_id")
+                or (client_cid if customer_match else "")
+                or ""
+            ),
+            "ready": doc_ready,
+            "total_value": round(total_value, 2),
+            "currency": doc_currency,
+            "commercial_source": commercial_source,
+            "proforma_draft_id": (bundle or {}).get("proforma_draft_id"),
             "blocking_reasons": doc_blocking,
-            "advisories":      doc_advisories,
-            "rows":            rows,
+            "advisories": doc_advisories,
+            "rows": rows,
+            "reservation_exists": bool(created_for_client),
+            "wfirma_reservation_id": (
+                (created_for_client or {}).get("wfirma_reservation_id") or ""
+            ),
         })
 
-    # ── 8. Overall readiness ──────────────────────────────────────────────────
-    # Authority separation (2026-06-22): `ready_to_create` no longer includes
-    # `audit_clean`. Whole-batch warehouse scan completeness is a WAREHOUSE
-    # advisory, not a SALES reservation gate. Reservation readiness now depends
-    # only on per-document readiness (customer matched + products mapped + stock
-    # dispatched per billed line) and the infrastructure blockers (API / module).
-    all_docs_ready  = bool(documents) and all(d["ready"] for d in documents)
+    all_docs_ready = bool(documents) and all(d["ready"] for d in documents)
     ready_to_create = (
         all_docs_ready
         and wfirma_configured
         and reservation_supported
     )
-
-    # Batch-level blockers (infrastructure only now). Warehouse scan signals are
-    # surfaced separately via `batch_advisories` so the frontend renders advisory
-    # vs blocker distinctly. Display-only.
     batch_blocking_reasons = list(blocking_reasons)
-
     if not all_docs_ready:
         for d in documents:
             if not d["ready"] and d["blocking_reasons"]:
@@ -518,35 +623,178 @@ def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
                     f"{d['client_name']!r}: " + "; ".join(d["blocking_reasons"])
                 )
 
+    # Plan-level currency: dominant commercial currency across documents/rows.
+    ccy_counts: Dict[str, int] = defaultdict(int)
+    for d in documents:
+        for r in d.get("rows") or []:
+            c = (r.get("currency") or d.get("currency") or "").upper()
+            if c:
+                ccy_counts[c] += 1
+        if not d.get("rows") and d.get("currency"):
+            ccy_counts[str(d["currency"]).upper()] += 1
+    plan_currency = (
+        max(ccy_counts.items(), key=lambda kv: kv[1])[0] if ccy_counts else "PLN"
+    )
+
     return {
-        "batch_id":             batch_id,
-        "audit_clean":          audit_clean,
-        "wfirma_configured":    wfirma_configured,
+        "batch_id": batch_id,
+        "audit_clean": audit_clean,
+        "wfirma_configured": wfirma_configured,
         "reservation_supported": reservation_supported,
-        "ready_to_create":      ready_to_create,
-        "blocking_reasons":     blocking_reasons,
+        "ready_to_create": ready_to_create,
+        "blocking_reasons": blocking_reasons,
         "batch_blocking_reasons": batch_blocking_reasons,
-        "batch_advisories":     batch_advisories,
-        "currency":             batch_currency,
-        "reservation_exists":   reservation_exists,
-        "reservation_id":       reservation_id,
-        "documents":            documents,
+        "batch_advisories": batch_advisories,
+        "currency": plan_currency,
+        "reservation_exists": reservation_exists,
+        "reservation_id": reservation_id,
+        "documents": documents,
+        "persisted": bool(persist),
+    }
+
+
+def get_reservation_preview(batch_id: str) -> Dict[str, Any]:
+    """Preview + persist local drafts/lines (Create prep). No wFirma HTTP."""
+    return build_reservation_plan(batch_id, persist=True)
+
+
+def dry_run_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
+    """Pure dry-run: readiness + exact wFirma XML payload. Zero HTTP. Zero persist."""
+    plan = build_reservation_plan(
+        batch_id, client_name=client_name, persist=False,
+    )
+    docs = plan.get("documents") or []
+    doc = next(
+        (d for d in docs if (d.get("client_name") or "").strip() == (client_name or "").strip()),
+        None,
+    )
+    if doc is None:
+        return {
+            "ok": False,
+            "code": "CLIENT_NOT_FOUND",
+            "error": f"No reservation document for client_name={client_name!r}",
+            "batch_id": batch_id,
+            "client_name": client_name,
+            "plan": plan,
+            "payload": None,
+            "xml": None,
+        }
+
+    unresolved = [
+        r for r in (doc.get("rows") or [])
+        if r.get("product_code", "").startswith("UNMATCHED:") or not r.get("product_match")
+    ]
+    lines_out = []
+    for r in doc.get("rows") or []:
+        if r.get("product_code", "").startswith("UNMATCHED:"):
+            continue
+        lines_out.append({
+            "line_index": r.get("line_index"),
+            "design_no": r.get("design_no") or "",
+            "product_code": r.get("product_code"),
+            "wfirma_product_id": r.get("wfirma_product_id") or "",
+            "qty": r.get("quantity"),
+            "unit_price": r.get("unit_price"),
+            "currency": r.get("currency") or doc.get("currency"),
+            "line_total": r.get("line_total"),
+            "unit": r.get("unit") or "szt.",
+            "product_name": r.get("product_name_pl") or r.get("product_code"),
+            "stock_ok": r.get("stock_ok"),
+            "stock_status": r.get("stock_status"),
+        })
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    contractor_id = str(doc.get("wfirma_customer_id") or "").strip()
+    # Build the commercial XML whenever customer + product IDs resolve, even if
+    # stock/readiness still blocks live Create — operator must review the exact
+    # payload before approving the live write.
+    commercial_complete = bool(
+        contractor_id
+        and lines_out
+        and not unresolved
+        and all(ln.get("wfirma_product_id") for ln in lines_out)
+    )
+    xml = None
+    if commercial_complete:
+        req = wfcli.ReservationRequest(
+            batch_id=batch_id,
+            client_name=client_name,
+            wfirma_contractor_id=contractor_id,
+            wfirma_warehouse_id=settings.wfirma_warehouse_id or "",
+            date=today,
+            currency=doc.get("currency") or "PLN",
+            description=f"Batch {batch_id} · {client_name}"[:200],
+            lines=[
+                wfcli.ReservationLine(
+                    product_code=ln["product_code"],
+                    wfirma_good_id=ln["wfirma_product_id"],
+                    product_name=ln["product_name"],
+                    qty=float(ln["qty"] or 0),
+                    unit_price=float(ln["unit_price"] or 0),
+                    unit=ln.get("unit") or "szt.",
+                    currency=ln.get("currency") or doc.get("currency") or "PLN",
+                )
+                for ln in lines_out
+            ],
+        )
+        xml = wfcli._build_reservation_xml(req)
+
+    payload = {
+        "batch_id": batch_id,
+        "client_name": client_name,
+        "contractor_id": contractor_id,
+        "document_currency": doc.get("currency"),
+        "commercial_source": doc.get("commercial_source"),
+        "proforma_draft_id": doc.get("proforma_draft_id"),
+        "warehouse_id": settings.wfirma_warehouse_id or "",
+        "date": today,
+        "lines": lines_out,
+        "line_count": len(lines_out),
+        "total_value": doc.get("total_value"),
+        "unresolved_count": len(unresolved),
+        "unresolved": [
+            {
+                "line_index": r.get("line_index"),
+                "design_no": r.get("design_no"),
+                "product_code": r.get("product_code"),
+            }
+            for r in unresolved
+        ],
+        "ready_for_live_create": bool(doc.get("ready")),
+        "commercial_complete": commercial_complete,
+        "blocking_reasons": list(doc.get("blocking_reasons") or []) + list(
+            plan.get("batch_blocking_reasons") or []
+        ),
+        "batch_advisories": plan.get("batch_advisories") or [],
+    }
+
+    return {
+        "ok": True,
+        "code": "DRY_RUN",
+        "error": "",
+        "batch_id": batch_id,
+        "client_name": client_name,
+        "would_call_wfirma": False,
+        "payload": payload,
+        "xml": xml,
+        "plan_document": doc,
     }
 
 
 def _empty_response(batch_id: str) -> Dict[str, Any]:
     caps = wfc.get_capabilities()
     return {
-        "batch_id":             batch_id,
-        "audit_clean":          False,
-        "wfirma_configured":    caps["api_configured"],
+        "batch_id": batch_id,
+        "audit_clean": False,
+        "wfirma_configured": caps["api_configured"],
         "reservation_supported": caps["reservation_supported"],
-        "ready_to_create":      False,
-        "blocking_reasons":     ["no sales documents found"],
+        "ready_to_create": False,
+        "blocking_reasons": ["no sales documents found"],
         "batch_blocking_reasons": ["no sales documents found"],
-        "batch_advisories":     [],
-        "currency":             "PLN",
-        "reservation_exists":   False,
-        "reservation_id":       None,
-        "documents":            [],
+        "batch_advisories": [],
+        "currency": "PLN",
+        "reservation_exists": False,
+        "reservation_id": None,
+        "documents": [],
+        "persisted": False,
     }

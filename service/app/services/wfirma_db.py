@@ -112,7 +112,9 @@ def init_wfirma_db(db_path: Path) -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_wfrd_batch_client
                 ON wfirma_reservation_drafts (batch_id, client_name);
 
-            -- ── Per-product-code line within a draft ──────────────────────────
+            -- ── Per Draft commercial line within a draft ─────────────────────
+            -- line_index preserves distinct Draft unit prices even when several
+            -- lines share the same wFirma product_code / good_id.
             CREATE TABLE IF NOT EXISTS wfirma_reservation_lines (
                 id              TEXT PRIMARY KEY,
                 draft_id        TEXT NOT NULL
@@ -124,11 +126,15 @@ def init_wfirma_db(db_path: Path) -> None:
                 currency        TEXT NOT NULL DEFAULT 'USD',
                 stock_ok        INTEGER NOT NULL DEFAULT 0,
                 product_ok      INTEGER NOT NULL DEFAULT 0,
-                created_at      TEXT NOT NULL
+                created_at      TEXT NOT NULL,
+                line_index      INTEGER NOT NULL DEFAULT 0,
+                design_no       TEXT NOT NULL DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_wfrl_draft
                 ON wfirma_reservation_lines (draft_id);
+            -- Unique (draft_id, line_index) is created AFTER column migration below —
+            -- existing DBs may lack line_index until ALTER runs.
         """)
 
     # ── Migration: status / wfirma_reservation_id / submitted_at / last_error ─
@@ -171,6 +177,51 @@ def init_wfirma_db(db_path: Path) -> None:
             ("ship_to_wfirma_customer_id",  "TEXT NOT NULL DEFAULT ''"),
         ],
     )
+    # Distinct Draft commercial lines (same product_code, different unit_price).
+    _add_columns_if_missing(
+        db_path,
+        "wfirma_reservation_lines",
+        [
+            ("line_index", "INTEGER NOT NULL DEFAULT 0"),
+            ("design_no",  "TEXT NOT NULL DEFAULT ''"),
+        ],
+    )
+    # Existing rows get DEFAULT 0 for line_index — collapse uniqueness. Backfill
+    # a stable per-draft ordinal before creating the unique index.
+    with sqlite3.connect(str(db_path)) as con:
+        # Drop legacy unique(draft_id, product_code) if present — same good_id
+        # may appear on multiple Draft commercial lines.
+        for idx_row in con.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type='index' AND tbl_name='wfirma_reservation_lines'"
+        ).fetchall():
+            name, sql = idx_row[0], (idx_row[1] or "")
+            if name and "product_code" in sql.lower() and "unique" in sql.lower():
+                con.execute(f'DROP INDEX IF EXISTS "{name}"')
+
+        dupes = con.execute(
+            "SELECT draft_id, line_index, COUNT(*) c "
+            "FROM wfirma_reservation_lines "
+            "GROUP BY draft_id, line_index HAVING c > 1"
+        ).fetchall()
+        if dupes:
+            rows = con.execute(
+                "SELECT id, draft_id FROM wfirma_reservation_lines "
+                "ORDER BY draft_id, product_code, id"
+            ).fetchall()
+            counters: Dict[str, int] = {}
+            for rid, draft_id in rows:
+                n = counters.get(draft_id, 0)
+                con.execute(
+                    "UPDATE wfirma_reservation_lines SET line_index=? WHERE id=?",
+                    (n, rid),
+                )
+                counters[draft_id] = n + 1
+
+        con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_wfrl_draft_line "
+            "ON wfirma_reservation_lines (draft_id, line_index)"
+        )
 
 
 def _add_columns_if_missing(
@@ -794,36 +845,90 @@ def upsert_reservation_line(
     currency:       str = "USD",
     stock_ok:       bool = False,
     product_ok:     bool = False,
+    line_index:     int = 0,
+    design_no:      str = "",
 ) -> str:
-    """Insert or update a reservation line. Returns line id."""
+    """Insert or update a reservation line by (draft_id, line_index). Returns line id.
+
+    ``line_index`` is the Draft commercial line ordinal so multiple rows may share
+    the same ``product_code`` with distinct unit prices.
+    """
     if _db_path is None or not draft_id or not product_code:
         return ""
     now = _now()
     with _lock, _connect() as con:
         existing = con.execute(
-            "SELECT id FROM wfirma_reservation_lines WHERE draft_id=? AND product_code=?",
-            (draft_id, product_code),
+            "SELECT id FROM wfirma_reservation_lines WHERE draft_id=? AND line_index=?",
+            (draft_id, int(line_index)),
         ).fetchone()
         if existing:
             con.execute(
                 """UPDATE wfirma_reservation_lines
-                   SET product_name_pl=?, qty=?, unit_price=?, currency=?,
-                       stock_ok=?, product_ok=?
+                   SET product_code=?, product_name_pl=?, qty=?, unit_price=?, currency=?,
+                       stock_ok=?, product_ok=?, design_no=?
                    WHERE id=?""",
-                (product_name_pl, qty, unit_price, currency,
-                 1 if stock_ok else 0, 1 if product_ok else 0, existing["id"]),
+                (product_code, product_name_pl, qty, unit_price, currency,
+                 1 if stock_ok else 0, 1 if product_ok else 0,
+                 design_no or "", existing["id"]),
             )
             return existing["id"]
         line_id = str(uuid.uuid4())
         con.execute(
             """INSERT INTO wfirma_reservation_lines
                (id, draft_id, product_code, product_name_pl, qty, unit_price,
-                currency, stock_ok, product_ok, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                currency, stock_ok, product_ok, created_at, line_index, design_no)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (line_id, draft_id, product_code, product_name_pl, qty, unit_price,
-             currency, 1 if stock_ok else 0, 1 if product_ok else 0, now),
+             currency, 1 if stock_ok else 0, 1 if product_ok else 0, now,
+             int(line_index), design_no or ""),
         )
         return line_id
+
+
+def replace_reservation_lines(
+    draft_id: str,
+    lines: List[Dict[str, Any]],
+) -> int:
+    """Replace all lines for a draft with the supplied commercial snapshot.
+
+    Deletes existing rows then inserts one row per entry. Each entry may use
+    keys: product_code, qty, unit_price, currency, stock_ok, product_ok,
+    product_name_pl, design_no, line_index (defaults to enumerate order).
+    Returns the number of lines written.
+    """
+    if _db_path is None or not draft_id:
+        return 0
+    now = _now()
+    with _lock, _connect() as con:
+        con.execute("DELETE FROM wfirma_reservation_lines WHERE draft_id=?", (draft_id,))
+        n = 0
+        for i, ln in enumerate(lines or []):
+            pc = str(ln.get("product_code") or "").strip()
+            if not pc:
+                continue
+            idx = int(ln.get("line_index") if ln.get("line_index") is not None else i)
+            con.execute(
+                """INSERT INTO wfirma_reservation_lines
+                   (id, draft_id, product_code, product_name_pl, qty, unit_price,
+                    currency, stock_ok, product_ok, created_at, line_index, design_no)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    draft_id,
+                    pc,
+                    str(ln.get("product_name_pl") or ""),
+                    float(ln.get("qty") or ln.get("quantity") or 0),
+                    float(ln.get("unit_price") or 0),
+                    str(ln.get("currency") or "USD"),
+                    1 if ln.get("stock_ok") else 0,
+                    1 if ln.get("product_ok") or ln.get("product_match") else 0,
+                    now,
+                    idx,
+                    str(ln.get("design_no") or ""),
+                ),
+            )
+            n += 1
+        return n
 
 
 def list_reservation_lines(draft_id: str) -> List[Dict[str, Any]]:
@@ -831,7 +936,8 @@ def list_reservation_lines(draft_id: str) -> List[Dict[str, Any]]:
         return []
     with _connect() as con:
         rows = con.execute(
-            "SELECT * FROM wfirma_reservation_lines WHERE draft_id=? ORDER BY product_code",
+            "SELECT * FROM wfirma_reservation_lines WHERE draft_id=? "
+            "ORDER BY line_index, product_code",
             (draft_id,),
         ).fetchall()
     return [dict(r) for r in rows]

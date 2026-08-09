@@ -181,17 +181,20 @@ def test_gate_blocks_when_draft_not_ready(db):
     assert result["code"] == wrc.GATE_DRAFT_NOT_READY
 
 
-def test_gate_blocks_when_draft_already_created(db):
+def test_gate_reconciles_when_draft_already_created(db):
     draft_id = _setup_ready_draft(db, "B-CREATED", "ClientC")
     wfdb.mark_draft_submitting(draft_id)
     wfdb.mark_draft_created(draft_id, "EXISTING-WF-ID-123")
 
     with _full_settings():
-        with patch("app.services.wfirma_client._requests.request", side_effect=_all_ok):
-            result = wrc.create_one_reservation("B-CREATED", "ClientC")
-    assert result["ok"] is False
-    assert result["code"] == wrc.GATE_DRAFT_ALREADY_PROCESSED
-    assert result["details"]["wfirma_reservation_id"] == "EXISTING-WF-ID-123"
+        with patch("app.services.wfirma_client._requests.request", side_effect=_all_ok) as http:
+            with patch("app.services.wfirma_reservation.build_reservation_plan", return_value={}):
+                result = wrc.create_one_reservation("B-CREATED", "ClientC")
+    assert result["ok"] is True
+    assert result["code"] == wrc.GATE_ALREADY_CREATED
+    assert result["wfirma_reservation_id"] == "EXISTING-WF-ID-123"
+    assert result["details"]["reconciled"] is True
+    assert http.call_count == 0
 
 
 def test_gate_blocks_when_draft_already_submitting(db):
@@ -301,16 +304,24 @@ def test_happy_path_creates_reservation(db):
     assert draft["last_error"] == ""
 
 
-def test_happy_path_then_repeat_call_blocks(db):
-    """After a successful create, a re-call MUST block as already-processed."""
+def test_happy_path_then_repeat_call_reconciles(db):
+    """After a successful create, a re-call MUST return the same id as success
+    without a second wFirma write."""
     draft_id = _setup_ready_draft(db, "B-IDEMP", "Idem Client")
     with _full_settings():
-        with patch("app.services.wfirma_client._requests.request", side_effect=_all_ok):
-            r1 = wrc.create_one_reservation("B-IDEMP", "Idem Client")
-            r2 = wrc.create_one_reservation("B-IDEMP", "Idem Client")
+        with patch("app.services.wfirma_client._requests.request", side_effect=_all_ok) as http:
+            with patch("app.services.wfirma_reservation.build_reservation_plan", return_value={}):
+                r1 = wrc.create_one_reservation("B-IDEMP", "Idem Client")
+                calls_after_first = http.call_count
+                r2 = wrc.create_one_reservation("B-IDEMP", "Idem Client")
     assert r1["ok"] is True
-    assert r2["ok"] is False
-    assert r2["code"] == wrc.GATE_DRAFT_ALREADY_PROCESSED
+    assert r2["ok"] is True
+    assert r2["code"] == wrc.GATE_ALREADY_CREATED
+    assert r2["wfirma_reservation_id"] == r1["wfirma_reservation_id"] == "987654"
+    assert r2["details"].get("reconciled") is True
+    assert r2["details"].get("second_write") is False
+    # No additional HTTP after the first successful create.
+    assert http.call_count == calls_after_first
 
 
 def test_failed_draft_can_retry(db):
