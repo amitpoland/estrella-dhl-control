@@ -621,7 +621,13 @@ function DhlTowerDrawer({ row, isAdmin, onClose, onViewShipment, onResolved }) {
         {row.batch_id && onViewShipment && (
           <button
             data-testid="dhl-tower-open-batch"
-            onClick={() => onViewShipment(row.batch_id)}
+            onClick={() => onViewShipment({
+              batch_id: row.batch_id,
+              awb: row.awb,
+              tracking_no: row.awb,
+              carrier: row.carrier || 'DHL',
+              status: row.status || null,
+            })}
             style={{ ..._dhlBtnStyle(), marginTop: 8, width: '100%' }}
           >Open shipment batch</button>
         )}
