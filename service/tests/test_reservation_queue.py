@@ -398,10 +398,11 @@ def test_process_ready_live_success(db_path):
     result = rworker.process_ready_reservations(
         db_path, mc, batch_id="BATCH-LIVE", mode="live",
     )
-    assert result["mode"] == "live"
-    assert result["results"][0]["status"] == "created"
-    assert result["results"][0]["wfirma_reservation_id"] == "WF-R-001"
-    mc.create_reservation.assert_called_once()
+    # Legacy live writer retired — canonical path is create_one_reservation.
+    assert result.get("code") == "LEGACY_LIVE_WRITER_DISABLED"
+    assert result["groups"] == 0
+    assert result["results"] == []
+    mc.create_reservation.assert_not_called()
 
 
 # ── Test 13: process_ready_reservations live mode failure ─────────────────────
@@ -432,12 +433,8 @@ def test_process_ready_live_failure(db_path):
     result = rworker.process_ready_reservations(
         db_path, mc, batch_id="BATCH-FAIL", mode="live",
     )
-    assert result["results"][0]["status"] == "failed"
-    assert "stock" in result["results"][0]["error"].lower()
-
-    # Verify queue row is now failed
-    rows = rdb.list_reservation_queue(db_path, batch_id="BATCH-FAIL")
-    assert rows[0]["status"] == "failed"
+    assert result.get("code") == "LEGACY_LIVE_WRITER_DISABLED"
+    mc.create_reservation.assert_not_called()
 
 
 # ── Test 14: POST /api/v1/products/import-purchase-packing ────────────────────

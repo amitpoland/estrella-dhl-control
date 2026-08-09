@@ -5122,11 +5122,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     (reservationPreview.documents || []).find(
       // trim both sides so whitespace drift can't silently false-block the draft
       d => (d.client_name || '').trim() === (clientName || '').trim())) || null;
-  const reservationExists = !!(reservationPreview && reservationPreview.reservation_exists);
-  const reservationId      = (reservationPreview && reservationPreview.reservation_id) || null;
-  // Ready only when the batch full-gate AND this draft's client document are ready.
-  const reservationReady = !!(reservationPreview &&
-    reservationPreview.ready_to_create && reservationDoc && reservationDoc.ready);
+  const reservationExists = !!(reservationDoc && (
+    reservationDoc.reservation_exists || reservationDoc.wfirma_reservation_id
+  ));
+  const reservationId = (reservationDoc && reservationDoc.wfirma_reservation_id)
+    || null;
+  // Per-client create gate: THIS draft's document readiness + infrastructure.
+  // Do NOT require batch-wide ready_to_create (other clients must not veto Create).
+  const reservationReady = !!(reservationPreview && reservationDoc && reservationDoc.ready
+    && reservationPreview.wfirma_configured && reservationPreview.reservation_supported);
   // Reservation signals are surfaced at TWO distinct scopes. Warehouse scan
   // signals (e.g. "84 packing line(s) not yet scanned" — counts the whole
   // batch's packing, NOT this draft's billed lines) arrive as batch_advisories:
@@ -7142,6 +7146,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             convertDisabledReason={convertDisabledReason}
             onConvert={() => canConvert && setShowConvertModal(true)}
             reservationLoading={reservationLoading}
+            reservationPreviewLoaded={!!reservationPreview}
             reservationReady={reservationReady}
             reservationBatchReasons={reservationBatchReasons}
             reservationDraftReasons={reservationDraftReasons}
@@ -9578,7 +9583,7 @@ function ReceiptConfirmBlock({ batchId }) {
 // WIRED: blocking_reasons and export_blockers from POST /api/v1/proforma/preview/{batch_id}/{client_name}
 function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canConvert,
                                   convertDisabledReason, onConvert,
-                                  reservationLoading, reservationReady,
+                                  reservationLoading, reservationPreviewLoaded, reservationReady,
                                   reservationBatchReasons, reservationDraftReasons,
                                   reservationBatchAdvisories, reservationDraftAdvisories,
                                   reservationClientName, draftLineCount,
@@ -9606,7 +9611,11 @@ function ProformaReservationTab({ blockingReasons, exportBlockers, preview, canC
           ? `This draft: ${draftReasons[0]}`
           : (batchReasons[0]
               ? `Batch-level: ${batchReasons[0]}`
-              : 'Reservation readiness not loaded — open this tab to check.'));
+              : (reservationPreviewLoaded
+                  ? (reservationReady
+                      ? ''
+                      : 'Reservation not ready for this draft — see blockers above.')
+                  : 'Reservation readiness not loaded — open this tab to check.')));
   const resvCanCreate = !!reservationReady && !reservationExists && !reservationBusy;
 
   return (

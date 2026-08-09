@@ -177,12 +177,32 @@ async def sync_products_by_codes(body: SyncByCodesBody) -> JSONResponse:
 @router.post("/reservations/process-pending", dependencies=[_auth])
 async def process_pending_reservations(body: ProcessPendingBody) -> JSONResponse:
     """
-    Process ready reservations.
-    mode='dry_run' returns would_create count without calling wFirma.
-    mode='live' creates reservations in wFirma.
+    Process ready reservations from the legacy queue.
+
+    mode='dry_run' — inspect only (still allowed).
+    mode='live'    — HARD-DISABLED. Canonical live create is
+                     POST /api/v1/wfirma/reservations/create
+                     (wfirma_reservation_create.create_one_reservation).
     """
     if body.mode not in ("dry_run", "live"):
         raise HTTPException(status_code=422, detail="mode must be 'dry_run' or 'live'")
+
+    if body.mode == "live":
+        return JSONResponse(
+            {
+                "ok": False,
+                "code": "LEGACY_LIVE_WRITER_DISABLED",
+                "error": (
+                    "Legacy POST /reservations/process-pending mode=live is retired. "
+                    "Create reservations only via POST /api/v1/wfirma/reservations/create "
+                    "(Draft Proforma commercial authority)."
+                ),
+                "mode": "live",
+                "groups": 0,
+                "results": [],
+            },
+            status_code=409,
+        )
 
     from ..services.wfirma_client import create_reservation as _create
 

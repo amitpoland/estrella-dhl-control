@@ -337,20 +337,25 @@ def process_ready_reservations(
     one reservation per group.
 
     mode='dry_run'  → returns would_create count, no API calls.
-    mode='live'     → calls wfirma_client.create_reservation() for each group.
-
-    wfirma_client must have: create_reservation(req) → ReservationResult
-
-    Returns {
-        "mode": str,
-        "groups": int,
-        "results": [{
-            "group_key": str, "batch_id": str, "client_name": str,
-            "sales_doc_no": str, "lines": int, "status": str,
-            "wfirma_reservation_id": str, "error": str
-        }]
-    }
+    mode='live'     → HARD-DISABLED at the service layer. Canonical live create
+                      is wfirma_reservation_create.create_one_reservation
+                      (POST /api/v1/wfirma/reservations/create). Legacy queue
+                      live writes are retired so two independent writers cannot
+                      create the same reservation.
     """
+    if mode == "live":
+        return {
+            "ok": False,
+            "code": "LEGACY_LIVE_WRITER_DISABLED",
+            "mode": "live",
+            "groups": 0,
+            "results": [],
+            "error": (
+                "Legacy reservation_worker.process_ready_reservations(mode='live') "
+                "is retired. Use wfirma_reservation_create.create_one_reservation."
+            ),
+        }
+
     ready_rows = rdb.list_reservation_queue(db_path, status="ready", batch_id=batch_id)
 
     # Group by (batch_id, client_name, sales_doc_no)
@@ -531,7 +536,13 @@ def worker_tick(db_path: Path, wfirma_client: Any) -> Dict[str, Any]:
     except Exception:
         auto_live = False
 
-    mode = "live" if auto_live else "dry_run"
+    # Legacy live queue writer is retired — always dry_run here. Canonical create
+    # is wfirma_reservation_create.create_one_reservation (operator button).
+    mode = "dry_run"
+    if auto_live:
+        log.warning(
+            "AUTO_CREATE_WFIRMA_RESERVATIONS ignored — legacy live queue writer disabled"
+        )
 
     # Step 1: sync products
     pending_codes = rdb.list_product_codes_from_queue(db_path, status="pending")

@@ -105,6 +105,7 @@ def _enter_reservation_patches(
     mock_wfdb.get_product.return_value = None
     mock_wfdb.upsert_reservation_draft.return_value = 1
     mock_wfdb.upsert_reservation_line.return_value = None
+    mock_wfdb.replace_reservation_lines.return_value = 0
 
     # Fake warehouse DB connection (inventory query returns empty)
     mock_con = MagicMock()
@@ -216,20 +217,20 @@ class TestC2DraftAuthority:
             f"got {got_pc!r}"
         )
 
-    def test_draft_missing_sku_falls_back_to_view_for_that_sku(self):
-        """When a Draft exists but does NOT have a line for a particular SKU,
-        the view provides the product_code for that SKU."""
+    def test_draft_present_is_sole_commercial_authority(self):
+        """When a Draft exists, only Draft editable lines are reserved — sales
+        packing SKUs absent from the Draft are NOT auto-added via the view.
+        (Operator-locked 2026-08-09: Draft Proforma is commercial truth.)"""
         from app.services.wfirma_reservation import get_reservation_preview
 
         _OTHER_SKU = "OTHER-SKU-999"
-        # Draft has a line for _OTHER_SKU only, not for the test SKU
         draft = _make_draft(design_no=_OTHER_SKU, product_code="EJL/26-27/OTHER")
 
         with ExitStack() as stack:
             _enter_reservation_patches(
                 stack,
                 list_drafts_return=[draft],
-                view_rows=[_view_row()],   # view covers _SKU → _VIEW_PC
+                view_rows=[_view_row()],   # view covers _SKU — must NOT invent a row
             )
             result = get_reservation_preview(_BATCH)
 
@@ -237,11 +238,8 @@ class TestC2DraftAuthority:
         assert len(docs) == 1
         rows = docs[0].get("rows", [])
         assert len(rows) == 1
-        got_pc = rows[0]["product_code"]
-        assert got_pc == _VIEW_PC, (
-            f"When Draft doesn't cover the SKU, expected view fallback {_VIEW_PC!r}; "
-            f"got {got_pc!r}"
-        )
+        assert rows[0]["product_code"] == "EJL/26-27/OTHER"
+        assert docs[0].get("commercial_source") == "draft_proforma"
 
     def test_draft_lookup_exception_is_non_fatal(self):
         """If list_drafts_for_batch raises, get_reservation_preview must still complete

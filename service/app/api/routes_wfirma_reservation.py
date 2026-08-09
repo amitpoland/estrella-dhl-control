@@ -4,12 +4,16 @@ routes_wfirma_reservation.py — wFirma reservation preview + live create.
 Endpoints
 ---------
   GET  /api/v1/wfirma/reservation-preview/{batch_id}
-       Grouped reservation preview per sales document (client), ready for
-       submission to wFirma once all conditions are met.
+       Reservation readiness preview (persists local drafts/lines for Create).
+
+  GET  /api/v1/wfirma/reservations/dry-run
+       Pure dry-run payload for one (batch_id, client_name). Zero wFirma HTTP.
+       Zero local draft persist.
 
   POST /api/v1/wfirma/reservations/create
        Create one wFirma reservation for one (batch_id, client_name).
        Hard-gated by check_wfirma_config criteria + per-draft state.
+       Success-reconcile idempotent when already created.
 
   POST /api/v1/wfirma/reservations/{draft_id}/reset-stuck
        Force a draft stuck in status='submitting' back to 'failed'.
@@ -32,36 +36,27 @@ _auth  = Depends(require_api_key)
 
 @router.get("/reservation-parity", dependencies=[_auth])
 def reservation_parity(batch_id: str = Query(None, description="optional: limit to one batch")) -> dict:
-    """WF-3 Slice 2B-1 — READ-ONLY reservation customer-resolution parity report.
-
-    Compares, per reservation draft, the current NAME-based resolution against
-    the canonical contractor.id resolver, and classifies each draft. Performs NO
-    write and NO wFirma call; changes NO reservation/proforma/invoice behavior.
-    ``blocked`` is True iff any draft diverges (name resolves to a different id
-    than the operator-selected contractor.id) — the gate for Slice 2B-2.
-    """
+    """WF-3 Slice 2B-1 — READ-ONLY reservation customer-resolution parity report."""
     return rcp.run_reservation_parity(batch_id=batch_id)
 
 
 @router.get("/reservation-preview/{batch_id:path}", dependencies=[_auth])
 def reservation_preview(batch_id: str) -> JSONResponse:
-    """
-    Build a wFirma reservation preview for *batch_id*.
-
-    Groups sales packing lines by client (sales_document) and invoice
-    product_code.  Returns readiness state, stock check, and per-row
-    unit prices from invoice_lines.
-
-    ready_to_create = True only when:
-      - warehouse audit is clean (no missing_scans, invalid_flows, orphans)
-      - all rows have stock confirmed in warehouse
-      - all clients have a non-empty customer name
-    """
+    """Build reservation preview for *batch_id* (persists local drafts/lines)."""
     result = wr.get_reservation_preview(batch_id)
     return JSONResponse(result)
 
 
-# ── Live create (Phase 3.A — single client, gate-protected) ──────────────────
+@router.get("/reservations/dry-run", dependencies=[_auth])
+def reservation_dry_run(
+    batch_id: str = Query(..., description="shipment batch id"),
+    client_name: str = Query(..., description="exact client_name"),
+) -> JSONResponse:
+    """Pure dry-run: commercial payload + XML. Zero wFirma HTTP. Zero persist."""
+    result = wr.dry_run_reservation(batch_id, client_name)
+    status = 200 if result.get("ok") else 404
+    return JSONResponse(result, status_code=status)
+
 
 class CreateReservationRequest(BaseModel):
     batch_id:    str
@@ -91,9 +86,9 @@ def create_reservation(req: CreateReservationRequest) -> JSONResponse:
     Create ONE wFirma reservation for the (batch_id, client_name) pair.
 
     Status codes:
-      200 — reservation created; body contains wfirma_reservation_id
-      409 — pre-flight gate failed; body.code identifies which gate
-      502 — upstream wFirma returned an error; body.error has details
+      200 — reservation created OR reconciled existing id
+      409 — pre-flight gate failed
+      502 — upstream wFirma error
     """
     result = wrc.create_one_reservation(req.batch_id, req.client_name)
     if result["ok"]:
@@ -103,7 +98,6 @@ def create_reservation(req: CreateReservationRequest) -> JSONResponse:
         return JSONResponse(result, status_code=502)
     if result["code"] in _GATE_CODES_409:
         return JSONResponse(result, status_code=409)
-    # Unknown failure — treat as server error so it shows up in monitoring
     return JSONResponse(result, status_code=500)
 
 
@@ -112,10 +106,7 @@ def reset_stuck_reservation(
     draft_id: str,
     force:    bool = Query(False, description="Override the 30-min timeout"),
 ) -> JSONResponse:
-    """
-    Force a draft stuck in status='submitting' back to 'failed'.
-    Use only when you have confirmed no submission is actually in flight.
-    """
+    """Force a draft stuck in status='submitting' back to 'failed'."""
     result = wrc.reset_stuck_draft(draft_id, force=force)
     if result["ok"]:
         return JSONResponse(result, status_code=200)

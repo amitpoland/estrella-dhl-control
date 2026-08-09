@@ -45,11 +45,12 @@ log = get_logger(__name__)
 
 # ── Result codes (human-readable, machine-parseable) ─────────────────────────
 GATE_OK                       = "OK"
+GATE_ALREADY_CREATED          = "ALREADY_CREATED"
 GATE_NOT_READY                = "WFIRMA_NOT_READY"
 GATE_DIAGNOSTIC_FAILED        = "DIAGNOSTIC_FAILED"
 GATE_DRAFT_NOT_FOUND          = "DRAFT_NOT_FOUND"
 GATE_DRAFT_NOT_READY          = "DRAFT_NOT_READY"
-GATE_DRAFT_ALREADY_PROCESSED  = "DRAFT_ALREADY_PROCESSED"
+GATE_DRAFT_ALREADY_PROCESSED  = "DRAFT_ALREADY_PROCESSED"  # legacy alias; success path uses ALREADY_CREATED
 GATE_DRAFT_ALREADY_SUBMITTING = "DRAFT_ALREADY_SUBMITTING"
 GATE_NO_LINES                 = "NO_LINES"
 GATE_CUSTOMER_NOT_MAPPED      = "CUSTOMER_NOT_MAPPED"
@@ -98,6 +99,13 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
       wfirma_reservation_id : str (only on success)
       details       : dict with extra context for the caller / UI
     """
+    # Refresh commercial snapshot from Draft (persist local lines for this create).
+    try:
+        from . import wfirma_reservation as wr
+        wr.build_reservation_plan(batch_id, client_name=client_name, persist=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("reservation plan refresh failed (continuing with stored draft): %s", exc)
+
     # ── Gate 1: capability ───────────────────────────────────────────────────
     caps = wfc.get_capabilities()
     if not caps.get("ready_to_reserve"):
@@ -105,6 +113,35 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
             GATE_NOT_READY,
             "wFirma not ready to reserve. See blocking_reasons.",
             details={"blocking_reasons": caps.get("blocking_reasons", [])},
+        )
+
+    # ── Gate 3 early: draft exists (before live diagnostic — enables zero-HTTP reconcile)
+    draft = wfdb.get_reservation_draft(batch_id, client_name)
+    if not draft:
+        return _fail(
+            GATE_DRAFT_NOT_FOUND,
+            f"No draft for batch_id={batch_id} client_name={client_name}",
+        )
+
+    draft_id = draft["id"]
+
+    # ── Success-reconcile idempotency (ZERO second wFirma write / probe) ─────
+    status = (draft.get("status") or "pending").lower()
+    existing_id = (draft.get("wfirma_reservation_id") or "").strip()
+    if status == "created" and existing_id:
+        return {
+            "ok": True,
+            "code": GATE_ALREADY_CREATED,
+            "error": "",
+            "draft_id": draft_id,
+            "wfirma_reservation_id": existing_id,
+            "details": {"reconciled": True, "second_write": False},
+        }
+    if status == "created" and not existing_id:
+        return _fail(
+            GATE_DRAFT_ALREADY_PROCESSED,
+            "Draft marked created but wfirma_reservation_id is missing — manual reconcile required.",
+            draft_id=draft_id,
         )
 
     # ── Gate 2: live diagnostic re-probe ─────────────────────────────────────
@@ -116,29 +153,16 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
             details=diag,
         )
 
-    # ── Gate 3: draft exists ─────────────────────────────────────────────────
-    draft = wfdb.get_reservation_draft(batch_id, client_name)
-    if not draft:
-        return _fail(
-            GATE_DRAFT_NOT_FOUND,
-            f"No draft for batch_id={batch_id} client_name={client_name}",
-        )
-
+    # Re-read draft after diagnostic (status may race)
+    draft = wfdb.get_reservation_draft(batch_id, client_name) or draft
     draft_id = draft["id"]
+    status = (draft.get("status") or "pending").lower()
 
-    # ── Gate 4: draft state ──────────────────────────────────────────────────
+    # ── Gate 4: draft ready / submitting ─────────────────────────────────────
     if not draft.get("ready_to_create"):
         return _fail(GATE_DRAFT_NOT_READY,
                      "Draft is not marked ready_to_create.",
                      draft_id=draft_id)
-    status = (draft.get("status") or "pending").lower()
-    if status == "created":
-        return _fail(
-            GATE_DRAFT_ALREADY_PROCESSED,
-            f"Reservation already created in wFirma (id={draft.get('wfirma_reservation_id')}).",
-            draft_id=draft_id,
-            details={"wfirma_reservation_id": draft.get("wfirma_reservation_id", "")},
-        )
     if status == "submitting":
         return _fail(
             GATE_DRAFT_ALREADY_SUBMITTING,
@@ -264,6 +288,12 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
     result = wfcli.create_reservation(req)
     if result.ok and result.wfirma_reservation_id:
         wfdb.mark_draft_created(draft_id, result.wfirma_reservation_id)
+        _record_reservation_created_audit(
+            batch_id=batch_id,
+            client_name=client_name,
+            wfirma_reservation_id=result.wfirma_reservation_id,
+            reservation_draft_id=draft_id,
+        )
         log.info(
             "wfirma reservation created: batch=%s client=%s wfirma_id=%s",
             batch_id, client_name, result.wfirma_reservation_id,
@@ -274,7 +304,7 @@ def create_one_reservation(batch_id: str, client_name: str) -> Dict[str, Any]:
             "error": "",
             "draft_id": draft_id,
             "wfirma_reservation_id": result.wfirma_reservation_id,
-            "details": {},
+            "details": {"reconciled": False, "second_write": False},
         }
 
     # Submission failed at upstream — record + return
@@ -424,3 +454,63 @@ def _fail(code: str, error: str, *, draft_id: str = "", details: Dict[str, Any] 
         "wfirma_reservation_id": "",
         "details": details or {},
     }
+
+
+def _record_reservation_created_audit(
+    *,
+    batch_id: str,
+    client_name: str,
+    wfirma_reservation_id: str,
+    reservation_draft_id: str,
+) -> None:
+    """Write audit ONLY after the wFirma reservation id is persisted locally.
+
+    Prefer proforma_draft_events when a ProformaDraft exists for the client;
+    also append a batch timeline event. Never raises into the create path.
+    """
+    import json as _json
+    try:
+        from .proforma_invoice_link_db import (
+            get_draft as _get_draft,
+            _record_draft_event as _rec,
+        )
+        pf_db = settings.storage_root / "proforma_links.db"
+        pf_draft = _get_draft(pf_db, batch_id, client_name)
+        if pf_draft is not None and getattr(pf_draft, "id", None):
+            _rec(
+                pf_db,
+                draft_id=int(pf_draft.id),
+                event="wfirma_reservation_created",
+                detail_json=_json.dumps({
+                    "wfirma_reservation_id": wfirma_reservation_id,
+                    "reservation_draft_id": reservation_draft_id,
+                    "batch_id": batch_id,
+                    "client_name": client_name,
+                }),
+                operator="system",
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("proforma draft reservation audit failed (non-fatal): %s", exc)
+
+    try:
+        from ..core import timeline as tl
+        audit_path = None
+        for sub in ("outputs", "working"):
+            p = settings.storage_root / sub / batch_id / "audit.json"
+            if p.exists():
+                audit_path = p
+                break
+        if audit_path is not None:
+            tl.log_event(
+                audit_path,
+                event="wfirma_reservation_created",
+                trigger_source="wfirma_reservation_create",
+                actor="system",
+                detail={
+                    "wfirma_reservation_id": wfirma_reservation_id,
+                    "reservation_draft_id": reservation_draft_id,
+                    "client_name": client_name,
+                },
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("timeline reservation audit failed (non-fatal): %s", exc)
