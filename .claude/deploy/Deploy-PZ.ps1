@@ -232,11 +232,37 @@ function Set-ServiceState {
     param($Cfg, [ValidateSet("Stopped", "Running")][string]$Target)
     $svc = $Cfg.service
     if ($script:PlanOnly) { Write-Host "  would drive $svc to $Target"; return }
-    if ($Target -eq "Stopped") { & sc.exe stop $svc | Out-Null } else { & sc.exe start $svc | Out-Null }
+    $current = (Get-Service $svc).Status
+    if ($current -eq $Target) {
+        Write-Host "  $svc is already $Target"
+        return
+    }
+    $verb = if ($Target -eq "Stopped") { "stop" } else { "start" }
+    # Do NOT redirect sc.exe stderr with 2>&1 under ErrorActionPreference=Stop --
+    # that wraps NativeCommandError and throws before $LASTEXITCODE is readable
+    # (same pattern as the git identity-gate cat-file call). Exit code is authority;
+    # OpenService/ControlService text usually lands on host stderr.
+    $scOut = & sc.exe $verb $svc | Out-String
+    $scCode = $LASTEXITCODE
+    if ($scCode -ne 0) {
+        $after = (Get-Service $svc).Status
+        if ($after -ne $Target) {
+            $trimmed = "$scOut".Trim()
+            if (-not $trimmed) {
+                $trimmed = "(sc.exe produced no stdout; see host stderr for OpenService/ControlService text)"
+            }
+            $hint = ""
+            if ($scCode -eq 5) {
+                $hint = " Access Denied (exit 5): re-run Deploy-PZ from an elevated Administrator shell; do not widen service ACLs."
+            }
+            throw "BLOCKED: sc.exe $verb $svc failed (exit $scCode); service remained $after. $trimmed.$hint"
+        }
+    }
     $deadline = (Get-Date).AddSeconds($Cfg.service_wait_seconds)
     while ((Get-Service $svc).Status -ne $Target -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
-    if ((Get-Service $svc).Status -ne $Target) {
-        throw "BLOCKED: $svc did not reach $Target within $($Cfg.service_wait_seconds)s"
+    $final = (Get-Service $svc).Status
+    if ($final -ne $Target) {
+        throw "BLOCKED: $svc did not reach $Target within $($Cfg.service_wait_seconds)s (sc.exe $verb returned success; service remained $final -- STOP_PENDING hang or application shutdown stall, not a discarded sc.exe failure)"
     }
     Write-Host "  $svc is $Target"
 }
@@ -714,7 +740,7 @@ function Test-RuntimeUnchanged {
         # In Windows PowerShell 5.1, any uncaptured pipeline output is part of the
         # function's return value, so `if (Test-RuntimeUnchanged …)` would see a
         # non-empty array (name-status lines + $false) and wrongly take the NO-OP
-        # path on a real delta — the 2026-08-07 consolidation deploy failure mode.
+        # path on a real delta -- the 2026-08-07 consolidation deploy failure mode.
         & git -C $SRC diff --name-status $FromSha $ToSha -- $paths | ForEach-Object { Write-Host "  $_" }
         return $false
     }
@@ -1716,3 +1742,4 @@ function Invoke-Deploy {
 }
 
 if (-not $NoRun) { Invoke-Deploy -PlanOnly:$WhatIf }
+
