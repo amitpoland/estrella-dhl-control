@@ -1424,6 +1424,23 @@
     getClientInvoiceLedger: (contractorId, from, to) =>
       _get(`${BASE}/ledgers/clients/${encodeURIComponent(contractorId)}/invoice-ledger.json?from=${encodeURIComponent(from || '')}&to=${encodeURIComponent(to || '')}`),
 
+    // GET /api/v1/ledgers/management-analysis.json
+    // Read-only portfolio receivables + due-date aging. Bulk invoices/payments
+    // only — zero per-customer wFirma calls. Currencies stay separate (no FX).
+    // params: { from, to, as_of?, currency?, contractor_id?, status? }
+    getManagementAnalysis: (params) => {
+      const p = params || {};
+      const qs = new URLSearchParams();
+      if (p.from) qs.set('from', p.from);
+      if (p.to) qs.set('to', p.to);
+      if (p.as_of) qs.set('as_of', p.as_of);
+      if (p.currency) qs.set('currency', p.currency);
+      if (p.contractor_id) qs.set('contractor_id', p.contractor_id);
+      if (p.status) qs.set('status', p.status);
+      const q = qs.toString();
+      return _get(`${BASE}/ledgers/management-analysis.json${q ? `?${q}` : ''}`);
+    },
+
     // ── Proforma — PR B: Customer address + service-charge authority ──
 
     // POST /api/v1/proforma/draft/{draft_id}/apply-customer-address

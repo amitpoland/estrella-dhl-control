@@ -315,3 +315,21 @@ def test_no_n_plus_one_in_list_helpers():
     with patch.object(wc, "_http_request", return_value=(200, xml_wh)) as m:
         wc.list_warehouse_documents_by_type("RW")
         assert m.call_count == 1
+
+
+def test_list_invoices_by_type_uses_sibling_page(monkeypatch):
+    """Accounting Hub start offset must map to sibling page=N, not nested start."""
+    from app.services import wfirma_client as wc
+
+    captured = {}
+
+    def _stub(method, module, action, body=""):
+        captured["body"] = body
+        return 200, _xml_invoices(2)
+
+    monkeypatch.setattr(wc, "_http_request", _stub)
+    wc.list_invoices_by_type("normal", start=20, limit=20)
+    body = captured["body"]
+    assert "<page>2</page>" in body
+    assert "<limit>20</limit>" in body
+    assert "<page><start>" not in body

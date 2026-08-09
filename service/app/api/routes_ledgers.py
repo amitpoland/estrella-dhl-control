@@ -355,6 +355,9 @@ def _build_statement_dict(
         )
 
     # Defence-in-depth Python-side date filtering.
+    # Period statement model: issue-date window for invoices and payment-date
+    # window for payments independently. Outside-window invoice links stay
+    # flagged — the window is not silently broadened (no opening-balance mix).
     invoice_nodes = _python_side_date_filter(invoice_nodes, df, dt)
     payment_nodes = _python_side_payment_date_filter(payment_nodes, df, dt)
 
@@ -706,3 +709,76 @@ def list_client_balances(
             "last_30d":             "backend_pending",
         },
     })
+
+
+@router.get(
+    "/management-analysis.json",
+    dependencies=[_auth],
+)
+def get_management_analysis(
+    from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
+    to: str = Query("", description="Window end YYYY-MM-DD"),
+    as_of: str = Query("", description="Aging anchor YYYY-MM-DD; default today UTC"),
+    currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN"),
+    contractor_id: str = Query("", description="Optional single contractor filter"),
+    status: str = Query(
+        "",
+        description="Optional: outstanding | overdue | credit",
+    ),
+) -> JSONResponse:
+    """Read-only receivables portfolio + due-date aging (Management Analysis).
+
+    Bulk ``invoices/find`` + ``payments/find`` only — zero per-customer
+    wFirma calls. Currency portfolios stay separate (no FX grand total).
+    Drill-down remains ``/clients/{id}/statement.json``.
+    """
+    df = _validate_date("from", from_)
+    dt = _validate_date("to", to)
+    if df > dt:
+        raise HTTPException(
+            status_code=400,
+            detail=f"from {df!r} is after to {dt!r}",
+        )
+    if (as_of or "").strip():
+        ao = _validate_date("as_of", as_of)
+    else:
+        from datetime import datetime, timezone
+        ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    ccy = (currency or "").strip().upper()
+    if ccy and ccy not in ("USD", "EUR", "PLN"):
+        raise HTTPException(
+            status_code=400,
+            detail="currency must be USD, EUR, PLN, or empty",
+        )
+    st = (status or "").strip().lower()
+    if st and st not in ("outstanding", "overdue", "credit"):
+        raise HTTPException(
+            status_code=400,
+            detail="status must be outstanding, overdue, credit, or empty",
+        )
+
+    from ..services.accounting_analytics import build_management_analysis
+
+    try:
+        body = build_management_analysis(
+            date_from=df,
+            date_to=dt,
+            as_of=ao,
+            currency=ccy,
+            contractor_id=(contractor_id or "").strip(),
+            status=st,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.warning("[management-analysis] bulk read failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": f"wFirma portfolio read failed: {exc}",
+                "code": "MANAGEMENT_ANALYSIS_FETCH_FAILED",
+            },
+        ) from exc
+
+    return JSONResponse(body)
