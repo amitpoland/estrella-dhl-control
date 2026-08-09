@@ -336,7 +336,7 @@ def test_service_charge_currency_mismatch_blocks(client):
     body = client.post(f"/api/v1/proforma/preview/{BATCH}/MM-CLIENT",
                        headers=_auth()).json()
     assert body["ready"] is False
-    assert any("does not match product line currency" in br
+    assert any("does not match document currency" in br
                for br in body["blocking_reasons"])
 
 

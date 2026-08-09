@@ -1228,6 +1228,7 @@ def _build_preview(batch_id: str, client_name: str,
     # so preview, print, posting and finance read identical amounts + resolutions.
     _snap_cc = None
     _from_snapshot = False
+    _pv_draft = None
     try:
         _pf_db0 = _proforma_db_path()
         if _pf_db0.exists():
@@ -1247,6 +1248,22 @@ def _build_preview(batch_id: str, client_name: str,
     except Exception:
         _snap_cc = None
         _from_snapshot = False
+    # Document vs source currency authority:
+    #   * Pre-draft: dominant sales packing currency is the billable currency.
+    #   * With draft: draft.currency is the selected document/billing currency;
+    #     sales packing / frozen source_currency is provenance only and must NOT
+    #     be compared against saved service charges after NBP revaluation.
+    document_currency = currency
+    source_currency: Optional[str] = (
+        currency if currency and currency != "unknown" else None
+    )
+    if _pv_draft is not None:
+        _doc = (getattr(_pv_draft, "currency", None) or "").strip().upper()
+        if _doc:
+            document_currency = _doc
+        _src = (getattr(_pv_draft, "source_currency", None) or "").strip().upper()
+        if _src:
+            source_currency = _src
     # Only before a draft snapshot exists does the live editing table apply.
     if not _from_snapshot:
         try:
@@ -1255,15 +1272,16 @@ def _build_preview(batch_id: str, client_name: str,
         except Exception as exc:
             log.warning("service_charges read failed for %s/%s: %s",
                         batch_id, client_name, exc)
-    # Operator MUST keep charges in the same currency as the product lines —
-    # mixed currencies block create (checked against the authoritative list).
+    # Charges must match the document/billing currency (not frozen source).
+    # Cross-currency saved charges still block — conversion belongs on the
+    # explicit currency-change / revalue write path (nbp_rate_service).
     sc_currencies = {(c.get("currency") or "").upper() for c in service_charges
                      if (c.get("currency") or "").strip()}
-    if service_charges and currency != "unknown" and \
-       sc_currencies and sc_currencies != {currency}:
+    if service_charges and document_currency != "unknown" and \
+       sc_currencies and sc_currencies != {document_currency}:
         blocking_reasons.append(
             f"service charge currency {sorted(sc_currencies)} does not match "
-            f"product line currency {currency!r}"
+            f"document currency {document_currency!r}"
         )
     if _snap_cc is not None:
         service_charge_total = _snap_cc["service_charge_subtotal"]
@@ -1361,7 +1379,11 @@ def _build_preview(batch_id: str, client_name: str,
         "ok":               True,
         "batch_id":         batch_id,
         "client_name":      client_name,
-        "currency":         currency,
+        # `currency` = document/billing currency (draft.currency when a draft
+        # exists). `source_currency` = frozen commercial provenance.
+        "currency":         document_currency,
+        "document_currency": document_currency,
+        "source_currency":  source_currency,
         "exchange_rate":    exchange_rate,
         "can_preview":      can_preview,
         "draft_ready":      draft_ready,
@@ -1400,7 +1422,7 @@ def _build_preview(batch_id: str, client_name: str,
             "product_total":         product_total,
             "service_charge_total":  service_charge_total,
             "final_total":           final_total,
-            "currency":              currency,
+            "currency":              document_currency,
         },
         # PR-6 — the resolved commercial-charge authority (freight/insurance
         # totals, per-charge resolution, unresolved-for-review). Present only

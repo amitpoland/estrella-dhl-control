@@ -25,8 +25,13 @@ writer — never inferred at read time):
 
 Governance rules (operator-ratified, PR-6):
   * The draft snapshot is the SOLE financial source once a charge is saved.
-  * Only charges whose currency == the draft currency enter the subtotal.
-  * Cross-currency charges are surfaced separately, never converted or summed.
+  * Only charges whose currency == the draft **document** currency enter the
+    subtotal. FX conversion is NOT performed here at read time — the explicit
+    currency-change / ``nbp_rate_service.revalue_commercial_snapshot`` write
+    path must already have revalued saved charges into document currency
+    (source commercial amounts stay frozen as provenance).
+  * Cross-currency charges (not yet revalued) are surfaced separately, never
+    converted or summed by this resolver.
   * The premium is computed by ONE formula (:func:`insurance_premium`) at the
     Calculate action (WRITE time) and frozen. **This module never recomputes a
     saved amount at read time** — a persisted zero stays zero.
