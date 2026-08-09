@@ -604,6 +604,9 @@ def list_client_balances(
     limit:   int = Query(25, ge=1, le=100),
     country: str = Query("", description="Filter by ISO-3166 alpha-2 country"),
     q:       str = Query("", description="Case-insensitive name substring"),
+    contractor: str = Query("", description="Exact wFirma contractor id"),
+    currency: str = Query("", description="Filter by currency code (PLN/EUR/USD/…)"),
+    status: str = Query("", description="Filter by state: outstanding|clear|unknown"),
 ) -> JSONResponse:
     """Read-only Client Balance roster (Wave 4 Item 4).
 
@@ -629,13 +632,22 @@ def list_client_balances(
     if df > dt:
         raise HTTPException(status_code=400, detail=f"from {df!r} is after to {dt!r}")
 
+    contractor_f = (contractor or "").strip()
+    currency_f = (currency or "").strip().upper()
+    status_f = (status or "").strip().lower()
+
     customers = _cm_list_customers(
         _CM_DB_PATH,
         country=(country.strip().upper() or None),
         q=(q.strip() or None),
         active=True,
-        limit=start + limit,
+        limit=start + limit if not contractor_f else 5000,
     )
+    if contractor_f:
+        customers = [
+            c for c in customers
+            if (getattr(c, "bill_to_contractor_id", "") or "").strip() == contractor_f
+        ]
     page = customers[start:start + limit]
 
     rows = []
@@ -659,12 +671,31 @@ def list_client_balances(
             continue
         rows.append({**base, **_roster_row_from_statement(default_ccy, stmt)})
 
+    if currency_f:
+        rows = [
+            r for r in rows
+            if (r.get("currency") or "").upper() == currency_f
+            or (
+                r.get("currency") == "multi"
+                and currency_f in (r.get("open_by_currency") or {})
+            )
+        ]
+    if status_f:
+        rows = [r for r in rows if (r.get("state") or "").lower() == status_f]
+
     return JSONResponse({
         "period":       {"from": df, "to": dt},
         "start":        start,
         "limit":        limit,
         "count":        len(rows),
         "rows":         rows,
+        "filters": {
+            "contractor": contractor_f or None,
+            "currency": currency_f or None,
+            "status": status_f or None,
+            "country": (country or "").strip().upper() or None,
+            "q": (q or "").strip() or None,
+        },
         "column_status": {
             "open":                 "documented",
             "currency":             "documented",

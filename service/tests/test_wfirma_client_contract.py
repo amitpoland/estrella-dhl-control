@@ -562,7 +562,8 @@ def test_list_invoices_by_type_parses_rows():
     assert r0["party"] == "Crown Jewelers Ltd"
     assert r0["gross"] == "24100.00"
     assert r0["currency"] == "USD"
-    assert r0["state"] == "paid"
+    assert r0["state"] == "Paid"
+    assert r0["payment_state"] == "Paid"
     assert r0["wfirma_id"] == "101"
 
 

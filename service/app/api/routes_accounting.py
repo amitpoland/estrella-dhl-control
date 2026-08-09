@@ -1,37 +1,45 @@
 """
-Accounting document reads (Wave 4 — Item 3A).
+Accounting document reads — P0 Accounting Hub normalization.
 
-Endpoint
---------
+Endpoints
+---------
   GET /api/v1/accounting/documents/{doc_type}
-      doc_type ∈ {invoice, credit_note} — DOCUMENTED wFirma reads.
+      doc_type ∈ {invoice, credit_note, wz, pz, pw, rw}
+      MM → 404 (controller not found live — unavailable, not pending)
+  GET /api/v1/accounting/documents/{doc_type}/{wfirma_id}/pdf
+      Invoice / Credit Note only — delegates to fetch_invoice_pdf.
+      disposition=inline|attachment
 
-Authority: wFirma (Accounting Authority). Read-only via the proven
-`invoices/find` transport (`wfirma_client.list_invoices_by_type`). No local
-mirror, no duplicate authority. Consumer: the Accounting hub Invoice / Credit
-Note grids (accounting-hub.jsx AccDocGrid).
-
-Item 3B (WZ/PW/RW/MM warehouse-document reads) is intentionally NOT served here —
-those reads are UNDOCUMENTED in the wFirma API and are recorded as a Wave-4
-sandbox-verification task; the UI stays honest `Backend Pending`.
+Authority: wFirma. Read-only. No local accounting mirror. No writes.
+Normalization boundary: accounting_documents (top-level XML only).
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 
 from ..core.security import require_api_key
 from ..services import wfirma_client
+from ..services.accounting_documents import (
+    WAREHOUSE_TYPES_BLOCKED,
+    WAREHOUSE_TYPES_SUPPORTED,
+)
 
 router = APIRouter(prefix="/api/v1/accounting", tags=["accounting"])
 
-# Same auth posture as the sibling accounting reads (proforma/search,
-# dashboard/batches): X-API-Key, dev-bypassed when no key is configured.
 _auth = Depends(require_api_key)
 
-# doc_type → wFirma invoice type. Only DOCUMENTED types are mapped.
-_DOC_TYPE_MAP = {
-    "invoice":     "normal",       # faktura VAT
-    "credit_note": "correction",   # faktura korygująca
+_INVOICE_DOC_TYPES = {
+    "invoice": "normal",
+    "credit_note": "correction",
+}
+
+_WAREHOUSE_DOC_TYPES = {t.lower(): t for t in WAREHOUSE_TYPES_SUPPORTED}
+
+_NO_STORE = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
 }
 
 
@@ -41,28 +49,103 @@ def list_accounting_documents(
     start: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=200),
 ) -> dict:
-    """
-    Return one page of accounting documents of the given type from wFirma.
+    """One page of normalized accounting documents from wFirma.
 
-    Response: {"doc_type", "wfirma_type", "rows": [...], "count": int}.
-    Each row: number · date · party · net · tax · gross · currency · state · wfirma_id.
-
-    Errors: 404 unsupported/undocumented type · 400 invalid arg · 502 wFirma read failure.
+    Invoice/CN → invoices/find. Warehouse WZ/PZ/PW/RW → warehouse_documents/find.
+    MM is blocked (404) — live controller check failed.
     """
-    wfirma_type = _DOC_TYPE_MAP.get(doc_type)
-    if not wfirma_type:
+    key = (doc_type or "").strip().lower()
+
+    if key in WAREHOUSE_TYPES_BLOCKED or key == "mm":
         raise HTTPException(
             status_code=404,
             detail=(
-                f"Unsupported accounting document type '{doc_type}'. "
-                "Documented: invoice, credit_note. WZ/PW/RW/MM warehouse-document "
-                "reads are undocumented in wFirma (sandbox-verification pending)."
+                "MM warehouse transfers are unavailable: wFirma controller "
+                "warehouse_document_m_m / _mm was not found (live check 2026-08-09). "
+                "Not implemented — do not treat as Backend Pending."
             ),
         )
+
+    if key in _INVOICE_DOC_TYPES:
+        wfirma_type = _INVOICE_DOC_TYPES[key]
+        try:
+            result = wfirma_client.list_invoices_by_type(
+                wfirma_type, start=start, limit=limit
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (RuntimeError, ConnectionError) as exc:
+            raise HTTPException(status_code=502, detail=f"wFirma read failed: {exc}") from exc
+        return {
+            "doc_type": key,
+            "authority": "wfirma.invoices",
+            "wfirma_type": wfirma_type,
+            **result,
+        }
+
+    if key in _WAREHOUSE_DOC_TYPES:
+        wh_type = _WAREHOUSE_DOC_TYPES[key]
+        try:
+            result = wfirma_client.list_warehouse_documents_by_type(
+                wh_type, start=start, limit=limit
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (RuntimeError, ConnectionError) as exc:
+            raise HTTPException(status_code=502, detail=f"wFirma read failed: {exc}") from exc
+        return {
+            "doc_type": key,
+            "authority": "wfirma.warehouse_documents",
+            "warehouse_type": wh_type,
+            **result,
+        }
+
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"Unsupported accounting document type '{doc_type}'. "
+            "Supported: invoice, credit_note, wz, pz, pw, rw. "
+            "MM is unavailable (controller not found)."
+        ),
+    )
+
+
+@router.get("/documents/{doc_type}/{wfirma_id}/pdf", dependencies=[_auth])
+def get_accounting_document_pdf(
+    doc_type: str,
+    wfirma_id: str,
+    disposition: str = Query("inline", pattern="^(inline|attachment)$"),
+) -> Response:
+    """Official Invoice/CN PDF via existing fetch_invoice_pdf authority.
+
+    Warehouse PDF is not exposed — standalone warehouse download is unproven.
+    """
+    key = (doc_type or "").strip().lower()
+    if key not in _INVOICE_DOC_TYPES:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "PDF proxy is available only for invoice and credit_note. "
+                "Warehouse document PDF is unproven and not exposed."
+            ),
+        )
+    iid = (wfirma_id or "").strip()
+    if not iid or not iid.isdigit():
+        raise HTTPException(status_code=400, detail="wfirma_id must be a numeric id")
     try:
-        result = wfirma_client.list_invoices_by_type(wfirma_type, start=start, limit=limit)
+        pdf_bytes = wfirma_client.fetch_invoice_pdf(iid)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (RuntimeError, ConnectionError) as exc:
-        raise HTTPException(status_code=502, detail=f"wFirma read failed: {exc}")
-    return {"doc_type": doc_type, "wfirma_type": wfirma_type, **result}
+        raise HTTPException(status_code=502, detail=f"wFirma PDF fetch failed: {exc}") from exc
+    if len(pdf_bytes) < 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"wFirma returned an unusably small PDF ({len(pdf_bytes)} bytes)",
+        )
+    filename = f"{key}-{iid}.pdf"
+    headers = {
+        **_NO_STORE,
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
+    }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)

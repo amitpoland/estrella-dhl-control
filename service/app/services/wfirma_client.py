@@ -2639,28 +2639,91 @@ def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> 
     code, desc = _parse_status(response_text)
     if code != "OK":
         raise RuntimeError(f"invoices/find wFirma status={code}: {desc}")
-    root = ET.fromstring(response_text)
+    # P0: top-level <invoices>/<invoice> only. Deep ``.//invoice`` counted nested
+    # ``<invoice><id>…</id></invoice>`` stubs as rows (live: 20 → 240 → 220 junk).
+    from .accounting_documents import normalize_invoices_from_xml
 
-    def _f(node, *tags):
-        for tag in tags:
-            v = node.findtext(tag)
-            if v and v.strip():
-                return v.strip()
-        return "—"
+    rows = normalize_invoices_from_xml(response_text)
+    return {"rows": rows, "count": len(rows)}
 
-    rows = []
-    for inv in root.findall(".//invoice"):
-        rows.append({
-            "number":    _f(inv, "fullnumber", "number", "id"),
-            "date":      _f(inv, "date"),
-            "party":     _f(inv, "contractor_detail/name", "contractor/name"),
-            "net":       _f(inv, "netto", "total_netto"),
-            "tax":       _f(inv, "tax", "vat"),
-            "gross":     _f(inv, "brutto", "total", "total_brutto"),
-            "currency":  _f(inv, "currency"),
-            "state":     _f(inv, "paymentstate", "state"),
-            "wfirma_id": inv.findtext("id") or "",
-        })
+
+def list_warehouse_documents_by_type(
+    warehouse_type: str, start: int = 0, limit: int = 25
+) -> Dict[str, Any]:
+    """Read-only page of wFirma warehouse documents filtered by type.
+
+    Uses umbrella ``warehouse_documents/find`` with ``type`` eq filter.
+    Supported types: WZ, PZ, PW, RW. MM is rejected (controller not found live).
+
+    Top-level ``<warehouse_documents>/<warehouse_document>`` only — never
+    ``.//warehouse_document`` (deep traversal inflates 20 → 307 nodes).
+
+    Field projection limits payload size when supported. Pagination semantics
+    follow observed wFirma behaviour (requested limit may not be honoured).
+
+    Never calls warehouse_documents/add|edit|delete.
+    """
+    from .accounting_documents import (
+        WAREHOUSE_TYPES_BLOCKED,
+        WAREHOUSE_TYPES_SUPPORTED,
+        normalize_warehouse_documents_from_xml,
+    )
+
+    t = (warehouse_type or "").strip().upper()
+    if t in WAREHOUSE_TYPES_BLOCKED:
+        raise ValueError(
+            "list_warehouse_documents_by_type: MM is unavailable "
+            "(wFirma controller not found)"
+        )
+    if t not in WAREHOUSE_TYPES_SUPPORTED:
+        raise ValueError(
+            "list_warehouse_documents_by_type: type must be one of WZ, PZ, PW, RW"
+        )
+    try:
+        start_i = max(0, int(start))
+        limit_i = max(1, min(int(limit), _INVOICE_LEDGER_PAGE_LIMIT))
+    except (TypeError, ValueError):
+        start_i, limit_i = 0, 25
+
+    # Project professional register fields only — avoids multi-MB warehouse
+    # payloads observed without fields= (live probe 2026-08-09).
+    fields_xml = "".join(
+        f"<name>{name}</name>"
+        for name in (
+            "id",
+            "type",
+            "fullnumber",
+            "date",
+            "netto",
+            "brutto",
+            "currency",
+            "status",
+            "contractor",
+            "contractor_detail",
+        )
+    )
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<api><warehouse_documents><parameters>"
+        "<conditions>"
+        f"<condition><field>type</field><operator>eq</operator>"
+        f"<value>{_esc(t)}</value></condition>"
+        "</conditions>"
+        f"<page><start>{start_i}</start><limit>{limit_i}</limit></page>"
+        f"<fields>{fields_xml}</fields>"
+        "</parameters></warehouse_documents></api>"
+    )
+    http_status, response_text = _http_request(
+        "GET", "warehouse_documents", "find", body
+    )
+    if http_status >= 400:
+        raise RuntimeError(f"warehouse_documents/find HTTP {http_status}")
+    code, desc = _parse_status(response_text)
+    if code != "OK":
+        raise RuntimeError(f"warehouse_documents/find wFirma status={code}: {desc}")
+    rows = normalize_warehouse_documents_from_xml(
+        response_text, allowed_types={t}
+    )
     return {"rows": rows, "count": len(rows)}
 
 
