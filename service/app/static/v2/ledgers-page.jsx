@@ -255,17 +255,27 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, pe
   const [stmt, setStmt]       = React.useState({ status: 'idle', data: null, err: null });
   const [currencyFilter, setCurrencyFilter] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('');
+  const [listPage, setListPage] = React.useState(1);
+  const [listHasMore, setListHasMore] = React.useState(false);
+  const LDG_LIST_LIMIT = 15;
   const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
 
   React.useEffect(() => {
     if (focusContractorId) setActive(focusContractorId);
   }, [focusContractorId]);
 
+  React.useEffect(() => { setListPage(1); }, [period.from, period.to, currencyFilter, statusFilter]);
+
   // Live client-balance list. Re-runs on ↻ Refresh (refreshKey).
   React.useEffect(() => {
     let gone = false;
     setClients(null); setListErr(null);
-    const params = { limit: 100, from: period.from, to: period.to };
+    const params = {
+      limit: LDG_LIST_LIMIT,
+      start: (listPage - 1) * LDG_LIST_LIMIT,
+      from: period.from,
+      to: period.to,
+    };
     if (currencyFilter) params.currency = currencyFilter;
     if (statusFilter) params.status = statusFilter;
     window.PzApi.listClientBalancesShared(params, { force: refreshKey > 0 || !!(periodFrom && periodTo) })
@@ -273,6 +283,7 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, pe
         if (gone) return;
         const rows = (r && r.rows) || [];
         setClients(rows);
+        setListHasMore(rows.length >= LDG_LIST_LIMIT);
         onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
         const prefer = focusContractorId && rows.some(x => x.contractor_id === focusContractorId)
           ? focusContractorId : null;
@@ -288,7 +299,7 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, pe
         onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: (e && e.message) || '' });
       });
     return () => { gone = true; };
-  }, [refreshKey, period.from, period.to, currencyFilter, statusFilter]);
+  }, [refreshKey, period.from, period.to, currencyFilter, statusFilter, listPage]);
 
   const c = (clients || []).find(x => x.contractor_id === active) || null;
 
@@ -353,11 +364,15 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, pe
           activeId={active}
           onSelect={setActive}
         />
-        {clients.length >= 100 && (
-          <div data-testid="ldg-clients-truncated" style={{ marginTop: 8, fontSize: 10.5, color: 'var(--badge-amber-text)' }}>
-            Showing the first 100 clients — the list may be truncated (backend pagination pending).
-          </div>
-        )}
+        <div data-testid="ldg-clients-pager" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
+          <button type="button" data-testid="ldg-clients-prev" disabled={listPage <= 1}
+            onClick={() => setListPage(p => Math.max(1, p - 1))}
+            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: listPage <= 1 ? 'not-allowed' : 'pointer', opacity: listPage <= 1 ? 0.45 : 1 }}>Previous</button>
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Page {listPage} · {LDG_LIST_LIMIT}/page</span>
+          <button type="button" data-testid="ldg-clients-next" disabled={!listHasMore}
+            onClick={() => setListPage(p => p + 1)}
+            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: !listHasMore ? 'not-allowed' : 'pointer', opacity: !listHasMore ? 0.45 : 1 }}>Next</button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -595,6 +610,9 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
   const [err, setErr] = React.useState(null);
   const [apErr, setApErr] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
+  const [arTablePage, setArTablePage] = React.useState(1);
+  const [apTablePage, setApTablePage] = React.useState(1);
+  const MA_TABLE_LIMIT = 15;
 
   React.useEffect(() => {
     let gone = false;
@@ -648,7 +666,12 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
     setQ('');
     setApQ('');
     setAsOf(period.to);
+    setArTablePage(1);
+    setApTablePage(1);
   };
+
+  React.useEffect(() => { setArTablePage(1); }, [q, currency, status, period.from, period.to]);
+  React.useEffect(() => { setApTablePage(1); }, [apQ, currency, apStatus, period.from, period.to]);
 
   if (loading && !data) {
     return <div data-testid="ldg-ma-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading receivables portfolio from wFirma…</div>;
@@ -668,10 +691,14 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
   const dq = (data && data.data_quality) || {};
   const health = (data && data.source_health) || {};
   const qLower = (q || '').trim().toLowerCase();
-  const rows = ((data && data.customers) || []).filter((r) => {
+  const rowsAll = ((data && data.customers) || []).filter((r) => {
     if (!qLower) return true;
     return String(r.customer_name || '').toLowerCase().includes(qLower);
   });
+  // Table paging only — KPI currency_summaries remain full filtered portfolio.
+  const arTotalPages = Math.max(1, Math.ceil(rowsAll.length / MA_TABLE_LIMIT) || 1);
+  const arPageSafe = Math.min(arTablePage, arTotalPages);
+  const rows = rowsAll.slice((arPageSafe - 1) * MA_TABLE_LIMIT, arPageSafe * MA_TABLE_LIMIT);
 
   const moneyCell = (v, ccy) => (
     <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
@@ -810,6 +837,14 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
             ))}
           </tbody>
         </table>
+        <div data-testid="ldg-ma-ar-pager" style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', padding: '10px 12px', borderTop: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-3)' }}>
+          <span>KPIs = full portfolio · table {MA_TABLE_LIMIT}/page</span>
+          <button type="button" data-testid="ldg-ma-ar-prev" disabled={arPageSafe <= 1} onClick={() => setArTablePage(p => Math.max(1, p - 1))}
+            style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: arPageSafe <= 1 ? 'not-allowed' : 'pointer', opacity: arPageSafe <= 1 ? 0.45 : 1 }}>Previous</button>
+          <span data-testid="ldg-ma-ar-page-label">Page {arPageSafe} of {arTotalPages}</span>
+          <button type="button" data-testid="ldg-ma-ar-next" disabled={arPageSafe >= arTotalPages} onClick={() => setArTablePage(p => p + 1)}
+            style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: arPageSafe >= arTotalPages ? 'not-allowed' : 'pointer', opacity: arPageSafe >= arTotalPages ? 0.45 : 1 }}>Next</button>
+        </div>
       </window.Card>
 
       {Object.keys(dq).length > 0 && (
@@ -842,10 +877,13 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
           const apDq = apData.data_quality || {};
           const apHealth = apData.source_health || {};
           const apQLower = (apQ || '').trim().toLowerCase();
-          const apRows = (apData.suppliers || []).filter((r) => {
+          const apRowsAll = (apData.suppliers || []).filter((r) => {
             if (!apQLower) return true;
             return String(r.supplier_name || '').toLowerCase().includes(apQLower);
           });
+          const apTotalPages = Math.max(1, Math.ceil(apRowsAll.length / MA_TABLE_LIMIT) || 1);
+          const apPageSafe = Math.min(apTablePage, apTotalPages);
+          const apRows = apRowsAll.slice((apPageSafe - 1) * MA_TABLE_LIMIT, apPageSafe * MA_TABLE_LIMIT);
           return (
             <div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12, fontSize: 11, color: 'var(--text-3)' }}>
@@ -911,6 +949,14 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
                     ))}
                   </tbody>
                 </table>
+                <div data-testid="ldg-ma-ap-pager" style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', padding: '10px 12px', borderTop: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-3)' }}>
+                  <span>AP KPIs = full portfolio · table {MA_TABLE_LIMIT}/page</span>
+                  <button type="button" data-testid="ldg-ma-ap-prev" disabled={apPageSafe <= 1} onClick={() => setApTablePage(p => Math.max(1, p - 1))}
+                    style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: apPageSafe <= 1 ? 'not-allowed' : 'pointer', opacity: apPageSafe <= 1 ? 0.45 : 1 }}>Previous</button>
+                  <span data-testid="ldg-ma-ap-page-label">Page {apPageSafe} of {apTotalPages}</span>
+                  <button type="button" data-testid="ldg-ma-ap-next" disabled={apPageSafe >= apTotalPages} onClick={() => setApTablePage(p => p + 1)}
+                    style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: apPageSafe >= apTotalPages ? 'not-allowed' : 'pointer', opacity: apPageSafe >= apTotalPages ? 0.45 : 1 }}>Next</button>
+                </div>
               </window.Card>
               {Object.keys(apDq).length > 0 && (
                 <details data-testid="ldg-ma-ap-dq" style={{ marginTop: 14 }}>
@@ -939,6 +985,8 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focu
   const [stmt, setStmt] = React.useState(null);
   const [stmtErr, setStmtErr] = React.useState(null);
   const [stmtLoading, setStmtLoading] = React.useState(false);
+  const [supListPage, setSupListPage] = React.useState(1);
+  const SUP_LIST_LIMIT = 15;
 
   React.useEffect(() => {
     if (focusSupplierId) setActiveId(focusSupplierId);
@@ -1003,21 +1051,34 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focu
   }
 
   const active = suppliers.find((s) => s.contractor_id === activeId) || suppliers[0];
-  const filterItems = suppliers.map((s) => ({
-    id: s.contractor_id,
-    label: s.supplier_name || s.contractor_id,
-    sub: `${s.currency} · net ${s.net_payable}`,
-  }));
+  const supTotalPages = Math.max(1, Math.ceil(suppliers.length / SUP_LIST_LIMIT) || 1);
+  const supPageSafe = Math.min(supListPage, supTotalPages);
+  const filterItems = suppliers
+    .slice((supPageSafe - 1) * SUP_LIST_LIMIT, supPageSafe * SUP_LIST_LIMIT)
+    .map((s) => ({
+      id: s.contractor_id,
+      label: s.supplier_name || s.contractor_id,
+      sub: `${s.currency} · net ${s.net_payable}`,
+    }));
 
   return (
     <div data-testid="ldg-suppliers-root" style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
-      <LdgFilterPanel
-        title="Suppliers"
-        searchPlaceholder="Search supplier…"
-        items={filterItems}
-        activeId={active.contractor_id}
-        onSelect={setActiveId}
-      />
+      <div>
+        <LdgFilterPanel
+          title="Suppliers"
+          searchPlaceholder="Search supplier…"
+          items={filterItems}
+          activeId={active.contractor_id}
+          onSelect={setActiveId}
+        />
+        <div data-testid="ldg-suppliers-pager" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
+          <button type="button" data-testid="ldg-suppliers-prev" disabled={supPageSafe <= 1} onClick={() => setSupListPage(p => Math.max(1, p - 1))}
+            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: supPageSafe <= 1 ? 'not-allowed' : 'pointer', opacity: supPageSafe <= 1 ? 0.45 : 1 }}>Previous</button>
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Page {supPageSafe}/{supTotalPages}</span>
+          <button type="button" data-testid="ldg-suppliers-next" disabled={supPageSafe >= supTotalPages} onClick={() => setSupListPage(p => p + 1)}
+            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: supPageSafe >= supTotalPages ? 'not-allowed' : 'pointer', opacity: supPageSafe >= supTotalPages ? 0.45 : 1 }}>Next</button>
+        </div>
+      </div>
       <div>
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 15, fontWeight: 700 }} data-testid="ldg-supplier-name">{active.supplier_name}</div>

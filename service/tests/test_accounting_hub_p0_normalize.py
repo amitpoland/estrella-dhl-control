@@ -185,10 +185,20 @@ def test_list_warehouse_documents_by_type_top_level():
     from app.services import wfirma_client as wc
 
     xml = _xml_warehouse(20, "WZ")
-    with patch.object(wc, "_http_request", return_value=(200, xml)):
-        out = wc.list_warehouse_documents_by_type("WZ", limit=25)
+    captured = {}
+
+    def _capture(method, module, action, body="", **kwargs):
+        captured["body"] = body
+        return (200, xml)
+
+    with patch.object(wc, "_http_request", side_effect=_capture):
+        out = wc.list_warehouse_documents_by_type("WZ", page=2, limit=15)
     assert out["count"] == 20
     assert out["rows"][0]["number"].startswith("WZ ")
+    # Sibling page contract (nested page/start is ignored by live wFirma)
+    assert "<page>2</page>" in captured["body"]
+    assert "<limit>15</limit>" in captured["body"]
+    assert "<page><start>" not in captured["body"]
 
 
 def test_list_warehouse_mm_raises():

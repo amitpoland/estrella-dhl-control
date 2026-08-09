@@ -25,7 +25,7 @@ def test_accounting_invoice_returns_rows():
     c = _client()
     try:
         with patch("app.api.routes_accounting.wfirma_client.list_invoices_by_type",
-                   return_value={"rows": [_ROW], "count": 1}) as m:
+                   return_value={"rows": [_ROW], "count": 1, "page": 1, "limit": 15, "has_more": False}) as m:
             r = c.get("/api/v1/accounting/documents/invoice")
         assert r.status_code == 200
         body = r.json()
@@ -33,7 +33,45 @@ def test_accounting_invoice_returns_rows():
         assert body["wfirma_type"] == "normal"
         assert body["count"] == 1
         assert body["rows"][0]["number"] == "FV 1/2026"
+        assert body["limit"] == 15
+        assert body["page"] == 1
+        assert body["sort"] == "date_desc"
         assert m.call_args.args[0] == "normal"
+        assert m.call_args.kwargs.get("limit") == 15
+        assert m.call_args.kwargs.get("page") == 1
+        assert m.call_args.kwargs.get("sort") == "date_desc"
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_accounting_invoice_year_and_page_passed_to_client():
+    c = _client()
+    try:
+        with patch("app.api.routes_accounting.wfirma_client.list_invoices_by_type",
+                   return_value={"rows": [], "count": 0, "has_more": False}) as m:
+            r = c.get("/api/v1/accounting/documents/invoice?year=2025&page=2&limit=15")
+        assert r.status_code == 200
+        assert m.call_args.kwargs["page"] == 2
+        assert m.call_args.kwargs["limit"] == 15
+        assert m.call_args.kwargs["date_from"] == "2025-01-01"
+        assert m.call_args.kwargs["date_to"] == "2025-12-31"
+        body = r.json()
+        assert body["year"] == 2025
+        assert body["page"] == 2
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_accounting_invoice_all_years_no_date_window():
+    c = _client()
+    try:
+        with patch("app.api.routes_accounting.wfirma_client.list_invoices_by_type",
+                   return_value={"rows": [], "count": 0, "has_more": False}) as m:
+            r = c.get("/api/v1/accounting/documents/invoice?year=all")
+        assert r.status_code == 200
+        assert m.call_args.kwargs.get("date_from") is None
+        assert m.call_args.kwargs.get("date_to") is None
+        assert r.json()["all_years"] is True
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 

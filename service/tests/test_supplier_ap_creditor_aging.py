@@ -284,6 +284,29 @@ def test_paginate_expenses_repeated_page_terminates(monkeypatch):
     assert calls["n"] == 2  # page1 + repeated page2 stop
 
 
+def test_ma_ap_kpi_totals_independent_of_table_page_slice():
+    """Visible AP table page must not change currency_summaries KPIs."""
+    from app.services.accounting_register_paging import paginate_rows
+
+    expenses = [
+        _exp(eid=str(i), cid=f"S{i}", name=f"Sup{i}", gross="100.00", due="2021-01-10")
+        for i in range(1, 40)
+    ]
+    out = build_payables_portfolio_from_facts(
+        expenses, [], as_of="2021-07-01", period=("2021-01-01", "2021-12-31")
+    )
+    summaries = out["currency_summaries"]
+    p1 = paginate_rows(out["suppliers"], page=1, limit=15)
+    p2 = paginate_rows(out["suppliers"], page=2, limit=15)
+    assert p1["count"] == 15
+    assert p2["count"] == 15
+    assert {s["contractor_id"] for s in p1["rows"]}.isdisjoint(
+        {s["contractor_id"] for s in p2["rows"]}
+    )
+    assert out["currency_summaries"] == summaries
+    assert summaries[0]["suppliers_outstanding"] == len(out["suppliers"])
+
+
 def test_payables_route_zero_per_supplier_calls(monkeypatch):
     settings.api_key = settings.api_key or "test-key"
     from app.main import app

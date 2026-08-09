@@ -607,7 +607,7 @@ def list_client_balances(
                           description="Window start YYYY-MM-DD; default = Jan 1 this year"),
     to:      str = Query("", description="Window end YYYY-MM-DD; default = today UTC"),
     start:   int = Query(0, ge=0),
-    limit:   int = Query(25, ge=1, le=100),
+    limit:   int = Query(15, ge=1, le=100),
     country: str = Query("", description="Filter by ISO-3166 alpha-2 country"),
     q:       str = Query("", description="Case-insensitive name substring"),
     contractor: str = Query("", description="Exact wFirma contractor id"),
