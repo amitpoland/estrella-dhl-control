@@ -286,7 +286,19 @@ function deriveDetail(audit, shipment) {
     // file the endpoint reports missing).
     polishDescGenerated: audit.polish_desc_file_exists != null ? audit.polish_desc_file_exists === true : !!audit.polish_desc_filename,
     dskGenerated:        audit.dsk_file_exists != null ? audit.dsk_file_exists === true : !!audit.dsk_filename,
-    replyPackageBuilt:   !!(audit.reply_package || audit.dhl_reply_package || audit.agency_reply_package),
+    // Authority split (permanent): reply_package = DHL; agency_reply_package = agency.
+    // Never OR agency into DHL readiness — send-reply requires audit.reply_package.to.
+    replyPackageBuilt:   !!(audit.reply_package),
+    replyPackageSendReady: !!(audit.reply_package && audit.reply_package.to),
+    agencyReplyPackage:  audit.agency_reply_package || null,
+    agencyPackageStatus: (function () {
+      var arp = audit.agency_reply_package;
+      if (!arp) return 'Pending';
+      var st = String(arp.status || '').toLowerCase();
+      if (st === 'sent') return 'Sent';
+      if (st === 'queued' || st === 'built' || st) return 'Built';
+      return 'Pending';
+    })(),
     // Totals (PLN) — audit totals are authoritative; fall back to the list row
     netPln:   tot.net   != null ? tot.net   : (shipment.net   != null ? shipment.net   : null),
     grossPln: tot.gross != null ? tot.gross : (shipment.gross != null ? shipment.gross : null),
@@ -1186,8 +1198,14 @@ function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReloa
   const emailReceived = _coalesce(_done('dhl_email_received'), dhlEmailReceived);
   const descCompleted = _coalesce(_done('polish_description_generated'), d.polishDescGenerated);
   const dskCompleted  = _coalesce(_done('dsk_generated'), d.dskGenerated);
+  // DHL package completion: milestone OR audit.reply_package — never agency.
   const pkgCompleted  = _coalesce(_done('reply_package_generated'), d.replyPackageBuilt);
   const sendCompleted = _coalesce(_done('reply_sent'), replySent);
+  // Send mirrors POST /dhl/send-reply: requires reply_package with recipient "to".
+  const sendReady     = !!(d.replyPackageSendReady);
+
+  const agencyStatus  = d.agencyPackageStatus || 'Pending';
+  const agencyOnlySplit = !!(d.agencyReplyPackage) && !d.replyPackageBuilt;
 
   const emailState = emailReceived ? 'completed' : 'available';
   const descState  = descCompleted ? 'completed' : (emailReceived ? 'available' : 'blocked');
@@ -1195,7 +1213,10 @@ function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReloa
                    : (_na('dsk_generated') ? 'unavailable' : (emailReceived ? 'available' : 'blocked'));
   const pkgState   = pkgCompleted ? 'completed'
                    : ((descCompleted || dskCompleted) ? 'available' : 'blocked');
-  const sendState  = sendCompleted ? 'completed' : (pkgCompleted ? 'available' : 'blocked');
+  const sendState  = sendCompleted ? 'completed' : (sendReady ? 'available' : 'blocked');
+  const sendReason = agencyOnlySplit
+    ? 'Agency package exists. DHL reply package has not been built yet.'
+    : 'Build the DHL reply package before sending.';
 
   const B = (props) => <DhlActionButton {...props} />;
 
@@ -1204,6 +1225,27 @@ function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReloa
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>
         Clearance actions · this shipment
       </div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 12 }}>
+        <div data-testid="dhl-reply-package-status">
+          <span style={{ color: 'var(--text-3)', fontWeight: 600 }}>DHL Reply Package: </span>
+          <span style={{ fontWeight: 700, color: pkgCompleted ? 'var(--badge-green-text)' : 'var(--text-2)' }}>
+            {sendCompleted ? 'Sent' : (pkgCompleted ? 'Built' : 'Pending')}
+          </span>
+        </div>
+        <div data-testid="agency-package-status">
+          <span style={{ color: 'var(--text-3)', fontWeight: 600 }}>Agency Package: </span>
+          <span style={{ fontWeight: 700, color: agencyStatus === 'Pending' ? 'var(--text-2)' : 'var(--badge-green-text)' }}>
+            {agencyStatus}
+          </span>
+        </div>
+      </div>
+      {agencyOnlySplit && (
+        <div data-testid="agency-dhl-package-split-note" role="status"
+          style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 6, fontSize: 12, lineHeight: 1.45,
+            background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', color: 'var(--badge-amber-text)' }}>
+          Agency package exists. DHL reply package has not been built yet.
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
         <B label="Scan DHL Inbox" icon="⌕" testid="scan-dhl-inbox"
            route={'GET /api/v1/dhl/scan-inbox'}
@@ -1228,11 +1270,11 @@ function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReloa
            route={'POST /api/v1/dsk/email-package'}
            state={busy === 'pkg' ? 'running' : pkgState}
            reason="Generate the Polish description or DSK first."
-           onClick={() => run('pkg', () => window.PzApi.buildDhlReplyPackage(batchId, { awb }), 'Reply package built (not sent).')} />
+           onClick={() => run('pkg', () => window.PzApi.buildDhlReplyPackage(batchId, { awb }), 'DHL reply package built into audit.reply_package (not sent).')} />
         <B label="Send Reply to DHL" icon="↗" testid="send-reply" variant={sendState === 'available' ? 'gold' : 'outline'}
            route={'POST /api/v1/dhl/send-reply/' + batchId}
            state={busy === 'send' ? 'running' : sendState}
-           reason="Build the reply package before sending."
+           reason={sendReason}
            onClick={() => setConfirmSend(true)} />
       </div>
 
@@ -1299,8 +1341,14 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
             <InfoRow label="DHL Email"           value={dhlEmailReceived ? 'Received ✓' : 'Awaiting'} />
             <InfoRow label="Polish Description"  value={d.polishDescGenerated ? 'Generated ✓' : '—'} />
             <InfoRow label="DSK PDF"             value={d.dskGenerated ? 'Generated ✓' : '—'} />
-            <InfoRow label="Reply Package"       value={replySent ? 'Sent ✓' : (d.replyPackageBuilt ? 'Built ✓' : '—')} />
+            <InfoRow label="DHL Reply Package"   value={replySent ? 'Sent ✓' : (d.replyPackageBuilt ? 'Built ✓' : '—')} />
+            <InfoRow label="Agency Package"      value={d.agencyPackageStatus || 'Pending'} />
             <InfoRow label="Reply Sent"          value={replySent ? 'Sent ✓ — see Timeline for exact time' : 'Not sent'} />
+            {!!(d.agencyReplyPackage) && !d.replyPackageBuilt && (
+              <div data-testid="agency-dhl-package-split-info" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.4, color: 'var(--badge-amber-text)' }}>
+                Agency package exists. DHL reply package has not been built yet.
+              </div>
+            )}
           </div>
         </div>
         {/* Authority note — Detail owns per-batch writes; Console is observer-only.
@@ -1941,7 +1989,8 @@ const _EVENT_LABELS = {
   dhl_email_received:              'DHL clearance email received',
   polish_description_generated:    'Polish description generated',
   dsk_generated:                   'DSK generated',
-  reply_package_generated:         'Reply package prepared',
+  reply_package_generated:         'DHL reply package prepared',
+  agency_package_generated:        'Agency package prepared',
   reply_sent:                      'Reply sent to DHL',
   agency_forward_after_dhl_queued: 'Forwarded to customs agency',
   sad_imported:                    'SAD / ZC429 uploaded',
@@ -1975,6 +2024,7 @@ const _TIMELINE_MILESTONES = [
   'polish_description_generated',
   'dsk_generated',
   'reply_package_generated',
+  'agency_package_generated',
   'reply_sent',
   'sad_imported',
   'customs_parsed',

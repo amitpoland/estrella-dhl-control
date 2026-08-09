@@ -22,7 +22,7 @@ def _ev(*events):
 
 def test_read_model_shape_and_order():
     out = build_milestones({})
-    assert isinstance(out, list) and len(out) == 16
+    assert isinstance(out, list) and len(out) == 17
     for m in out:
         # blocked_reason is present only when state == "blocked"
         assert set(m) - {"blocked_reason"} == {"key", "label", "done", "state", "ts", "source"}
@@ -43,12 +43,12 @@ def test_polish_description_from_description_ready_event():
 
 
 def test_reply_package_from_auto_built_emitters():
-    # Slice 2A: reply-package completion accepts the three real auto-build events
-    # (self-clearance + agency paths). ``dsk_generated`` is deliberately NOT here —
-    # a DSK existing does not prove a reply package was built.
-    for e in ("dhl_reply_package_auto_built",
-              "dhl_self_clearance_reply_auto_built", "agency_package_auto_built"):
+    # DHL reply-package completion accepts DHL auto-build events only.
+    # agency_package_auto_built is a SEPARATE agency milestone.
+    for e in ("dhl_reply_package_auto_built", "dhl_self_clearance_reply_auto_built"):
         assert _ms(_ev(e))["reply_package_generated"]["done"] is True, e
+    assert _ms(_ev("agency_package_auto_built"))["reply_package_generated"]["done"] is False
+    assert _ms(_ev("agency_package_auto_built"))["agency_package_generated"]["done"] is True
 
 
 def test_reply_package_not_completed_by_dsk_generated_event_alone():
@@ -61,7 +61,10 @@ def test_reply_package_not_completed_by_dsk_generated_event_alone():
 
 def test_reply_package_from_reply_package_field_fallback():
     assert _ms({"reply_package": {"to": "x@dhl.com"}})["reply_package_generated"]["done"] is True
-    assert _ms({"agency_reply_package": {"status": "queued"}})["reply_package_generated"]["done"] is True
+    # Agency package alone must NOT complete the DHL reply-package milestone.
+    agency_only = _ms({"agency_reply_package": {"status": "queued"}})
+    assert agency_only["reply_package_generated"]["done"] is False
+    assert agency_only["agency_package_generated"]["done"] is True
 
 
 def test_reply_sent_from_dhl_or_agency_emitters():
@@ -166,9 +169,19 @@ def test_customs_parsed_from_mrn_field_when_no_event():
 def test_ts_is_earliest_matching_event():
     audit = {"timeline": [
         {"ts": "2026-07-13T12:00:00+00:00", "event": "dsk_generated"},
-        {"ts": "2026-07-13T09:00:00+00:00", "event": "agency_package_auto_built"},
+        {"ts": "2026-07-13T09:00:00+00:00", "event": "dhl_reply_package_auto_built"},
+        {"ts": "2026-07-13T10:00:00+00:00", "event": "dhl_self_clearance_reply_auto_built"},
     ]}
     assert _ms(audit)["reply_package_generated"]["ts"] == "2026-07-13T09:00:00+00:00"
+
+
+def test_agency_package_event_does_not_stamp_dhl_reply_package_ts():
+    audit = {"timeline": [
+        {"ts": "2026-07-13T09:00:00+00:00", "event": "agency_package_auto_built"},
+    ]}
+    assert _ms(audit)["reply_package_generated"]["done"] is False
+    assert _ms(audit)["reply_package_generated"]["ts"] is None
+    assert _ms(audit)["agency_package_generated"]["ts"] == "2026-07-13T09:00:00+00:00"
 
 
 def test_no_completion_without_signal():
@@ -212,7 +225,8 @@ def test_batch_detail_includes_timeline_milestones(tmp_path, monkeypatch):
                           headers={"X-API-KEY": settings.api_key or "test-key"})
     assert r.status_code == 200, r.text
     ms = {m["key"]: m for m in r.json().get("timeline_milestones", [])}
-    assert len(ms) == 16
+    assert len(ms) == 17
+    assert "agency_package_generated" in ms
     assert ms["batch_created"]["done"] is True
     assert ms["polish_description_generated"]["done"] is True   # description_ready
     assert ms["pz_created"]["done"] is True                     # pz_generated

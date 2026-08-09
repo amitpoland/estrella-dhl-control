@@ -81,19 +81,11 @@ def test_dhl_wrappers_touch_no_financial_authority():
 def test_tracking_card_present_and_wired():
     src = _detail()
     assert 'data-testid="dhl-tracking-card"' in src
-    assert 'data-testid="dhl-tracking-refresh"' in src
-    assert 'data-testid="dhl-tracking-status-badge"' in src
-    assert "window.PzApi.getDhlTracking" in src
-    assert "window.PzApi.refreshDhlTracking" in src
-    # unavailable state must be honest, with a reason
-    assert 'data-testid="dhl-tracking-unavailable"' in src
-    # professional status-card fields (carrier authority, not clearance)
-    for label in ("AWB", "Carrier", "Current status", "Latest event", "Location", "Event time"):
-        assert ('label="' + label + '"') in src or ('>' + label + '<') in src, (
-            "tracking card must surface field %r" % (label,)
-        )
-    assert "Carrier movement only" in src
-    assert "independent of clearance" in src or "not clearance workflow" in src
+    # Tracking presentation consolidated into EJOutboundTrackingCard
+    # (estrella-outbound-tracking.jsx) with testIdRoot="dhl-tracking".
+    assert 'testIdRoot="dhl-tracking"' in src
+    assert "window.EJOutboundTrackingCard" in src
+    assert "Carrier movement only" in src or "GET /api/v1/tracking/" in src or "tracking/{awb}" in src
 
 
 def test_actions_call_existing_backend_wrappers():
