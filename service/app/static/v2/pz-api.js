@@ -193,15 +193,38 @@
       return _get(`${BASE}/proforma/search${qs}`);
     },
 
-    // GET /api/v1/accounting/documents/{doc_type}  (Wave 4 Item 3A — wFirma invoices/find)
-    // doc_type ∈ { invoice, credit_note }. Returns { ok, data: { doc_type, wfirma_type, rows[], count } }
+    // GET /api/v1/accounting/documents/{doc_type}  (P0 — normalized Invoice/CN + WZ/PZ/PW/RW)
+    // doc_type ∈ { invoice, credit_note, wz, pz, pw, rw }. Returns { ok, data: { doc_type, rows[], count } }
     listAccountingDocs: (docType, start, limit) => {
       const qs = '?' + new URLSearchParams({ start: start || 0, limit: limit || 25 }).toString();
       return _get(`${BASE}/accounting/documents/${encodeURIComponent(docType)}${qs}`);
     },
 
+    // GET /api/v1/accounting/documents/{doc_type}/{id}/pdf — official Invoice/CN PDF
+    accountingDocPdfUrl: (docType, wfirmaId, disposition) =>
+      `${BASE}/accounting/documents/${encodeURIComponent(docType)}/${encodeURIComponent(wfirmaId)}/pdf?disposition=${encodeURIComponent(disposition || 'inline')}`,
+
+    openAccountingDocPdf: async (docType, wfirmaId, disposition, fallbackName) => {
+      const url = window.PzApi.accountingDocPdfUrl(docType, wfirmaId, disposition || 'inline');
+      if ((disposition || 'inline') === 'attachment') {
+        return _download(url, (fallbackName || docType) + '.pdf');
+      }
+      // View: open blob in new tab (cookie auth)
+      try {
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+        const blob = await res.blob();
+        const objUrl = window.URL.createObjectURL(blob);
+        window.open(objUrl, '_blank', 'noopener');
+        setTimeout(() => window.URL.revokeObjectURL(objUrl), 60_000);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: (err && err.message) || String(err) };
+      }
+    },
+
     // GET /api/v1/ledgers/clients  (Wave 4 Item 4 — Client Balance roster)
-    // params: { from?, to?, start?, limit?, country?, q? }. Default window = YTD.
+    // params: { from?, to?, start?, limit?, country?, q?, contractor?, currency?, status? }. Default window = YTD.
     // Returns { ok, data: { period, count, rows[], column_status } }
     // rows[]: { contractor_id, name, open, overdue_invoice_age, ytd_invoiced,
     //           last_30d (null · Backend Pending), currency, state, balance_available }

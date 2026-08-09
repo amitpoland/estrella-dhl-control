@@ -182,176 +182,8 @@ function AccRailGroup({ label, sections, active, onClick }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TAB A — Purchase Ledger
-// Backend: GET /api/v1/dashboard/batches  (PzApi.listBatches — LIVE)
-// Columns: Doc No · Date · Supplier/AWB · Items · Net · Gross · Status · wFirma
-// ═══════════════════════════════════════════════════════════════════════════════
-function PurchaseLedgerTab() {
-  const [data, setData]   = React.useState(null);
-  const [error, setError] = React.useState(null);
-  const [loading, setLoading] = React.useState(true);
-  const [filter, setFilter]   = React.useState('');
+// P0: Accounting PZ register = wFirma warehouse PZ (AccDocGrid). Batch pipeline removed.
 
-  React.useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const r = await window.PzApi.listBatches();
-      if (r.ok) {
-        setData(r.data);
-      } else {
-        setError(r.error || 'Failed to load batches');
-      }
-      setLoading(false);
-    })();
-  }, []);
-
-  if (loading) return <AccLoading />;
-  if (error)   return <AccError msg={error} />;
-
-  // Normalise: batches is the array (API returns array directly)
-  const batches = Array.isArray(data) ? data : (data && data.batches) || [];
-  const q = filter.toLowerCase();
-  const rows = batches.filter(b =>
-    !q ||
-    (b.batch_id || '').toLowerCase().includes(q) ||
-    (b.doc_no   || '').toLowerCase().includes(q) ||
-    (b.awb      || '').toLowerCase().includes(q) ||
-    (b.status   || '').toLowerCase().includes(q)
-  );
-
-  // KPI tiles from live data
-  const total      = batches.length;
-  const done       = batches.filter(b => (b.status || '').toLowerCase() === 'done').length;
-  const wfirmaSync = batches.filter(b => b.wfirma_posted).length;
-  const inProgress = batches.filter(b => !['done', 'error'].includes((b.status || '').toLowerCase())).length;
-
-  return (
-    <div style={{ padding: '20px 28px 40px' }} data-testid="tab-purchase-ledger">
-      {/* Authority disclosure — this view is the import-pipeline proxy, NOT the wFirma
-          PZ warehouse-document register. It lists EJ Dashboard goods-receipt batches
-          (GET /dashboard/batches), not booked wFirma PZ documents. */}
-      <div
-        data-testid="purchase-ledger-authority-note"
-        style={{
-          background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
-          color: 'var(--badge-amber-text)', borderRadius: 8, padding: '9px 14px',
-          fontSize: 11.5, lineHeight: 1.5, marginBottom: 14,
-        }}
-      >
-        <strong>Import pipeline — not the wFirma PZ register.</strong> This lists EJ Dashboard
-        goods-receipt batches (the import/landed-cost pipeline). It is not the wFirma PZ
-        warehouse-document authority; booked wFirma PZ documents are viewed in wFirma.
-      </div>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-        <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>
-          Purchase Ledger
-        </span>
-        <span style={{ fontSize: 9, fontFamily: 'monospace', padding: '2px 6px', borderRadius: 2, background: 'var(--accent-subtle)', color: 'var(--accent)', fontWeight: 700 }}>PZ</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 10, color: 'var(--text-3)' }}>Source: EJ Dashboard batches</span>
-        <input
-          data-testid="purchase-filter"
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-          placeholder="Filter by batch / AWB / status…"
-          style={{
-            padding: '5px 10px', fontSize: 11, borderRadius: 4,
-            border: '1px solid var(--border)', background: 'var(--card)',
-            color: 'var(--text)', width: 220,
-          }}
-        />
-      </div>
-
-      {/* KPI tiles */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
-        <AccKpiTile label="Total batches"   value={String(total)}      hint="all time" accent="var(--text)" />
-        <AccKpiTile label="In progress"     value={String(inProgress)} hint="open PZ"  accent="var(--badge-amber-text)" />
-        <AccKpiTile label="Completed"       value={String(done)}       hint="status: done" accent="var(--badge-green-text)" />
-        <AccKpiTile label="Synced to wFirma" value={String(wfirmaSync)} hint="wfirma_posted" accent="var(--accent)" />
-      </div>
-
-      {/* Table */}
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '160px 100px 1fr 80px 120px 100px 90px 110px 80px',
-          padding: '10px 14px', background: 'var(--bg-subtle)',
-          borderBottom: '1px solid var(--border)',
-          fontSize: 10, fontWeight: 700, color: 'var(--text-3)',
-          textTransform: 'uppercase', letterSpacing: '0.06em',
-        }}>
-          <div>Doc No</div>
-          <div>Date</div>
-          <div>AWB / Batch</div>
-          <div style={{ textAlign: 'right' }}>Lines</div>
-          <div style={{ textAlign: 'right' }}>Net (PLN)</div>
-          <div style={{ textAlign: 'right' }}>Gross (PLN)</div>
-          <div>Status</div>
-          <div>wFirma</div>
-          <div />
-        </div>
-
-        {rows.length === 0 ? (
-          <AccEmptyState msg={filter ? 'No batches match your filter.' : 'No purchase batches found.'} />
-        ) : rows.map(b => {
-          const docNo  = b.doc_no || b.batch_id || '—';
-          const date   = b.created_at ? b.created_at.slice(0, 10) : '—';
-          const awb    = b.awb || b.batch_id || '—';
-          const lines  = b.invoice_line_count ?? b.line_count ?? '—';
-          const net    = typeof b.net_pln === 'number' ? b.net_pln.toFixed(2) : (typeof b.net === 'number' ? b.net.toFixed(2) : '—');
-          const gross  = typeof b.gross_pln === 'number' ? b.gross_pln.toFixed(2) : (typeof b.gross === 'number' ? b.gross.toFixed(2) : '—');
-          const status = b.status || '—';
-          const wf     = b.wfirma_posted ? 'synced' : (b.wfirma_doc_id ? 'partial' : 'pending');
-          return (
-            <div
-              key={b.batch_id}
-              data-testid={`purchase-row-${b.batch_id}`}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '160px 100px 1fr 80px 120px 100px 90px 110px 80px',
-                padding: '10px 14px',
-                borderBottom: '1px solid var(--border-subtle)',
-                fontSize: 11.5, color: 'var(--text-2)', alignItems: 'center',
-              }}
-            >
-              <div style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text)', fontSize: 10.5 }}>{docNo}</div>
-              <div style={{ fontFamily: 'monospace', fontSize: 10.5 }}>{date}</div>
-              <div style={{ fontFamily: 'monospace', fontSize: 10.5, color: 'var(--accent)' }}>{awb}</div>
-              <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{lines}</div>
-              <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>{net}</div>
-              <div style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 600, color: 'var(--text)' }}>{gross}</div>
-              <div><AccStateChip state={status} /></div>
-              <div>
-                <span style={{
-                  fontSize: 9, padding: '1px 6px', borderRadius: 2, fontWeight: 700,
-                  letterSpacing: '0.04em', textTransform: 'uppercase',
-                  background: wf === 'synced' ? 'var(--badge-green-bg)' : wf === 'partial' ? 'var(--badge-amber-bg)' : 'var(--badge-neutral-bg)',
-                  color:      wf === 'synced' ? 'var(--badge-green-text)' : wf === 'partial' ? 'var(--badge-amber-text)' : 'var(--badge-neutral-text)',
-                  border:     `1px solid ${wf === 'synced' ? 'var(--badge-green-border)' : wf === 'partial' ? 'var(--badge-amber-border)' : 'var(--badge-neutral-border)'}`,
-                }}>wF · {wf}</span>
-              </div>
-              <div>
-                <button data-testid={`view-batch-${b.batch_id}`} style={{
-                  background: 'transparent', border: '1px solid var(--border)',
-                  color: 'var(--text-2)', borderRadius: 3, padding: '2px 6px',
-                  fontSize: 10, cursor: 'pointer',
-                }}>View</button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TAB B — Sales / Proforma
-// Backend: GET /api/v1/proforma/search  (PzApi.searchProformaDrafts — LIVE)
-// Columns: Draft No · Date · Client · Currency · Net · Gross · State · wFirma · Actions
-// ═══════════════════════════════════════════════════════════════════════════════
 function SalesProformaTab() {
   const [data, setData]     = React.useState(null);
   const [error, setError]   = React.useState(null);
@@ -502,6 +334,30 @@ function SalesProformaTab() {
 // ═══════════════════════════════════════════════════════════════════════════════
 function ClientLedgerTab() {
   const LedgersPage = window.LedgersPage;
+  const [preset, setPreset] = React.useState('ytd');
+  const [custom, setCustom] = React.useState({ from: '', to: '' });
+  const period = React.useMemo(() => {
+    const now = new Date();
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth();
+    if (preset === 'this_month') {
+      return { from: iso(new Date(Date.UTC(y, m, 1))), to: iso(now) };
+    }
+    if (preset === 'prev_month') {
+      const from = new Date(Date.UTC(y, m - 1, 1));
+      const to = new Date(Date.UTC(y, m, 0));
+      return { from: iso(from), to: iso(to) };
+    }
+    if (preset === 'quarter') {
+      const q = Math.floor(m / 3) * 3;
+      return { from: iso(new Date(Date.UTC(y, q, 1))), to: iso(now) };
+    }
+    if (preset === 'custom' && custom.from && custom.to) {
+      return { from: custom.from, to: custom.to };
+    }
+    return { from: `${y}-01-01`, to: iso(now) };
+  }, [preset, custom.from, custom.to]);
   if (typeof LedgersPage !== 'function') {
     return (
       <div style={{ padding: '32px 28px' }} data-testid="tab-client-ledger-fallback">
@@ -509,9 +365,33 @@ function ClientLedgerTab() {
       </div>
     );
   }
+  const presets = [
+    { id: 'this_month', label: 'This month' },
+    { id: 'prev_month', label: 'Previous month' },
+    { id: 'quarter', label: 'Quarter' },
+    { id: 'ytd', label: 'YTD' },
+    { id: 'custom', label: 'Custom' },
+  ];
   return (
     <div style={{ padding: '0 0 40px' }} data-testid="tab-client-ledger">
-      <LedgersPage />
+      <div data-testid="acc-ledger-period-bar" style={{ padding: '12px 28px 0', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600 }}>Period</span>
+        {presets.map(p => (
+          <button key={p.id} type="button" data-testid={`acc-ledger-preset-${p.id}`}
+            onClick={() => setPreset(p.id)}
+            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: preset === p.id ? 'var(--accent-subtle)' : 'var(--card)', color: 'var(--text)', fontWeight: preset === p.id ? 700 : 500, cursor: 'pointer' }}>
+            {p.label}
+          </button>
+        ))}
+        {preset === 'custom' && (
+          <>
+            <input type="date" data-testid="acc-ledger-from" value={custom.from} onChange={e => setCustom(c => ({ ...c, from: e.target.value }))} style={{ fontSize: 11, padding: '3px 6px' }} />
+            <input type="date" data-testid="acc-ledger-to" value={custom.to} onChange={e => setCustom(c => ({ ...c, to: e.target.value }))} style={{ fontSize: 11, padding: '3px 6px' }} />
+          </>
+        )}
+        <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{period.from} → {period.to}</span>
+      </div>
+      <LedgersPage periodFrom={period.from} periodTo={period.to} />
     </div>
   );
 }
@@ -1043,13 +923,13 @@ function AccountingOverview({ onJump }) {
   }, []);
   const _reasons = {
     pi: 'Source: proforma_drafts (all states) · GET /api/v1/proforma/search total',
-    inv: 'Backend Pending — wFirma invoices/find returns a page, not a grand total',
-    cn:  'Backend Pending — wFirma invoices/find returns a page, not a grand total',
-    wz:  'Backend Pending — Item 3B: WZ read undocumented in wFirma',
-    pz:  'Backend Pending — no warehouse-document PZ total authority (batch list is a capped pipeline proxy)',
-    pw:  'Backend Pending — Item 3B: PW read undocumented in wFirma',
-    rw:  'Backend Pending — Item 3B: RW read undocumented in wFirma',
-    mm:  'Backend Pending — Item 3B: MM read undocumented in wFirma',
+    inv: 'Page from wFirma invoices/find (no grand total)',
+    cn:  'Page from wFirma invoices/find (no grand total)',
+    wz:  'Page from wFirma warehouse_documents (WZ)',
+    pz:  'Page from wFirma warehouse_documents (PZ) — not the import batch pipeline',
+    pw:  'Page from wFirma warehouse_documents (PW)',
+    rw:  'Page from wFirma warehouse_documents (RW)',
+    mm:  'Unavailable — wFirma MM controller not found',
   };
   const mapStep = (code, name) => (
     <div style={{ flex: 1, minWidth: 110, background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', textAlign: 'center' }}>
@@ -1095,9 +975,25 @@ function _AccGridHeader({ title, code, color, actions }) {
       {code && <span style={{ fontSize: 9, fontWeight: 700, fontFamily: 'monospace', color: color || 'var(--accent)', background: 'var(--accent-subtle)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 6px' }}>{code}</span>}
       <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Source: wFirma</span>
       <div style={{ flex: 1 }} />
-      {(actions || []).map(a => (
-        <button key={a} data-testid={'acc-grid-action-' + a.replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '')} disabled title="Backend Pending — endpoint not yet available" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>{a}</button>
-      ))}
+      {(actions || []).map(a => {
+        const nav = a && a.nav;
+        const label = typeof a === 'string' ? a : a.label;
+        const click = (a && typeof a.onClick === 'function')
+          ? a.onClick
+          : (nav ? () => { if (typeof window !== 'undefined' && window.location) { window.location.hash = nav; } } : null);
+        const disabled = !click;
+        return (
+          <button
+            key={label}
+            type="button"
+            data-testid={'acc-grid-action-' + String(label).replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '')}
+            disabled={disabled}
+            title={disabled ? ((a && a.title) || 'Not available from Accounting Hub (read-only)') : ((a && a.title) || label)}
+            onClick={() => { if (click) click(); }}
+            style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: disabled ? 'var(--text-3)' : 'var(--text)', fontSize: 11, fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1 }}
+          >{label}</button>
+        );
+      })}
     </div>
   );
 }
@@ -1108,7 +1004,7 @@ function _AccPendingTable({ cols, note }) {
         <thead><tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
           {cols.map((c, i) => <th key={c || i} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
         </tr></thead>
-        <tbody><tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>— · Backend Pending{note ? ` · ${note}` : ''}</td></tr></tbody>
+        <tbody><tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>— · Unavailable{note ? ` · ${note}` : ''}</td></tr></tbody>
       </table>
     </div>
   );
@@ -1117,19 +1013,19 @@ const _ACC_DOC_TITLES = {
   inv: { t: 'Invoice', c: 'INV', color: 'var(--badge-green-text)', wh: false },
   cn:  { t: 'Credit Note', c: 'CN', color: 'var(--badge-amber-text)', wh: false },
   wz:  { t: 'WZ — Outbound', c: 'WZ', color: 'var(--badge-purple-text)', wh: true },
+  pz:  { t: 'PZ — Inbound', c: 'PZ', color: 'var(--accent)', wh: true },
   pw:  { t: 'PW — Internal in', c: 'PW', color: 'var(--badge-blue-text)', wh: true },
   rw:  { t: 'RW — Internal out', c: 'RW', color: 'var(--badge-red-text)', wh: true },
-  mm:  { t: 'MM — Transfer', c: 'MM', color: 'var(--badge-neutral-text)', wh: true },
+  mm:  { t: 'MM — Transfer', c: 'MM', color: 'var(--badge-neutral-text)', wh: true, blocked: true },
 };
-// Documented live reads (Wave 4 Item 3A): Invoice / Credit Note via wFirma
-// invoices/find. WZ/PW/RW/MM stay Backend Pending (Item 3B — undocumented).
-const _ACC_DOC_LIVE = { inv: 'invoice', cn: 'credit_note' };
-function AccDocGrid({ sectionId }) {
+// Live reads: Invoice/CN + warehouse WZ/PZ/PW/RW. MM blocked (controller not found).
+const _ACC_DOC_LIVE = { inv: 'invoice', cn: 'credit_note', wz: 'wz', pz: 'pz', pw: 'pw', rw: 'rw' };
+function AccDocGrid({ sectionId, onNav }) {
   const m = _ACC_DOC_TITLES[sectionId] || { t: sectionId, c: null, wh: false };
   const cols = m.wh
-    ? ['Number', 'Date', 'Party', 'Items', 'Linked', 'State', 'wFirma', 'View']
-    : ['Number', 'Date', 'Party', 'Net', 'Tax', 'Gross', 'Cur', 'State', 'wFirma', 'View'];
-  const docType = _ACC_DOC_LIVE[sectionId];
+    ? ['Type', 'Number', 'Date', 'Party', 'Net', 'Gross', 'AWB', 'Actions']
+    : ['Number', 'Date', 'Party', 'Net', 'Tax', 'Gross', 'Cur', 'Payment', 'Due', 'Actions'];
+  const docType = m.blocked ? null : _ACC_DOC_LIVE[sectionId];
   const [st, setSt] = React.useState({ loading: !!docType, error: null, rows: null });
   React.useEffect(() => {
     if (!docType) return;
@@ -1142,17 +1038,49 @@ function AccDocGrid({ sectionId }) {
     }).catch(e => { if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null }); });
     return () => { cancelled = true; };
   }, [docType]);
-  const td = { padding: '9px 12px', fontSize: 11.5, color: 'var(--text-2)' };
-  const tdm = { ...td, fontFamily: 'monospace' };
+  const actions = m.wh
+    ? (
+        m.c === 'PZ'
+          ? [{ label: '+ New PZ', nav: '#dashboard', title: 'Open canonical PZ / goods-receipt workflow (navigate only)' }]
+          : [{ label: `+ New ${m.c}`, nav: null, title: `${m.c} create is not owned by Accounting Hub` }]
+      )
+    : [
+        { label: '+ New Proforma', nav: '#proforma', title: 'Open canonical Proforma workflow' },
+      ];
+  if (onNav && !m.wh) {
+    actions[0] = {
+      label: '+ New Proforma',
+      nav: null,
+      title: 'Open canonical Proforma workflow',
+      onClick: () => onNav('proforma'),
+    };
+  }
+  if (onNav && m.c === 'PZ') {
+    actions[0] = {
+      label: '+ New PZ',
+      nav: null,
+      title: 'Open canonical PZ workflow (navigate only)',
+      onClick: () => onNav('dashboard'),
+    };
+  }
+  const td = { padding: '7px 10px', fontSize: 11.5, color: 'var(--text-2)', whiteSpace: 'nowrap' };
+  const tdm = { ...td, fontFamily: 'monospace', textAlign: 'right' };
+  const thAmt = { padding: '8px 10px', textAlign: 'right', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', position: 'sticky', top: 0, background: 'var(--bg-subtle)' };
+  const th = { padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', position: 'sticky', top: 0, background: 'var(--bg-subtle)' };
+  const openPdf = (row, disposition) => {
+    if (!row || !row.wfirma_id || !window.PzApi.openAccountingDocPdf) return;
+    window.PzApi.openAccountingDocPdf(docType, row.wfirma_id, disposition, row.number);
+  };
   return (
     <div data-testid={`acc-grid-${sectionId}`} style={{ padding: '20px 28px' }}>
-      <_AccGridHeader title={m.t} code={m.c} color={m.color} actions={['↻ Sync', '↓ Export', `+ New ${m.c || ''}`]} />
-      {!docType && <_AccPendingTable cols={cols} note="GET /api/v1/accounting/{type}" />}
+      <_AccGridHeader title={m.t} code={m.c} color={m.color} actions={actions} />
+      {m.blocked && <_AccPendingTable cols={cols} note="MM unavailable — wFirma controller not found (not Backend Pending)" />}
+      {!m.blocked && !docType && <_AccPendingTable cols={cols} note="GET /api/v1/accounting/{type}" />}
       {docType && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', maxHeight: 'calc(100vh - 220px)' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-              {cols.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
+            <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>
+              {cols.map(c => <th key={c} style={['Net', 'Tax', 'Gross'].includes(c) ? thAmt : th}>{c}</th>)}
             </tr></thead>
             <tbody>
               {st.loading && <tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading from wFirma…</td></tr>}
@@ -1160,16 +1088,36 @@ function AccDocGrid({ sectionId }) {
               {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={cols.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No {m.t.toLowerCase()} documents.</td></tr>}
               {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
                 <tr key={r.wfirma_id || i} data-testid={`acc-grid-${sectionId}-row`} style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
-                  <td style={{ ...tdm, color: 'var(--text)' }}>{r.number}</td>
+                  {m.wh && <td style={{ ...td, color: 'var(--text)', fontWeight: 700 }}>{r.doc_type || m.c}</td>}
+                  <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text)' }}>{r.number}</td>
                   <td style={td}>{r.date}</td>
-                  <td style={{ ...td, color: 'var(--text)' }}>{r.party}</td>
-                  <td style={tdm}>{r.net}</td>
-                  <td style={tdm}>{r.tax}</td>
-                  <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
-                  <td style={td}>{r.currency}</td>
-                  <td style={{ ...td, fontSize: 11 }}>{r.state}</td>
-                  <td style={{ ...td, fontSize: 11, color: 'var(--text-3)' }}>{r.wfirma_id ? 'wF' : '—'}</td>
-                  <td style={{ ...td, fontSize: 11, color: 'var(--text-3)' }}>View</td>
+                  <td style={{ ...td, color: 'var(--text)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.party_name || r.party}</td>
+                  {m.wh ? (
+                    <>
+                      <td style={tdm}>{r.net}</td>
+                      <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
+                      <td style={{ ...td, color: 'var(--text-3)' }}>{r.awb || '—'}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td style={tdm}>{r.net}</td>
+                      <td style={tdm}>{r.tax}</td>
+                      <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
+                      <td style={td}>{r.currency}</td>
+                      <td style={{ ...td, fontSize: 11 }}>{r.payment_state || r.state}</td>
+                      <td style={td}>{r.payment_due_date || '—'}</td>
+                    </>
+                  )}
+                  <td style={{ ...td }}>
+                    {!m.wh && r.pdf_available !== false && r.wfirma_id ? (
+                      <span style={{ display: 'inline-flex', gap: 6 }}>
+                        <button type="button" data-testid={`acc-pdf-view-${sectionId}`} onClick={() => openPdf(r, 'inline')} style={{ padding: '3px 8px', fontSize: 10, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', cursor: 'pointer' }}>View PDF</button>
+                        <button type="button" data-testid={`acc-pdf-dl-${sectionId}`} onClick={() => openPdf(r, 'attachment')} style={{ padding: '3px 8px', fontSize: 10, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', cursor: 'pointer' }}>Download</button>
+                      </span>
+                    ) : m.wh ? (
+                      <span style={{ color: 'var(--text-3)', fontSize: 10 }} title="Warehouse PDF unproven">—</span>
+                    ) : null}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1184,7 +1132,7 @@ function AccDocGrid({ sectionId }) {
 // Statement authority). "Last 30d" and due-date Overdue are Backend Pending —
 // rendered honestly ("—", disclosed), never faked.
 const _ACC_BAL_COLS = ['Client', 'Open', 'Overdue', 'Last 30d', 'YTD', 'Cur', 'State'];
-function AccClientBalance() {
+function AccClientBalance({ onOpenLedger }) {
   const [st, setSt] = React.useState({ loading: true, error: null, rows: null, period: null });
   React.useEffect(() => {
     let cancelled = false;
@@ -1198,31 +1146,41 @@ function AccClientBalance() {
     return () => { cancelled = true; };
   }, []);
   const td = { padding: '9px 12px', fontSize: 11.5, color: 'var(--text-2)' };
-  const tdm = { ...td, fontFamily: 'monospace' };
+  const tdm = { ...td, fontFamily: 'monospace', textAlign: 'right' };
   const dash = <span style={{ color: 'var(--text-3)' }}>—</span>;
   return (
     <div data-testid="acc-balance" style={{ padding: '20px 28px' }}>
-      <_AccGridHeader title="Client Balance" actions={['↻ Refresh', '↓ Export']} />
+      <_AccGridHeader title="Client Balance" actions={[
+        { label: 'Open Client Ledger', nav: null, title: 'Reuse existing statement authority' },
+      ]} />
+      <div style={{ marginBottom: 10 }}>
+        <button type="button" data-testid="acc-balance-open-ledger" onClick={() => onOpenLedger && onOpenLedger()}
+          style={{ padding: '5px 12px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+          Open Client Ledger (statement authority)
+        </button>
+      </div>
       {st.period && (
         <div style={{ fontSize: 10.5, color: 'var(--text-3)', margin: '-6px 0 10px' }}>
-          Period {st.period.from} → {st.period.to} (YTD default) · Overdue = invoice-age basis · Last 30d Backend Pending
+          Period {st.period.from} → {st.period.to} (YTD default) · Overdue = invoice-age basis
         </div>
       )}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-            {_ACC_BAL_COLS.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
+            {_ACC_BAL_COLS.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: ['Open', 'Overdue', 'YTD'].includes(c) ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
           </tr></thead>
           <tbody>
             {st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading balances from wFirma…</td></tr>}
             {st.error && !st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} data-testid="acc-balance-error" style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable: {st.error}</td></tr>}
             {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No clients in Customer Master.</td></tr>}
             {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
-              <tr key={r.contractor_id || i} data-testid="acc-balance-row" style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+              <tr key={r.contractor_id || i} data-testid="acc-balance-row"
+                onClick={() => onOpenLedger && onOpenLedger()}
+                style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: onOpenLedger ? 'pointer' : 'default' }}>
                 <td style={{ ...td, color: 'var(--text)' }}>{r.name || r.contractor_id || '—'}</td>
-                <td style={tdm}>{r.balance_available ? (r.open != null ? r.open : <span title="Multi-currency — see per-currency breakdown" style={{ color: 'var(--text-3)' }}>multi</span>) : dash}</td>
-                <td style={tdm} title="Invoice-age basis; due-date overdue Backend Pending">{r.balance_available && r.overdue_invoice_age != null ? r.overdue_invoice_age : dash}</td>
-                <td style={td} title="Backend Pending — no existing authority">{dash}</td>
+                <td style={tdm}>{r.balance_available ? (r.open != null ? r.open : <span title="Multi-currency — see Client Ledger" style={{ color: 'var(--text-3)' }}>multi</span>) : dash}</td>
+                <td style={tdm} title="Invoice-age basis">{r.balance_available && r.overdue_invoice_age != null ? r.overdue_invoice_age : dash}</td>
+                <td style={td} title="No authority yet">{dash}</td>
                 <td style={tdm}>{r.balance_available && r.ytd_invoiced != null ? r.ytd_invoiced : dash}</td>
                 <td style={td}>{r.currency || '—'}</td>
                 <td style={{ ...td, fontSize: 11 }}>{r.balance_available ? r.state : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
@@ -1239,12 +1197,12 @@ function AccSupplierLedger() {
     <div data-testid="acc-supplier-ledger" style={{ padding: '20px 28px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>Supplier Ledger</h2>
-        <select data-testid="acc-supplier-select" disabled style={{ fontSize: 11, padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)' }}><option>All suppliers</option></select>
-        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Source: wFirma</span>
-        <div style={{ flex: 1 }} />
-        <button disabled title="Backend Pending" style={{ padding: '5px 10px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text-3)', fontSize: 11, fontWeight: 600, cursor: 'not-allowed', opacity: 0.6 }}>↓ Export</button>
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Source: wFirma expenses + payments</span>
       </div>
-      <_AccPendingTable cols={['Date', 'Supplier', 'Reference', 'Description', 'Debit', 'Credit', 'Balance']} note="GET /api/v1/ledgers/suppliers" />
+      <div style={{ background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', color: 'var(--badge-amber-text)', borderRadius: 8, padding: '12px 14px', fontSize: 12, lineHeight: 1.5 }} data-testid="acc-supplier-ledger-p0-note">
+        P0: production AP totals are not shown until the expense−payments reconciliation proof passes.
+        Supplier payable aging remains deferred. Reconciliation fixture lives in tests only.
+      </div>
     </div>
   );
 }
@@ -1397,10 +1355,9 @@ function AccountingHub({ onNav }) {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {section === 'overview'       && <AccountingOverview onJump={setSection} />}
         {section === 'pi'             && <SalesProformaTab />}
-        {section === 'pz'             && <PurchaseLedgerTab />}
         {section === 'clientLedger'   && <ClientLedgerTab />}
-        {['inv', 'cn', 'wz', 'pw', 'rw', 'mm'].includes(section) && <AccDocGrid sectionId={section} />}
-        {section === 'balance'        && <AccClientBalance />}
+        {['inv', 'cn', 'wz', 'pz', 'pw', 'rw', 'mm'].includes(section) && <AccDocGrid sectionId={section} onNav={onNav} />}
+        {section === 'balance'        && <AccClientBalance onOpenLedger={() => setSection('clientLedger')} />}
         {section === 'supplierLedger' && <AccSupplierLedger />}
         {section === 'wfirma'         && <AccWfirmaSyncInline onNav={onNav} />}
         {section === 'audit'          && <AuditTrailTab />}

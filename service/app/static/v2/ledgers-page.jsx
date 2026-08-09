@@ -95,7 +95,9 @@ function LdgStatTile({ label, value, sub, tone, alert }) {
 }
 
 // ── Header (sub-tabs + global wFirma sync state) ───────────────────────
-function LedgersPage() {
+function LedgersPage(props) {
+  const periodFrom = props && props.periodFrom;
+  const periodTo = props && props.periodTo;
   const [tab, setTab] = React.useState('clients');
   const [selectedRow, setSelectedRow] = React.useState(null);
   // HONEST load model (replaces the old fabricated static sync-age chip):
@@ -105,6 +107,7 @@ function LedgersPage() {
   const [loadInfo, setLoadInfo] = React.useState({ status: 'loading', at: null, count: null, error: null });
   const [refreshKey, setRefreshKey] = React.useState(0);
   const _t = (d) => d ? d.toLocaleTimeString('en-GB') : '';
+  React.useEffect(() => { setRefreshKey(k => k + 1); }, [periodFrom, periodTo]);
 
   return (
     <div>
@@ -185,6 +188,7 @@ function LedgersPage() {
       {tab === 'clients'
         ? <ClientLedgerView onSelectRow={setSelectedRow} selectedRow={selectedRow}
             refreshKey={refreshKey}
+            periodFrom={periodFrom} periodTo={periodTo}
             onLoadInfo={(info) => setLoadInfo(info)} />
         : <SupplierLedgerView />}
 
@@ -203,21 +207,23 @@ function LedgersPage() {
 // statement. Every figure below now comes from the canonical ledger read
 // authority (routes_ledgers.py → live wFirma reads). No value is fabricated:
 // a failed read renders its own honest state, never a placeholder number.
-function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) {
+function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, periodFrom, periodTo }) {
   const [clients, setClients] = React.useState(null);      // null = loading
   const [listErr, setListErr] = React.useState(null);
   const [active, setActive]   = React.useState('');
   const [stmt, setStmt]       = React.useState({ status: 'idle', data: null, err: null });
+  const [currencyFilter, setCurrencyFilter] = React.useState('');
+  const [statusFilter, setStatusFilter] = React.useState('');
+  const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
 
   // Live client-balance list. Re-runs on ↻ Refresh (refreshKey).
   React.useEffect(() => {
     let gone = false;
     setClients(null); setListErr(null);
-    // Shared roster read: routes through the PzApi transport authority so this
-    // page and Accounting Overview reuse ONE live /ledgers/clients?limit=100 read
-    // per navigation (short TTL, in-flight coalesced). Manual ↻ Refresh
-    // (refreshKey > 0) forces a real new backend read, bypassing the cache.
-    window.PzApi.listClientBalancesShared({ limit: 100 }, { force: refreshKey > 0 })
+    const params = { limit: 100, from: period.from, to: period.to };
+    if (currencyFilter) params.currency = currencyFilter;
+    if (statusFilter) params.status = statusFilter;
+    window.PzApi.listClientBalancesShared(params, { force: refreshKey > 0 || !!(periodFrom && periodTo) })
       .then(r => {
         if (gone) return;
         const rows = (r && r.rows) || [];
@@ -234,7 +240,7 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) 
         onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: (e && e.message) || '' });
       });
     return () => { gone = true; };
-  }, [refreshKey]);
+  }, [refreshKey, period.from, period.to, currencyFilter, statusFilter]);
 
   const c = (clients || []).find(x => x.contractor_id === active) || null;
 
@@ -244,12 +250,12 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) 
     if (!active) { setStmt({ status: 'idle', data: null, err: null }); return; }
     let gone = false;
     setStmt({ status: 'loading', data: null, err: null });
-    const w = LDG_WINDOW();
+    const w = period;
     window.EstrellaShared.apiFetch(`/api/v1/ledgers/clients/${encodeURIComponent(active)}/statement.json?from=${w.from}&to=${w.to}`)
       .then(r => { if (!gone) setStmt({ status: 'ok', data: r, err: null }); })
       .catch(e => { if (!gone) setStmt({ status: 'error', data: null, err: (e && e.message) || 'statement read failed' }); });
     return () => { gone = true; };
-  }, [active, refreshKey]);
+  }, [active, refreshKey, period.from, period.to]);
 
   if (clients === null) {
     return <div data-testid="ldg-clients-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading client balances from wFirma…</div>;
@@ -268,13 +274,26 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) 
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
-      {/* Left: client filter list (live rows; '—' when the wFirma read for a
-          row failed — balance_available:false is an honest backend state) */}
       <div>
         <LdgFilterPanel
           title="Clients"
           searchPlaceholder="Search clients…"
-          extraFilters={[]}
+          extraFilters={[
+            {
+              id: 'currency',
+              label: 'Currency',
+              value: currencyFilter,
+              onChange: setCurrencyFilter,
+              options: ['', 'PLN', 'EUR', 'USD', 'GBP'],
+            },
+            {
+              id: 'status',
+              label: 'Status',
+              value: statusFilter,
+              onChange: setStatusFilter,
+              options: ['', 'outstanding', 'clear', 'unknown'],
+            },
+          ]}
           items={clients.map(x => ({
             id: x.contractor_id, label: x.name || x.contractor_id,
             sub: [x.country, x.vat_id].filter(Boolean).join(' · '),
@@ -286,8 +305,6 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) 
           activeId={active}
           onSelect={setActive}
         />
-        {/* limit=100 is the route maximum; equal counts mean the roster MAY be
-            truncated — say so instead of silently hiding clients. */}
         {clients.length >= 100 && (
           <div data-testid="ldg-clients-truncated" style={{ marginTop: 8, fontSize: 10.5, color: 'var(--badge-amber-text)' }}>
             Showing the first 100 clients — the list may be truncated (backend pagination pending).
@@ -295,23 +312,22 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo }) 
         )}
       </div>
 
-      {/* Right: header card + statement table */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {c && <ClientHeaderCard client={c} stmt={stmt} />}
-        {c && <ClientStatementTable client={c} stmt={stmt} onRowClick={onSelectRow} selectedId={selectedRow && selectedRow.id} />}
+        {c && <ClientHeaderCard client={c} stmt={stmt} period={period} />}
+        {c && <ClientStatementTable client={c} stmt={stmt} period={period} onRowClick={onSelectRow} selectedId={selectedRow && selectedRow.id} />}
       </div>
     </div>
   );
 }
 
-function ClientHeaderCard({ client: c, stmt }) {
+function ClientHeaderCard({ client: c, stmt, period }) {
   // LDG-1: every KPI reads the /ledgers/clients row (live wFirma) or renders
   // an honest missing state. Credit-limit / KUKE utilisation bars and
   // inventory-exposure tiles from the old mock are NOT rendered as numbers —
   // no ledger authority serves them yet (see backend-pending note below).
   const unavailable = c.balance_available === false;
   const stmtGen = stmt && stmt.status === 'ok' && stmt.data ? (stmt.data.generated_at || '') : '';
-  const w = LDG_WINDOW();
+  const w = period || LDG_WINDOW();
   const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(c.contractor_id)}/statement.pdf?from=${w.from}&to=${w.to}`;
   return (
     <window.Card>
@@ -398,7 +414,7 @@ function LdgAgingStrip({ buckets }) {
 // aging_per_currency from GET /ledgers/clients/{id}/statement.json. The old
 // synthetic rows and the fabricated aging strip are gone; every state
 // (loading / error / empty) is honest.
-function ClientStatementTable({ client, stmt, onRowClick, selectedId }) {
+function ClientStatementTable({ client, stmt, onRowClick, selectedId, period }) {
   if (stmt.status === 'loading' || stmt.status === 'idle') {
     return <window.Card><div data-testid="ldg-stmt-loading" style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>Loading statement from wFirma…</div></window.Card>;
   }
@@ -416,7 +432,7 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId }) {
   const entriesBy = d.entries_per_currency || {};
   const totalsBy = d.totals_per_currency || {};
   const agingBy = d.aging_per_currency || {};
-  const w = LDG_WINDOW();
+  const w = period || LDG_WINDOW();
   const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(client.contractor_id)}/statement.pdf?from=${w.from}&to=${w.to}`;
 
   const TYPE_LABEL = { invoice: 'Invoice', correction: 'Correction', payment: 'Payment', proforma: 'Proforma' };
@@ -557,9 +573,22 @@ function LdgFilterPanel({ title, searchPlaceholder, items, activeId, onSelect, e
       </div>
       <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
         <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Filters</div>
-        {extraFilters.map(f => (
-          <label key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '3px 0', color: 'var(--text-2)', cursor: 'pointer' }}>
-            <input type="checkbox" /> {f.label}
+        {(extraFilters || []).length === 0 && (
+          <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>Search above · period presets on Accounting Hub</div>
+        )}
+        {(extraFilters || []).map(f => (
+          <label key={f.id} style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, padding: '4px 0', color: 'var(--text-2)' }}>
+            <span>{f.label}</span>
+            <select
+              data-testid={`ldg-filter-${f.id}`}
+              value={f.value || ''}
+              onChange={(e) => f.onChange && f.onChange(e.target.value)}
+              style={{ fontSize: 11, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)' }}
+            >
+              {(f.options || []).map(opt => (
+                <option key={opt || 'all'} value={opt}>{opt || 'All'}</option>
+              ))}
+            </select>
           </label>
         ))}
       </div>
