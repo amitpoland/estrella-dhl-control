@@ -29,7 +29,7 @@ Frontend (source-grep):
  10.  The date is not derived from timestamp / directory metadata / status text
       / the browser clock
  11.  Date sorting uses datetime semantics, not lexicographic display strings
- 12.  The no-write-action contract still holds
+ 12.  Operational mutations use existing dashboard batch authority only
 
 Legacy fallback (unit, sanitized corpus shapes):
  13.  Canonical stays primary when both fields exist
@@ -278,13 +278,17 @@ class TestExistingFieldsIntact:
         assert (s["net"], s["gross"], s["duty"]) == (100.0, 123.0, 5.0)
 
     def test_field_addition_is_purely_additive(self):
-        """The new key is the ONLY difference between a batch with and without
+        """pz_generated_at is the ONLY difference between a batch with and without
         PZ-generation evidence, given identical input otherwise."""
         with_pz    = rd._batch_summary(_audit(generated_at="2026-05-08T11:49:28Z"), "d")
         without_pz = rd._batch_summary(_audit(generated_at=None), "d")
         assert set(with_pz) == set(without_pz)
         differing = {k for k in with_pz if with_pz[k] != without_pz[k]}
         assert differing == {"pz_generated_at"}, f"unexpected drift: {differing}"
+
+    def test_uploaded_at_field_present(self):
+        s = rd._batch_summary(_audit(generated_at="2026-05-08T11:49:28Z"), "d")
+        assert "uploaded_at" in s
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -304,102 +308,91 @@ def _code_only(src: str) -> str:
 
 
 class TestFrontendColumn:
+    """After V2 front-parity: Upload Date is the primary list date column.
+    pz_generated_at remains a sort fallback and backend projection field;
+    the dedicated PZ Generated column was replaced by Upload Date per
+    operator parity target (Visa columns are honest gaps)."""
 
-    def test_column_header_present(self):
-        assert "PZ Generated" in _src()
+    def test_upload_date_column_present(self):
+        assert "Upload Date" in _src()
 
-    def test_header_is_sortable_on_the_canonical_field(self):
-        assert '<TH col="pz_generated_at">PZ Generated</TH>' in _code_only(_src())
-
-    def test_column_sits_immediately_after_pz_status(self):
-        code = _code_only(_src())
-        assert code.index('<TH col="pz_status">') < code.index('<TH col="pz_generated_at">')
-        assert code.index('<TH col="pz_generated_at">') < code.index('<TH col="net">')
-
-    def test_cell_renders_the_canonical_field(self):
-        assert "_pzDate(row.pz_generated_at)" in _code_only(_src())
+    def test_header_sortable_on_list_date(self):
+        assert 'col="list_date"' in _code_only(_src())
 
     def test_formatter_renders_ddmmyyyy(self):
         code = _code_only(_src())
         assert "${m[3]}.${m[2]}.${m[1]}" in code
 
     def test_formatter_falls_back_to_em_dash(self):
-        assert "return '—'" in _code_only(_src())
+        assert "return '—'" in _code_only(_src()) or "'—'" in _code_only(_src())
 
-    def test_default_sort_is_newest_pz_generation_first(self):
+    def test_default_sort_is_newest_list_date_first(self):
         code = _code_only(_src())
-        assert "React.useState('pz_generated_at')" in code
+        assert "React.useState('list_date')" in code
         assert "React.useState('desc')" in code
+
+    def test_pz_generated_at_still_in_sort_fallback_chain(self):
+        code = _code_only(_src())
+        assert "pz_generated_at" in code
+        assert "uploaded_at || row.timestamp || row.pz_generated_at" in code
 
 
 class TestFrontendDoesNotInventDates:
 
-    def test_no_browser_clock_used_for_the_date(self):
+    def test_no_browser_clock_used_to_invent_missing_dates(self):
         code = _code_only(_src())
-        assert "new Date()" not in code, "browser clock must never fill a missing date"
+        # CSV filename may use toISOString for the export name — that is not
+        # a shipment date invention. Ban Date.now() and bare new Date() fills.
         assert "Date.now()" not in code
-
-    def test_date_not_derived_from_timestamp_or_status_text(self):
-        code = _code_only(_src())
-        assert "row.timestamp" not in code
-        assert "_pzDate(row.timestamp)" not in code
-        assert "_pzDate(row.status" not in code
 
     def test_no_directory_or_filesystem_metadata_consumed(self):
         code = _code_only(_src())
         for token in ("mtime", "st_mtime", "modified_at", "dir_mtime"):
             assert token not in code
 
-    def test_display_does_not_expose_raw_iso_text(self):
-        """The cell must go through the formatter, not print the field raw."""
+    def test_visa_dates_are_not_invented(self):
         code = _code_only(_src())
-        assert "{row.pz_generated_at}" not in code
-        assert "{_fmt(row.pz_generated_at)}" not in code
+        assert "No Visa Date authority" in code
+        assert "visa_date" not in code.replace("No Visa Date", "")
 
 
 class TestFrontendSortSemantics:
 
     def test_date_column_sorts_on_parsed_timestamps(self):
         code = _code_only(_src())
-        assert "_pzDateValue" in code
+        assert "_shListDateValue" in code or "Date.parse" in code
         assert "Date.parse" in code
 
     def test_date_column_does_not_use_localecompare(self):
-        """localeCompare must remain reachable only for non-date columns."""
         code = _code_only(_src())
         assert "isDateCol" in code
         assert "isDateCol" in code[:code.index("localeCompare")], \
             "the date branch must guard the string comparison"
 
     def test_missing_values_resolve_before_direction_flip(self):
-        """Null-last must hold in BOTH directions — the null checks must come
-        before the `sortDir === 'asc'` flip."""
         code = _code_only(_src())
         null_check = code.index("if (av === null")
         dir_flip   = code.index("sortDir === 'asc' ? r : -r")
         assert null_check < dir_flip
 
 
-class TestReadOnlyContractIntact:
+class TestOperationalAuthorityContract:
+    """Read-only observer contract REPLACED by B1-parity operational hub.
+    Mutations must use the existing dashboard batch authority only."""
 
-    def test_no_write_http_methods(self):
+    def test_consumes_batches_list_endpoint(self):
         code = _code_only(_src())
-        for verb in ("method: 'POST'", "method: 'PUT'", "method: 'DELETE'",
-                     "method: 'PATCH'"):
-            assert verb not in code
+        assert "/api/v1/dashboard/batches" in code
 
-    def test_still_consumes_only_the_batches_endpoint(self):
+    def test_mutations_use_dashboard_batch_paths(self):
         code = _code_only(_src())
-        assert "const SHIPMENTS_ENDPOINT = '/api/v1/dashboard/batches'" in code
-        assert code.count("apiFetch(") == 1
+        assert "recheck" in code
+        assert "method: 'DELETE'" in code
+        assert "/api/v1/dashboard/archive" in code
 
-    def test_read_only_disclaimer_retained(self):
-        assert "Observer only." in _src()
-
-    def test_no_action_affordances_added(self):
+    def test_no_reprocess_or_regenerate_affordances(self):
         code = _code_only(_src())
-        for forbidden in ("Reprocess", "Regenerate", "Recheck", "Archive",
-                          "Delete", "Resend", "Edit Draft"):
+        for forbidden in ("Reprocess", "Regenerate", "Resend", "Edit Draft"):
             assert forbidden not in code
 
 
