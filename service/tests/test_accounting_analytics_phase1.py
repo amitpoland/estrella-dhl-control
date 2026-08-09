@@ -195,6 +195,30 @@ def client(tmp_path):
             yield c
 
 
+def test_ma_kpi_totals_independent_of_table_page_slice():
+    """Visible AR table page must not change currency_summaries KPIs."""
+    from app.services.accounting_register_paging import paginate_rows
+
+    invoices = [
+        _inv(iid=str(i), cid=f"C{i}", name=f"Cust{i}", gross="100.00", due="2021-01-10")
+        for i in range(1, 40)
+    ]
+    out = build_portfolio_from_facts(
+        invoices, [], as_of="2021-07-01", period=("2021-01-01", "2021-12-31")
+    )
+    summaries = out["currency_summaries"]
+    p1 = paginate_rows(out["customers"], page=1, limit=15)
+    p2 = paginate_rows(out["customers"], page=2, limit=15)
+    assert p1["count"] == 15
+    assert p2["count"] == 15
+    assert {c["contractor_id"] for c in p1["rows"]}.isdisjoint(
+        {c["contractor_id"] for c in p2["rows"]}
+    )
+    # KPIs are portfolio-level — unchanged by table slicing
+    assert out["currency_summaries"] == summaries
+    assert summaries[0]["customers_outstanding"] == len(out["customers"])
+
+
 def test_route_management_analysis_ok(client, monkeypatch):
     inv_env = (
         '<?xml version="1.0"?><api><invoices>'

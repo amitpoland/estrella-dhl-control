@@ -1019,25 +1019,76 @@ const _ACC_DOC_TITLES = {
   mm:  { t: 'MM — Transfer', c: 'MM', color: 'var(--badge-neutral-text)', wh: true, blocked: true },
 };
 // Live reads: Invoice/CN + warehouse WZ/PZ/PW/RW. MM blocked (controller not found).
+// Shared register contract: year + page + limit=15 + sort=date_desc (backend-authoritative).
 const _ACC_DOC_LIVE = { inv: 'invoice', cn: 'credit_note', wz: 'wz', pz: 'pz', pw: 'pw', rw: 'rw' };
+const _ACC_PAGE_LIMIT = 15;
+function _accDefaultYear() { return String(new Date().getFullYear()); }
+function AccRegisterPager({ page, hasMore, loading, onPrev, onNext, year, years, onYear, testId }) {
+  const btn = {
+    padding: '5px 12px', fontSize: 11, borderRadius: 5, border: '1px solid var(--border)',
+    background: 'var(--card)', color: 'var(--text)', cursor: 'pointer',
+  };
+  const btnDis = { ...btn, opacity: 0.45, cursor: 'not-allowed' };
+  return (
+    <div data-testid={testId || 'acc-register-pager'} style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, maxWidth: '100%' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', minWidth: 0 }}>
+        <label style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 700 }}>Year</label>
+        <select data-testid="acc-register-year" value={year} onChange={(e) => onYear(e.target.value)}
+          style={{ padding: '5px 8px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', maxWidth: '100%' }}>
+          {(years || []).map(y => <option key={y} value={String(y)}>{y}</option>)}
+          <option value="all">All Years</option>
+        </select>
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>latest first · {_ACC_PAGE_LIMIT}/page</span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <button type="button" data-testid="acc-register-prev" disabled={loading || page <= 1} onClick={onPrev} style={loading || page <= 1 ? btnDis : btn}>Previous</button>
+        <span data-testid="acc-register-page-label" style={{ fontSize: 12, color: 'var(--text-2)', minWidth: 72, textAlign: 'center' }}>Page {page}</span>
+        <button type="button" data-testid="acc-register-next" disabled={loading || !hasMore} onClick={onNext} style={loading || !hasMore ? btnDis : btn}>Next</button>
+      </div>
+    </div>
+  );
+}
 function AccDocGrid({ sectionId, onNav }) {
   const m = _ACC_DOC_TITLES[sectionId] || { t: sectionId, c: null, wh: false };
   const cols = m.wh
     ? ['Type', 'Number', 'Date', 'Party', 'Net', 'Gross', 'AWB', 'Actions']
     : ['Number', 'Date', 'Party', 'Net', 'Tax', 'Gross', 'Cur', 'Payment', 'Due', 'Actions'];
   const docType = m.blocked ? null : _ACC_DOC_LIVE[sectionId];
-  const [st, setSt] = React.useState({ loading: !!docType, error: null, rows: null });
+  const [year, setYear] = React.useState(_accDefaultYear);
+  const [page, setPage] = React.useState(1);
+  const [years, setYears] = React.useState(() => {
+    const y = new Date().getFullYear();
+    return Array.from({ length: 11 }, (_, i) => y - i);
+  });
+  const [st, setSt] = React.useState({ loading: !!docType, error: null, rows: null, hasMore: false });
   React.useEffect(() => {
     if (!docType) return;
     let cancelled = false;
-    setSt({ loading: true, error: null, rows: null });
-    window.PzApi.listAccountingDocs(docType).then(res => {
+    setSt(s => ({ ...s, loading: true, error: null }));
+    window.PzApi.listAccountingDocs(docType, {
+      page, limit: _ACC_PAGE_LIMIT, year, sort: 'date_desc',
+    }).then(res => {
       if (cancelled) return;
-      if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null }); return; }
-      setSt({ loading: false, error: null, rows: (res.data && res.data.rows) || [] });
-    }).catch(e => { if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null }); });
+      if (!res || !res.ok) {
+        setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, hasMore: false });
+        return;
+      }
+      const d = res.data || {};
+      if (Array.isArray(d.years_available) && d.years_available.length) {
+        setYears(d.years_available.map(Number));
+      }
+      setSt({
+        loading: false,
+        error: null,
+        rows: d.rows || [],
+        hasMore: !!d.has_more,
+      });
+    }).catch(e => {
+      if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null, hasMore: false });
+    });
     return () => { cancelled = true; };
-  }, [docType]);
+  }, [docType, page, year]);
+  const onYear = (y) => { setYear(y); setPage(1); };
   const actions = m.wh
     ? (
         m.c === 'PZ'
@@ -1077,52 +1128,61 @@ function AccDocGrid({ sectionId, onNav }) {
       {m.blocked && <_AccPendingTable cols={cols} note="MM unavailable — wFirma controller not found (not Backend Pending)" />}
       {!m.blocked && !docType && <_AccPendingTable cols={cols} note="GET /api/v1/accounting/{type}" />}
       {docType && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', maxHeight: 'calc(100vh - 220px)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {cols.map(c => <th key={c} style={['Net', 'Tax', 'Gross'].includes(c) ? thAmt : th}>{c}</th>)}
-            </tr></thead>
-            <tbody>
-              {st.loading && <tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading from wFirma…</td></tr>}
-              {st.error && !st.loading && <tr><td colSpan={cols.length} data-testid={`acc-grid-${sectionId}-error`} style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable: {st.error}</td></tr>}
-              {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={cols.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No {m.t.toLowerCase()} documents.</td></tr>}
-              {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
-                <tr key={r.wfirma_id || i} data-testid={`acc-grid-${sectionId}-row`} style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
-                  {m.wh && <td style={{ ...td, color: 'var(--text)', fontWeight: 700 }}>{r.doc_type || m.c}</td>}
-                  <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text)' }}>{r.number}</td>
-                  <td style={td}>{r.date}</td>
-                  <td style={{ ...td, color: 'var(--text)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.party_name || r.party}</td>
-                  {m.wh ? (
-                    <>
-                      <td style={tdm}>{r.net}</td>
-                      <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
-                      <td style={{ ...td, color: 'var(--text-3)' }}>{r.awb || '—'}</td>
-                    </>
-                  ) : (
-                    <>
-                      <td style={tdm}>{r.net}</td>
-                      <td style={tdm}>{r.tax}</td>
-                      <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
-                      <td style={td}>{r.currency}</td>
-                      <td style={{ ...td, fontSize: 11 }}>{r.payment_state || r.state}</td>
-                      <td style={td}>{r.payment_due_date || '—'}</td>
-                    </>
-                  )}
-                  <td style={{ ...td }}>
-                    {!m.wh && r.pdf_available !== false && r.wfirma_id ? (
-                      <span style={{ display: 'inline-flex', gap: 6 }}>
-                        <button type="button" data-testid={`acc-pdf-view-${sectionId}`} onClick={() => openPdf(r, 'inline')} style={{ padding: '3px 8px', fontSize: 10, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', cursor: 'pointer' }}>View PDF</button>
-                        <button type="button" data-testid={`acc-pdf-dl-${sectionId}`} onClick={() => openPdf(r, 'attachment')} style={{ padding: '3px 8px', fontSize: 10, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', cursor: 'pointer' }}>Download</button>
-                      </span>
-                    ) : m.wh ? (
-                      <span style={{ color: 'var(--text-3)', fontSize: 10 }} title="Warehouse PDF unproven">—</span>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <AccRegisterPager
+            page={page} hasMore={st.hasMore} loading={st.loading}
+            year={year} years={years} onYear={onYear}
+            onPrev={() => setPage(p => Math.max(1, p - 1))}
+            onNext={() => setPage(p => p + 1)}
+            testId={`acc-pager-${sectionId}`}
+          />
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', maxHeight: 'calc(100vh - 260px)' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>
+                {cols.map(c => <th key={c} style={['Net', 'Tax', 'Gross'].includes(c) ? thAmt : th}>{c}</th>)}
+              </tr></thead>
+              <tbody>
+                {st.loading && <tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading from wFirma…</td></tr>}
+                {st.error && !st.loading && <tr><td colSpan={cols.length} data-testid={`acc-grid-${sectionId}-error`} style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable: {st.error}</td></tr>}
+                {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={cols.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No {m.t.toLowerCase()} documents.</td></tr>}
+                {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
+                  <tr key={r.wfirma_id || i} data-testid={`acc-grid-${sectionId}-row`} style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+                    {m.wh && <td style={{ ...td, color: 'var(--text)', fontWeight: 700 }}>{r.doc_type || m.c}</td>}
+                    <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text)' }}>{r.number}</td>
+                    <td style={td}>{r.date || '—'}</td>
+                    <td style={{ ...td, color: 'var(--text)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.party_name || r.party}</td>
+                    {m.wh ? (
+                      <>
+                        <td style={tdm}>{r.net}</td>
+                        <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
+                        <td style={{ ...td, color: 'var(--text-3)' }}>{r.awb || '—'}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td style={tdm}>{r.net}</td>
+                        <td style={tdm}>{r.tax}</td>
+                        <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
+                        <td style={td}>{r.currency}</td>
+                        <td style={{ ...td, fontSize: 11 }}>{r.payment_state || r.state}</td>
+                        <td style={td}>{r.payment_due_date || '—'}</td>
+                      </>
+                    )}
+                    <td style={{ ...td }}>
+                      {!m.wh && r.pdf_available !== false && r.wfirma_id ? (
+                        <span style={{ display: 'inline-flex', gap: 6 }}>
+                          <button type="button" data-testid={`acc-pdf-view-${sectionId}`} onClick={() => openPdf(r, 'inline')} style={{ padding: '3px 8px', fontSize: 10, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', cursor: 'pointer' }}>View PDF</button>
+                          <button type="button" data-testid={`acc-pdf-dl-${sectionId}`} onClick={() => openPdf(r, 'attachment')} style={{ padding: '3px 8px', fontSize: 10, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', cursor: 'pointer' }}>Download</button>
+                        </span>
+                      ) : m.wh ? (
+                        <span style={{ color: 'var(--text-3)', fontSize: 10 }} title="Warehouse PDF unproven">—</span>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
@@ -1137,7 +1197,7 @@ function AccClientBalance({ onOpenLedger }) {
   React.useEffect(() => {
     let cancelled = false;
     setSt({ loading: true, error: null, rows: null, period: null });
-    window.PzApi.listClientBalances({ limit: 25 }).then(res => {
+    window.PzApi.listClientBalances({ limit: 15 }).then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, period: null }); return; }
       const d = res.data || {};

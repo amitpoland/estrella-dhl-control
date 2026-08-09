@@ -195,9 +195,21 @@
 
     // GET /api/v1/accounting/documents/{doc_type}  (P0 — normalized Invoice/CN + WZ/PZ/PW/RW)
     // doc_type ∈ { invoice, credit_note, wz, pz, pw, rw }. Returns { ok, data: { doc_type, rows[], count } }
-    listAccountingDocs: (docType, start, limit) => {
-      const qs = '?' + new URLSearchParams({ start: start || 0, limit: limit || 25 }).toString();
-      return _get(`${BASE}/accounting/documents/${encodeURIComponent(docType)}${qs}`);
+    // GET /api/v1/accounting/documents/{doc_type}
+    // Shared register contract: page (1-indexed), limit=15, year, sort=date_desc.
+    // params: number page/limit (legacy) OR object { page, limit, year, sort, date_from, date_to }
+    listAccountingDocs: (docType, pageOrParams, limit) => {
+      const p = (pageOrParams && typeof pageOrParams === 'object')
+        ? pageOrParams
+        : { page: pageOrParams, limit: limit };
+      const qs = new URLSearchParams();
+      qs.set('page', String(p.page != null ? p.page : 1));
+      qs.set('limit', String(p.limit != null ? p.limit : 15));
+      qs.set('sort', p.sort || 'date_desc');
+      if (p.year != null && p.year !== '') qs.set('year', String(p.year));
+      if (p.date_from) qs.set('date_from', p.date_from);
+      if (p.date_to) qs.set('date_to', p.date_to);
+      return _get(`${BASE}/accounting/documents/${encodeURIComponent(docType)}?${qs.toString()}`);
     },
 
     // GET /api/v1/accounting/documents/{doc_type}/{id}/pdf — official Invoice/CN PDF

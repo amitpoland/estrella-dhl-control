@@ -15,6 +15,8 @@ Normalization boundary: accounting_documents (top-level XML only).
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
@@ -46,15 +48,46 @@ _NO_STORE = {
 @router.get("/documents/{doc_type}", dependencies=[_auth])
 def list_accounting_documents(
     doc_type: str,
-    start: int = Query(0, ge=0),
-    limit: int = Query(25, ge=1, le=200),
+    page: int = Query(1, ge=1, description="1-indexed page; page 1 = newest"),
+    limit: int = Query(15, ge=1, le=200),
+    year: Optional[str] = Query(
+        None,
+        description="Calendar year (default=current). Pass 'all' for All Years.",
+    ),
+    sort: str = Query("date_desc"),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    start: Optional[int] = Query(
+        None,
+        ge=0,
+        description="Legacy row offset; ignored when page is provided.",
+    ),
 ) -> dict:
     """One page of normalized accounting documents from wFirma.
 
+    Shared register contract: year + page + limit + sort=date_desc.
     Invoice/CN → invoices/find. Warehouse WZ/PZ/PW/RW → warehouse_documents/find.
     MM is blocked (404) — live controller check failed.
     """
+    from ..services.accounting_register_paging import (
+        enrich_years_available,
+        parse_register_paging,
+    )
+
     key = (doc_type or "").strip().lower()
+    paging = parse_register_paging(
+        page=page,
+        limit=limit,
+        year=year,
+        sort=sort,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    # Legacy start= offset (tests / old clients) maps to page when page==1 default
+    # and start was explicitly provided.
+    call_page = paging["page"]
+    if start is not None and page == 1 and start > 0:
+        call_page = (start // paging["limit"]) + 1
 
     if key in WAREHOUSE_TYPES_BLOCKED or key == "mm":
         raise HTTPException(
@@ -66,38 +99,73 @@ def list_accounting_documents(
             ),
         )
 
+    meta = {
+        "page": call_page,
+        "limit": paging["limit"],
+        "year": paging["year"],
+        "all_years": paging["all_years"],
+        "sort": paging["sort"],
+        "date_from": paging["date_from"],
+        "date_to": paging["date_to"],
+        "years_available": paging["years_available"],
+    }
+
     if key in _INVOICE_DOC_TYPES:
         wfirma_type = _INVOICE_DOC_TYPES[key]
         try:
             result = wfirma_client.list_invoices_by_type(
-                wfirma_type, start=start, limit=limit
+                wfirma_type,
+                limit=paging["limit"],
+                page=call_page,
+                date_from=paging["date_from"],
+                date_to=paging["date_to"],
+                sort=paging["sort"],
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except (RuntimeError, ConnectionError) as exc:
             raise HTTPException(status_code=502, detail=f"wFirma read failed: {exc}") from exc
+        years = enrich_years_available(
+            paging["years_available"], result.get("rows") or []
+        )
         return {
             "doc_type": key,
             "authority": "wfirma.invoices",
             "wfirma_type": wfirma_type,
+            **meta,
+            "years_available": years,
             **result,
+            "page": call_page,
+            "limit": paging["limit"],
         }
 
     if key in _WAREHOUSE_DOC_TYPES:
         wh_type = _WAREHOUSE_DOC_TYPES[key]
         try:
             result = wfirma_client.list_warehouse_documents_by_type(
-                wh_type, start=start, limit=limit
+                wh_type,
+                limit=paging["limit"],
+                page=call_page,
+                date_from=paging["date_from"],
+                date_to=paging["date_to"],
+                sort=paging["sort"],
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except (RuntimeError, ConnectionError) as exc:
             raise HTTPException(status_code=502, detail=f"wFirma read failed: {exc}") from exc
+        years = enrich_years_available(
+            paging["years_available"], result.get("rows") or []
+        )
         return {
             "doc_type": key,
             "authority": "wfirma.warehouse_documents",
             "warehouse_type": wh_type,
+            **meta,
+            "years_available": years,
             **result,
+            "page": call_page,
+            "limit": paging["limit"],
         }
 
     raise HTTPException(

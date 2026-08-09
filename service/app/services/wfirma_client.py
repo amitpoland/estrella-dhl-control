@@ -2688,40 +2688,68 @@ def fetch_invoices_for_contractor(
     )
 
 
-def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> Dict[str, Any]:
+def list_invoices_by_type(
+    wfirma_type: str,
+    start: int = 0,
+    limit: int = 15,
+    *,
+    page: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort: str = "date_desc",
+) -> Dict[str, Any]:
     """
     Wave 4 (Item 3A) — read-only accounting document list: one page of
     ``invoices/find`` filtered by wFirma invoice type. Reuses the proven
     invoices/find transport (auth, pagination, retry, error handling, XML parse);
     wFirma remains the authority (no local mirror, no duplicate data).
 
-    Pagination: ``start`` is treated as a row offset and converted to the
-    live sibling page index (``page = start // limit + 1``). Nested
-    ``page/start`` is not used — live wFirma ignores it.
+    Pagination: 1-indexed ``page`` (preferred) or row ``start`` offset → sibling
+    ``<page>N</page><limit>K</limit>``. Nested ``page/start`` is not used.
+
+    Optional ``date_from`` / ``date_to`` (YYYY-MM-DD) bound the find window.
+    ``sort=date_desc`` requests wFirma order + Python null-date-last defence.
 
     wfirma_type: "normal" (Invoice) or "correction" (Credit Note).
-    Returns {"rows": [{number, date, party, net, tax, gross, currency, state,
-    wfirma_id}], "count": int}.
-
-    Raises ValueError on an unsupported type; RuntimeError on HTTP/non-OK status;
-    ConnectionError on network failure. Never calls invoices/add|edit|delete.
+    Never calls invoices/add|edit|delete.
     """
+    from .accounting_register_paging import (
+        date_window_conditions_xml,
+        order_xml_date_desc,
+        sort_rows_date_desc,
+    )
+
     t = (wfirma_type or "").strip()
     if t not in ("normal", "correction"):
         raise ValueError("list_invoices_by_type: type must be 'normal' or 'correction'")
     try:
-        start_i = max(0, int(start))
         limit_i = max(1, min(int(limit), _INVOICE_LEDGER_PAGE_LIMIT))
     except (TypeError, ValueError):
-        start_i, limit_i = 0, 25
-    page_i = _offset_to_wfirma_page(start_i, limit_i)
+        limit_i = 15
+    if page is not None:
+        try:
+            page_i = max(1, int(page))
+        except (TypeError, ValueError):
+            page_i = 1
+        start_i = (page_i - 1) * limit_i
+    else:
+        try:
+            start_i = max(0, int(start))
+        except (TypeError, ValueError):
+            start_i = 0
+        page_i = _offset_to_wfirma_page(start_i, limit_i)
+
+    date_xml = date_window_conditions_xml(date_from, date_to)
+    order_xml = order_xml_date_desc() if (sort or "").strip().lower() == "date_desc" else ""
 
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<api><invoices><parameters>'
           '<conditions>'
             f'<condition><field>type</field><operator>eq</operator><value>{_esc(t)}</value></condition>'
+            f'{date_xml}'
           '</conditions>'
+          f'{order_xml}'
           f'{_wfirma_sibling_page_xml(page_i, limit_i)}'
         '</parameters></invoices></api>'
     )
@@ -2736,11 +2764,31 @@ def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> 
     from .accounting_documents import normalize_invoices_from_xml
 
     rows = normalize_invoices_from_xml(response_text)
-    return {"rows": rows, "count": len(rows)}
+    if (sort or "").strip().lower() == "date_desc":
+        rows = sort_rows_date_desc(rows, "date")
+    has_more = len(rows) >= limit_i
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "page": page_i,
+        "limit": limit_i,
+        "start": start_i,
+        "sort": "date_desc" if (sort or "").strip().lower() == "date_desc" else (sort or ""),
+        "date_from": (date_from or "").strip() or None,
+        "date_to": (date_to or "").strip() or None,
+        "has_more": has_more,
+    }
 
 
 def list_warehouse_documents_by_type(
-    warehouse_type: str, start: int = 0, limit: int = 25
+    warehouse_type: str,
+    start: int = 0,
+    limit: int = 15,
+    *,
+    page: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort: str = "date_desc",
 ) -> Dict[str, Any]:
     """Read-only page of wFirma warehouse documents filtered by type.
 
@@ -2750,8 +2798,8 @@ def list_warehouse_documents_by_type(
     Top-level ``<warehouse_documents>/<warehouse_document>`` only — never
     ``.//warehouse_document`` (deep traversal inflates 20 → 307 nodes).
 
-    Field projection limits payload size when supported. Pagination semantics
-    follow observed wFirma behaviour (requested limit may not be honoured).
+    Pagination uses sibling ``<page>N</page><limit>K</limit>`` (same live
+    contract as invoices). Nested page/start is not used.
 
     Never calls warehouse_documents/add|edit|delete.
     """
@@ -2759,6 +2807,11 @@ def list_warehouse_documents_by_type(
         WAREHOUSE_TYPES_BLOCKED,
         WAREHOUSE_TYPES_SUPPORTED,
         normalize_warehouse_documents_from_xml,
+    )
+    from .accounting_register_paging import (
+        date_window_conditions_xml,
+        order_xml_date_desc,
+        sort_rows_date_desc,
     )
 
     t = (warehouse_type or "").strip().upper()
@@ -2772,10 +2825,21 @@ def list_warehouse_documents_by_type(
             "list_warehouse_documents_by_type: type must be one of WZ, PZ, PW, RW"
         )
     try:
-        start_i = max(0, int(start))
         limit_i = max(1, min(int(limit), _INVOICE_LEDGER_PAGE_LIMIT))
     except (TypeError, ValueError):
-        start_i, limit_i = 0, 25
+        limit_i = 15
+    if page is not None:
+        try:
+            page_i = max(1, int(page))
+        except (TypeError, ValueError):
+            page_i = 1
+        start_i = (page_i - 1) * limit_i
+    else:
+        try:
+            start_i = max(0, int(start))
+        except (TypeError, ValueError):
+            start_i = 0
+        page_i = _offset_to_wfirma_page(start_i, limit_i)
 
     # Project professional register fields only — avoids multi-MB warehouse
     # payloads observed without fields= (live probe 2026-08-09).
@@ -2794,14 +2858,18 @@ def list_warehouse_documents_by_type(
             "contractor_detail",
         )
     )
+    date_xml = date_window_conditions_xml(date_from, date_to)
+    order_xml = order_xml_date_desc() if (sort or "").strip().lower() == "date_desc" else ""
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<api><warehouse_documents><parameters>"
         "<conditions>"
         f"<condition><field>type</field><operator>eq</operator>"
         f"<value>{_esc(t)}</value></condition>"
+        f"{date_xml}"
         "</conditions>"
-        f"<page><start>{start_i}</start><limit>{limit_i}</limit></page>"
+        f"{order_xml}"
+        f"{_wfirma_sibling_page_xml(page_i, limit_i)}"
         f"<fields>{fields_xml}</fields>"
         "</parameters></warehouse_documents></api>"
     )
@@ -2816,7 +2884,20 @@ def list_warehouse_documents_by_type(
     rows = normalize_warehouse_documents_from_xml(
         response_text, allowed_types={t}
     )
-    return {"rows": rows, "count": len(rows)}
+    if (sort or "").strip().lower() == "date_desc":
+        rows = sort_rows_date_desc(rows, "date")
+    has_more = len(rows) >= limit_i
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "page": page_i,
+        "limit": limit_i,
+        "start": start_i,
+        "sort": "date_desc" if (sort or "").strip().lower() == "date_desc" else (sort or ""),
+        "date_from": (date_from or "").strip() or None,
+        "date_to": (date_to or "").strip() or None,
+        "has_more": has_more,
+    }
 
 
 # ── Phase 10B — payments/find wrapper for Statement of Account ─────────────
