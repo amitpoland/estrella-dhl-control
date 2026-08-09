@@ -101,6 +101,7 @@ function LedgersPage(props) {
   const [tab, setTab] = React.useState('clients');
   const [selectedRow, setSelectedRow] = React.useState(null);
   const [focusContractorId, setFocusContractorId] = React.useState('');
+  const [focusSupplierId, setFocusSupplierId] = React.useState('');
   // HONEST load model (replaces the old fabricated static sync-age chip):
   // ledger figures are LIVE on-demand wFirma reads via GET /api/v1/ledgers/*.
   // The chip reports the LAST ACTUAL fetch outcome, lifted from
@@ -113,6 +114,12 @@ function LedgersPage(props) {
   const openClientLedger = (contractorId) => {
     setFocusContractorId(contractorId || '');
     setTab('clients');
+    setSelectedRow(null);
+  };
+
+  const openSupplierLedger = (contractorId) => {
+    setFocusSupplierId(contractorId || '');
+    setTab('suppliers');
     setSelectedRow(null);
   };
 
@@ -205,9 +212,16 @@ function LedgersPage(props) {
           refreshKey={refreshKey}
           periodFrom={periodFrom} periodTo={periodTo}
           onOpenLedger={openClientLedger}
+          onOpenSupplierLedger={openSupplierLedger}
           onLoadInfo={(info) => setLoadInfo(info)} />
       )}
-      {tab === 'suppliers' && <SupplierLedgerView />}
+      {tab === 'suppliers' && (
+        <SupplierLedgerView
+          refreshKey={refreshKey}
+          periodFrom={periodFrom} periodTo={periodTo}
+          focusSupplierId={focusSupplierId}
+          onLoadInfo={(info) => setLoadInfo(info)} />
+      )}
 
       {selectedRow && (
         <StatementDetailDrawer
@@ -557,51 +571,72 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period }) 
 // ── MANAGEMENT ANALYSIS — portfolio receivables + due-date aging ──────────
 // Authority: GET /api/v1/ledgers/management-analysis.json (bulk invoices +
 // payments). Remaining = shared ledger formula. Drill-down reuses Client Ledger.
-function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, onOpenLedger }) {
+function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, onOpenLedger, onOpenSupplierLedger }) {
   const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
   const [asOf, setAsOf] = React.useState(period.to);
   const [currency, setCurrency] = React.useState('');
   const [status, setStatus] = React.useState('outstanding');
   const [q, setQ] = React.useState('');
+  const [apStatus, setApStatus] = React.useState('outstanding');
+  const [apQ, setApQ] = React.useState('');
   const [localRefresh, setLocalRefresh] = React.useState(0);
   const [data, setData] = React.useState(null);
+  const [apData, setApData] = React.useState(null);
   const [err, setErr] = React.useState(null);
+  const [apErr, setApErr] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
     let gone = false;
-    setLoading(true); setErr(null);
+    setLoading(true); setErr(null); setApErr(null);
     onLoadInfo && onLoadInfo({ status: 'loading', at: null, count: null, error: null });
     const params = { from: period.from, to: period.to, as_of: asOf || period.to };
     if (currency) params.currency = currency;
     if (status) params.status = status;
-    window.PzApi.getManagementAnalysis(params)
-      .then((res) => {
+    const apParams = { from: period.from, to: period.to, as_of: asOf || period.to };
+    if (currency) apParams.currency = currency;
+    if (apStatus) apParams.status = apStatus;
+    Promise.all([
+      window.PzApi.getManagementAnalysis(params),
+      window.PzApi.getPayablesAnalysis(apParams),
+    ])
+      .then(([arRes, apRes]) => {
         if (gone) return;
-        if (!res || res.ok === false) {
-          throw new Error((res && res.error) || 'portfolio read failed');
+        if (!arRes || arRes.ok === false) {
+          throw new Error((arRes && arRes.error) || 'receivables portfolio read failed');
         }
-        const body = res.data || res;
+        const body = arRes.data || arRes;
         setData(body);
+        if (!apRes || apRes.ok === false) {
+          setApData(null);
+          setApErr((apRes && apRes.error) || 'payables portfolio read failed');
+        } else {
+          setApData(apRes.data || apRes);
+          setApErr(null);
+        }
         setLoading(false);
-        const n = (body && body.customers && body.customers.length) || 0;
-        onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: n, error: null });
+        const nAr = (body && body.customers && body.customers.length) || 0;
+        const nAp = (apRes && (apRes.data || apRes).suppliers && (apRes.data || apRes).suppliers.length) || 0;
+        onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: nAr + nAp, error: null });
       })
       .catch((e) => {
         if (gone) return;
         setData(null);
+        setApData(null);
         setLoading(false);
         const msg = (e && e.message) || 'portfolio read failed';
         setErr(msg);
         onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: msg });
       });
     return () => { gone = true; };
-  }, [period.from, period.to, asOf, currency, status, refreshKey, localRefresh]);
+  }, [period.from, period.to, asOf, currency, status, apStatus, refreshKey, localRefresh]);
 
   const reset = () => {
     setCurrency('');
     setStatus('outstanding');
+    setApStatus('outstanding');
     setQ('');
+    setApQ('');
     setAsOf(period.to);
   };
 
@@ -639,7 +674,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>Management Analysis</div>
         <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
-          Receivables and debtor aging from wFirma invoices and payments.
+          Receivables and Payables from wFirma — shared remaining math, no FX merge, read-only.
         </div>
       </div>
 
@@ -663,9 +698,10 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
             <option value="USD">USD</option>
             <option value="EUR">EUR</option>
             <option value="PLN">PLN</option>
+            <option value="CHF">CHF</option>
           </select>
         </label>
-        <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Status
+        <label style={{ fontSize: 11, color: 'var(--text-3)' }}>AR status
           <select data-testid="ldg-ma-status" value={status} onChange={(e) => setStatus(e.target.value)}
             style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}>
             <option value="">All</option>
@@ -674,8 +710,21 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
             <option value="credit">Credit balances</option>
           </select>
         </label>
-        <label style={{ fontSize: 11, color: 'var(--text-3)', flex: '1 1 160px' }}>Customer
+        <label style={{ fontSize: 11, color: 'var(--text-3)' }}>AP status
+          <select data-testid="ldg-ma-ap-status" value={apStatus} onChange={(e) => setApStatus(e.target.value)}
+            style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}>
+            <option value="">All</option>
+            <option value="outstanding">Outstanding</option>
+            <option value="overdue">Overdue</option>
+            <option value="credit">Credits / advances</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: 'var(--text-3)', flex: '1 1 140px' }}>Customer
           <input data-testid="ldg-ma-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name…"
+            style={{ display: 'block', width: '100%', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }} />
+        </label>
+        <label style={{ fontSize: 11, color: 'var(--text-3)', flex: '1 1 140px' }}>Supplier
+          <input data-testid="ldg-ma-ap-search" value={apQ} onChange={(e) => setApQ(e.target.value)} placeholder="Search name…"
             style={{ display: 'block', width: '100%', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }} />
         </label>
         <window.Btn small variant="outline" data-testid="ldg-ma-reset" onClick={reset}>Reset</window.Btn>
@@ -755,7 +804,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
 
       {Object.keys(dq).length > 0 && (
         <details data-testid="ldg-ma-dq" style={{ marginTop: 14 }}>
-          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>Data quality</summary>
+          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>AR data quality</summary>
           <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 11.5, color: 'var(--text-3)' }}>
             {Object.entries(dq).map(([k, v]) => (
               <li key={k}>{k}: {v}</li>
@@ -763,25 +812,254 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
           </ul>
         </details>
       )}
+
+      {/* ── PAYABLES / CREDITOR AGING ── */}
+      <div data-testid="ldg-ma-payables" style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid var(--border)' }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Payables</div>
+        <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }}>
+          Supplier payables and creditor aging from wFirma expenses and linked payments.
+          Credits / advances stay outside overdue buckets. Currencies stay separate.
+        </div>
+        {apErr && !apData && (
+          <div data-testid="ldg-ma-ap-error" style={{ padding: 16, border: '1px solid var(--badge-red-border)', background: 'var(--badge-red-bg)', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+            {apErr}
+          </div>
+        )}
+        {apData && (() => {
+          const apSummaries = apData.currency_summaries || [];
+          const apCov = apData.due_date_coverage || {};
+          const apQs = apData.query_stats || {};
+          const apDq = apData.data_quality || {};
+          const apHealth = apData.source_health || {};
+          const apQLower = (apQ || '').trim().toLowerCase();
+          const apRows = (apData.suppliers || []).filter((r) => {
+            if (!apQLower) return true;
+            return String(r.supplier_name || '').toLowerCase().includes(apQLower);
+          });
+          return (
+            <div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12, fontSize: 11, color: 'var(--text-3)' }}>
+                <span data-testid="ldg-ma-ap-health">
+                  AP source {apHealth.ok === false ? '⚠️ incomplete' : 'healthy'}
+                  {apQs.expense_api_calls != null ? ` · exp calls ${apQs.expense_api_calls}` : ''}
+                  {apQs.payment_api_calls != null ? ` · pay calls ${apQs.payment_api_calls}` : ''}
+                  {apQs.per_supplier_wfirma_calls === 0 ? ' · no N+1' : ''}
+                </span>
+                <span>·</span>
+                <span data-testid="ldg-ma-ap-due-coverage">
+                  Due-date coverage {apCov.open_coverage_pct == null ? '—' : `${apCov.open_coverage_pct}%`}
+                </span>
+              </div>
+              {apSummaries.map((s) => (
+                <div key={s.currency} data-testid={`ldg-ma-ap-ccy-${s.currency}`} style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>{s.currency} payables</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
+                    <LdgStatTile label="Supplier Payable" value={LDG_FMT.money(s.gross_payable, s.currency)} />
+                    <LdgStatTile label="Overdue Payable" value={LDG_FMT.money(s.overdue, s.currency)} tone="red" alert={Number(s.overdue) > 0} />
+                    <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
+                    <LdgStatTile label="Supplier Credits" value={LDG_FMT.money(s.supplier_credits, s.currency)} tone="green" />
+                    <LdgStatTile label="Suppliers Outstanding" value={String(s.suppliers_outstanding)} sub={`${s.suppliers_overdue} overdue`} />
+                    <LdgStatTile label="Net Payable" value={LDG_FMT.money(s.net_payable, s.currency)}
+                      sub={s.reconciliation_ok ? 'aging reconciles' : '⚠️ aging mismatch'} />
+                  </div>
+                </div>
+              ))}
+              <window.Card style={{ padding: 0, overflow: 'auto' }}>
+                <table data-testid="ldg-ma-ap-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 960 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
+                      {['Supplier', 'Ccy', 'Credit', 'Not Due', '1–30', '31–90', '91–180', '>180', 'Net Payable', 'Oldest Due', 'Last Payment', ''].map((h) => (
+                        <th key={h} style={{ padding: '8px 8px', borderBottom: '1px solid var(--border)', fontSize: 10, color: 'var(--text-3)', fontWeight: 600, textAlign: h === 'Supplier' || h === '' ? 'left' : 'right' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {apRows.length === 0 && (
+                      <tr><td colSpan={12} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>No suppliers match filters.</td></tr>
+                    )}
+                    {apRows.map((r) => (
+                      <tr key={`${r.contractor_id}-${r.currency}`} data-testid={`ldg-ma-ap-row-${r.contractor_id}-${r.currency}`}
+                        style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td style={{ padding: '7px 8px', fontWeight: 600 }}>{r.supplier_name}</td>
+                        <td style={{ padding: '7px 8px', textAlign: 'right' }}>{r.currency}</td>
+                        {moneyCell(r.credit_balance, r.currency)}
+                        {moneyCell(r.not_due, r.currency)}
+                        {moneyCell(r.b_1_30, r.currency)}
+                        {moneyCell(r.b_31_90, r.currency)}
+                        {moneyCell(r.b_91_180, r.currency)}
+                        {moneyCell(r.b_180_plus, r.currency)}
+                        {moneyCell(r.net_payable, r.currency)}
+                        <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.oldest_due_date || '—'}</td>
+                        <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.last_payment_date || '—'}</td>
+                        <td style={{ padding: '7px 8px' }}>
+                          <window.Btn small variant="outline" data-testid={`ldg-ma-ap-open-${r.contractor_id}`}
+                            onClick={() => onOpenSupplierLedger && onOpenSupplierLedger(r.contractor_id)}>
+                            Open Supplier Ledger
+                          </window.Btn>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </window.Card>
+              {Object.keys(apDq).length > 0 && (
+                <details data-testid="ldg-ma-ap-dq" style={{ marginTop: 14 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>AP data quality</summary>
+                  <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 11.5, color: 'var(--text-3)' }}>
+                    {Object.entries(apDq).map(([k, v]) => (
+                      <li key={k}>{k}: {v}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          );
+        })()}
+      </div>
     </div>
   );
 }
 
-// ── SUPPLIER LEDGER ── honest backend-pending state (LDG-1) ───────────────
-// No supplier-side ledger route exists (routes_ledgers.py serves clients
-// only). The previous view rendered four synthetic suppliers with synthetic
-// statements — fake data on an accounting surface. Per the five-state UI
-// truth model (Lesson M) the tab STAYS visible and states its real status;
-// building the purchase-side ledger is a separate backend campaign.
-function SupplierLedgerView() {
+// ── SUPPLIER LEDGER — shared AP facts (statement.json) ─────────────────────
+function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focusSupplierId }) {
+  const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
+  const [suppliers, setSuppliers] = React.useState(null);
+  const [listErr, setListErr] = React.useState(null);
+  const [activeId, setActiveId] = React.useState(focusSupplierId || '');
+  const [stmt, setStmt] = React.useState(null);
+  const [stmtErr, setStmtErr] = React.useState(null);
+  const [stmtLoading, setStmtLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (focusSupplierId) setActiveId(focusSupplierId);
+  }, [focusSupplierId]);
+
+  React.useEffect(() => {
+    let gone = false;
+    setSuppliers(null); setListErr(null);
+    onLoadInfo && onLoadInfo({ status: 'loading', at: null, count: null, error: null });
+    window.PzApi.getPayablesAnalysis({
+      from: period.from, to: period.to, as_of: period.to, status: 'outstanding',
+    })
+      .then((res) => {
+        if (gone) return;
+        if (!res || res.ok === false) throw new Error((res && res.error) || 'payables read failed');
+        const body = res.data || res;
+        const rows = body.suppliers || [];
+        setSuppliers(rows);
+        onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
+        if (!activeId && rows.length) setActiveId(rows[0].contractor_id);
+      })
+      .catch((e) => {
+        if (gone) return;
+        setListErr((e && e.message) || 'payables read failed');
+        onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: (e && e.message) || '' });
+      });
+    return () => { gone = true; };
+  }, [period.from, period.to, refreshKey]);
+
+  React.useEffect(() => {
+    if (!activeId) { setStmt(null); return; }
+    let gone = false;
+    setStmtLoading(true); setStmtErr(null); setStmt(null);
+    window.PzApi.getSupplierStatement(activeId, period.from, period.to, period.to)
+      .then((res) => {
+        if (gone) return;
+        if (!res || res.ok === false) throw new Error((res && res.error) || 'statement failed');
+        setStmt(res.data || res);
+        setStmtLoading(false);
+      })
+      .catch((e) => {
+        if (gone) return;
+        setStmtErr((e && e.message) || 'statement failed');
+        setStmtLoading(false);
+      });
+    return () => { gone = true; };
+  }, [activeId, period.from, period.to, refreshKey]);
+
+  if (listErr && !suppliers) {
+    return (
+      <div data-testid="ldg-suppliers-error" style={{ padding: 30, textAlign: 'center', border: '1px solid var(--badge-red-border)', background: 'var(--badge-red-bg)', borderRadius: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--badge-red-text)' }}>Could not load Supplier Ledger</div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{listErr}</div>
+      </div>
+    );
+  }
+  if (!suppliers) {
+    return <div data-testid="ldg-suppliers-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading supplier payables from wFirma…</div>;
+  }
+  if (suppliers.length === 0) {
+    return <div data-testid="ldg-suppliers-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)' }}>No outstanding suppliers in this period.</div>;
+  }
+
+  const active = suppliers.find((s) => s.contractor_id === activeId) || suppliers[0];
+  const filterItems = suppliers.map((s) => ({
+    id: s.contractor_id,
+    label: s.supplier_name || s.contractor_id,
+    sub: `${s.currency} · net ${s.net_payable}`,
+  }));
+
   return (
-    <div data-testid="ldg-suppliers-pending" style={{ padding: 36, textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 8, background: 'var(--bg-subtle)' }}>
-      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>Supplier Ledger — backend pending</div>
-      <div style={{ fontSize: 12, color: 'var(--text-2)', maxWidth: 560, margin: '0 auto', lineHeight: 1.6 }}>
-        There is no supplier-side ledger read authority yet — purchase invoices and payments
-        live in wFirma. This tab will activate when a supplier statement route exists
-        (mirror of <span style={{ fontFamily: 'monospace' }}>GET /api/v1/ledgers/clients</span>).
-        No figures are shown because none would be real.
+    <div data-testid="ldg-suppliers-root" style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
+      <LdgFilterPanel
+        title="Suppliers"
+        searchPlaceholder="Search supplier…"
+        items={filterItems}
+        activeId={active.contractor_id}
+        onSelect={setActiveId}
+      />
+      <div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }} data-testid="ldg-supplier-name">{active.supplier_name}</div>
+          <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
+            Period {period.from} → {period.to} · {active.currency} · open expenses {active.open_expense_count}
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
+          <LdgStatTile label="Gross Payable" value={LDG_FMT.money(active.gross_payable, active.currency)} />
+          <LdgStatTile label="Credits" value={LDG_FMT.money(active.credit_balance, active.currency)} tone="green" />
+          <LdgStatTile label="Net Payable" value={LDG_FMT.money(active.net_payable, active.currency)} />
+          <LdgStatTile label="Overdue" value={LDG_FMT.money(active.overdue, active.currency)} tone="red" alert={Number(active.overdue) > 0} />
+        </div>
+        {stmtLoading && <div data-testid="ldg-supplier-stmt-loading" style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading statement…</div>}
+        {stmtErr && <div data-testid="ldg-supplier-stmt-error" style={{ padding: 16, border: '1px solid var(--badge-red-border)', borderRadius: 8, color: 'var(--badge-red-text)', fontSize: 12 }}>{stmtErr}</div>}
+        {stmt && (stmt.currencies || []).map((ccy) => {
+          const rows = (stmt.entries_per_currency && stmt.entries_per_currency[ccy]) || [];
+          const tot = (stmt.totals_per_currency && stmt.totals_per_currency[ccy]) || {};
+          return (
+            <window.Card key={ccy} style={{ padding: 0, marginBottom: 14, overflow: 'auto' }} data-testid={`ldg-supplier-stmt-${ccy}`}>
+              <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 700 }}>
+                {ccy} · outstanding {tot.outstanding} · net {tot.net_payable}
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 720 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)' }}>
+                    {['Date', 'Document', 'Type', 'Debit / Expense', 'Credit / Payment', 'Running', 'Due', 'Status'].map((h) => (
+                      <th key={h} style={{ padding: '7px 8px', textAlign: 'left', fontSize: 10, color: 'var(--text-3)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length === 0 && (
+                    <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)' }}>No movements.</td></tr>
+                  )}
+                  {rows.map((e, i) => (
+                    <tr key={`${e.wfirma_doc_id}-${i}`} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{e.date || '—'}</td>
+                      <td style={{ padding: '6px 8px' }}>{e.doc_number || '—'}</td>
+                      <td style={{ padding: '6px 8px' }}>{e.type}</td>
+                      <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{e.debit}</td>
+                      <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{e.credit}</td>
+                      <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{e.running_balance}</td>
+                      <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{e.due_date || '—'}</td>
+                      <td style={{ padding: '6px 8px' }}>{e.status || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </window.Card>
+          );
+        })}
       </div>
     </div>
   );

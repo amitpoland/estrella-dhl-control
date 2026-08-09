@@ -1,0 +1,72 @@
+{
+  "contractor_id": "38142296",
+  "supplier_name": "ESTRELLA JEWELS LLP.",
+  "query_stats": {
+    "expense_api_calls": 11,
+    "payment_api_calls": 16,
+    "expense_pages": 11,
+    "payment_pages": 16,
+    "expenses_normalized": 2141,
+    "payments_normalized": 3046,
+    "expense_duplicates_suppressed": 0,
+    "payment_duplicates_suppressed": 0,
+    "expense_stop_reason": "short",
+    "payment_stop_reason": "short",
+    "duration_ms": 120145,
+    "per_supplier_wfirma_calls": 0
+  },
+  "usd_row": {
+    "contractor_id": "38142296",
+    "supplier_name": "ESTRELLA JEWELS LLP.",
+    "currency": "USD",
+    "gross_payable": "656662.63",
+    "credit_balance": "7787.13",
+    "net_payable": "648875.50",
+    "not_due": "413762.00",
+    "b_1_30": "66948.00",
+    "b_31_90": "113530.00",
+    "b_91_180": "43172.00",
+    "b_180_plus": "19250.63",
+    "due_date_unavailable": "0.00",
+    "overdue": "242900.63",
+    "oldest_due_date": "2020-12-11",
+    "days_oldest_overdue": 2067,
+    "last_expense_date": "2026-07-25",
+    "last_payment_date": "2026-07-31",
+    "expense_count": 636,
+    "open_expense_count": 129
+  },
+  "usd_summary": {
+    "currency": "USD",
+    "gross_payable": "656662.63",
+    "supplier_credits": "7787.13",
+    "net_payable": "648875.50",
+    "overdue": "242900.63",
+    "not_due": "413762.00",
+    "due_date_unavailable": "0.00",
+    "suppliers_outstanding": 1,
+    "suppliers_overdue": 1,
+    "suppliers_with_credit": 1,
+    "oldest_overdue_days": 2067,
+    "expenses_represented": 636,
+    "open_expenses": 129,
+    "aging_plus_unavailable": "656662.63",
+    "reconciliation_ok": true
+  },
+  "expected_shape": {
+    "outstanding": "656662.63",
+    "credits": "7787.13",
+    "note": "If live data moved, document delta \u2014 do not force stale pin"
+  },
+  "reconciliation": {
+    "gross_payable": "656662.63",
+    "credit_balance": "7787.13",
+    "net_payable": "648875.50",
+    "aging_sum": "656662.63",
+    "delta_aging": "0.00",
+    "matches_v3_outstanding": true,
+    "matches_v3_credits": true,
+    "per_supplier_wfirma_calls": 0
+  },
+  "verdict": "GO"
+}

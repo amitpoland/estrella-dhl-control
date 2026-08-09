@@ -40,7 +40,7 @@ def test_reads_client_balance_authority():
         "Client roster must read via the shared PzApi.listClientBalancesShared "
         "authority (single live /ledgers/clients read shared with Accounting Overview)"
     )
-    assert "{ limit: 100 }" in src, (
+    assert "limit: 100" in src, (
         "Client roster read must request limit=100 (route maximum), matching the "
         "Accounting Overview read so both share one cache entry"
     )
@@ -119,7 +119,8 @@ _REQUIRED_TESTIDS = [
     "ldg-stmt-pdf",
     "ldg-stmt-warnings",
     "ldg-credit-kuke-pending",  # credit/KUKE + exposure: backend pending note
-    "ldg-suppliers-pending",    # supplier tab: honest backend-pending panel
+    "ldg-suppliers-loading",    # supplier tab: live AP portfolio loading
+    "ldg-suppliers-root",       # supplier tab: live Supplier Ledger
     "ldg-entry-drawer",
     "ldg-entry-links-pending",  # drawer cross-links: backend pending
     "ldg-filter-search",        # search input is WIRED (was a dead input)
@@ -137,34 +138,29 @@ def test_honest_state_testids_present():
         )
 
 
-def test_supplier_tab_visible_but_honest():
-    """Lesson M: the Suppliers tab STAYS (no capability suppression) but states
-    its real status — no supplier ledger route exists in routes_ledgers.py."""
+def test_supplier_tab_wired_to_ap_authority():
+    """Lesson M: Suppliers tab stays visible and now consumes live AP routes."""
     src = _src()
     assert "SupplierLedgerView" in src, (
         "Suppliers tab must remain visible (Lesson M — no silent removal)"
     )
-    assert "backend pending" in src.lower(), (
-        "Missing capabilities must be declared 'backend pending', not faked"
-    )
-    # The old synthetic supplier statement components are gone.
+    assert "getPayablesAnalysis" in src or "getSupplierStatement" in src
+    assert "ldg-suppliers-root" in src or "ldg-suppliers-loading" in src
+    # The old synthetic supplier statement components stay gone.
     for gone in ("SupplierHeaderCard", "SupplierStatementTable"):
         assert gone not in src, (
-            f"{gone} (synthetic supplier mock) must not return without a real "
-            "supplier ledger authority behind it"
+            f"{gone} (synthetic supplier mock) must not return"
         )
 
 
-def test_backend_matches_no_supplier_routes_assumption():
-    """The supplier panel's honesty claim is only valid while routes_ledgers.py
-    really has no supplier route. If one is added, the panel must be wired
-    instead — this test forces that reconciliation."""
+def test_backend_has_supplier_ap_routes():
+    """Supplier Ledger UI is backed by payables + statement routes."""
     routes = (Path(__file__).resolve().parent.parent / "app" / "api"
               / "routes_ledgers.py").read_text(encoding="utf-8", errors="replace")
-    assert "/suppliers" not in routes, (
-        "routes_ledgers.py now serves a supplier route — wire the Suppliers "
-        "tab to it and retire the backend-pending panel (update LDG pin)"
-    )
+    assert "/payables-analysis.json" in routes
+    assert "/suppliers/{contractor_id}/statement.json" in routes
+    assert "build_payables_analysis" in routes
+    assert "aggregate_supplier_statement" in routes
 
 
 # ── D. Page stays mounted (no duplicate page / renderer) ─────────────────

@@ -1441,6 +1441,36 @@
       return _get(`${BASE}/ledgers/management-analysis.json${q ? `?${q}` : ''}`);
     },
 
+    // GET /api/v1/ledgers/payables-analysis.json
+    // Read-only Supplier AP portfolio + creditor aging. Bulk expenses/payments
+    // only — zero per-supplier wFirma calls. Currencies stay separate (no FX).
+    // params: { from, to, as_of?, currency?, contractor_id?, status?, aging_bucket? }
+    getPayablesAnalysis: (params) => {
+      const p = params || {};
+      const qs = new URLSearchParams();
+      if (p.from) qs.set('from', p.from);
+      if (p.to) qs.set('to', p.to);
+      if (p.as_of) qs.set('as_of', p.as_of);
+      if (p.currency) qs.set('currency', p.currency);
+      if (p.contractor_id) qs.set('contractor_id', p.contractor_id);
+      if (p.status) qs.set('status', p.status);
+      if (p.aging_bucket) qs.set('aging_bucket', p.aging_bucket);
+      const q = qs.toString();
+      return _get(`${BASE}/ledgers/payables-analysis.json${q ? `?${q}` : ''}`);
+    },
+
+    // GET /api/v1/ledgers/suppliers/{contractor_id}/statement.json
+    getSupplierStatement: (contractorId, from, to, asOf) => {
+      const qs = new URLSearchParams();
+      if (from) qs.set('from', from);
+      if (to) qs.set('to', to);
+      if (asOf) qs.set('as_of', asOf);
+      const q = qs.toString();
+      return _get(
+        `${BASE}/ledgers/suppliers/${encodeURIComponent(contractorId)}/statement.json${q ? `?${q}` : ''}`
+      );
+    },
+
     // ── Proforma — PR B: Customer address + service-charge authority ──
 
     // POST /api/v1/proforma/draft/{draft_id}/apply-customer-address

@@ -2951,6 +2951,44 @@ def fetch_payments_for_period(
     )
 
 
+def fetch_expenses_for_period(
+    date_from: str,
+    date_to: str,
+    stats: Optional[Dict[str, Any]] = None,
+) -> List[ET.Element]:
+    """Bulk read-only ``expenses/find`` for a date window (all contractors).
+
+    Sibling ``<page>N</page><limit>K</limit>`` pagination (live-proven for
+    expenses 2026-08-09). Nested ``page/start`` is ignored by wFirma.
+
+    Note: ``contractor.id`` find conditions are ignored by live wFirma for
+    expenses — callers that need a single supplier MUST filter Python-side
+    on ``contractor/id``. Callers MUST also Python-side date-filter nodes.
+    """
+    df = (date_from or "").strip()
+    dt = (date_to or "").strip()
+    if df and dt and df > dt:
+        raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
+    date_conditions = ""
+    if df:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>ge</operator><value>{_esc(df)}</value></condition>"
+        )
+    if dt:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>le</operator><value>{_esc(dt)}</value></condition>"
+        )
+    return _paginate_find_collection(
+        module="expenses",
+        collection_tag="expenses",
+        item_tag="expense",
+        conditions_xml=date_conditions,
+        stats=stats,
+    )
+
+
 def _normalise_fullnumber(value: Any) -> str:
     """Canonical comparison form for a wFirma ``<fullnumber>``.
 
