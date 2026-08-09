@@ -1352,6 +1352,29 @@
     listBatches: () =>
       _get(`${BASE}/dashboard/batches`),
 
+    // GET /api/v1/dashboard/archive — soft-archived shipments (read).
+    listArchived: () =>
+      _get(`${BASE}/dashboard/archive`),
+
+    // POST /api/v1/dashboard/batches/{id}/recheck  body { mode: 'all' }
+    // Role-gated admin/logistics/accounts. Distinct from recheckSad (mode:'sad').
+    recheckBatch: (batchId) =>
+      _postM(`${BASE}/dashboard/batches/${encodeURIComponent(batchId)}/recheck`, { mode: 'all' }),
+
+    // DELETE /api/v1/dashboard/batches/{id}  body { reason } — soft archive (admin).
+    archiveBatch: (batchId, reason) =>
+      _callM('DELETE', `${BASE}/dashboard/batches/${encodeURIComponent(batchId)}`, {
+        reason: reason || 'archived by user',
+      }),
+
+    // POST /api/v1/dashboard/archive/{id}/restore — admin.
+    restoreBatch: (batchId) =>
+      _postM(`${BASE}/dashboard/archive/${encodeURIComponent(batchId)}/restore`),
+
+    // DELETE /api/v1/dashboard/archive/{id} — permanent delete (admin).
+    permanentlyDeleteArchived: (batchId) =>
+      _callM('DELETE', `${BASE}/dashboard/archive/${encodeURIComponent(batchId)}`),
+
     // GET /auth/users  (requires admin cookie)
     // Returns [{id, full_name, email, role, is_active, ...}]
     listUsers: () =>

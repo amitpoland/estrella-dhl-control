@@ -443,11 +443,19 @@ def _batch_summary(a: Dict[str, Any], batch_dir_name: str) -> Dict[str, Any]:
     # Tracking status from audit (populated by POST /refresh)
     tracking = a.get("tracking", {})
 
+    # Upload / intake timestamp — preserved under inputs.uploaded_at by
+    # audit_merge (operator/upload-time key). Distinct from overloaded
+    # top-level `timestamp` and from PZ generation. Absent → None (em-dash).
+    _uploaded_raw = inp.get("uploaded_at")
+    uploaded_at = _uploaded_raw.strip() if isinstance(_uploaded_raw, str) and _uploaded_raw.strip() else None
+
     return {
         "batch_id":              raw_batch_id,
         "tracking_no":           tracking_no,
         "doc_no":                doc_no,
         "timestamp":             a.get("timestamp", ""),
+        # Authoritative upload/intake stamp when present (see above).
+        "uploaded_at":           uploaded_at,
         # Canonical PZ-generation datetime (see _pz_generated_at above).
         # None when the engine has never produced PZ output for this batch.
         "pz_generated_at":       _pz_generated_at(a),

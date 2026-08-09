@@ -385,7 +385,8 @@ function App() {
 
   // ── URL helpers ──────────────────────────────────────────────────────────────
   // Pages that carry a persistent ?batch_id= param (preserved across their sub-routes)
-  const BATCH_SCOPED_PAGES = ['proforma', 'proforma_detail'];
+  // `shipments` keeps batch_id so Open-in-New-Tab / deep links open V2 detail.
+  const BATCH_SCOPED_PAGES = ['proforma', 'proforma_detail', 'shipments'];
 
   // Legacy route slugs → canonical page ids.
   // Sprint 31: the 'dhl: shipments' redirect was removed — DHL is now a
@@ -422,7 +423,7 @@ function App() {
     return { page: target, search: window.location.search };
   }
 
-  // Build the URL for a given page, preserving batch_id for proforma pages
+  // Build the URL for a given page, preserving batch_id for scoped pages
   function pageToUrl(target, currentSearch) {
     const sp = new URLSearchParams(currentSearch || '');
     const batchId = sp.get('batch_id') || '';
@@ -436,12 +437,27 @@ function App() {
     return '/v2/' + target + (qs ? '?' + qs : '');
   }
 
+  // Shipment deep-link helper — detail is in-shell page:'detail' but URL stays
+  // /v2/shipments?batch_id=… so Open-in-New-Tab and bookmarks work.
+  function shipmentDetailUrl(batchId) {
+    const qs = batchId ? ('?batch_id=' + encodeURIComponent(batchId)) : '';
+    return '/v2/shipments' + qs;
+  }
+
   // ── Initial state from URL ─────────────────────────────────────────────────
   const _initialLocation = parseV2Location();
-  const [page, setPage] = React.useState(_initialLocation.page);
-  const [activeNav, setActiveNav] = React.useState(_initialLocation.page);
+  const _initShipmentBatchId = (
+    _initialLocation.page === 'shipments'
+      ? (new URLSearchParams(_initialLocation.search).get('batch_id') || '')
+      : ''
+  );
+  // Deep-link /v2/shipments?batch_id=… opens the existing V2 detail authority.
+  const [page, setPage] = React.useState(_initShipmentBatchId ? 'detail' : _initialLocation.page);
+  const [activeNav, setActiveNav] = React.useState(_initialLocation.page === 'detail' ? 'shipments' : _initialLocation.page);
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
-  const [selectedShipment, setSelectedShipment] = React.useState(null);
+  const [selectedShipment, setSelectedShipment] = React.useState(
+    _initShipmentBatchId ? { batch_id: _initShipmentBatchId } : null
+  );
   const [showNewShipment, setShowNewShipment] = React.useState(false);
   const [showApiChecklist, setShowApiChecklist] = React.useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
@@ -489,10 +505,18 @@ function App() {
   React.useEffect(() => {
     const onPop = () => {
       const loc = parseV2Location();
-      setPage(loc.page);
-      setActiveNav(loc.page);
       setCurrentSearch(loc.search);
       if (loc.page !== 'proforma_detail') setProformaDraft(null);
+      const batchId = new URLSearchParams(loc.search || '').get('batch_id') || '';
+      if (loc.page === 'shipments' && batchId) {
+        setSelectedShipment({ batch_id: batchId });
+        setPage('detail');
+        setActiveNav('shipments');
+        return;
+      }
+      if (loc.page === 'shipments') setSelectedShipment(null);
+      setPage(loc.page);
+      setActiveNav(loc.page);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -562,10 +586,21 @@ function App() {
   }, []);
 
   const handleViewShipment = (shipment) => {
+    const batchId = shipment && (shipment.batch_id || shipment.id) || '';
     setSelectedShipment(shipment);
-    const url = pageToUrl('shipments', '');
-    history.pushState({ page: 'shipments' }, '', url);
+    const url = shipmentDetailUrl(batchId);
+    const search = batchId ? ('?batch_id=' + encodeURIComponent(batchId)) : '';
+    setCurrentSearch(search);
+    history.pushState({ page: 'detail', batch_id: batchId }, '', url);
     setPage('detail');
+    setActiveNav('shipments');
+  };
+
+  const handleBackFromShipmentDetail = () => {
+    setSelectedShipment(null);
+    setCurrentSearch('');
+    history.pushState({ page: 'shipments' }, '', '/v2/shipments');
+    setPage('shipments');
     setActiveNav('shipments');
   };
 
@@ -649,22 +684,22 @@ function App() {
             </>
           )}
 
-          {/* Shipments */}
+          {/* Shipments — canonical V2 front/list (B1 operational parity) */}
           {!viewerDoc && page === 'shipments' && (
             <>
-              <PageHeader title="Shipments" subtitle="Read-only batch list — completed shipments from the engine, newest first. AWB links out to carrier tracking. No write actions." />
+              <PageHeader title="Shipments" subtitle="Operational shipment hub — newest upload first. View opens V2 detail. Recheck / Archive use the same dashboard batch authority as B1." />
               <SubTabStrip active={page} onNav={handleNav} />
               <DashboardPage onViewShipment={handleViewShipment} />
             </>
           )}
 
-          {/* Detail view */}
+          {/* Detail view — existing V2 Shipment Detail authority (unchanged business behavior) */}
           {!viewerDoc && page === 'detail' && selectedShipment && (
             <>
               <div style={{ padding: '20px 32px 0', flexShrink: 0 }}>
                 <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: 'var(--text)' }}>Shipment Detail</h1>
               </div>
-              <ShipmentDetailPage shipment={selectedShipment} onBack={() => { setPage('shipments'); setActiveNav('shipments'); }} />
+              <ShipmentDetailPage shipment={selectedShipment} onBack={handleBackFromShipmentDetail} />
             </>
           )}
 

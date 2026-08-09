@@ -69,8 +69,11 @@ def test_dashboard_money_columns_use_formatter():
     src = _read(DASHBOARD)
     # net/gross/duty must render through the money formatter, not raw _fmt
     for field in ("row.net", "row.gross", "row.duty"):
-        assert re.search(rf"_money\(\s*{re.escape(field)}\s*\)", src), (
-            f"{field} must render via _money(...) (2-dp formatter), not raw _fmt"
+        assert (
+            re.search(rf"_money\(\s*{re.escape(field)}\s*\)", src)
+            or re.search(rf"_shMoney\(\s*{re.escape(field)}\s*\)", src)
+        ), (
+            f"{field} must render via _money/_shMoney (2-dp formatter), not raw _fmt"
         )
     assert "window.fmtMoney2" in src, "dashboard-page.jsx must delegate to window.fmtMoney2"
     # pl-PL is the established V2 money convention (kanban + detail) — the list
