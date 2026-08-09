@@ -2489,6 +2489,144 @@ _INVOICE_LEDGER_PAGE_LIMIT      = 200
 _INVOICE_LEDGER_SAFETY_CAP      = 5000
 
 
+def _wfirma_sibling_page_xml(page: int, limit: int) -> str:
+    """Build the live-proven find pagination fragment.
+
+    Live wFirma (contractors 2026-05-06; invoices 2026-08-09) **ignores**
+    nested ``<page><start>…</start><limit>…</limit></page>`` and always
+    returns page 1. Sibling ``<page>N</page><limit>K</limit>`` (1-indexed
+    page number) advances the cursor and honours limit.
+    """
+    p = int(page)
+    lim = int(limit)
+    if p < 1 or lim <= 0:
+        raise ValueError("page must be >=1 and limit must be >0")
+    return f"<page>{p}</page><limit>{lim}</limit>"
+
+
+def _offset_to_wfirma_page(start: int, limit: int) -> int:
+    """Map Accounting Hub ``start`` offset to 1-indexed wFirma page."""
+    s = max(0, int(start))
+    lim = max(1, int(limit))
+    return (s // lim) + 1
+
+
+def _type_condition_xml(types: tuple) -> str:
+    """Build type filter XML.
+
+    Multiple ``type eq`` conditions are AND-combined by wFirma and match
+    nothing (live 2026-08-09: normal∧correction∧proforma → 0 rows).
+    Use ``operator=in`` with comma-separated values for multi-type reads
+    (live: ``normal,correction,proforma`` → full contractor set).
+    """
+    cleaned = tuple(str(t).strip() for t in types if str(t).strip())
+    if not cleaned:
+        raise ValueError("types must be a non-empty tuple")
+    if len(cleaned) == 1:
+        return (
+            "<condition><field>type</field>"
+            f"<operator>eq</operator><value>{_esc(cleaned[0])}</value></condition>"
+        )
+    joined = ",".join(cleaned)
+    return (
+        "<condition><field>type</field>"
+        f"<operator>in</operator><value>{_esc(joined)}</value></condition>"
+    )
+
+
+def _paginate_find_collection(
+    *,
+    module: str,
+    collection_tag: str,
+    item_tag: str,
+    conditions_xml: str,
+    page_size: int = _INVOICE_LEDGER_PAGE_LIMIT,
+    safety_cap: int = _INVOICE_LEDGER_SAFETY_CAP,
+    stats: Optional[Dict[str, Any]] = None,
+) -> List[ET.Element]:
+    """Sibling-page iterator with deterministic stop + id dedupe guard.
+
+    Stops when: empty page, short page, safety cap, or a page yields no
+    new top-level ids (broken paging / repeated page 1).
+
+    Optional *stats* dict is mutated in place with:
+      api_calls, pages, items_raw, items_kept, duplicate_ids_suppressed,
+      stopped_reason (``empty``|``short``|``no_new_ids``|``safety_cap``).
+    """
+    out: List[ET.Element] = []
+    seen_ids: set = set()
+    page = 1
+    dupes = 0
+    raw_items = 0
+    stop_reason = "empty"
+    while True:
+        if (page - 1) * page_size >= safety_cap:
+            stop_reason = "safety_cap"
+            break
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f"<api><{module}><parameters>"
+            f"<conditions>{conditions_xml}</conditions>"
+            f"{_wfirma_sibling_page_xml(page, page_size)}"
+            f"</parameters></{module}></api>"
+        )
+        http_status, response_text = _http_request("GET", module, "find", body)
+        if stats is not None:
+            stats["api_calls"] = int(stats.get("api_calls") or 0) + 1
+        if http_status >= 400:
+            raise RuntimeError(
+                f"{module}/find HTTP {http_status} (page={page}): "
+                f"{response_text[:200]}"
+            )
+        code, desc = _parse_status(response_text)
+        if code != "OK":
+            raise RuntimeError(f"{module}/find wFirma status={code}: {desc}")
+        try:
+            root = ET.fromstring(response_text)
+        except ET.ParseError as exc:
+            raise RuntimeError(
+                f"{module}/find: malformed XML at page={page}: {exc}"
+            ) from exc
+        items = root.findall(f"{collection_tag}/{item_tag}")
+        if stats is not None:
+            stats["pages"] = int(stats.get("pages") or 0) + 1
+        if not items:
+            stop_reason = "empty"
+            break
+        raw_items += len(items)
+        new_count = 0
+        for node in items:
+            nid = (node.findtext("id") or "").strip()
+            if nid and nid in seen_ids:
+                dupes += 1
+                continue
+            if nid:
+                seen_ids.add(nid)
+            out.append(node)
+            new_count += 1
+            if len(out) >= safety_cap:
+                stop_reason = "safety_cap"
+                if stats is not None:
+                    stats["items_raw"] = raw_items
+                    stats["items_kept"] = len(out[:safety_cap])
+                    stats["duplicate_ids_suppressed"] = dupes
+                    stats["stopped_reason"] = stop_reason
+                return out[:safety_cap]
+        if new_count == 0:
+            stop_reason = "no_new_ids"
+            break
+        if len(items) < page_size:
+            stop_reason = "short"
+            break
+        page += 1
+    if stats is not None:
+        stats["items_raw"] = raw_items
+        stats["items_kept"] = len(out)
+        stats["duplicate_ids_suppressed"] = dupes
+        stats["stopped_reason"] = stop_reason
+    return out
+
+
 def fetch_invoices_for_contractor(
     contractor_id: str,
     date_from:     str,
@@ -2497,26 +2635,19 @@ def fetch_invoices_for_contractor(
 ) -> List[ET.Element]:
     """Phase 10A — paginated read-only ``invoices/find`` for one contractor.
 
-    READ-ONLY. Uses ``GET invoices/find`` with the proven filter
-    combination from
-    ``app/tools/sync_customer_invoice_snapshot.py:130-136``:
+    READ-ONLY. Uses ``GET invoices/find`` with:
 
-      • ``type``           ``eq``  (one condition per element of ``types``)
+      • ``type``           ``eq`` (one type) or ``in`` (comma list)
       • ``contractor_id``  ``eq``
-      • ``date``           ``ge`` ``date_from``
-      • ``date``           ``le`` ``date_to``
+      • ``date``           ``ge`` / ``le`` when supplied
 
-    The ``date`` conditions are sent because they are DOCUMENTED in
-    ``docs/WFIRMA_ENDPOINT_MAP.md:155``, but wFirma is known to silently
-    ignore unsupported filter shapes (existing ``fetch_invoice_xml``
-    docstring documents this). Callers MUST therefore re-filter the
-    returned list by ``<date>`` Python-side; this helper returns
-    everything wFirma sends and does NOT date-filter itself.
+    Live proof 2026-08-09: multiple ``type eq`` conditions AND to empty;
+    nested ``page/start`` is ignored; sibling ``page``/``limit`` works.
 
-    Pagination: ``start``/``limit`` of 200, with a 5000-doc safety cap
-    so a runaway / mis-filtered query never hangs the request thread.
+    The ``date`` conditions are sent but callers MUST re-filter by
+    ``<date>`` Python-side — wFirma may ignore unsupported filter shapes.
 
-    Returns the list of parsed ``<invoice>`` Element nodes.
+    Returns top-level ``<invoice>`` Element nodes (deduped by id).
     Raises:
       ValueError      — empty contractor_id, or date_from > date_to.
       RuntimeError    — wFirma status != OK on any page.
@@ -2532,11 +2663,7 @@ def fetch_invoices_for_contractor(
     if not isinstance(types, tuple) or not types:
         raise ValueError("types must be a non-empty tuple")
 
-    type_conditions = "".join(
-        f"<condition><field>type</field>"
-        f"<operator>eq</operator><value>{_esc(t)}</value></condition>"
-        for t in types
-    )
+    type_conditions = _type_condition_xml(types)
     contractor_condition = (
         f"<condition><field>contractor_id</field>"
         f"<operator>eq</operator><value>{_esc(cid)}</value></condition>"
@@ -2552,53 +2679,13 @@ def fetch_invoices_for_contractor(
             f"<condition><field>date</field>"
             f"<operator>le</operator><value>{_esc(dt)}</value></condition>"
         )
-
-    out: List[ET.Element] = []
-    start = 0
-    page_size = _INVOICE_LEDGER_PAGE_LIMIT
-    while True:
-        body = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<api><invoices><parameters>'
-              '<conditions>'
-                f'{type_conditions}'
-                f'{contractor_condition}'
-                f'{date_conditions}'
-              '</conditions>'
-              f'<page><start>{start}</start><limit>{page_size}</limit></page>'
-            '</parameters></invoices></api>'
-        )
-        http_status, response_text = _http_request(
-            "GET", "invoices", "find", body)
-        if http_status >= 400:
-            raise RuntimeError(
-                f"invoices/find HTTP {http_status} (start={start}): "
-                f"{response_text[:200]}"
-            )
-        code, desc = _parse_status(response_text)
-        if code != "OK":
-            raise RuntimeError(
-                f"invoices/find wFirma status={code}: {desc}"
-            )
-        try:
-            root = ET.fromstring(response_text)
-        except ET.ParseError as exc:
-            raise RuntimeError(
-                f"invoices/find: malformed XML at start={start}: {exc}"
-            ) from exc
-        invoices = root.findall("invoices/invoice")
-        if not invoices:
-            break
-        out.extend(invoices)
-        if len(invoices) < page_size:
-            break
-        start += page_size
-        # Safety cap — stop if pagination would exceed the cap on the
-        # NEXT page. The check uses ``start`` (the index of the next
-        # page's first row), so a 5000-cap stops at exactly 5000 rows.
-        if start >= _INVOICE_LEDGER_SAFETY_CAP:
-            break
-    return out
+    conditions = f"{type_conditions}{contractor_condition}{date_conditions}"
+    return _paginate_find_collection(
+        module="invoices",
+        collection_tag="invoices",
+        item_tag="invoice",
+        conditions_xml=conditions,
+    )
 
 
 def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> Dict[str, Any]:
@@ -2607,6 +2694,10 @@ def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> 
     ``invoices/find`` filtered by wFirma invoice type. Reuses the proven
     invoices/find transport (auth, pagination, retry, error handling, XML parse);
     wFirma remains the authority (no local mirror, no duplicate data).
+
+    Pagination: ``start`` is treated as a row offset and converted to the
+    live sibling page index (``page = start // limit + 1``). Nested
+    ``page/start`` is not used — live wFirma ignores it.
 
     wfirma_type: "normal" (Invoice) or "correction" (Credit Note).
     Returns {"rows": [{number, date, party, net, tax, gross, currency, state,
@@ -2623,6 +2714,7 @@ def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> 
         limit_i = max(1, min(int(limit), _INVOICE_LEDGER_PAGE_LIMIT))
     except (TypeError, ValueError):
         start_i, limit_i = 0, 25
+    page_i = _offset_to_wfirma_page(start_i, limit_i)
 
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -2630,7 +2722,7 @@ def list_invoices_by_type(wfirma_type: str, start: int = 0, limit: int = 25) -> 
           '<conditions>'
             f'<condition><field>type</field><operator>eq</operator><value>{_esc(t)}</value></condition>'
           '</conditions>'
-          f'<page><start>{start_i}</start><limit>{limit_i}</limit></page>'
+          f'{_wfirma_sibling_page_xml(page_i, limit_i)}'
         '</parameters></invoices></api>'
     )
     http_status, response_text = _http_request("GET", "invoices", "find", body)
@@ -2736,24 +2828,18 @@ def fetch_payments_for_contractor(
 ) -> List[ET.Element]:
     """Phase 10B — paginated read-only ``payments/find`` for one contractor.
 
-    READ-ONLY. Uses ``GET payments/find`` with the proven filter
-    combination from the Phase 10A.5 live probe
-    (``docs/WFIRMA_PAYMENTS_PROBE_EVIDENCE.md``):
+    READ-ONLY. Uses ``GET payments/find`` with:
 
       • ``contractor_id``  ``eq``
-      • ``date``           ``ge`` ``date_from``  (when supplied)
-      • ``date``           ``le`` ``date_to``    (when supplied)
+      • ``date``           ``ge`` / ``le`` when supplied
 
-    Mirrors :func:`fetch_invoices_for_contractor`:
+    Pagination uses sibling ``<page>N</page><limit>K</limit>`` (same live
+    contract as invoices/find — nested start is ignored).
 
-      * Pagination ``start``/``limit`` of 200, safety cap 5000.
-      * Date filters are SENT to wFirma but the caller MUST also
-        Python-side filter by ``<date>`` on the returned nodes,
-        because wFirma is documented to silently ignore unsupported
-        filter shapes.
+    Date filters are SENT but the caller MUST also Python-side filter by
+    ``<date>`` on returned nodes.
 
-    Returns the list of parsed ``<payment>`` Element nodes from
-    ``payments/find``'s ``<payments><payment>`` collection.
+    Returns top-level ``<payment>`` Element nodes (deduped by id).
 
     Raises:
       ValueError      — empty ``contractor_id``, ``date_from > date_to``.
@@ -2786,49 +2872,83 @@ def fetch_payments_for_contractor(
             f"<condition><field>date</field>"
             f"<operator>le</operator><value>{_esc(dt)}</value></condition>"
         )
+    return _paginate_find_collection(
+        module="payments",
+        collection_tag="payments",
+        item_tag="payment",
+        conditions_xml=f"{contractor_condition}{date_conditions}",
+    )
 
-    out: List[ET.Element] = []
-    start = 0
-    page_size = _INVOICE_LEDGER_PAGE_LIMIT
-    while True:
-        body = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<api><payments><parameters>'
-              '<conditions>'
-                f'{contractor_condition}'
-                f'{date_conditions}'
-              '</conditions>'
-              f'<page><start>{start}</start><limit>{page_size}</limit></page>'
-            '</parameters></payments></api>'
+
+def fetch_invoices_for_period(
+    date_from: str,
+    date_to: str,
+    types: tuple = ("normal", "correction", "proforma"),
+    stats: Optional[Dict[str, Any]] = None,
+) -> List[ET.Element]:
+    """Bulk read-only ``invoices/find`` for a date window (all contractors).
+
+    Same sibling-page + ``type in`` contract as
+    :func:`fetch_invoices_for_contractor`. No per-contractor loop.
+    Callers MUST Python-side date-filter returned nodes.
+    """
+    df = (date_from or "").strip()
+    dt = (date_to or "").strip()
+    if df and dt and df > dt:
+        raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
+    if not isinstance(types, tuple) or not types:
+        raise ValueError("types must be a non-empty tuple")
+    date_conditions = ""
+    if df:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>ge</operator><value>{_esc(df)}</value></condition>"
         )
-        http_status, response_text = _http_request(
-            "GET", "payments", "find", body)
-        if http_status >= 400:
-            raise RuntimeError(
-                f"payments/find HTTP {http_status} (start={start}): "
-                f"{response_text[:200]}"
-            )
-        code, desc = _parse_status(response_text)
-        if code != "OK":
-            raise RuntimeError(
-                f"payments/find wFirma status={code}: {desc}"
-            )
-        try:
-            root = ET.fromstring(response_text)
-        except ET.ParseError as exc:
-            raise RuntimeError(
-                f"payments/find: malformed XML at start={start}: {exc}"
-            ) from exc
-        payments = root.findall("payments/payment")
-        if not payments:
-            break
-        out.extend(payments)
-        if len(payments) < page_size:
-            break
-        start += page_size
-        if start >= _INVOICE_LEDGER_SAFETY_CAP:
-            break
-    return out
+    if dt:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>le</operator><value>{_esc(dt)}</value></condition>"
+        )
+    return _paginate_find_collection(
+        module="invoices",
+        collection_tag="invoices",
+        item_tag="invoice",
+        conditions_xml=f"{_type_condition_xml(types)}{date_conditions}",
+        stats=stats,
+    )
+
+
+def fetch_payments_for_period(
+    date_from: str,
+    date_to: str,
+    stats: Optional[Dict[str, Any]] = None,
+) -> List[ET.Element]:
+    """Bulk read-only ``payments/find`` for a date window (all contractors).
+
+    Sibling-page iterator. Callers MUST Python-side date-filter nodes.
+    """
+    df = (date_from or "").strip()
+    dt = (date_to or "").strip()
+    if df and dt and df > dt:
+        raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
+    date_conditions = ""
+    if df:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>ge</operator><value>{_esc(df)}</value></condition>"
+        )
+    if dt:
+        date_conditions += (
+            f"<condition><field>date</field>"
+            f"<operator>le</operator><value>{_esc(dt)}</value></condition>"
+        )
+    return _paginate_find_collection(
+        module="payments",
+        collection_tag="payments",
+        item_tag="payment",
+        conditions_xml=date_conditions,
+        stats=stats,
+    )
 
 
 def _normalise_fullnumber(value: Any) -> str:

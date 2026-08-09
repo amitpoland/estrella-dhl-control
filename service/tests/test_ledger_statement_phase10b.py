@@ -229,14 +229,15 @@ def test_payments_helper_paginates(monkeypatch):
 
 
 def test_payments_helper_safety_cap_at_5000(monkeypatch):
-    full_page = _envelope_payments("".join(
-        _payment_xml(payment_id=str(i + 1), invoice_id="X",
-                      value="1.00", value_pln="1.00")
-        for i in range(200)
-    ))
     calls = {"n": 0}
     def _stub(method, module, action, body=""):
         calls["n"] += 1
+        base = (calls["n"] - 1) * 200
+        full_page = _envelope_payments("".join(
+            _payment_xml(payment_id=str(base + i + 1), invoice_id="X",
+                          value="1.00", value_pln="1.00")
+            for i in range(200)
+        ))
         return 200, full_page
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     nodes = wfirma_client.fetch_payments_for_contractor(
@@ -244,6 +245,19 @@ def test_payments_helper_safety_cap_at_5000(monkeypatch):
     )
     assert len(nodes) == 5000
     assert calls["n"] == 25
+
+
+def test_payments_helper_uses_sibling_page(monkeypatch):
+    captured = {}
+    def _stub(method, module, action, body=""):
+        captured["body"] = body
+        return 200, _envelope_payments("")
+    monkeypatch.setattr(wfirma_client, "_http_request", _stub)
+    wfirma_client.fetch_payments_for_contractor(
+        "C-1", "2026-01-01", "2026-12-31",
+    )
+    assert "<page>1</page>" in captured["body"]
+    assert "<page><start>" not in captured["body"]
 
 
 def test_payments_helper_propagates_wfirma_error(monkeypatch):
@@ -360,44 +374,97 @@ def test_unmatched_payment_listed():
                           date="2026-04-01", currency="EUR")
         ],
         payment_xmls=[
-            # invoice_id empty → unmatched.
+            # invoice_id empty → unmatched. currency_label must not become ISO.
             _payment_xml(payment_id="P-UNM", invoice_id="", value="50.00",
                           currency="EUR", date="2026-04-20")
         ],
     )
-    unm = out["unmatched_payments_per_currency"]["EUR"]
+    unm = out["unmatched_payments_per_currency"]["UNRESOLVED"]
     assert len(unm) == 1
     assert unm[0]["wfirma_doc_id"] == "P-UNM"
     assert unm[0]["value"]         == "50.00"
     assert unm[0]["linked_invoice"] == ""
-    # Warning emitted.
     assert any(w["event"] == "unmatched_payment" for w in out["warnings"])
+    assert any(w["event"] == "payment_currency_unresolved" for w in out["warnings"])
     # Invoice still owes 100 because the payment didn't match it.
     assert out["aging_per_currency"]["EUR"]["total"] == "100.00"
 
 
-def test_cross_currency_payment_listed_as_unmatched():
-    """An EUR invoice paid via a USD payment must NOT reduce the EUR
-    invoice's remaining. The payment lives in its own currency
-    (USD) as an unmatched credit."""
+def test_nbp_currency_label_does_not_block_match():
+    """currency_label is an NBP table ref — never ISO. Linked payment
+    must still settle the invoice in the invoice's ISO currency."""
     out = _agg(
         invoice_xmls=[
             _invoice_xml(invoice_id="1", brutto="100.00",
                           date="2026-04-01", currency="EUR")
         ],
         payment_xmls=[
-            _payment_xml(payment_id="P1", invoice_id="1", value="120.00",
-                          currency="USD", date="2026-04-15")
+            _payment_xml(payment_id="P1", invoice_id="1", value="100.00",
+                          currency="083/A/NBP/2021", date="2026-04-15")
         ],
     )
-    # EUR invoice still fully unpaid in aging.
+    assert out["totals_per_currency"]["EUR"]["received"] == "100.00"
+    assert out["totals_per_currency"]["EUR"]["outstanding"] == "0.00"
+    assert out["aging_per_currency"]["EUR"]["total"] == "0.00"
+    assert "083/A/NBP/2021" not in out["currencies"]
+    assert not any(
+        w["event"] == "currency_mismatch_with_invoice" for w in out["warnings"]
+    )
+
+
+def test_fx_invoice_uses_total_when_brutto_absent():
+    """WDT-style invoices: document-currency gross lives in <total>."""
+    inv = (
+        "<invoice><id>1</id><fullnumber>WDT 1/2020</fullnumber>"
+        "<type>normal</type><date>2020-05-27</date><currency>USD</currency>"
+        "<netto>3947.61</netto><total>965.54</total>"
+        "</invoice>"
+    )
+    pay = _payment_xml(payment_id="P1", invoice_id="1", value="965.54",
+                        currency="048/A/NBP/2020", date="2020-06-03")
+    out = _agg(invoice_xmls=[inv], payment_xmls=[pay])
+    assert out["totals_per_currency"]["USD"]["invoiced"] == "965.54"
+    assert out["totals_per_currency"]["USD"]["received"] == "965.54"
+    assert out["totals_per_currency"]["USD"]["outstanding"] == "0.00"
+
+
+def test_nbp_label_never_accepted_as_iso_currency():
+    from app.services.ledger_aggregator import (
+        _is_iso_currency_code,
+        _parse_payment_fact,
+    )
+    assert not _is_iso_currency_code("083/A/NBP/2021")
+    assert not _is_iso_currency_code("106/A/NBP/2021")
+    assert _is_iso_currency_code("EUR")
+    pay = ET.fromstring(
+        _payment_xml(payment_id="P1", invoice_id="1", value="10.00",
+                      currency="083/A/NBP/2021")
+    )
+    fact = _parse_payment_fact(pay)
+    assert fact["currency"] == ""
+    assert fact["currency_label"] == "083/A/NBP/2021"
+
+
+def test_real_iso_currency_tag_mismatch_still_unmatched():
+    """If a payment carries a real <currency> ISO that disagrees with
+    the invoice, refuse the match (no FX conversion)."""
+    pay_xml = (
+        "<payment>"
+        "<id>P1</id><invoice><id>1</id></invoice>"
+        "<value>120.00</value><value_pln>0</value_pln>"
+        "<date>2026-04-15</date>"
+        "<currency>USD</currency>"
+        "<currency_label>083/A/NBP/2021</currency_label>"
+        "</payment>"
+    )
+    out = _agg(
+        invoice_xmls=[
+            _invoice_xml(invoice_id="1", brutto="100.00",
+                          date="2026-04-01", currency="EUR")
+        ],
+        payment_xmls=[pay_xml],
+    )
     assert out["aging_per_currency"]["EUR"]["total"] == "100.00"
-    # USD bucket exists with the unmatched payment.
-    assert "USD" in out["unmatched_payments_per_currency"]
-    usd_unm = out["unmatched_payments_per_currency"]["USD"]
-    assert len(usd_unm) == 1
-    assert usd_unm[0]["wfirma_doc_id"] == "P1"
-    # Currency-mismatch warning.
     mw = [w for w in out["warnings"]
            if w["event"] == "currency_mismatch_with_invoice"]
     assert mw and mw[0]["wfirma_doc_id"] == "P1"
@@ -697,7 +764,7 @@ def test_route_python_side_payment_date_filter(client, monkeypatch):
         headers=_auth_headers(),
     )
     assert r.status_code == 200, r.text
-    unm = r.json()["unmatched_payments_per_currency"].get("EUR", [])
+    unm = r.json()["unmatched_payments_per_currency"].get("UNRESOLVED", [])
     ids = {u["wfirma_doc_id"] for u in unm}
     # Outside-window payment dropped; inside-window unmatched payment kept.
     assert ids == {"IN"}

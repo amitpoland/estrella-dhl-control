@@ -31,7 +31,7 @@ with synthetic XML fixtures.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 
 
@@ -105,7 +105,7 @@ def _entry_from_invoice(inv: ET.Element) -> Dict[str, Any]:
         "date":          (inv.findtext("date") or "").strip(),
         "currency":      (inv.findtext("currency") or "").strip().upper(),
         "total_net":     _q(_decimal_or_none(inv.findtext("netto"))),
-        "total_gross":   _q(_decimal_or_none(inv.findtext("brutto"))),
+        "total_gross":   _q(_decimal_or_none(_invoice_gross_raw(inv))),
     }
 
 
@@ -208,15 +208,25 @@ def aggregate_invoice_ledger(
 #
 # Pin spec: docs/PHASE10B_STATEMENT_ARCHITECTURE.md
 #
-# Reconciliation rule (§6 of the spec):
+# Reconciliation rule (§6 — corrected 2026-08-09 live probe):
 #   remaining_for(X) = X.brutto
 #                       - Σ payment.value
 #                         where payment.invoice/id == X.id
-#                           AND payment.currency_label == X.currency
-# Cross-currency payment-vs-invoice mismatch → payment is unmatched.
+#
+# Payment XML has **no ISO currency tag**. ``currency_label`` is an NBP
+# table reference (e.g. ``083/A/NBP/2021``) or empty — never treat it as
+# USD/EUR/PLN. Matched payments inherit the linked invoice's ISO currency.
+# Cross-currency invent via currency_label is forbidden (no FX fallback).
 # Empty payment.invoice/id           → payment is unmatched.
 # Negative <brutto> on a correction  → contributes to totals.credited.
 # Aging hardcoded to "invoice_age"   → label exposed on every block.
+#
+# Statement period semantics (period statement model):
+#   invoices with issue date in [from, to] + payments with payment date
+#   in [from, to]. Payments that link to invoices outside the fetched
+#   invoice window remain ``payment_links_invoice_outside_window`` —
+#   the window is NOT silently broadened; opening-balance is a separate
+#   model and is not mixed in here.
 
 # Entry types in chronological output. Numeric tie-break rank below
 # enforces invoice-before-same-day-payment ordering (§5.1 of the spec).
@@ -262,36 +272,155 @@ def _days_between(later: str, earlier: str) -> int:
     return (a - b).days
 
 
+def _is_iso_currency_code(raw: Optional[str]) -> bool:
+    """True only for a 3-letter alphabetic ISO code (USD/EUR/PLN…)."""
+    s = (raw or "").strip().upper()
+    return len(s) == 3 and s.isalpha()
+
+
+def _iso_currency_or_empty(raw: Optional[str]) -> str:
+    s = (raw or "").strip().upper()
+    return s if _is_iso_currency_code(s) else ""
+
+
+def remaining_after_payments(gross: Decimal, paid: Decimal) -> Decimal:
+    """Shared remaining = gross − matched payments (no FX)."""
+    return gross - paid
+
+
+def _invoice_gross_raw(inv: ET.Element) -> Optional[str]:
+    """Document-currency gross — same authority as accounting_documents.
+
+    Domestic invoices expose ``<brutto>``. Foreign-currency (WDT) invoices
+    often omit ``brutto`` and put the document-currency gross in ``<total>``
+    (``<netto>`` may be PLN). Payment ``<value>`` matches document currency.
+    """
+    for tag in ("brutto", "total", "total_brutto"):
+        raw = inv.findtext(tag)
+        if raw is not None and str(raw).strip() != "":
+            return raw
+    return None
+
+
 def _parse_invoice_fact(inv: ET.Element) -> Dict[str, Any]:
     """Project an <invoice> node into the verified-fields-only dict the
     Statement aggregator works with."""
+    name = (
+        (inv.findtext("contractor_detail/name") or "").strip()
+        or (inv.findtext("contractor/name") or "").strip()
+    )
     return {
-        "id":            (inv.findtext("id") or "").strip(),
-        "fullnumber":    (inv.findtext("fullnumber") or "").strip(),
-        "type":          (inv.findtext("type") or "").strip(),
-        "date":          (inv.findtext("date") or "").strip(),
-        "currency":      (inv.findtext("currency") or "").strip().upper(),
-        "netto":         _decimal_or_none(inv.findtext("netto")),
-        "brutto":        _decimal_or_none(inv.findtext("brutto")),
-        "contractor_id": (inv.findtext("contractor/id") or "").strip(),
+        "id":              (inv.findtext("id") or "").strip(),
+        "fullnumber":      (inv.findtext("fullnumber") or "").strip(),
+        "type":            (inv.findtext("type") or "").strip(),
+        "date":            (inv.findtext("date") or "").strip(),
+        "paymentdate":     (inv.findtext("paymentdate") or "").strip(),
+        "currency":        _iso_currency_or_empty(inv.findtext("currency")),
+        "netto":           _decimal_or_none(inv.findtext("netto")),
+        "brutto":          _decimal_or_none(_invoice_gross_raw(inv)),
+        "contractor_id":   (inv.findtext("contractor/id") or "").strip(),
+        "contractor_name": name,
     }
 
 
 def _parse_payment_fact(pay: ET.Element) -> Dict[str, Any]:
     """Project a <payment> node into the verified-fields-only dict.
 
-    Only the six fields confirmed by the Phase 10A.5 live probe are read:
-    id, invoice/id, value, value_pln, date, currency_label. Every other
-    leaf (account, payment_method, compensation_*, payroll fields, etc.)
-    is ignored — the Statement does not need them.
+    Live payment schema (2026-08-09): id, invoice/id, value, value_pln,
+    date, currency_label, currency_date, currency_exchange — **no**
+    ``<currency>`` ISO tag. ``currency_label`` is an NBP table id when
+    present (e.g. ``083/A/NBP/2021``) and must never be copied into the
+    ISO ``currency`` field.
     """
+    label = (pay.findtext("currency_label") or "").strip()
+    # Optional defence: if a future schema adds <currency>, accept only ISO.
+    raw_currency = pay.findtext("currency")
     return {
         "id":              (pay.findtext("id") or "").strip(),
         "linked_invoice":  (pay.findtext("invoice/id") or "").strip(),
         "value":           _decimal_or_none(pay.findtext("value")),
         "value_pln":       _decimal_or_none(pay.findtext("value_pln")),
         "date":            (pay.findtext("date") or "").strip(),
-        "currency":        (pay.findtext("currency_label") or "").strip().upper(),
+        "currency_label":  label,  # NBP / FX table reference — not ISO
+        "currency":        _iso_currency_or_empty(raw_currency),
+        "contractor_id":   (pay.findtext("contractor/id") or "").strip(),
+    }
+
+
+def match_payments_to_invoices(
+    invoice_facts: List[Dict[str, Any]],
+    payment_facts: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Shared payment→invoice apply step for Client Ledger and analytics.
+
+    Returns:
+      paid_against_invoice: id → Decimal sum of matched payment values
+      matched_payment_ids: set
+      unmatched_payments: list of payment facts (outside window / no link /
+        ISO mismatch)
+      warnings: list of event dicts (same event names as aggregate_statement)
+    """
+    warnings: List[Dict[str, Any]] = []
+    invoice_by_id = {f["id"]: f for f in invoice_facts if f.get("id")}
+    paid_against_invoice: Dict[str, Decimal] = {}
+    matched_payment_ids: set = set()
+    unmatched_payments: List[Dict[str, Any]] = []
+
+    for p in payment_facts:
+        if not p.get("id"):
+            warnings.append({"event": "payment_with_empty_id"})
+            continue
+        linked = p.get("linked_invoice") or ""
+        if not linked:
+            unmatched_payments.append(p)
+            warnings.append({
+                "event": "unmatched_payment",
+                "wfirma_doc_id": p["id"],
+            })
+            continue
+        inv = invoice_by_id.get(linked)
+        if inv is None:
+            unmatched_payments.append(p)
+            warnings.append({
+                "event": "payment_links_invoice_outside_window",
+                "wfirma_doc_id": p["id"],
+                "linked_invoice": linked,
+            })
+            continue
+        inherited = inv.get("currency") or ""
+        pay_iso = p.get("currency") or ""
+        if pay_iso and inherited and pay_iso != inherited:
+            unmatched_payments.append(p)
+            warnings.append({
+                "event": "currency_mismatch_with_invoice",
+                "wfirma_doc_id": p["id"],
+                "linked_invoice": linked,
+                "invoice_currency": inherited,
+                "payment_currency": pay_iso,
+            })
+            continue
+        p = dict(p)
+        p["currency"] = inherited or pay_iso
+        matched_payment_ids.add(p["id"])
+        paid_against_invoice[linked] = (
+            paid_against_invoice.get(linked, Decimal("0")) + p["value"]
+        )
+        inv_cid = inv.get("contractor_id") or ""
+        pay_cid = p.get("contractor_id") or ""
+        if inv_cid and pay_cid and inv_cid != pay_cid:
+            warnings.append({
+                "event": "payment_invoice_contractor_mismatch",
+                "wfirma_doc_id": p["id"],
+                "linked_invoice": linked,
+                "invoice_contractor_id": inv_cid,
+                "payment_contractor_id": pay_cid,
+            })
+
+    return {
+        "paid_against_invoice": paid_against_invoice,
+        "matched_payment_ids": matched_payment_ids,
+        "unmatched_payments": unmatched_payments,
+        "warnings": warnings,
     }
 
 
@@ -407,12 +536,6 @@ def aggregate_statement(
         if not f["id"]:
             warnings.append({"event": "payment_with_empty_id"})
             continue
-        if not f["currency"]:
-            warnings.append({
-                "event":         "payment_currency_missing",
-                "wfirma_doc_id": f["id"],
-            })
-            continue   # cannot bucket — skip from per-currency totals
         if f["value"] < 0:
             warnings.append({
                 "event":         "reversal_payment",
@@ -421,20 +544,20 @@ def aggregate_statement(
         payment_facts_kept.append(f)
     payment_facts = payment_facts_kept
 
-    # Build invoice index by (id, currency) for the §6 reconciliation.
+    # Build invoice index by id for the §6 reconciliation.
     invoice_by_id: Dict[str, Dict[str, Any]] = {f["id"]: f for f in invoice_facts}
 
-    # Classify each payment as matched (currency-aligned with linked
-    # invoice) or unmatched. paid_against_invoice maps id → Decimal sum
-    # of currency-aligned matched payments only.
+    # Classify each payment as matched (linked invoice in window) or
+    # unmatched. paid_against_invoice maps id → Decimal sum of matched
+    # payments only. Matched payments inherit the invoice ISO currency.
     paid_against_invoice: Dict[str, Decimal] = {}
     unmatched_payments_by_ccy: Dict[str, List[Dict[str, Any]]] = {}
     matched_payment_ids: set = set()
 
     for p in payment_facts:
         linked = p["linked_invoice"]
-        ccy    = p["currency"] or "PLN"
         is_unmatched = False
+        inherited_ccy = ""
         if not linked:
             is_unmatched = True
             warnings.append({
@@ -444,35 +567,57 @@ def aggregate_statement(
         else:
             inv = invoice_by_id.get(linked)
             if inv is None:
-                # Linked invoice not in the fetched window. We don't
-                # know its currency; treat as unmatched in the
-                # payment's own currency.
+                # Linked invoice not in the fetched window. Do not broaden
+                # the window; keep the outside-window warning.
                 is_unmatched = True
                 warnings.append({
                     "event":          "payment_links_invoice_outside_window",
                     "wfirma_doc_id":  p["id"],
                     "linked_invoice": linked,
                 })
-            elif (inv["currency"] or "").upper() != p["currency"]:
-                is_unmatched = True
-                warnings.append({
-                    "event":              "currency_mismatch_with_invoice",
-                    "wfirma_doc_id":      p["id"],
-                    "linked_invoice":     linked,
-                    "invoice_currency":   inv["currency"],
-                    "payment_currency":   p["currency"],
-                })
             else:
-                matched_payment_ids.add(p["id"])
-                paid_against_invoice[linked] = (
-                    paid_against_invoice.get(linked, Decimal("0")) + p["value"]
-                )
+                # Match on invoice id. Payment value is in document currency.
+                inherited_ccy = inv["currency"] or ""
+                if not inherited_ccy:
+                    warnings.append({
+                        "event":         "invoice_currency_missing",
+                        "wfirma_doc_id": inv["id"],
+                    })
+                # If payment somehow carries a real ISO <currency> that
+                # disagrees with the invoice, refuse the match (no FX).
+                pay_iso = p.get("currency") or ""
+                if pay_iso and inherited_ccy and pay_iso != inherited_ccy:
+                    is_unmatched = True
+                    warnings.append({
+                        "event":              "currency_mismatch_with_invoice",
+                        "wfirma_doc_id":      p["id"],
+                        "linked_invoice":     linked,
+                        "invoice_currency":   inherited_ccy,
+                        "payment_currency":   pay_iso,
+                    })
+                else:
+                    p["currency"] = inherited_ccy or pay_iso
+                    matched_payment_ids.add(p["id"])
+                    paid_against_invoice[linked] = (
+                        paid_against_invoice.get(linked, Decimal("0")) + p["value"]
+                    )
 
         if is_unmatched:
+            # Bucket key: payment ISO if present, else UNRESOLVED — never
+            # NBP currency_label.
+            ccy = p.get("currency") or ""
+            if not ccy:
+                ccy = "UNRESOLVED"
+                warnings.append({
+                    "event":         "payment_currency_unresolved",
+                    "wfirma_doc_id": p["id"],
+                    "currency_label": p.get("currency_label") or "",
+                })
             unmatched_payments_by_ccy.setdefault(ccy, []).append({
                 "wfirma_doc_id":   p["id"],
                 "value":           _q(p["value"]),
-                "currency":        p["currency"],
+                "currency":        ccy if ccy != "UNRESOLVED" else "",
+                "currency_label":  p.get("currency_label") or "",
                 "date":            p["date"],
                 "linked_invoice":  linked,
             })
@@ -565,7 +710,7 @@ def aggregate_statement(
             # reducing balance; their "remaining" is their absolute
             # signed value but it's already credited at invoice time.
             # We only age positive-balance invoices.
-            remaining = inv["brutto"] - paid
+            remaining = remaining_after_payments(inv["brutto"], paid)
             if remaining <= 0:
                 continue
             days_old = _days_between(statement_date, inv["date"])
@@ -604,4 +749,9 @@ __all__ = [
     "aggregate_invoice_ledger",
     # Phase 10B
     "aggregate_statement",
+    "remaining_after_payments",
+    "match_payments_to_invoices",
+    "_is_iso_currency_code",
+    "_parse_payment_fact",
+    "_parse_invoice_fact",
 ]

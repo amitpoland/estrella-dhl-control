@@ -154,26 +154,22 @@ def test_pagination_stops_when_page_smaller_than_limit(monkeypatch):
 # ── 2. Safety cap at 5000 ──────────────────────────────────────────────────
 
 def test_safety_cap_stops_at_5000(monkeypatch):
-    """If wFirma keeps returning full pages, the loop must break at
-    exactly 5000 rows. We simulate an infinite stream of 200-invoice
-    pages and confirm the helper bails out."""
-    def _full_page_factory():
-        invs = "".join(
-            _invoice_xml(invoice_id=str(i + 1),
-                          fullnumber=f"FV {i + 1}/2026")
-            for i in range(200)
-        )
-        return _envelope(invs)
-    page = _full_page_factory()
+    """If wFirma keeps returning full pages of *new* ids, the loop must
+    break at exactly 5000 rows (25 pages of 200)."""
     calls = {"n": 0}
     def _stub(method, module, action, body=""):
         calls["n"] += 1
-        return 200, page
+        base = (calls["n"] - 1) * 200
+        invs = "".join(
+            _invoice_xml(invoice_id=str(base + i + 1),
+                          fullnumber=f"FV {base + i + 1}/2026")
+            for i in range(200)
+        )
+        return 200, _envelope(invs)
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     nodes = wfirma_client.fetch_invoices_for_contractor(
         "C-1", "2026-01-01", "2026-12-31",
     )
-    # Cap is 5000, so we get 5000 rows — 25 pages of 200.
     assert len(nodes) == 5000
     assert calls["n"] == 25
 
@@ -503,8 +499,7 @@ def test_helper_rejects_inverted_date_range():
 
 
 def test_helper_uses_only_proven_filters(monkeypatch):
-    """Regression guard: the request body must contain
-    contractor_id + type + date filters and NOTHING else."""
+    """Regression guard: sibling page + type in + contractor_id + date."""
     captured = {}
     def _stub(method, module, action, body=""):
         captured["method"] = method
@@ -517,24 +512,44 @@ def test_helper_uses_only_proven_filters(monkeypatch):
         "C-99", "2026-04-01", "2026-04-30",
     )
     body = captured["body"]
-    # Must be a GET on invoices/find (matches snapshot tool pattern).
     assert captured["method"] == "GET"
     assert captured["module"] == "invoices"
     assert captured["action"] == "find"
-    # Required fields are present.
     assert "<field>contractor_id</field>" in body
     assert "<value>C-99</value>"           in body
     assert "<field>type</field>"           in body
+    assert "<operator>in</operator>"       in body
+    assert "normal,correction,proforma"    in body
     assert "<field>date</field>"           in body
     assert "<value>2026-04-01</value>"     in body
     assert "<value>2026-04-30</value>"     in body
-    # Forbidden filter fields are absent.
+    # Live paging contract — sibling page/limit, never nested start.
+    assert "<page>1</page>" in body
+    assert "<limit>200</limit>" in body
+    assert "<page><start>" not in body
     for forbidden in ("paymentstate", "alreadypaid", "remaining",
                        "paymentdate", "paid_date", "id"):
         assert f"<field>{forbidden}</field>" not in body, (
             f"forbidden filter field {forbidden!r} leaked into request: "
             f"{body[:300]}"
         )
+
+
+def test_helper_rejects_and_of_multiple_type_eq(monkeypatch):
+    """Multi-type requests must use operator=in, not repeated type eq."""
+    captured = {}
+    def _stub(method, module, action, body=""):
+        captured["body"] = body
+        return 200, _envelope("")
+    monkeypatch.setattr(wfirma_client, "_http_request", _stub)
+    wfirma_client.fetch_invoices_for_contractor(
+        "C-1", "2026-01-01", "2026-12-31",
+        types=("normal", "correction"),
+    )
+    body = captured["body"]
+    assert body.count("<field>type</field>") == 1
+    assert "<operator>in</operator>" in body
+    assert "<value>normal,correction</value>" in body
 
 
 # ── Phase 10A.5 TODO must remain in routes_ledgers.py ─────────────────────

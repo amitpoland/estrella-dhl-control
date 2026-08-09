@@ -100,6 +100,7 @@ function LedgersPage(props) {
   const periodTo = props && props.periodTo;
   const [tab, setTab] = React.useState('clients');
   const [selectedRow, setSelectedRow] = React.useState(null);
+  const [focusContractorId, setFocusContractorId] = React.useState('');
   // HONEST load model (replaces the old fabricated static sync-age chip):
   // ledger figures are LIVE on-demand wFirma reads via GET /api/v1/ledgers/*.
   // The chip reports the LAST ACTUAL fetch outcome, lifted from
@@ -108,6 +109,12 @@ function LedgersPage(props) {
   const [refreshKey, setRefreshKey] = React.useState(0);
   const _t = (d) => d ? d.toLocaleTimeString('en-GB') : '';
   React.useEffect(() => { setRefreshKey(k => k + 1); }, [periodFrom, periodTo]);
+
+  const openClientLedger = (contractorId) => {
+    setFocusContractorId(contractorId || '');
+    setTab('clients');
+    setSelectedRow(null);
+  };
 
   return (
     <div>
@@ -154,12 +161,13 @@ function LedgersPage(props) {
           suppliers: no backend ledger route exists yet → no fake count) */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 0, marginBottom: 18, borderBottom: '1px solid var(--border)' }}>
         {[
-          { id: 'clients',   label: 'Client Ledger',   count: loadInfo.count },
+          { id: 'clients',   label: 'Client Ledger',   count: tab === 'clients' ? loadInfo.count : null },
+          { id: 'analysis',  label: 'Management Analysis', count: tab === 'analysis' ? loadInfo.count : null },
           { id: 'suppliers', label: 'Supplier Ledger', count: null },
         ].map(t => {
           const active = tab === t.id;
           return (
-            <button key={t.id} onClick={() => { setTab(t.id); setSelectedRow(null); }} style={{
+            <button key={t.id} data-testid={`ldg-tab-${t.id}`} onClick={() => { setTab(t.id); setSelectedRow(null); }} style={{
               padding: '10px 16px', background: 'none', border: 'none', cursor: 'pointer',
               borderBottom: `2px solid ${active ? 'var(--accent)' : 'transparent'}`,
               color: active ? 'var(--text)' : 'var(--text-2)',
@@ -185,12 +193,21 @@ function LedgersPage(props) {
         </div>
       </div>
 
-      {tab === 'clients'
-        ? <ClientLedgerView onSelectRow={setSelectedRow} selectedRow={selectedRow}
-            refreshKey={refreshKey}
-            periodFrom={periodFrom} periodTo={periodTo}
-            onLoadInfo={(info) => setLoadInfo(info)} />
-        : <SupplierLedgerView />}
+      {tab === 'clients' && (
+        <ClientLedgerView onSelectRow={setSelectedRow} selectedRow={selectedRow}
+          refreshKey={refreshKey}
+          periodFrom={periodFrom} periodTo={periodTo}
+          focusContractorId={focusContractorId}
+          onLoadInfo={(info) => setLoadInfo(info)} />
+      )}
+      {tab === 'analysis' && (
+        <ManagementAnalysisView
+          refreshKey={refreshKey}
+          periodFrom={periodFrom} periodTo={periodTo}
+          onOpenLedger={openClientLedger}
+          onLoadInfo={(info) => setLoadInfo(info)} />
+      )}
+      {tab === 'suppliers' && <SupplierLedgerView />}
 
       {selectedRow && (
         <StatementDetailDrawer
@@ -207,7 +224,7 @@ function LedgersPage(props) {
 // statement. Every figure below now comes from the canonical ledger read
 // authority (routes_ledgers.py → live wFirma reads). No value is fabricated:
 // a failed read renders its own honest state, never a placeholder number.
-function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, periodFrom, periodTo }) {
+function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, periodFrom, periodTo, focusContractorId }) {
   const [clients, setClients] = React.useState(null);      // null = loading
   const [listErr, setListErr] = React.useState(null);
   const [active, setActive]   = React.useState('');
@@ -215,6 +232,10 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, pe
   const [currencyFilter, setCurrencyFilter] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('');
   const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
+
+  React.useEffect(() => {
+    if (focusContractorId) setActive(focusContractorId);
+  }, [focusContractorId]);
 
   // Live client-balance list. Re-runs on ↻ Refresh (refreshKey).
   React.useEffect(() => {
@@ -229,7 +250,10 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, pe
         const rows = (r && r.rows) || [];
         setClients(rows);
         onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
-        if (rows.length && !rows.some(x => x.contractor_id === active)) {
+        const prefer = focusContractorId && rows.some(x => x.contractor_id === focusContractorId)
+          ? focusContractorId : null;
+        if (prefer) setActive(prefer);
+        else if (rows.length && !rows.some(x => x.contractor_id === active)) {
           setActive(rows[0].contractor_id);
         }
       })
@@ -527,6 +551,219 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period }) 
         </div>
       )}
     </window.Card>
+  );
+}
+
+// ── MANAGEMENT ANALYSIS — portfolio receivables + due-date aging ──────────
+// Authority: GET /api/v1/ledgers/management-analysis.json (bulk invoices +
+// payments). Remaining = shared ledger formula. Drill-down reuses Client Ledger.
+function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, onOpenLedger }) {
+  const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
+  const [asOf, setAsOf] = React.useState(period.to);
+  const [currency, setCurrency] = React.useState('');
+  const [status, setStatus] = React.useState('outstanding');
+  const [q, setQ] = React.useState('');
+  const [localRefresh, setLocalRefresh] = React.useState(0);
+  const [data, setData] = React.useState(null);
+  const [err, setErr] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let gone = false;
+    setLoading(true); setErr(null);
+    onLoadInfo && onLoadInfo({ status: 'loading', at: null, count: null, error: null });
+    const params = { from: period.from, to: period.to, as_of: asOf || period.to };
+    if (currency) params.currency = currency;
+    if (status) params.status = status;
+    window.PzApi.getManagementAnalysis(params)
+      .then((res) => {
+        if (gone) return;
+        if (!res || res.ok === false) {
+          throw new Error((res && res.error) || 'portfolio read failed');
+        }
+        const body = res.data || res;
+        setData(body);
+        setLoading(false);
+        const n = (body && body.customers && body.customers.length) || 0;
+        onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: n, error: null });
+      })
+      .catch((e) => {
+        if (gone) return;
+        setData(null);
+        setLoading(false);
+        const msg = (e && e.message) || 'portfolio read failed';
+        setErr(msg);
+        onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: msg });
+      });
+    return () => { gone = true; };
+  }, [period.from, period.to, asOf, currency, status, refreshKey, localRefresh]);
+
+  const reset = () => {
+    setCurrency('');
+    setStatus('outstanding');
+    setQ('');
+    setAsOf(period.to);
+  };
+
+  if (loading && !data) {
+    return <div data-testid="ldg-ma-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading receivables portfolio from wFirma…</div>;
+  }
+  if (err && !data) {
+    return (
+      <div data-testid="ldg-ma-error" style={{ padding: 30, textAlign: 'center', border: '1px solid var(--badge-red-border)', background: 'var(--badge-red-bg)', borderRadius: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--badge-red-text)', marginBottom: 4 }}>Could not load Management Analysis</div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{err}</div>
+      </div>
+    );
+  }
+
+  const summaries = (data && data.currency_summaries) || [];
+  const cov = (data && data.due_date_coverage) || {};
+  const qs = (data && data.query_stats) || {};
+  const dq = (data && data.data_quality) || {};
+  const health = (data && data.source_health) || {};
+  const qLower = (q || '').trim().toLowerCase();
+  const rows = ((data && data.customers) || []).filter((r) => {
+    if (!qLower) return true;
+    return String(r.customer_name || '').toLowerCase().includes(qLower);
+  });
+
+  const moneyCell = (v, ccy) => (
+    <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+      {LDG_FMT.money(v, ccy)}
+    </td>
+  );
+
+  return (
+    <div data-testid="ldg-ma-root">
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>Management Analysis</div>
+        <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+          Receivables and debtor aging from wFirma invoices and payments.
+        </div>
+      </div>
+
+      <div style={{
+        display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end',
+        marginBottom: 14, padding: '12px 14px', border: '1px solid var(--border)',
+        borderRadius: 8, background: 'var(--card)',
+      }}>
+        <label style={{ fontSize: 11, color: 'var(--text-3)' }}>As of
+          <input data-testid="ldg-ma-asof" type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)}
+            style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }} />
+        </label>
+        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          Period
+          <div style={{ marginTop: 4, fontFamily: 'monospace', color: 'var(--text)' }}>{period.from} → {period.to}</div>
+        </div>
+        <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Currency
+          <select data-testid="ldg-ma-currency" value={currency} onChange={(e) => setCurrency(e.target.value)}
+            style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}>
+            <option value="">All</option>
+            <option value="USD">USD</option>
+            <option value="EUR">EUR</option>
+            <option value="PLN">PLN</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Status
+          <select data-testid="ldg-ma-status" value={status} onChange={(e) => setStatus(e.target.value)}
+            style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}>
+            <option value="">All</option>
+            <option value="outstanding">Outstanding</option>
+            <option value="overdue">Overdue</option>
+            <option value="credit">Credit balances</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: 'var(--text-3)', flex: '1 1 160px' }}>Customer
+          <input data-testid="ldg-ma-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name…"
+            style={{ display: 'block', width: '100%', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }} />
+        </label>
+        <window.Btn small variant="outline" data-testid="ldg-ma-reset" onClick={reset}>Reset</window.Btn>
+        <window.Btn small data-testid="ldg-ma-refresh" onClick={() => setLocalRefresh((n) => n + 1)}>Refresh</window.Btn>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12, fontSize: 11, color: 'var(--text-3)' }}>
+        <span data-testid="ldg-ma-asof-label">Data as of {data.generated_at || '—'}</span>
+        <span>·</span>
+        <span data-testid="ldg-ma-health">
+          Source {health.ok === false ? '⚠️ incomplete (cap/stall)' : 'healthy'}
+          {qs.duration_ms != null ? ` · ${qs.duration_ms} ms` : ''}
+          {qs.invoice_api_calls != null ? ` · inv calls ${qs.invoice_api_calls}` : ''}
+          {qs.payment_api_calls != null ? ` · pay calls ${qs.payment_api_calls}` : ''}
+          {qs.per_customer_wfirma_calls === 0 ? ' · no N+1' : ''}
+        </span>
+        <span>·</span>
+        <span data-testid="ldg-ma-due-coverage">
+          Due-date coverage {cov.open_coverage_pct == null ? '—' : `${cov.open_coverage_pct}%`}
+          {cov.open_with_paymentdate != null ? ` (${cov.open_with_paymentdate}/${(cov.open_with_paymentdate || 0) + (cov.open_missing_paymentdate || 0)} open)` : ''}
+        </span>
+      </div>
+
+      {summaries.map((s) => (
+        <div key={s.currency} data-testid={`ldg-ma-ccy-${s.currency}`} style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>{s.currency} portfolio</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
+            <LdgStatTile label="Receivable" value={LDG_FMT.money(s.total_receivable, s.currency)} />
+            <LdgStatTile label="Overdue" value={LDG_FMT.money(s.overdue, s.currency)} tone="red" alert={Number(s.overdue) > 0} />
+            <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
+            <LdgStatTile label="Customer Credits" value={LDG_FMT.money(s.customer_credits, s.currency)} tone="green" />
+            <LdgStatTile label="Customers Outstanding" value={String(s.customers_outstanding)} sub={`${s.customers_overdue} overdue`} />
+            <LdgStatTile label="Net position" value={LDG_FMT.money(s.net_position, s.currency)}
+              sub={s.reconciliation_ok ? 'aging reconciles' : '⚠️ aging mismatch'} />
+          </div>
+        </div>
+      ))}
+
+      <window.Card style={{ padding: 0, overflow: 'auto' }}>
+        <table data-testid="ldg-ma-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 960 }}>
+          <thead>
+            <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
+              {['Customer', 'Ccy', 'Credit', 'Not Due', '1–30', '31–90', '91–180', '>180', 'Outstanding', 'Oldest Due', 'Last Payment', ''].map((h) => (
+                <th key={h} style={{ padding: '8px 8px', borderBottom: '1px solid var(--border)', fontSize: 10, color: 'var(--text-3)', fontWeight: 600, textAlign: h === 'Customer' || h === '' ? 'left' : 'right' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr><td colSpan={12} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>No customers match filters.</td></tr>
+            )}
+            {rows.map((r) => (
+              <tr key={`${r.contractor_id}-${r.currency}`} data-testid={`ldg-ma-row-${r.contractor_id}-${r.currency}`}
+                style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                <td style={{ padding: '7px 8px', fontWeight: 600 }}>{r.customer_name}</td>
+                <td style={{ padding: '7px 8px', textAlign: 'right' }}>{r.currency}</td>
+                {moneyCell(r.credit_balance, r.currency)}
+                {moneyCell(r.not_due, r.currency)}
+                {moneyCell(r.b_1_30, r.currency)}
+                {moneyCell(r.b_31_90, r.currency)}
+                {moneyCell(r.b_91_180, r.currency)}
+                {moneyCell(r.b_180_plus, r.currency)}
+                {moneyCell(r.outstanding, r.currency)}
+                <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.oldest_due_date || '—'}</td>
+                <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.last_payment_date || '—'}</td>
+                <td style={{ padding: '7px 8px' }}>
+                  <window.Btn small variant="outline" data-testid={`ldg-ma-open-${r.contractor_id}`}
+                    onClick={() => onOpenLedger && onOpenLedger(r.contractor_id)}>
+                    Open Ledger
+                  </window.Btn>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </window.Card>
+
+      {Object.keys(dq).length > 0 && (
+        <details data-testid="ldg-ma-dq" style={{ marginTop: 14 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>Data quality</summary>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 11.5, color: 'var(--text-3)' }}>
+            {Object.entries(dq).map(([k, v]) => (
+              <li key={k}>{k}: {v}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 
