@@ -159,6 +159,7 @@ def maybe_notify_outbound_delivered(
     client_name: Optional[str] = None,
     delivered: bool = False,
     carrier_delivered_at: Optional[str] = None,
+    delivery_location: Optional[str] = None,
     booking_created_at: Optional[str] = None,
     customer_email: Optional[str] = None,
     customer_name: Optional[str] = None,
@@ -174,6 +175,10 @@ def maybe_notify_outbound_delivered(
 
     Idempotency: the notification row's ``UNIQUE(awb)`` means a repeated
     delivered event never queues a second email.
+
+    ``delivery_location`` is read-only presentation metadata (the carrier's own
+    normalised city + country for the delivered event). It gates nothing, is
+    never persisted, and is omitted from the email when absent.
     """
     from ..core.config import settings
 
@@ -250,7 +255,11 @@ def maybe_notify_outbound_delivered(
     link = build_receipt_link(token)
     subject = "Your Estrella shipment has been delivered — confirm condition"
     html_body, text_body = _delivery_email_bodies(
-        customer_name, awb, link, carrier_delivered_at=carrier_delivered_at,
+        customer_name,
+        awb,
+        link,
+        carrier_delivered_at=carrier_delivered_at,
+        delivery_location=delivery_location,
     )
 
     email_id = ""
@@ -281,101 +290,252 @@ def maybe_notify_outbound_delivered(
     }
 
 
+def _format_delivered_at(carrier_delivered_at: Optional[str]) -> Optional[str]:
+    """One display string for the carrier delivery time — HTML and text share it.
+
+    Returns ``None`` when no timestamp was supplied, so both MIME parts omit the
+    row together and neither can show the customer something the other does not.
+    """
+    raw = (carrier_delivered_at or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(
+            raw.replace("Z", "+00:00")
+        ).strftime("%d %b %Y %H:%M UTC")
+    except Exception:
+        return raw[:32]
+
+
+# Only what cannot be inlined: text-size clamping, Outlook table gutters, and an
+# additive small-screen block. Every colour / padding / font is inline as well,
+# because Gmail drops <style> entirely.
+_EMAIL_STYLE = """
+    body,table,td,a{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}
+    table{border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;}
+    @media only screen and (max-width:600px){
+      .card{width:100% !important;}
+      .pad{padding-left:16px !important;padding-right:16px !important;}
+      .fact{display:block !important;width:100% !important;
+            border-right:0 !important;border-bottom:1px solid #F0E5C8 !important;}
+      .fact-last{border-bottom:0 !important;}
+      .cta-link{display:block !important;padding-left:16px !important;padding-right:16px !important;}
+      .h1{font-size:20px !important;}
+    }
+"""
+
+# The customer-facing outcomes the secure receipt link can report. Mirrors the
+# six issue categories the receipt page offers, plus "good condition".
+_REPORTABLE_OUTCOMES = (
+    "received in good condition",
+    "damaged package or box",
+    "damaged packing",
+    "damaged goods",
+    "missing item(s)",
+    "suspected loss or theft",
+    "other issue",
+)
+
+_SUPPORT_SENTENCE = (
+    "Please confirm that your shipment arrived safely. If there is any damage, "
+    "missing item or packaging problem, you can report it and attach photographs."
+)
+
+
 def _delivery_email_bodies(
     customer_name: Optional[str],
     awb: str,
     link: str,
     *,
     carrier_delivered_at: Optional[str] = None,
+    delivery_location: Optional[str] = None,
 ) -> tuple[str, str]:
     """Transactional Estrella delivery-confirmation email (HTML + plain text).
 
-    Table-based, email-client-safe HTML — no JS. Distinct from DHL carrier
-    notifications. CTA opens the secure /receipt/&#123;token&#125; page only.
+    Table-based, email-client-safe HTML — no JS, no webfont, no remote image.
+    Estrella house style (emerald / gold / cream / ink); DHL is named only as the
+    carrier. The single CTA opens the secure /receipt/&#123;token&#125; page.
+
+    ``delivery_location`` is presentational only: the already-normalised city +
+    country code from the carrier's delivered event. Empty / missing → the cell
+    is omitted rather than guessed at.
     """
     from html import escape
+
     who = escape(customer_name or "Customer")
     awb_e = escape(awb)
     link_e = escape(link)
-    when_raw = (carrier_delivered_at or "").strip()
-    when_disp = ""
-    if when_raw:
-        try:
-            when_disp = datetime.fromisoformat(
-                when_raw.replace("Z", "+00:00")
-            ).strftime("%d %b %Y %H:%M UTC")
-        except Exception:
-            when_disp = when_raw[:32]
-    when = escape(when_disp)
-    when_row = (
-        f'<tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">Delivered</td>'
-        f'<td style="padding:4px 0;font-size:13px;font-weight:600;color:#1c1a17;">{when}</td></tr>'
-        if when else ""
-    )
+    when_disp = _format_delivered_at(carrier_delivered_at)
+    loc_disp = (delivery_location or "").strip() or None
+
+    mono = "ui-monospace,SFMono-Regular,Menlo,Consolas,'Courier New',monospace"
+    sans = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
+
+    # (label, value, monospace?) — order is fixed; optional cells simply absent.
+    facts: List[tuple] = [
+        ("Recipient", who, False),
+        ("Carrier", "DHL", False),
+        ("Tracking / AWB", awb_e, True),
+    ]
+    if when_disp:
+        facts.append(("Delivered", escape(when_disp), False))
+    if loc_disp:
+        facts.append(("Location", escape(loc_disp), False))
+
+    fact_cells = []
+    for idx, (label, value, is_mono) in enumerate(facts):
+        last = idx == len(facts) - 1
+        cls = "fact fact-last" if last else "fact"
+        edge = "" if last else "border-right:1px solid #F0E5C8;"
+        vfont = mono if is_mono else sans
+        vbreak = "break-all" if is_mono else "break-word"
+        fact_cells.append(
+            f'<td class="{cls}" bgcolor="#FBF8F1" valign="top"'
+            f' style="padding:10px 12px;background:#FBF8F1;{edge}">'
+            f'<div style="font-family:{sans};font-size:8.5px;letter-spacing:0.12em;'
+            f'text-transform:uppercase;font-weight:600;color:#8B6914;'
+            f'padding-bottom:4px;">{label.upper()}</div>'
+            f'<div style="font-family:{vfont};font-size:12px;font-weight:700;'
+            f'color:#0B3D2E;line-height:1.35;word-break:{vbreak};'
+            f'overflow-wrap:anywhere;">{value}</div></td>'
+        )
+    facts_row = "".join(fact_cells)
+
+    outcomes_html = " &middot; ".join(escape(o) for o in _REPORTABLE_OUTCOMES)
+    support_html = escape(_SUPPORT_SENTENCE)
+
     html = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Delivery confirmation</title></head>
-<body style="margin:0;padding:0;background:#f5f3ef;color:#1c1a17;
- font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f3ef;padding:24px 12px;">
-<tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;
- border:1px solid #e3ded5;border-radius:14px;">
-<tr><td style="padding:28px 28px 8px;text-align:center;">
-  <div style="font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#6b655c;font-weight:600;">Estrella Jewels</div>
-  <h1 style="margin:14px 0 0;font-size:22px;line-height:1.3;color:#1c1a17;font-weight:700;">
-    Your Estrella shipment has been delivered
-  </h1>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml"
+ xmlns:v="urn:schemas-microsoft-com:vml"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:w="urn:schemas-microsoft-com:office:word">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+<meta name="color-scheme" content="light only"/>
+<meta name="supported-color-schemes" content="light"/>
+<title>Delivery confirmation</title>
+<!--[if mso]><xml><o:OfficeDocumentSettings><o:AllowPNG/>
+<o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->
+<style type="text/css">{_EMAIL_STYLE}</style>
+</head>
+<body style="margin:0;padding:0;background-color:#FBF8F1;color:#0F172A;font-family:{sans};">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">
+Your Estrella shipment has been delivered &ndash; please confirm its condition.
+</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+ bgcolor="#FBF8F1" style="background-color:#FBF8F1;">
+<tr><td align="center" style="padding:24px 12px;">
+<!--[if mso]><table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+<table role="presentation" class="card" width="600" cellpadding="0" cellspacing="0" border="0"
+ style="width:600px;max-width:600px;background-color:#ffffff;border:1px solid #E2E8F0;">
+
+<tr><td class="pad" bgcolor="#0B3D2E"
+ style="background-color:#0B3D2E;padding:20px 24px;">
+  <div style="font-family:{sans};font-size:13px;letter-spacing:0.22em;text-transform:uppercase;
+   font-weight:700;color:#C9A24B;">Estrella Jewels</div>
+  <div style="height:1px;line-height:1px;font-size:0;background-color:#C9A24B;
+   opacity:0.5;margin:10px 0 12px;">&nbsp;</div>
+  <div style="font-family:{sans};font-size:9px;letter-spacing:0.18em;text-transform:uppercase;
+   font-weight:600;color:#C9A24B;padding-bottom:6px;">Delivery confirmation</div>
+  <h1 class="h1" style="margin:0;font-family:{sans};font-size:18px;line-height:1.35;
+   font-weight:700;color:#ffffff;">Your Estrella shipment has been delivered</h1>
 </td></tr>
-<tr><td style="padding:8px 28px 0;font-size:15px;line-height:1.55;color:#1c1a17;">
-  <p style="margin:0 0 14px;">Dear {who},</p>
-  <p style="margin:0 0 18px;">DHL has marked your shipment as delivered. Please confirm everything arrived correctly,
-  or report damage / missing items and attach photographs if needed.</p>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-   style="background:#f5f3ef;border-radius:10px;padding:12px 14px;margin:0 0 22px;">
-    <tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">Customer</td>
-        <td style="padding:4px 0;font-size:13px;font-weight:600;">{who}</td></tr>
-    <tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">Carrier</td>
-        <td style="padding:4px 0;font-size:13px;font-weight:600;">DHL</td></tr>
-    <tr><td style="padding:4px 0;color:#6b655c;font-size:13px;">AWB</td>
-        <td style="padding:4px 0;font-size:13px;font-weight:700;font-family:ui-monospace,monospace;">{awb_e}</td></tr>
-    {when_row}
+
+<tr><td class="pad" style="padding:24px 24px 8px;font-family:{sans};font-size:13px;
+ line-height:1.55;color:#0F172A;">
+  <p style="margin:0 0 12px;">Dear {who},</p>
+  <p style="margin:0 0 18px;">{support_html}</p>
+</td></tr>
+
+<tr><td class="pad" style="padding:0 24px 20px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+   style="width:100%;border:1px solid #E2E8F0;border-radius:6px;">
+    <tr>{facts_row}</tr>
   </table>
-  <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 18px;">
-    <tr><td align="center" bgcolor="#8a6d3b" style="border-radius:12px;">
-      <a href="{link_e}" style="display:inline-block;padding:14px 28px;font-size:16px;font-weight:700;
-       color:#ffffff;text-decoration:none;border-radius:12px;">Confirm delivery condition</a>
+</td></tr>
+
+<tr><td class="pad" align="center" style="padding:0 24px 18px;">
+  <!--[if mso]>
+  <v:roundrect href="{link_e}" arcsize="8%" stroke="f" fillcolor="#0B3D2E"
+   style="height:44px;width:262px;v-text-anchor:middle;">
+  <w:anchorlock/>
+  <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:13px;font-weight:bold;">
+  Confirm delivery condition</center>
+  </v:roundrect>
+  <![endif]-->
+  <!--[if !mso]><!-->
+  <a class="cta-link" href="{link_e}"
+   style="display:inline-block;background-color:#0B3D2E;color:#ffffff;font-family:{sans};
+   font-size:13px;font-weight:600;line-height:20px;text-decoration:none;border-radius:4px;
+   padding:12px 22px;mso-hide:all;">Confirm delivery condition</a>
+  <!--<![endif]-->
+</td></tr>
+
+<tr><td class="pad" style="padding:0 24px 18px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+   style="width:100%;background-color:#F0F6F4;border-left:3px solid #0B3D2E;">
+    <tr><td style="padding:12px;font-family:{sans};font-size:10.5px;line-height:1.6;color:#475569;">
+      The secure link lets you report: {outcomes_html} &mdash; with comments and photographs.
     </td></tr>
   </table>
-  <p style="margin:0 0 8px;font-size:13px;color:#6b655c;line-height:1.5;">
-    You can confirm receipt in good condition, or report damaged packaging, damaged goods,
-    missing items, suspected loss/theft, or another problem — and attach photos when reporting an issue.
-  </p>
-  <p style="margin:16px 0 0;font-size:12px;color:#6b655c;word-break:break-all;">
-    If the button does not work, open this secure link:<br/>
-    <a href="{link_e}" style="color:#8a6d3b;">{link_e}</a>
-  </p>
 </td></tr>
-<tr><td style="padding:22px 28px 28px;font-size:13px;color:#6b655c;">
-  Thank you,<br/><strong style="color:#1c1a17;">Estrella Jewels</strong>
+
+<tr><td class="pad" style="padding:0 24px 22px;font-family:{sans};font-size:10.5px;
+ line-height:1.6;color:#475569;word-break:break-all;overflow-wrap:anywhere;">
+  If the button does not open, use this secure link:<br/>
+  <a href="{link_e}" style="color:#0B3D2E;">{link_e}</a>
 </td></tr>
+
+<tr><td class="pad" bgcolor="#F8FAFC" align="center"
+ style="background-color:#F8FAFC;padding:16px 24px;font-family:{sans};font-size:9.5px;
+ line-height:1.7;color:#64748B;text-align:center;">
+  Estrella Jewels Sp. z o.o. &middot; ul. Saba&#322;y 58, 02-174 Warszawa &middot; NIP PL5252812119<br/>
+  info@estrellajewels.eu &middot; www.estrellajewels.eu
+</td></tr>
+
 </table>
+<!--[if mso]></td></tr></table><![endif]-->
 </td></tr></table>
 </body></html>"""
-    text = (
-        f"Your Estrella shipment has been delivered\n\n"
-        f"Dear {customer_name or 'Customer'},\n\n"
-        f"DHL has marked your shipment as delivered.\n"
-        f"Customer: {customer_name or 'Customer'}\n"
-        f"Carrier: DHL\n"
-        f"AWB: {awb}\n"
-        + (f"Delivered: {carrier_delivered_at}\n" if carrier_delivered_at else "")
-        + "\nConfirm delivery condition (or report damage / missing items):\n"
-        f"{link}\n\n"
-        "You can confirm good condition, or report damaged packaging, damaged goods,\n"
-        "missing items, suspected loss/theft, or another problem, and attach photos.\n\n"
-        "Thank you,\nEstrella Jewels\n"
-    )
+
+    who_txt = customer_name or "Customer"
+    lines = [
+        "Your Estrella shipment has been delivered",
+        "",
+        f"Dear {who_txt},",
+        "",
+        _SUPPORT_SENTENCE,
+        "",
+        "SHIPMENT DETAILS",
+        f"  Recipient: {who_txt}",
+        "  Carrier:   DHL",
+        f"  AWB:       {awb}",
+    ]
+    if when_disp:
+        lines.append(f"  Delivered: {when_disp}")
+    if loc_disp:
+        lines.append(f"  Location:  {loc_disp}")
+    lines += [
+        "",
+        "Confirm delivery condition:",
+        link,
+        "",
+        "The secure link lets you report:",
+    ]
+    lines += [f"  - {o}" for o in _REPORTABLE_OUTCOMES]
+    lines += [
+        "",
+        "You can add comments and photographs when reporting an issue.",
+        "",
+        "Thank you,",
+        "Estrella Jewels",
+        "Estrella Jewels Sp. z o.o. | ul. Sabaly 58, 02-174 Warszawa | NIP PL5252812119",
+        "info@estrellajewels.eu | www.estrellajewels.eu",
+        "",
+    ]
+    text = "\n".join(lines)
     return html, text
 
 

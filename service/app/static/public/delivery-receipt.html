@@ -7,15 +7,25 @@
   <title>Confirm your delivery · Estrella Jewels</title>
   <style>
     :root {
-      --bg: #f5f3ef;
+      /* Estrella house palette — same tokens the delivery email renders with. */
+      --bg: #FBF8F1;          /* cream document paper */
       --card: #ffffff;
-      --ink: #1c1a17;
-      --muted: #6b655c;
-      --line: #e3ded5;
-      --accent: #8a6d3b;      /* warm gold */
+      --ink: #0F172A;
+      --muted: #64748B;
+      --line: #E2E8F0;
+      --hairline: #F0E5C8;
+      --accent: #0B3D2E;      /* Estrella emerald */
       --accent-ink: #ffffff;
+      --gold: #C9A24B;        /* restrained gold accent */
+      --gold-label: #8B6914;  /* AA-contrast gold for small label text */
+      --wash: #F0F6F4;
+      --footer-bg: #F8FAFC;
+      --footer-text: #64748B;
       --good: #2f7d52;
+      --good-bg: #e9f5ee;
       --issue: #b23c3c;
+      --issue-bg: #fbeaea;
+      --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
       --radius: 14px;
     }
     * { box-sizing: border-box; }
@@ -24,16 +34,31 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       line-height: 1.5;
     }
+    .site-head { background: var(--accent); color: var(--accent-ink); }
+    .head-inner { max-width: 560px; margin: 0 auto; padding: 20px 16px; }
+    .head-inner .wordmark {
+      font-size: 15px; letter-spacing: 0.22em; text-transform: uppercase;
+      font-weight: 700; color: var(--gold);
+    }
+    .head-inner .rule {
+      height: 1px; background: var(--gold); opacity: .5; margin: 10px 0 12px;
+    }
+    .head-inner .eyebrow {
+      font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+      font-weight: 600; color: var(--gold);
+    }
+    .head-inner .title {
+      margin: 6px 0 0; font-size: 18px; line-height: 1.35; font-weight: 700;
+      color: var(--accent-ink);
+    }
     .wrap { max-width: 560px; margin: 0 auto; padding: 24px 16px 64px; }
-    .brand { text-align: center; margin: 8px 0 20px; }
-    .brand .name { font-size: 22px; letter-spacing: 3px; text-transform: uppercase; font-weight: 600; }
-    .brand .sub { color: var(--muted); font-size: 13px; letter-spacing: 1px; }
     .card {
       background: var(--card); border: 1px solid var(--line);
       border-radius: var(--radius); padding: 22px; margin-bottom: 16px;
     }
     h1 { font-size: 20px; margin: 0 0 6px; }
     .awb { color: var(--muted); font-size: 14px; margin-bottom: 4px; }
+    .awb[data-testid="receipt-awb"] { font-family: var(--mono-font); word-break: break-all; }
     fieldset { border: none; padding: 0; margin: 0 0 8px; }
     legend { font-weight: 600; margin-bottom: 10px; }
     .opt {
@@ -46,7 +71,10 @@
     .opt .t { font-weight: 600; }
     .opt .d { color: var(--muted); font-size: 13px; }
     #issueBlock { display: none; margin-top: 6px; }
-    .cat { display: flex; align-items: center; gap: 10px; padding: 8px 4px; }
+    .cat {
+      display: flex; align-items: center; gap: 10px; padding: 8px 4px;
+      min-height: 44px; cursor: pointer;
+    }
     textarea, input[type=file] { width: 100%; }
     textarea {
       border: 1px solid var(--line); border-radius: 10px; padding: 10px;
@@ -55,24 +83,42 @@
     label.blk { display: block; font-weight: 600; margin: 14px 0 6px; }
     .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
     button {
-      width: 100%; padding: 14px; border: none; border-radius: 12px;
+      width: 100%; min-height: 44px; padding: 14px; border: none; border-radius: 12px;
       background: var(--accent); color: var(--accent-ink);
       font-size: 16px; font-weight: 600; cursor: pointer;
+      transition: opacity 180ms ease;
     }
     button:disabled { opacity: .55; cursor: not-allowed; }
+    :focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px;
+    }
+    .site-head :focus-visible { outline-color: var(--gold); }
     .msg { padding: 14px; border-radius: 10px; margin-bottom: 12px; font-size: 14px; display: none; }
-    .msg.err { background: #fbeaea; color: var(--issue); display: block; }
-    .msg.ok  { background: #e9f5ee; color: var(--good); display: block; }
+    .msg.err { background: var(--issue-bg); color: var(--issue); display: block; }
+    .msg.ok  { background: var(--good-bg); color: var(--good); display: block; }
     .center { text-align: center; }
+    .page-foot {
+      background: var(--footer-bg); border-top: 1px solid var(--line);
+      color: var(--footer-text); font-size: 12px; line-height: 1.7;
+      text-align: center; padding: 16px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+          transition-duration: .01ms !important; scroll-behavior: auto !important; }
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="brand">
-      <div class="name">Estrella Jewels</div>
-      <div class="sub">Delivery Confirmation</div>
+  <header class="site-head" role="banner">
+    <div class="head-inner">
+      <div class="wordmark">Estrella Jewels</div>
+      <div class="rule"></div>
+      <div class="eyebrow">Delivery confirmation</div>
+      <p class="title">Confirm how your shipment arrived</p>
     </div>
+  </header>
 
+  <div class="wrap">
     <div id="loading" class="card center" data-testid="receipt-loading">Loading…</div>
 
     <div id="doneCard" class="card center" data-testid="receipt-done" style="display:none">
@@ -127,8 +173,13 @@
       </div>
     </form>
 
-    <p class="center hint">Estrella Jewels · This page is only for confirming your delivery.</p>
   </div>
+
+  <footer class="page-foot">
+    This page is only for confirming your delivery.<br />
+    Estrella Jewels Sp. z o.o. · ul. Sabały 58, 02-174 Warszawa · NIP PL5252812119<br />
+    info@estrellajewels.eu · www.estrellajewels.eu
+  </footer>
 
   <script>
     (function () {

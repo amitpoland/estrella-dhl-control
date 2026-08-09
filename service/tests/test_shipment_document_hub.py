@@ -477,6 +477,148 @@ def test_delivery_email_redesign_has_cta_and_plaintext(tmp_path):
     assert "AWB" in text and AWB in text
 
 
+LINK = "https://pz.example.test/receipt/tok"
+
+
+def test_email_brand_tokens_and_no_internal_leakage():
+    """Estrella house style, MIME parity, and nothing internal in either body."""
+    html, text = dcs._delivery_email_bodies(
+        "ACME", AWB, LINK,
+        carrier_delivered_at="2026-08-08T12:00:00Z",
+        delivery_location="WARSZAWA - PL",
+    )
+
+    # House palette — emerald primary, gold accent, cream paper, ink body.
+    for token in ("#0B3D2E", "#C9A24B", "#FBF8F1", "#0F172A"):
+        assert token in html, token
+    assert "Estrella Jewels" in html
+
+    # Operator's verbatim supporting sentence, in BOTH representations.
+    assert dcs._SUPPORT_SENTENCE in text
+    assert (
+        "Please confirm that your shipment arrived safely. If there is any "
+        "damage, missing item or packaging problem, you can report it and "
+        "attach photographs."
+    ) == dcs._SUPPORT_SENTENCE
+
+    # Every outcome the secure link can report is named in both bodies.
+    for outcome in dcs._REPORTABLE_OUTCOMES:
+        assert outcome in text, outcome
+
+    # Timestamp parity: the SAME formatted string in HTML and plain text.
+    when_disp = dcs._format_delivered_at("2026-08-08T12:00:00Z")
+    assert when_disp == "08 Aug 2026 12:00 UTC"
+    assert when_disp in html and when_disp in text
+    assert "2026-08-08T12:00:00Z" not in text  # never the raw ISO value
+
+    # Optional location present here …
+    assert "WARSZAWA - PL" in html and "WARSZAWA - PL" in text
+    assert "LOCATION" in html
+
+    # … and cleanly absent when the carrier did not report one.
+    html2, text2 = dcs._delivery_email_bodies("ACME", AWB, LINK)
+    assert "LOCATION" not in html2
+    assert "Location" not in text2
+    assert "DELIVERED" not in html2  # no timestamp either → row omitted together
+
+    # The receipt URL appears in EVERY CTA branch emitted (VML + plain anchor).
+    assert html.count(LINK) >= 3  # v:roundrect href, <a href>, bare-link fallback
+    for branch in ("v:roundrect", "<a "):
+        assert branch in html
+    assert 'xmlns:v="urn:schemas-microsoft-com:vml"' in html
+
+    # No internal identifiers, API paths, or operator terminology.
+    for body in (html, text):
+        for leak in ("/api/v1", "batch_id", "BATCH-", "draft_id",
+                     "customer_delivery_confirmation", "activated_at"):
+            assert leak not in body, leak
+
+
+def test_outbound_delivery_hook_passes_delivered_event_location(tmp_path, monkeypatch):
+    """Timestamp and location must come from ONE AND THE SAME delivered event."""
+    from app.services import outbound_delivery_hook as hook
+    from app.services.carrier import epod_service
+    from app.services.carrier.persistence import shipment_db
+
+    carrier_db = tmp_path / "carrier_shipments.db"
+    carrier_db.write_bytes(b"")
+    monkeypatch.setattr(hook, "_carrier_db_path", lambda: carrier_db)
+    monkeypatch.setattr(
+        shipment_db, "get_shipment_by_tracking_ref",
+        lambda db, awb: {"batch_id": BATCH, "client_ref": None,
+                         "created_at": "2026-08-01T00:00:00.000Z"},
+    )
+    monkeypatch.setattr(epod_service, "ensure_epod_persisted", lambda *a, **k: None)
+
+    seen = {}
+
+    def _spy(awb, **kw):
+        seen.update(kw)
+        seen["awb"] = awb
+        return {"notified": True}
+
+    monkeypatch.setattr(dcs, "maybe_notify_outbound_delivered", _spy)
+
+    events = [
+        {"timestamp": "2026-08-07T09:00:00Z", "location": "LEIPZIG - DE",
+         "status": "transit", "description": "Processed at facility"},
+        {"timestamp": "2026-08-08T12:04:00Z", "location": "WARSZAWA - PL",
+         "status": "delivered", "description": "Delivered"},
+    ]
+    with patch.object(settings, "customer_delivery_confirmation_enabled", True), \
+         patch.object(settings, "storage_root", tmp_path):
+        hook.on_outbound_tracking_update(AWB, "delivered", events)
+
+    assert seen["delivery_location"] == "WARSZAWA - PL"       # NOT the transit one
+    assert seen["carrier_delivered_at"] == "2026-08-08T12:04:00Z"
+    # Same event sourced both fields.
+    assert hook._delivered_at_from_events(events) == events[1]["timestamp"]
+    assert hook._delivered_location_from_events(events) == events[1]["location"]
+
+    # A delivered event with no location yields None, never a guess.
+    seen.clear()
+    no_loc = [{"timestamp": "2026-08-08T12:04:00Z", "location": "",
+               "status": "delivered", "description": "Delivered"}]
+    with patch.object(settings, "customer_delivery_confirmation_enabled", True), \
+         patch.object(settings, "storage_root", tmp_path):
+        hook.on_outbound_tracking_update(AWB, "delivered", no_loc)
+    assert seen["delivery_location"] is None
+    assert seen["carrier_delivered_at"] == "2026-08-08T12:04:00Z"
+
+
+def _receipt_page() -> str:
+    page = (Path(__file__).resolve().parents[1]
+            / "app" / "static" / "public" / "delivery-receipt.html")
+    return page.read_text(encoding="utf-8")
+
+
+def test_receipt_page_data_testids_survive_restyle():
+    """The restyle is presentation-only — every operator/customer hook survives."""
+    src = _receipt_page()
+    for testid in (
+        "receipt-loading", "receipt-done", "receipt-form", "receipt-awb",
+        "receipt-customer", "condition-good", "condition-issue", "issue-block",
+        "cat-package_box_damaged", "cat-packing_damaged", "cat-goods_damaged",
+        "cat-item_missing", "cat-theft_tampering", "cat-other",
+        "photos-input", "comments-input", "submit-btn",
+    ):
+        assert f'data-testid="{testid}"' in src, testid
+    # Shares the email's identity tokens.
+    assert "--accent: #0B3D2E" in src
+    assert "--gold: #C9A24B" in src
+
+
+def test_receipt_page_contract_unchanged():
+    """Endpoint, category values and upload contract are byte-identical."""
+    src = _receipt_page()
+    assert "/api/v1/shipment-documents/public/receipt/" in src
+    for value in ("package_box_damaged", "packing_damaged", "goods_damaged",
+                  "item_missing", "theft_tampering", "other"):
+        assert f'value="{value}"' in src, value
+    assert 'accept="image/jpeg,image/png,image/webp,image/gif" multiple' in src
+    assert '<meta name="robots" content="noindex,nofollow" />' in src
+
+
 # ── 10. Delivery before activation does NOT notify (delivery-time gate) ─────────
 
 def test_historical_delivered_before_activation_not_notified(tmp_path, monkeypatch):
