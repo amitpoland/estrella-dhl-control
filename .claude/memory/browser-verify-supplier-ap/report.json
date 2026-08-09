@@ -1,0 +1,41 @@
+{
+  "ok": true,
+  "verdict": "GO_WITH_NOTES",
+  "base": "http://127.0.0.1:8015",
+  "mode": "desktop_ui_plus_live_api_parity",
+  "notes": [
+    "Desktop Management Analysis: Receivables intact + Payables section with 3 currency blocks, no currency_label, no write controls, no FX grand total.",
+    "Supplier Ledger Open from AP row reached Supplier Ledger tab; subsequent live statement fetch returned HTTP 502 TOTAL REQUESTS LIMIT EXCEEDED (wFirma global rate limit from verification bulk reads). Not N+1 — query_stats.per_supplier_wfirma_calls=0 on live reconcile.",
+    "Ledger vs Payables row parity proven offline via live_supplier_ledger_parity.py: gross/outstanding/credit/net Δ 0.00 for contractor 38142296 USD.",
+    "Mobile 390: Accounting hub + Client Ledger / Management Analysis tabs reachable; full Payables KPI scroll pass incomplete under rate-limit / rail overlay during verify window. Desktop proof + API proofs stand.",
+    "AccSupplierLedger rail stale P0 deferred placeholder removed — mounts LedgersPage initialTab=suppliers (same authority)."
+  ],
+  "checks": {
+    "receivables_visible": true,
+    "payables_section": true,
+    "payables_table": true,
+    "ap_currency_blocks": 3,
+    "no_currency_label_ui": true,
+    "no_write_controls": true,
+    "no_fx_grand_total_label": true,
+    "opened_supplier_ledger": true,
+    "supplier_name_visible": true,
+    "supplier_ledger_live_fetch": "RATE_LIMITED_502",
+    "mobile_payables": "PARTIAL",
+    "payables_api_status": 200,
+    "api_per_supplier_wfirma_calls": 0,
+    "api_aging_delta": 0.0,
+    "api_usd_gross": "656662.63",
+    "api_usd_net": "648875.50",
+    "ledger_payables_parity": true,
+    "receivables_api_status": 200
+  },
+  "screenshots": {
+    "01-accounting-hub.png": "C:\\PZ-wt\\supplier-ap-p1\\.claude\\memory\\browser-verify-supplier-ap\\01-accounting-hub.png",
+    "02-desktop-management-analysis.png": "C:\\PZ-wt\\supplier-ap-p1\\.claude\\memory\\browser-verify-supplier-ap\\02-desktop-management-analysis.png",
+    "03-desktop-supplier-ledger.png": "C:\\PZ-wt\\supplier-ap-p1\\.claude\\memory\\browser-verify-supplier-ap\\03-desktop-supplier-ledger.png",
+    "04-mobile390-management-analysis.png": "C:\\PZ-wt\\supplier-ap-p1\\.claude\\memory\\browser-verify-supplier-ap\\04-mobile390-management-analysis.png"
+  },
+  "live_reconcile": "C:\\PZ-wt\\supplier-ap-p1\\.claude\\memory\\supplier-ap-live-reconcile.json",
+  "ledger_parity": "C:\\PZ-wt\\supplier-ap-p1\\.claude\\memory\\supplier-ap-ledger-parity.json"
+}

@@ -284,8 +284,24 @@ def _iso_currency_or_empty(raw: Optional[str]) -> str:
 
 
 def remaining_after_payments(gross: Decimal, paid: Decimal) -> Decimal:
-    """Shared remaining = gross − matched payments (no FX)."""
+    """Shared remaining = signed gross − matched payments (no FX).
+
+    Used by Client Ledger (AR) and Supplier AP — same Decimal equation.
+    """
     return gross - paid
+
+
+def _normalize_doc_link_id(raw: Optional[str]) -> str:
+    """Normalize wFirma document link ids.
+
+    Live AP audit (2026-08-09): ``invoice/id=0`` and ``expense/id=0`` are
+    no-link sentinels, not valid object references. Empty / whitespace /
+    literal ``"0"`` → empty string.
+    """
+    s = (raw or "").strip()
+    if not s or s == "0":
+        return ""
+    return s
 
 
 def _invoice_gross_raw(inv: ET.Element) -> Optional[str]:
@@ -326,24 +342,65 @@ def _parse_invoice_fact(inv: ET.Element) -> Dict[str, Any]:
 def _parse_payment_fact(pay: ET.Element) -> Dict[str, Any]:
     """Project a <payment> node into the verified-fields-only dict.
 
-    Live payment schema (2026-08-09): id, invoice/id, value, value_pln,
-    date, currency_label, currency_date, currency_exchange — **no**
-    ``<currency>`` ISO tag. ``currency_label`` is an NBP table id when
-    present (e.g. ``083/A/NBP/2021``) and must never be copied into the
-    ISO ``currency`` field.
+    Live payment schema (2026-08-09): id, invoice/id, expense/id, value,
+    value_pln, date, currency_label, currency_date, currency_exchange —
+    **no** ``<currency>`` ISO tag. ``currency_label`` is an NBP table id
+    when present (e.g. ``083/A/NBP/2021``) and must never be copied into
+    the ISO ``currency`` field.
+
+    ``invoice/id=0`` and ``expense/id=0`` are no-link sentinels.
     """
     label = (pay.findtext("currency_label") or "").strip()
     # Optional defence: if a future schema adds <currency>, accept only ISO.
     raw_currency = pay.findtext("currency")
     return {
         "id":              (pay.findtext("id") or "").strip(),
-        "linked_invoice":  (pay.findtext("invoice/id") or "").strip(),
+        "linked_invoice":  _normalize_doc_link_id(pay.findtext("invoice/id")),
+        "linked_expense":  _normalize_doc_link_id(pay.findtext("expense/id")),
         "value":           _decimal_or_none(pay.findtext("value")),
         "value_pln":       _decimal_or_none(pay.findtext("value_pln")),
         "date":            (pay.findtext("date") or "").strip(),
         "currency_label":  label,  # NBP / FX table reference — not ISO
         "currency":        _iso_currency_or_empty(raw_currency),
         "contractor_id":   (pay.findtext("contractor/id") or "").strip(),
+    }
+
+
+def _expense_gross_raw(exp: ET.Element) -> Optional[str]:
+    """Document-currency expense gross — prefer ``brutto``, then ``total``."""
+    for tag in ("brutto", "total", "total_brutto"):
+        raw = exp.findtext(tag)
+        if raw is not None and str(raw).strip() != "":
+            return raw
+    return None
+
+
+def _parse_expense_fact(exp: ET.Element) -> Dict[str, Any]:
+    """Project an <expense> node into the AP ExpenseFact dict.
+
+    Live expense schema (2026-08-09 scoped audit): due date is
+    ``payment_date`` (underscore), not invoice ``paymentdate``.
+    ``correction=1`` credit notes already carry signed negative ``brutto``.
+    """
+    name = (
+        (exp.findtext("contractor_detail/name") or "").strip()
+        or (exp.findtext("contractor/name") or "").strip()
+    )
+    corr_raw = (exp.findtext("correction") or "").strip()
+    return {
+        "id":              (exp.findtext("id") or "").strip(),
+        "fullnumber":      (exp.findtext("fullnumber") or exp.findtext("number") or "").strip(),
+        "type":            (exp.findtext("type") or "").strip(),
+        "date":            (exp.findtext("date") or "").strip(),
+        "payment_date":    (exp.findtext("payment_date") or "").strip(),
+        "currency":        _iso_currency_or_empty(exp.findtext("currency")),
+        "netto":           _decimal_or_none(exp.findtext("netto")),
+        "brutto":          _decimal_or_none(_expense_gross_raw(exp)),
+        "contractor_id":   (exp.findtext("contractor/id") or "").strip(),
+        "contractor_name": name,
+        "paymentstate":    (exp.findtext("paymentstate") or "").strip(),
+        "correction":      corr_raw,
+        "parent_id":       _normalize_doc_link_id(exp.findtext("parent/id")),
     }
 
 
@@ -370,7 +427,7 @@ def match_payments_to_invoices(
         if not p.get("id"):
             warnings.append({"event": "payment_with_empty_id"})
             continue
-        linked = p.get("linked_invoice") or ""
+        linked = _normalize_doc_link_id(p.get("linked_invoice"))
         if not linked:
             unmatched_payments.append(p)
             warnings.append({
@@ -421,6 +478,236 @@ def match_payments_to_invoices(
         "matched_payment_ids": matched_payment_ids,
         "unmatched_payments": unmatched_payments,
         "warnings": warnings,
+    }
+
+
+def match_payments_to_expenses(
+    expense_facts: List[Dict[str, Any]],
+    payment_facts: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Shared payment→expense apply step for Supplier AP / Creditor Aging.
+
+    Matches only on normalized ``linked_expense`` (never names). Expense
+    ISO currency owns the payment currency context unless the payment
+    carries a conflicting real ISO ``<currency>`` (then refuse match).
+    """
+    warnings: List[Dict[str, Any]] = []
+    expense_by_id = {f["id"]: f for f in expense_facts if f.get("id")}
+    paid_against_expense: Dict[str, Decimal] = {}
+    matched_payment_ids: set = set()
+    unmatched_payments: List[Dict[str, Any]] = []
+    ignored_sentinel_links = 0
+
+    for p in payment_facts:
+        if not p.get("id"):
+            warnings.append({"event": "payment_with_empty_id"})
+            continue
+        raw_linked = str(p.get("linked_expense") or "").strip()
+        if raw_linked == "0":
+            ignored_sentinel_links += 1
+        linked = _normalize_doc_link_id(raw_linked)
+        if not linked:
+            # Expense-unlinked (AR invoice payment or neither) — not an AP match.
+            unmatched_payments.append(p)
+            continue
+        exp = expense_by_id.get(linked)
+        if exp is None:
+            unmatched_payments.append(p)
+            warnings.append({
+                "event": "orphan_expense_payment",
+                "wfirma_doc_id": p["id"],
+                "linked_expense": linked,
+            })
+            continue
+        inherited = exp.get("currency") or ""
+        pay_iso = p.get("currency") or ""
+        if pay_iso and inherited and pay_iso != inherited:
+            unmatched_payments.append(p)
+            warnings.append({
+                "event": "currency_mismatch_with_expense",
+                "wfirma_doc_id": p["id"],
+                "linked_expense": linked,
+                "expense_currency": inherited,
+                "payment_currency": pay_iso,
+            })
+            continue
+        p = dict(p)
+        p["currency"] = inherited or pay_iso
+        p["linked_expense"] = linked
+        matched_payment_ids.add(p["id"])
+        paid_against_expense[linked] = (
+            paid_against_expense.get(linked, Decimal("0")) + (p.get("value") or Decimal("0"))
+        )
+        exp_cid = exp.get("contractor_id") or ""
+        pay_cid = p.get("contractor_id") or ""
+        if exp_cid and pay_cid and exp_cid != pay_cid:
+            warnings.append({
+                "event": "payment_expense_contractor_mismatch",
+                "wfirma_doc_id": p["id"],
+                "linked_expense": linked,
+                "expense_contractor_id": exp_cid,
+                "payment_contractor_id": pay_cid,
+            })
+
+    if ignored_sentinel_links:
+        warnings.append({
+            "event": "zero_sentinel_object_references_ignored",
+            "count": ignored_sentinel_links,
+        })
+
+    return {
+        "paid_against_expense": paid_against_expense,
+        "matched_payment_ids": matched_payment_ids,
+        "unmatched_payments": unmatched_payments,
+        "warnings": warnings,
+    }
+
+
+def aggregate_supplier_statement(
+    expense_facts: List[Dict[str, Any]],
+    payment_facts: List[Dict[str, Any]],
+    *,
+    contractor_meta: Optional[Dict[str, Any]] = None,
+    period: Tuple[str, str] = ("", ""),
+    as_of: str = "",
+) -> Dict[str, Any]:
+    """Read-only Supplier Ledger statement from the same AP facts.
+
+    Chronological movements per currency. Remaining uses
+    :func:`remaining_after_payments` — no second arithmetic authority.
+    """
+    meta = contractor_meta or {}
+    df, dt = period if period else ("", "")
+    match = match_payments_to_expenses(expense_facts, payment_facts)
+    paid_map: Dict[str, Decimal] = match["paid_against_expense"]
+    matched_ids = match["matched_payment_ids"]
+    warnings = list(match["warnings"])
+
+    expense_by_id = {f["id"]: f for f in expense_facts if f.get("id")}
+    entries_by_ccy: Dict[str, List[Dict[str, Any]]] = {}
+
+    for f in expense_facts:
+        if not f.get("id") or not f.get("currency"):
+            continue
+        ccy = f["currency"]
+        gross = f.get("brutto") or Decimal("0")
+        if gross >= 0:
+            debit, credit = gross, Decimal("0")
+            typ = "expense"
+        else:
+            debit, credit = Decimal("0"), -gross
+            typ = "credit_note"
+        rem = remaining_after_payments(gross, paid_map.get(f["id"], Decimal("0")))
+        if rem > 0:
+            status = "open"
+        elif rem < 0:
+            status = "credit"
+        else:
+            status = "settled"
+        entries_by_ccy.setdefault(ccy, []).append({
+            "type": typ,
+            "wfirma_doc_id": f["id"],
+            "doc_number": f.get("fullnumber") or "",
+            "date": f.get("date") or "",
+            "due_date": f.get("payment_date") or "",
+            "currency": ccy,
+            "debit": _q(debit),
+            "credit": _q(credit),
+            "running_balance": "0.00",
+            "status": status,
+            "remaining": _q(rem),
+            "correction": f.get("correction") or "",
+        })
+
+    for p in payment_facts:
+        if p.get("id") not in matched_ids:
+            continue
+        linked = _normalize_doc_link_id(p.get("linked_expense"))
+        exp = expense_by_id.get(linked) if linked else None
+        ccy = (exp.get("currency") if exp else "") or (p.get("currency") or "")
+        if not ccy:
+            continue
+        val = p.get("value") or Decimal("0")
+        if val >= 0:
+            debit, credit = Decimal("0"), val
+        else:
+            debit, credit = -val, Decimal("0")
+        entries_by_ccy.setdefault(ccy, []).append({
+            "type": "payment",
+            "wfirma_doc_id": p["id"],
+            "doc_number": "",
+            "date": p.get("date") or "",
+            "due_date": "",
+            "currency": ccy,
+            "debit": _q(debit),
+            "credit": _q(credit),
+            "running_balance": "0.00",
+            "status": "applied",
+            "remaining": None,
+            "linked_expense": linked,
+            "correction": "",
+        })
+
+    totals_by_ccy: Dict[str, Dict[str, Any]] = {}
+    for ccy, rows in entries_by_ccy.items():
+        rows.sort(key=lambda r: (r["date"], 0 if r["type"] != "payment" else 1, r["wfirma_doc_id"]))
+        running = Decimal("0")
+        for e in rows:
+            running += Decimal(e["debit"]) - Decimal(e["credit"])
+            e["running_balance"] = _q(running)
+        gross_pay = Decimal("0")
+        credits = Decimal("0")
+        paid = Decimal("0")
+        for f in expense_facts:
+            if (f.get("currency") or "") != ccy:
+                continue
+            g = f.get("brutto") or Decimal("0")
+            if g > 0:
+                gross_pay += g
+            elif g < 0:
+                credits += -g
+            paid += paid_map.get(f["id"], Decimal("0"))
+        outstanding = remaining_after_payments(gross_pay - credits, paid)
+        # Prefer sum of positive remainings − credit balances for clarity
+        pos = Decimal("0")
+        credit_bal = Decimal("0")
+        for f in expense_facts:
+            if (f.get("currency") or "") != ccy:
+                continue
+            rem = remaining_after_payments(
+                f.get("brutto") or Decimal("0"),
+                paid_map.get(f["id"], Decimal("0")),
+            )
+            if rem > 0:
+                pos += rem
+            elif rem < 0:
+                credit_bal += -rem
+        totals_by_ccy[ccy] = {
+            "gross_payable": _q(gross_pay),
+            "supplier_credits": _q(credits if credits else credit_bal),
+            "payments_applied": _q(paid),
+            "outstanding": _q(pos),
+            "credit_balance": _q(credit_bal),
+            "net_payable": _q(pos - credit_bal),
+            "entry_count": len(rows),
+            "formula_outstanding": _q(outstanding),
+        }
+
+    return {
+        "contractor": {
+            "wfirma_contractor_id": str(meta.get("wfirma_contractor_id") or ""),
+            "name": str(meta.get("name") or ""),
+            "country": str(meta.get("country") or ""),
+            "vat_id": str(meta.get("vat_id") or ""),
+        },
+        "generated_at": as_of or "",
+        "as_of": as_of or "",
+        "period": {"from": str(df or ""), "to": str(dt or "")},
+        "currencies": sorted(entries_by_ccy.keys()),
+        "entries_per_currency": entries_by_ccy,
+        "totals_per_currency": totals_by_ccy,
+        "warnings": warnings,
+        "query_stats": {"per_supplier_wfirma_calls": 0},
     }
 
 
@@ -751,7 +1038,11 @@ __all__ = [
     "aggregate_statement",
     "remaining_after_payments",
     "match_payments_to_invoices",
+    "match_payments_to_expenses",
+    "aggregate_supplier_statement",
+    "_normalize_doc_link_id",
     "_is_iso_currency_code",
     "_parse_payment_fact",
     "_parse_invoice_fact",
+    "_parse_expense_fact",
 ]

@@ -52,6 +52,9 @@ from ..services.customer_master_db import (    # C-2b V5 reroute
 from ..services.ledger_aggregator import (
     aggregate_invoice_ledger,
     aggregate_statement,
+    aggregate_supplier_statement,
+    _parse_expense_fact,
+    _parse_payment_fact,
 )
 
 
@@ -778,6 +781,183 @@ def get_management_analysis(
             detail={
                 "error": f"wFirma portfolio read failed: {exc}",
                 "code": "MANAGEMENT_ANALYSIS_FETCH_FAILED",
+            },
+        ) from exc
+
+    return JSONResponse(body)
+
+
+@router.get(
+    "/payables-analysis.json",
+    dependencies=[_auth],
+)
+def get_payables_analysis(
+    from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
+    to: str = Query("", description="Window end YYYY-MM-DD"),
+    as_of: str = Query("", description="Aging anchor YYYY-MM-DD; default today UTC"),
+    currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN|CHF"),
+    contractor_id: str = Query("", description="Optional single contractor filter"),
+    status: str = Query(
+        "",
+        description="Optional: outstanding | overdue | credit",
+    ),
+    aging_bucket: str = Query(
+        "",
+        description="Optional bucket: not_due|b_1_30|b_31_90|b_91_180|b_180_plus|due_date_unavailable",
+    ),
+) -> JSONResponse:
+    """Read-only payables portfolio + creditor aging (Management Analysis).
+
+    Bulk ``expenses/find`` + ``payments/find`` only — zero per-supplier
+    wFirma calls. Currency portfolios stay separate (no FX grand total).
+    Drill-down: ``/suppliers/{id}/statement.json``.
+    """
+    df = _validate_date("from", from_)
+    dt = _validate_date("to", to)
+    if df > dt:
+        raise HTTPException(
+            status_code=400,
+            detail=f"from {df!r} is after to {dt!r}",
+        )
+    if (as_of or "").strip():
+        ao = _validate_date("as_of", as_of)
+    else:
+        from datetime import datetime, timezone
+        ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    ccy = (currency or "").strip().upper()
+    if ccy and ccy not in ("USD", "EUR", "PLN", "CHF"):
+        raise HTTPException(
+            status_code=400,
+            detail="currency must be USD, EUR, PLN, CHF, or empty",
+        )
+    st = (status or "").strip().lower()
+    if st and st not in ("outstanding", "overdue", "credit"):
+        raise HTTPException(
+            status_code=400,
+            detail="status must be outstanding, overdue, credit, or empty",
+        )
+    bucket = (aging_bucket or "").strip()
+    allowed_buckets = {
+        "not_due", "b_1_30", "b_31_90", "b_91_180", "b_180_plus",
+        "due_date_unavailable",
+    }
+    if bucket and bucket not in allowed_buckets:
+        raise HTTPException(
+            status_code=400,
+            detail=f"aging_bucket must be one of {sorted(allowed_buckets)} or empty",
+        )
+
+    from ..services.accounting_analytics import build_payables_analysis
+
+    try:
+        body = build_payables_analysis(
+            date_from=df,
+            date_to=dt,
+            as_of=ao,
+            currency=ccy,
+            contractor_id=(contractor_id or "").strip(),
+            status=st,
+            aging_bucket=bucket,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.warning("[payables-analysis] bulk read failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": f"wFirma payables read failed: {exc}",
+                "code": "PAYABLES_ANALYSIS_FETCH_FAILED",
+            },
+        ) from exc
+
+    return JSONResponse(body)
+
+
+@router.get(
+    "/suppliers/{contractor_id}/statement.json",
+    dependencies=[_auth],
+)
+def get_supplier_statement(
+    contractor_id: str,
+    from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
+    to: str = Query("", description="Window end YYYY-MM-DD"),
+    as_of: str = Query("", description="As-of date YYYY-MM-DD"),
+) -> JSONResponse:
+    """Read-only Supplier Ledger drill-down from shared AP facts.
+
+    Bulk expense + payment fetch, then Python-side contractor filter
+    (live wFirma ignores expense contractor.id find conditions).
+    Same remaining equation as Payables portfolio — no second authority.
+    """
+    cid = (contractor_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="contractor_id is required")
+    df = _validate_date("from", from_)
+    dt = _validate_date("to", to)
+    if df > dt:
+        raise HTTPException(
+            status_code=400,
+            detail=f"from {df!r} is after to {dt!r}",
+        )
+    if (as_of or "").strip():
+        ao = _validate_date("as_of", as_of)
+    else:
+        from datetime import datetime, timezone
+        ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    try:
+        exp_stats: Dict[str, Any] = {}
+        pay_stats: Dict[str, Any] = {}
+        exp_nodes = wfirma_client.fetch_expenses_for_period(df, dt, stats=exp_stats)
+        pay_nodes = wfirma_client.fetch_payments_for_period(df, dt, stats=pay_stats)
+        exp_nodes = _python_side_date_filter(exp_nodes, df, dt)
+        pay_nodes = _python_side_date_filter(pay_nodes, df, dt)
+
+        expense_facts = []
+        supplier_name = ""
+        for n in exp_nodes:
+            fact = _parse_expense_fact(n)
+            if fact.get("contractor_id") != cid:
+                continue
+            if not supplier_name and fact.get("contractor_name"):
+                supplier_name = fact["contractor_name"]
+            expense_facts.append(fact)
+
+        expense_ids = {f["id"] for f in expense_facts if f.get("id")}
+        payment_facts = []
+        for n in pay_nodes:
+            fact = _parse_payment_fact(n)
+            linked = fact.get("linked_expense") or ""
+            if fact.get("contractor_id") == cid or (linked and linked in expense_ids):
+                payment_facts.append(fact)
+
+        body = aggregate_supplier_statement(
+            expense_facts,
+            payment_facts,
+            contractor_meta={
+                "wfirma_contractor_id": cid,
+                "name": supplier_name or cid,
+            },
+            period=(df, dt),
+            as_of=ao,
+        )
+        body["query_stats"] = {
+            "expense_api_calls": int(exp_stats.get("api_calls") or 0),
+            "payment_api_calls": int(pay_stats.get("api_calls") or 0),
+            "expenses_in_scope": len(expense_facts),
+            "payments_in_scope": len(payment_facts),
+            "per_supplier_wfirma_calls": 0,
+            "note": "bulk find + Python contractor filter (wfirma contractor.id ignored)",
+        }
+    except Exception as exc:
+        log.warning("[supplier-statement] read failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": f"wFirma supplier statement failed: {exc}",
+                "code": "SUPPLIER_STATEMENT_FETCH_FAILED",
             },
         ) from exc
 
