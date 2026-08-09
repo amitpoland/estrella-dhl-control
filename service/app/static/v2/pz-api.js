@@ -1252,6 +1252,14 @@
       );
     },
 
+    // POST /api/v1/dhl/logistics/shipments/{awb}/resolve — admin reporting only
+    resolveDhlLogisticsShipment: (awb, body) =>
+      _post(`${BASE}/dhl/logistics/shipments/${encodeURIComponent(awb)}/resolve`, body),
+
+    // POST /api/v1/dhl/logistics/shipments/{awb}/reopen — admin reporting only
+    reopenDhlLogisticsShipment: (awb, body) =>
+      _post(`${BASE}/dhl/logistics/shipments/${encodeURIComponent(awb)}/reopen`, body),
+
     // ── DHL live tracking (carrier status) — read ───────────────────
     // GET /api/v1/tracking/{tracking_no}?carrier=&batch_id=&refresh=
     // Authority: tracking_service.get_tracking_status. Caches per-batch; gated by

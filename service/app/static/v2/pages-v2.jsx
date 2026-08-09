@@ -67,7 +67,7 @@ function Pill({ children, tone = 'neutral', small }) {
 
 function DhlCustomsPage({ onViewShipment }) {
   const [mainTab, setMainTab] = React.useState('logistics'); // logistics | automation
-  const [view, setView] = React.useState('active'); // active | delivered | attention | historical
+  const [view, setView] = React.useState('active'); // active | delivered | attention | historical | resolved
   const [direction, setDirection] = React.useState('all'); // all | inbound | outbound
   const [q, setQ] = React.useState('');
   const [stage, setStage] = React.useState('');
@@ -78,6 +78,13 @@ function DhlCustomsPage({ onViewShipment }) {
   const [reloadKey, setReloadKey] = React.useState(0);
   const [autoStatus, setAutoStatus] = React.useState(null);
   const [autoOpen, setAutoOpen] = React.useState(false);
+  const [isAdmin, setIsAdmin] = React.useState(false);
+
+  React.useEffect(() => {
+    window.EstrellaShared.apiFetch('/api/v1/auth/me')
+      .then((u) => setIsAdmin(u && u.role === 'admin'))
+      .catch(() => setIsAdmin(false));
+  }, []);
 
   const loadProjection = React.useCallback(() => {
     setLoading(true); setError(null);
@@ -125,6 +132,7 @@ function DhlCustomsPage({ onViewShipment }) {
   const fmt = (v) => (v == null || v === '') ? '—' : String(v);
   const fmtHours = (h) => (h == null ? '—' : (Math.round(h * 10) / 10) + 'h');
   const toneFor = (row) => {
+    if (row.manual_resolution_badge) return 'purple';
     if (row.classification === 'historical_unresolved') return 'amber';
     if (row.needs_attention) return 'red';
     if (row.direction === 'inbound') return 'blue';
@@ -226,6 +234,7 @@ function DhlCustomsPage({ onViewShipment }) {
                 { id: 'attention', label: 'Needs Attention', count: kpis.needs_attention },
                 { id: 'delivered', label: 'Delivered' },
                 { id: 'historical', label: 'Historical Unresolved', count: kpis.historical_unresolved },
+                { id: 'resolved', label: 'Resolved History', count: kpis.resolved_history },
               ]}
             />
           </div>
@@ -271,7 +280,7 @@ function DhlCustomsPage({ onViewShipment }) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 960 }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-                    {['Dir', 'Party', 'AWB', 'Created', 'Current Status', 'Location', 'Stage Age', 'Total Transit', 'Expected', 'Attention'].map((h) => (
+                    {['Dir', 'Party', 'AWB', 'Created ↓', 'Current Status', 'Location', 'Stage Age', 'Total Transit', 'Expected', 'Attention'].map((h) => (
                       <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
@@ -291,7 +300,11 @@ function DhlCustomsPage({ onViewShipment }) {
                       <td style={{ padding: '8px 10px', color: 'var(--text)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.party)}</td>
                       <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.awb)}</td>
                       <td style={{ padding: '8px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_dhlShortTs(r.created_at_warsaw)}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text)', fontWeight: 600, whiteSpace: 'nowrap' }}>{fmt(r.transport_status || r.current_status)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        {r.manual_resolution_badge
+                          ? <span><Pill tone="purple" small>Manually resolved</Pill>{' '}<span style={{ fontWeight: 500, color: 'var(--text-2)' }}>{fmt(r.transport_status)}</span></span>
+                          : fmt(r.transport_status || r.current_status)}
+                      </td>
                       <td style={{ padding: '8px 10px', color: 'var(--text-3)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.current_location)}</td>
                       <td style={{ padding: '8px 10px', color: r.needs_attention ? 'var(--badge-red-text)' : 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.stage_age_human)}</td>
                       <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.total_elapsed_human)}</td>
@@ -376,8 +389,10 @@ function DhlCustomsPage({ onViewShipment }) {
       {selected && (
         <DhlTowerDrawer
           row={selected}
+          isAdmin={isAdmin}
           onClose={() => setSelected(null)}
           onViewShipment={onViewShipment}
+          onResolved={() => { setSelected(null); loadProjection(); setReloadKey((k) => k + 1); }}
         />
       )}
     </div>
@@ -400,8 +415,66 @@ function _dhlShortTs(iso) {
   } catch (e) { return String(iso).slice(0, 16); }
 }
 
-function DhlTowerDrawer({ row, onClose, onViewShipment }) {
+function DhlTowerDrawer({ row, isAdmin, onClose, onViewShipment, onResolved }) {
   const milestones = row.milestones || [];
+  const [resolveOpen, setResolveOpen] = React.useState(false);
+  const [reopenOpen, setReopenOpen] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  const [resType, setResType] = React.useState('closed_no_longer_operational');
+  const [comment, setComment] = React.useState('');
+  const [manualAt, setManualAt] = React.useState('');
+  const [manualLoc, setManualLoc] = React.useState('');
+  const hasManual = !!(row.manual_resolution && row.manual_resolution.active);
+
+  const submitResolve = () => {
+    if (!comment.trim()) { setErr('Comment is required'); return; }
+    if (resType === 'historical_delivered' && !manualAt.trim()) {
+      setErr('Delivery date/time is required for historical delivery');
+      return;
+    }
+    if (!window.confirm('Resolve this Control Tower reporting record? This does not change DHL tracking, customs, or PZ data.')) return;
+    setBusy(true); setErr(null);
+    let deliveredIso = null;
+    if (resType === 'historical_delivered' && manualAt.trim()) {
+      const d = new Date(manualAt);
+      if (Number.isNaN(d.getTime())) { setErr('Invalid delivery date/time'); return; }
+      deliveredIso = d.toISOString();
+    }
+    const body = {
+      direction: row.direction,
+      resolution_status: resType,
+      comment: comment.trim(),
+      manual_delivered_at: deliveredIso,
+      manual_location: manualLoc.trim() || null,
+    };
+    const api = window.PzApi && window.PzApi.resolveDhlLogisticsShipment;
+    const req = api
+      ? api(row.awb, body)
+      : window.EstrellaShared.apiFetch('/api/v1/dhl/logistics/shipments/' + encodeURIComponent(row.awb) + '/resolve', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+    Promise.resolve(req)
+      .then(() => { setBusy(false); setResolveOpen(false); if (onResolved) onResolved(); })
+      .catch((e) => { setBusy(false); setErr((e && e.message) || String(e)); });
+  };
+
+  const submitReopen = () => {
+    if (!comment.trim()) { setErr('Comment is required'); return; }
+    if (!window.confirm('Reopen this reporting resolution? The row returns to normal Control Tower projection.')) return;
+    setBusy(true); setErr(null);
+    const body = { direction: row.direction, comment: comment.trim() };
+    const api = window.PzApi && window.PzApi.reopenDhlLogisticsShipment;
+    const req = api
+      ? api(row.awb, body)
+      : window.EstrellaShared.apiFetch('/api/v1/dhl/logistics/shipments/' + encodeURIComponent(row.awb) + '/reopen', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+    Promise.resolve(req)
+      .then(() => { setBusy(false); setReopenOpen(false); if (onResolved) onResolved(); })
+      .catch((e) => { setBusy(false); setErr((e && e.message) || String(e)); });
+  };
+
   return (
     <div data-testid="dhl-tower-drawer" style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 80,
@@ -418,11 +491,79 @@ function DhlTowerDrawer({ row, onClose, onViewShipment }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 12 }}>
           <div>
             <Pill tone={row.direction === 'inbound' ? 'blue' : 'amber'}>{row.direction}</Pill>
+            {row.manual_resolution_badge && (
+              <span style={{ marginLeft: 6 }}><Pill tone="purple" small>Manually resolved</Pill></span>
+            )}
             <div style={{ fontFamily: 'monospace', fontSize: 16, fontWeight: 700, marginTop: 8 }}>{row.awb}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>{row.party || '—'} · {row.current_status || '—'}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>{row.party || '—'} · {row.transport_status || row.current_status || '—'}</div>
           </div>
           <button data-testid="dhl-tower-drawer-close" onClick={onClose} style={_dhlBtnStyle()}>Close</button>
         </div>
+
+        {isAdmin && !hasManual && (
+          <div style={{ marginBottom: 14 }}>
+            <button data-testid="dhl-tower-resolve-btn" onClick={() => { setResolveOpen(true); setErr(null); }} style={{ ..._dhlBtnStyle(), borderColor: 'var(--accent)', color: 'var(--accent)' }}>
+              Resolve
+            </button>
+          </div>
+        )}
+        {isAdmin && hasManual && (
+          <div style={{ marginBottom: 14 }}>
+            <button data-testid="dhl-tower-reopen-btn" onClick={() => { setReopenOpen(true); setComment(''); setErr(null); }} style={_dhlBtnStyle()}>
+              Reopen resolution
+            </button>
+          </div>
+        )}
+
+        {row.manual_resolution && (
+          <div data-testid="dhl-tower-manual-resolution" style={{ marginBottom: 14, padding: 12, background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 12, lineHeight: 1.45 }}>
+            <strong>Manual reporting resolution</strong>
+            <div>Status: {row.manual_resolution.resolution_status}</div>
+            <div>By: {row.manual_resolution.resolved_by || '—'} · {_dhlShortTs(row.manual_resolution.resolved_at)}</div>
+            <div>Comment: {row.manual_resolution.comment || '—'}</div>
+            {row.manual_resolution.manual_delivered_at && <div>Operator delivery: {_dhlShortTs(row.manual_resolution.manual_delivered_at)}</div>}
+            {row.operator_confirmed_duration_human && <div>Operator-confirmed duration: {row.operator_confirmed_duration_human}</div>}
+            {row.manual_resolution_superseded_by_dhl && <div style={{ color: 'var(--badge-amber-text)' }}>DHL Delivered evidence now present — canonical transport wins.</div>}
+          </div>
+        )}
+
+        {resolveOpen && (
+          <div data-testid="dhl-tower-resolve-modal" style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Resolve reporting record</div>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>Resolution</label>
+            <select data-testid="dhl-tower-resolve-type" value={resType} onChange={(e) => setResType(e.target.value)} style={{ width: '100%', marginBottom: 8, padding: 6 }}>
+              <option value="historical_delivered">Historical delivery confirmed</option>
+              <option value="closed_no_longer_operational">Close historical record</option>
+            </select>
+            {resType === 'historical_delivered' && (
+              <>
+                <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>Actual delivery date/time (required)</label>
+                <input data-testid="dhl-tower-resolve-delivered-at" type="datetime-local" value={manualAt} onChange={(e) => setManualAt(e.target.value)} style={{ width: '100%', marginBottom: 8, padding: 6 }} />
+                <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>Location (optional)</label>
+                <input data-testid="dhl-tower-resolve-location" value={manualLoc} onChange={(e) => setManualLoc(e.target.value)} style={{ width: '100%', marginBottom: 8, padding: 6 }} />
+              </>
+            )}
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>Comment / evidence note (required)</label>
+            <textarea data-testid="dhl-tower-resolve-comment" value={comment} onChange={(e) => setComment(e.target.value)} rows={3} style={{ width: '100%', marginBottom: 8, padding: 6 }} />
+            {err && <div style={{ color: 'var(--badge-red-text)', fontSize: 11, marginBottom: 8 }}>{err}</div>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button data-testid="dhl-tower-resolve-cancel" disabled={busy} onClick={() => setResolveOpen(false)} style={_dhlBtnStyle()}>Cancel</button>
+              <button data-testid="dhl-tower-resolve-confirm" disabled={busy} onClick={submitResolve} style={{ ..._dhlBtnStyle(), background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }}>Resolve record</button>
+            </div>
+          </div>
+        )}
+
+        {reopenOpen && (
+          <div data-testid="dhl-tower-reopen-modal" style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Reopen resolution</div>
+            <textarea data-testid="dhl-tower-reopen-comment" value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Reason for reopen (required)" style={{ width: '100%', marginBottom: 8, padding: 6 }} />
+            {err && <div style={{ color: 'var(--badge-red-text)', fontSize: 11, marginBottom: 8 }}>{err}</div>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button disabled={busy} onClick={() => setReopenOpen(false)} style={_dhlBtnStyle()}>Cancel</button>
+              <button data-testid="dhl-tower-reopen-confirm" disabled={busy} onClick={submitReopen} style={_dhlBtnStyle()}>Reopen</button>
+            </div>
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16, fontSize: 12 }}>
           <div><span style={{ color: 'var(--text-3)' }}>Transport</span><div>{row.transport_status || row.current_status || '—'}</div></div>

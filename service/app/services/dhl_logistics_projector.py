@@ -1232,11 +1232,95 @@ def _fixed_transition_analytics(
     return out
 
 
+def _apply_manual_resolution(
+    row: Dict[str, Any],
+    resolution: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Overlay admin reporting resolution. Never invents DHL Delivered evidence.
+
+    Precedence: canonical DHL Delivered > active manual resolution > normal projection.
+    """
+    row["manual_resolution"] = None
+    row["manual_resolution_badge"] = None
+    row["manual_resolution_superseded_by_dhl"] = False
+    row["operator_confirmed_duration_hours"] = None
+    row["operator_confirmed_duration_human"] = None
+    if not resolution or not resolution.get("active"):
+        return row
+
+    snap = {
+        "resolution_status": resolution.get("resolution_status"),
+        "resolved_at": resolution.get("resolved_at"),
+        "resolved_by": resolution.get("resolved_by"),
+        "comment": resolution.get("comment"),
+        "manual_delivered_at": resolution.get("manual_delivered_at"),
+        "manual_location": resolution.get("manual_location"),
+        "active": True,
+    }
+    row["manual_resolution"] = snap
+
+    # Canonical DHL Delivered always wins for classification / Delivered badge.
+    if row.get("classification") == "delivered":
+        row["manual_resolution_superseded_by_dhl"] = True
+        row["manual_resolution_badge"] = "Manually resolved (DHL evidence now present)"
+        return row
+
+    status = str(resolution.get("resolution_status") or "")
+    row["manual_resolution_badge"] = "Manually resolved"
+    row["needs_attention"] = False
+    row["attention_reasons"] = []
+
+    if status == "historical_delivered":
+        row["classification"] = "manually_resolved_delivered"
+        # Keep transport_status as carrier truth; do not show plain "Delivered".
+        row["current_status"] = "Manually resolved"
+        row["current_stage_label"] = "Manually resolved"
+        row["reporting_status"] = "Manually resolved — historical delivery confirmed"
+        man_del = _parse_iso(resolution.get("manual_delivered_at"))
+        created = _parse_iso(row.get("created_at_utc"))
+        if man_del and created:
+            hours = _hours_between(created, man_del)
+            row["operator_confirmed_duration_hours"] = hours
+            row["operator_confirmed_duration_human"] = _fmt_duration(hours)
+        if resolution.get("manual_location"):
+            row["current_location"] = resolution.get("manual_location")
+    elif status == "closed_no_longer_operational":
+        row["classification"] = "manually_resolved_closed"
+        row["current_status"] = "Manually resolved"
+        row["current_stage_label"] = "Manually resolved"
+        row["reporting_status"] = "Manually resolved — closed / no longer operational"
+    return row
+
+
+def _load_resolution_map() -> Dict[Tuple[str, str], Dict[str, Any]]:
+    try:
+        from . import dhl_logistics_resolution_db as resdb
+        out: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for r in resdb.list_active_resolutions():
+            key = (str(r.get("direction") or ""), str(r.get("awb") or ""))
+            out[key] = r
+        return out
+    except Exception as exc:
+        log.warning("logistics_projector: resolution load failed: %s", exc)
+        return {}
+
+
 def _collect_transit_hours(rows: List[Dict[str, Any]]) -> Tuple[List[float], List[Dict[str, Any]]]:
-    """Valid pickup→delivered (or authoritative total) samples + DQ exclusions."""
+    """Valid pickup→delivered (or authoritative total) samples + DQ exclusions.
+
+    Manual/operator-confirmed durations are excluded from canonical DHL averages.
+    """
     valid: List[float] = []
     excluded: List[Dict[str, Any]] = []
     for r in rows:
+        # Operator-confirmed / non-DHL paths never enter canonical averages.
+        if r.get("classification") == "manually_resolved_delivered":
+            excluded.append({
+                "awb": r.get("awb"),
+                "reason": "manual_resolution_excluded_from_dhl_averages",
+                "direction": r.get("direction"),
+            })
+            continue
         if r.get("classification") != "delivered":
             continue
         dq = list(r.get("data_quality") or [])
@@ -1292,6 +1376,7 @@ def project_logistics(
     now = _now_utc()
     inbound_rows: List[Dict[str, Any]] = []
     outbound_rows: List[Dict[str, Any]] = []
+    resolution_map = _load_resolution_map()
 
     for path in _audit_paths():
         audit = _read_audit(path)
@@ -1309,12 +1394,15 @@ def project_logistics(
             row["orch_active"] = bool(orch_active)
         except Exception:
             row["orch_active"] = None
-        inbound_rows.append(row)
+        key = (row.get("direction") or "", row.get("awb") or "")
+        inbound_rows.append(_apply_manual_resolution(row, resolution_map.get(key)))
 
     try:
         from .carrier.persistence import shipment_db as csdb
         for crow in csdb.list_tracked_shipments(_carrier_db_path()):
-            outbound_rows.append(project_outbound_row(crow, now=now))
+            row = project_outbound_row(crow, now=now)
+            key = (row.get("direction") or "", row.get("awb") or "")
+            outbound_rows.append(_apply_manual_resolution(row, resolution_map.get(key)))
     except Exception as exc:
         log.warning("logistics_projector: outbound list failed: %s", exc)
 
@@ -1323,7 +1411,9 @@ def project_logistics(
     active_in = [r for r in inbound_rows if r["classification"] == "active"]
     active_out = [r for r in outbound_rows if r["classification"] == "active"]
     historical = [r for r in all_rows if r["classification"] == "historical_unresolved"]
-    # Operational attention only (excludes historical residue)
+    resolved_closed = [r for r in all_rows if r["classification"] == "manually_resolved_closed"]
+    manually_delivered = [r for r in all_rows if r["classification"] == "manually_resolved_delivered"]
+    # Operational attention only (excludes historical residue + manual resolutions)
     attention = [
         r for r in all_rows
         if r.get("needs_attention") and r["classification"] in ("active", "exception")
@@ -1368,14 +1458,20 @@ def project_logistics(
         rows = [r for r in rows if r["direction"] == "outbound"]
 
     if view == "active":
-        # Operational active + live exceptions — historical residue excluded
+        # Operational active + live exceptions — residue + manual resolutions excluded
         rows = [r for r in rows if r["classification"] in ("active", "exception")]
     elif view == "delivered":
-        rows = [r for r in rows if r["classification"] == "delivered"]
+        # DHL Delivered + admin historical-delivery confirmation (badge differs)
+        rows = [
+            r for r in rows
+            if r["classification"] in ("delivered", "manually_resolved_delivered")
+        ]
     elif view == "attention":
         rows = [r for r in rows if r.get("needs_attention") and r["classification"] in ("active", "exception")]
     elif view in ("historical", "unresolved", "historical_unresolved"):
         rows = [r for r in rows if r["classification"] == "historical_unresolved"]
+    elif view in ("resolved", "resolved_history"):
+        rows = [r for r in rows if r["classification"] == "manually_resolved_closed"]
 
     if needs_attention_only:
         rows = [r for r in rows if r.get("needs_attention") and r["classification"] in ("active", "exception")]
@@ -1414,14 +1510,13 @@ def project_logistics(
             filtered.append(r)
         rows = filtered
 
+    # Default: newest operational shipment first (created_at DESC).
+    # Needs Attention uses the same newest-created rule so 100d rows do not pin the top.
     def _sort_key(r: Dict[str, Any]):
-        return (
-            0 if r.get("needs_attention") else 1,
-            -(r.get("stage_age_hours") or 0),
-            r.get("created_at_utc") or "",
-        )
+        created = r.get("created_at_utc") or ""
+        return (0 if created else 1, created)
 
-    rows.sort(key=_sort_key)
+    rows.sort(key=_sort_key, reverse=True)
 
     orch_active_count = sum(1 for r in inbound_rows if r.get("orch_active"))
     customs_complete_still_active = sum(
@@ -1465,6 +1560,8 @@ def project_logistics(
         "active_outbound": len(active_out),
         "operational_exceptions": operational_exceptions,
         "historical_unresolved": len(historical),
+        "resolved_history": len(resolved_closed),
+        "manually_resolved_delivered": len(manually_delivered),
         "needs_attention": len(attention),
         "delivered_today": len(delivered_today),
         "avg_inbound_transit_hours": in_stats.get("average"),
@@ -1501,8 +1598,10 @@ def project_logistics(
             "inbound": "audit.timeline + tracking_cache + tracking_db (read-only)",
             "outbound": "carrier_shipments + tracking_cache (canonical) + delivery_confirmation",
             "tracking": "select_cached_tracking_record / tracking_cache.json — no live MyDHL poll",
-            "no_writes": True,
+            "projection_reads_only": True,
+            "manual_resolution_authority": "dhl_logistics_resolutions.db (reporting only)",
             "no_second_poller": True,
+            "manual_resolution_never_rewrites_tracking": True,
         },
         "data_gaps": [
             "estimated_delivery_not_parsed_from_mydhl",
@@ -1528,7 +1627,9 @@ def project_shipment_detail(awb: str) -> Optional[Dict[str, Any]]:
         from .carrier.persistence import shipment_db as csdb
         crow = csdb.get_shipment_by_tracking_ref(_carrier_db_path(), awb)
         if crow:
-            return project_outbound_row(crow)
+            row = project_outbound_row(crow)
+            key = (row.get("direction") or "", row.get("awb") or "")
+            return _apply_manual_resolution(row, _load_resolution_map().get(key))
     except Exception as exc:
         log.debug("logistics_projector: detail outbound lookup failed: %s", exc)
 
@@ -1542,7 +1643,11 @@ def project_shipment_detail(awb: str) -> Optional[Dict[str, Any]]:
         if not audit.get("batch_id"):
             audit = dict(audit)
             audit["batch_id"] = path.parent.name
-        return project_inbound_row(audit)
+        row = project_inbound_row(audit)
+        if row is None:
+            return None
+        key = (row.get("direction") or "", row.get("awb") or "")
+        return _apply_manual_resolution(row, _load_resolution_map().get(key))
     return None
 
 
