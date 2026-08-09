@@ -1193,16 +1193,67 @@ function AccClientBalance({ onOpenLedger }) {
   );
 }
 function AccSupplierLedger() {
+  // Same LedgersPage authority as Client Ledger — open on Supplier tab.
+  // No second AP page; no deferred P0 placeholder once AP routes exist.
+  const LedgersPage = window.LedgersPage;
+  const [preset, setPreset] = React.useState('ytd');
+  const [custom, setCustom] = React.useState({ from: '', to: '' });
+  const period = React.useMemo(() => {
+    const now = new Date();
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth();
+    if (preset === 'this_month') {
+      return { from: iso(new Date(Date.UTC(y, m, 1))), to: iso(now) };
+    }
+    if (preset === 'prev_month') {
+      const from = new Date(Date.UTC(y, m - 1, 1));
+      const to = new Date(Date.UTC(y, m, 0));
+      return { from: iso(from), to: iso(to) };
+    }
+    if (preset === 'quarter') {
+      const q = Math.floor(m / 3) * 3;
+      return { from: iso(new Date(Date.UTC(y, q, 1))), to: iso(now) };
+    }
+    if (preset === 'custom' && custom.from && custom.to) {
+      return { from: custom.from, to: custom.to };
+    }
+    return { from: `${y}-01-01`, to: iso(now) };
+  }, [preset, custom.from, custom.to]);
+  if (typeof LedgersPage !== 'function') {
+    return (
+      <div style={{ padding: '32px 28px' }} data-testid="acc-supplier-ledger">
+        <AccError msg="LedgersPage component not loaded. Check script load order in index.html." />
+      </div>
+    );
+  }
+  const presets = [
+    { id: 'this_month', label: 'This month' },
+    { id: 'prev_month', label: 'Previous month' },
+    { id: 'quarter', label: 'Quarter' },
+    { id: 'ytd', label: 'YTD' },
+    { id: 'custom', label: 'Custom' },
+  ];
   return (
-    <div data-testid="acc-supplier-ledger" style={{ padding: '20px 28px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>Supplier Ledger</h2>
-        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Source: wFirma expenses + payments</span>
+    <div style={{ padding: '0 0 40px' }} data-testid="acc-supplier-ledger">
+      <div data-testid="acc-supplier-ledger-period-bar" style={{ padding: '12px 28px 0', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600 }}>Period</span>
+        {presets.map(p => (
+          <button key={p.id} type="button" data-testid={`acc-supplier-ledger-preset-${p.id}`}
+            onClick={() => setPreset(p.id)}
+            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: preset === p.id ? 'var(--accent-subtle)' : 'var(--card)', color: 'var(--text)', fontWeight: preset === p.id ? 700 : 500, cursor: 'pointer' }}>
+            {p.label}
+          </button>
+        ))}
+        {preset === 'custom' && (
+          <>
+            <input type="date" data-testid="acc-supplier-ledger-from" value={custom.from} onChange={e => setCustom(c => ({ ...c, from: e.target.value }))} style={{ fontSize: 11, padding: '3px 6px' }} />
+            <input type="date" data-testid="acc-supplier-ledger-to" value={custom.to} onChange={e => setCustom(c => ({ ...c, to: e.target.value }))} style={{ fontSize: 11, padding: '3px 6px' }} />
+          </>
+        )}
+        <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{period.from} → {period.to}</span>
       </div>
-      <div style={{ background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', color: 'var(--badge-amber-text)', borderRadius: 8, padding: '12px 14px', fontSize: 12, lineHeight: 1.5 }} data-testid="acc-supplier-ledger-p0-note">
-        P0: production AP totals are not shown until the expense−payments reconciliation proof passes.
-        Supplier payable aging remains deferred. Reconciliation fixture lives in tests only.
-      </div>
+      <LedgersPage periodFrom={period.from} periodTo={period.to} initialTab="suppliers" />
     </div>
   );
 }

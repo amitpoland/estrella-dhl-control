@@ -172,3 +172,14 @@ def test_still_exports_window_ledgers_page():
         "ledgers-page.jsx must keep exporting window.LedgersPage — the "
         "Accounting hub mounts it (census AC-5)"
     )
+
+
+def test_accounting_hub_supplier_rail_uses_ledgers_page():
+    """AccSupplierLedger must mount LedgersPage — no deferred P0 placeholder."""
+    hub = (_V2 / "accounting-hub.jsx").read_text(encoding="utf-8", errors="replace")
+    assert "function AccSupplierLedger" in hub
+    assert 'initialTab="suppliers"' in hub or "initialTab: 'suppliers'" in hub or "initialTab=\"suppliers\"" in hub
+    assert "acc-supplier-ledger-p0-note" not in hub
+    assert "Supplier payable aging remains deferred" not in hub
+    src = _src()
+    assert "initialTab" in src

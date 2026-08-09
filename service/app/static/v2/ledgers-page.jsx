@@ -98,7 +98,12 @@ function LdgStatTile({ label, value, sub, tone, alert }) {
 function LedgersPage(props) {
   const periodFrom = props && props.periodFrom;
   const periodTo = props && props.periodTo;
-  const [tab, setTab] = React.useState('clients');
+  const initialTab = (props && props.initialTab) || 'clients';
+  const [tab, setTab] = React.useState(
+    initialTab === 'suppliers' || initialTab === 'analysis' || initialTab === 'clients'
+      ? initialTab
+      : 'clients'
+  );
   const [selectedRow, setSelectedRow] = React.useState(null);
   const [focusContractorId, setFocusContractorId] = React.useState('');
   const [focusSupplierId, setFocusSupplierId] = React.useState('');
@@ -110,6 +115,11 @@ function LedgersPage(props) {
   const [refreshKey, setRefreshKey] = React.useState(0);
   const _t = (d) => d ? d.toLocaleTimeString('en-GB') : '';
   React.useEffect(() => { setRefreshKey(k => k + 1); }, [periodFrom, periodTo]);
+  React.useEffect(() => {
+    if (initialTab === 'suppliers' || initialTab === 'analysis' || initialTab === 'clients') {
+      setTab(initialTab);
+    }
+  }, [initialTab]);
 
   const openClientLedger = (contractorId) => {
     setFocusContractorId(contractorId || '');
@@ -164,13 +174,13 @@ function LedgersPage(props) {
         </div>
       </div>
 
-      {/* Top-level tab strip — counts are REAL (clients: from the live list;
-          suppliers: no backend ledger route exists yet → no fake count) */}
+      {/* Top-level tab strip — clients / analysis / suppliers share LedgersPage.
+          Supplier counts come from live AP reads (no synthetic placeholder). */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 0, marginBottom: 18, borderBottom: '1px solid var(--border)' }}>
         {[
           { id: 'clients',   label: 'Client Ledger',   count: tab === 'clients' ? loadInfo.count : null },
           { id: 'analysis',  label: 'Management Analysis', count: tab === 'analysis' ? loadInfo.count : null },
-          { id: 'suppliers', label: 'Supplier Ledger', count: null },
+          { id: 'suppliers', label: 'Supplier Ledger', count: tab === 'suppliers' ? loadInfo.count : null },
         ].map(t => {
           const active = tab === t.id;
           return (

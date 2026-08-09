@@ -12,7 +12,7 @@
     "payment_duplicates_suppressed": 0,
     "expense_stop_reason": "short",
     "payment_stop_reason": "short",
-    "duration_ms": 120145,
+    "duration_ms": 64607,
     "per_supplier_wfirma_calls": 0
   },
   "usd_row": {
