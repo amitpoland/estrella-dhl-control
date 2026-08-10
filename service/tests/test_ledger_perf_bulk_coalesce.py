@@ -51,6 +51,21 @@ def _pay(pid, invoice_id, value="40.00", cid="C1", date="2026-01-20"):
     }
 
 
+def test_ar_universe_default_fetch_uses_fiscal_types_only():
+    seen = {}
+
+    def fake_inv(df, dt, types=(), stats=None):
+        seen["types"] = types
+        return []
+
+    with patch.object(LFU.wfirma_client, "fetch_invoices_for_period", side_effect=fake_inv), \
+         patch.object(LFU.wfirma_client, "fetch_payments_for_period", return_value=[]):
+        LFU.load_ar_fact_universe("2026-01-01", "2026-06-30")
+
+    assert seen["types"] == LFU.FISCAL_AR_INVOICE_TYPES
+    assert "proforma" not in seen["types"]
+
+
 def test_statement_index_matches_from_facts_authority():
     invoices = [_inv("1", cid="A", gross="100.00"), _inv("2", cid="B", gross="50.00")]
     payments = [_pay("P1", "1", value="25.00", cid="A")]

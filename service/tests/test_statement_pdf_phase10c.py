@@ -276,13 +276,13 @@ def test_warnings_render_only_when_present():
     with_warn["warnings"] = [
         {"event": "overpayment_on_invoice", "wfirma_doc_id": "INV-9001",
          "overpaid_by": "50.00"},
-        {"event": "proforma_treated_as_debit", "wfirma_doc_id": "P-1"},
+        {"event": "proforma_excluded_from_fiscal", "wfirma_doc_id": "P-1"},
     ]
     pdf_b  = render_statement_pdf(with_warn)
     text_b = _read_pdf_text(pdf_b)
     assert "Warnings" in text_b
     assert "overpayment_on_invoice"    in text_b
-    assert "proforma_treated_as_debit" in text_b
+    assert "proforma_excluded_from_fiscal" in text_b
 
 
 # 8
