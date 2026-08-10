@@ -245,7 +245,16 @@ function deriveDetail(audit, shipment) {
     // from a SAD file merely existing — surface the decision engine's verdict.
     sadDecision:          audit.agency_sad_decision || null,
     sadInvoiceAuthority:  audit.sad_invoice_authority || null,
-    sadPresent:           !!(cd.mrn || (audit.inputs || {}).zc429 || audit.zc429),
+    // Mirror backend derive_sad_status presence (MRN / file pointer / duty parse).
+    // List-row sadStatus can lag after upload+recheck — detail audit is authority.
+    sadPresent: !!(
+      cd.mrn
+      || cd.duty_a00_pln != null
+      || inp.zc429
+      || inp.zc429_file
+      || inp.sad_file
+      || (audit.zc429 && audit.zc429.mrn)
+    ),
     importer: cd.importer_name || shipment.client || null,
     exporter: cd.exporter_name || null,
     lineCount:    tot.line_count != null ? tot.line_count : null,
@@ -339,9 +348,14 @@ function ShipmentDetailPage({ shipment, onBack }) {
 
   const d = React.useMemo(() => deriveDetail(detail, shipment), [detail, shipment]);
 
-  // Workflow state is DERIVED from authoritative shipment props — read-only.
+  // Workflow state is DERIVED from authoritative signals — read-only.
   // No local setters fake progress; the page reflects backend truth, never produces it.
-  const sadUploaded     = shipment.sadStatus !== 'SAD Pending';
+  // SAD upload: prefer full-audit detail (d.sadPresent) once loaded — list-row
+  // shipment.sadStatus can stay "SAD Pending" after upload/recheck.
+  // Before detail loads, fall back to the list-row status so the stage strip is not blank.
+  const sadUploaded     = d.loaded
+    ? !!d.sadPresent
+    : (shipment.sadStatus !== 'SAD Pending');
   const pzGenerated     = shipment.pzStatus === 'Generated' || shipment.pzStatus === 'Exported';
   const pzExported      = shipment.pzStatus === 'Exported';
   const dhlEmailReceived = shipment.dhlStatus === 'DHL Email Received' || shipment.dhlStatus === 'Reply Sent';
@@ -1185,10 +1199,10 @@ function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReloa
     return true;
   };
 
-  // Per-action state derivation. Prefer the CANONICAL backend read-model
-  // (d.timelineMilestones — the same authority the Timeline renders) so the
-  // action buttons and the Timeline are consistent by construction; fall back to
-  // the coarse summary props + audit booleans only when the read-model is absent.
+  // Per-action state derivation. Email/reply milestones prefer the CANONICAL
+  // backend read-model (d.timelineMilestones). Document generation (Polish desc /
+  // DSK) uses on-disk existence flags only — never a timeline override that can
+  // show Completed when the file is missing.
   const _ms = {};
   (d.timelineMilestones || []).forEach(m => { _ms[m.key] = m; });
   const _done = (key) => (_ms[key] ? _ms[key].state === 'completed' : null);
@@ -1196,8 +1210,11 @@ function DhlActionsPanel({ d, dhlEmailReceived, replySent, batchId, awb, onReloa
   const _coalesce = (v, fb) => (v != null ? v : fb);
 
   const emailReceived = _coalesce(_done('dhl_email_received'), dhlEmailReceived);
-  const descCompleted = _coalesce(_done('polish_description_generated'), d.polishDescGenerated);
-  const dskCompleted  = _coalesce(_done('dsk_generated'), d.dskGenerated);
+  // Document generation rows: on-disk existence is authoritative (never show Generated
+  // for a missing file). Timeline milestones may still say completed after a path drift —
+  // do not let that override an explicit false from the detail endpoint.
+  const descCompleted = !!d.polishDescGenerated;
+  const dskCompleted  = !!d.dskGenerated;
   // DHL package completion: milestone OR audit.reply_package — never agency.
   const pkgCompleted  = _coalesce(_done('reply_package_generated'), d.replyPackageBuilt);
   const sendCompleted = _coalesce(_done('reply_sent'), replySent);
@@ -1405,7 +1422,7 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>Values & rates</div>
             <InfoRow label="SAD Customs Rate"    value={d.sadRate != null ? ('USD/PLN ' + _fmtRate(d.sadRate)) : '—'} />
-            <InfoRow label="NBP Accounting Rate" value={d.nbpRate != null ? ('USD/PLN ' + _fmtRate(d.nbpRate)) : '—'} />
+            <InfoRow label="NBP Accounting Rate" value={d.nbpRate != null ? ('USD/PLN ' + _fmtRate(d.nbpRate)) : 'Fetched during Run PZ'} />
             <InfoRow label="A00 Duty"            value={_fmtPln(d.dutyA00Pln)} />
             <InfoRow label="B00 VAT"             value={_fmtPln(d.vatB00Pln)} />
             <InfoRow label="VAT Mode"            value={_dash(d.vatModeLabel)} />
