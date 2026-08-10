@@ -574,3 +574,397 @@ def is_item_type_token(value: str) -> bool:
         or norm.upper() in ITEM_TYPE_PL
         or norm in _EN_LABELS
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Material-component semantics — THE single material parser
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Governing invariant:
+#
+#     Normalization may improve language.
+#     It may NEVER remove a material component present in the source.
+#
+# Before this block, TWO independent parsers each kept exactly ONE metal:
+#
+#   commercial — pz_import_processor.normalize_family() / get_karat()
+#       returned a single family + a single purity token, so
+#       "18KT Gold,LGD Stud PT950 Com" rendered platinum-only.
+#   customs    — customs_description_engine.normalize_item_description()
+#       scanned GOLD_PURITY with a first-match-wins ``break``; the dict is
+#       ordered gold -> silver -> steel -> platinum, so gold always won and
+#       "SILVER Plain 10kt Gold Com" rendered gold-only.
+#
+# Mixed-metal goods ("Com" = combination on Estrella/EJL invoices) therefore
+# lost a material that is physically present, and the loss propagated into the
+# commercial invoice, the customs declaration, wFirma, and customer documents.
+#
+# Both engines now consume ``parse_material_components()``.  This module
+# IDENTIFIES materials; it does not render sentences.  Each engine keeps its
+# own vocabulary (customs says "18-karatowego złota (próba 750)", the
+# commercial builder says "ze złota próby 18 karatów") — those are two roles,
+# not two copies, and unifying their wording would silently rewrite persisted
+# golden rows.  No third generator is introduced here.
+
+from dataclasses import dataclass, field
+
+
+# ── Bare metal words — a metal name with NO próba evidence ────────────────────
+# "SILVER" on an invoice line is evidence of silver.  It is NOT evidence of
+# próba 925 — the commercial builder used to print "próby 925" for any silver
+# row, inventing a hallmark the source never stated.
+#
+# Deliberately kept OUT of GOLD_PURITY: that dict means "purity code -> próba",
+# every consumer treats a hit as a confirmed próba, and its length is pinned by
+# service/tests/test_description_grammar_parity.py.
+#
+# Only SILVER is listed.  Bare "GOLD"/"PLATINUM" are NOT tokens: they appear as
+# noise next to a real purity code on nearly every line ("18KT Gold"), and
+# "gold plated silver" would be read as solid gold.  Adding one is a scope
+# decision, not a typo fix.
+BARE_METAL_TOKENS: dict[str, str] = {
+    "SILVER": "srebro",
+}
+
+BARE_METAL_GENITIVE: dict[str, str] = {
+    "SILVER": "srebra",
+}
+
+BARE_METAL_GENITIVE_PRODUCT: dict[str, str] = {
+    "SILVER": "srebra",
+}
+
+BARE_METAL_PREPOSITIONAL: dict[str, str] = {
+    "SILVER": "ze srebra",
+}
+
+BARE_METAL_SHORT: dict[str, str] = {
+    "SILVER": "Ag",
+}
+
+
+# ── Metal family per material key ─────────────────────────────────────────────
+# Explicit, not derived from the Polish strings: a reviewer must be able to see
+# which metal a key means without parsing prose.
+_MATERIAL_METAL: dict[str, str] = {
+    "9KT": "gold", "09KT": "gold", "10KT": "gold", "14KT": "gold",
+    "18KT": "gold", "22KT": "gold", "24KT": "gold",
+    "925": "silver", "SL925": "silver", "SILVER": "silver",
+    "SS": "steel",
+    "PT950": "platinum", "PT900": "platinum", "PT850": "platinum",
+}
+
+# Polish stem + English word per metal family.  The stems are what
+# check_material_completeness() looks for, so they must survive every
+# declension the renderers produce:
+#   złoto / złota / złotem      -> "złot"
+#   srebro / srebra / srebrny   -> "srebr"
+#   platyna / platyny           -> "platyn"
+#   stal / stali / stalowy      -> "stal"
+_METAL_PL_STEM: dict[str, str] = {
+    "gold": "złot", "silver": "srebr", "platinum": "platyn", "steel": "stal",
+}
+_METAL_EN: dict[str, str] = {
+    "gold": "Gold", "silver": "Silver", "platinum": "Platinum", "steel": "Steel",
+}
+
+# Numeric part of a purity key, used by renderers that spell the próba out.
+_PURITY_DIGITS: dict[str, str] = {
+    "9KT": "9", "09KT": "9", "10KT": "10", "14KT": "14",
+    "18KT": "18", "22KT": "22", "24KT": "24",
+    "925": "925", "SL925": "925",
+    "PT950": "950", "PT900": "900", "PT850": "850",
+    "SS": "", "SILVER": "",
+}
+
+# Legacy display token.  "09KT" and "9KT" are the same próba; the commercial
+# builder has always printed the un-padded form, and golden rows depend on it.
+_DISPLAY_KEY: dict[str, str] = {"09KT": "9KT"}
+
+
+# ── Combination marker ────────────────────────────────────────────────────────
+# EJL/Estrella invoices mark a mixed-material piece with "Com" (combination):
+#   "PCS, SILVER Plain 10kt Gold Com Jewell RING"
+# Nothing in the platform recognised this token before.
+COMBINATION_RE = _re.compile(r"\bCOM(?:B|BO|BINATION)?\b", _re.IGNORECASE)
+
+# All material tokens, longest-first so "SL925" wins over "925" and "09KT"
+# over "9KT" when two alternatives could start at the same offset.
+_ALL_MATERIAL_KEYS: list = sorted(
+    list(GOLD_PURITY.keys()) + list(BARE_METAL_TOKENS.keys()),
+    key=len,
+    reverse=True,
+)
+_ALL_PURITY_RE = _re.compile(
+    r"\b(" + "|".join(_re.escape(k) for k in _ALL_MATERIAL_KEYS) + r")\b",
+    _re.IGNORECASE,
+)
+
+# Stone abbreviations, longest-first ("DIA&CLS" before "DIA", "PLAIN" before
+# nothing).  Keys come from STONE_ABBR — no second stone table.
+_STONE_KEYS_BY_LENGTH: list = sorted(STONE_ABBR.keys(), key=len, reverse=True)
+
+# Lab-grown markers.  "NAT DIA" (natural diamond) is the explicit opposite;
+# a diamond with neither marker is reported as natural, which is what the
+# supplier's unqualified "DIA" has always meant.
+_LAB_GROWN_RE = _re.compile(
+    r"\b(?:LGD|LG|LAB|LAB[\s-]?GROWN|LAB[\s-]?CREATED)\b", _re.IGNORECASE
+)
+_DIAMOND_PL = {"diamenty", "diamenty i kamienie szlachetne"}
+_LAB_DIAMOND_PL = "diamenty laboratoryjne"
+
+# review_reason values — stable strings, asserted by tests and surfaced to the
+# operator as ``description_review_required``.
+REVIEW_NO_MATERIAL = "no_material_recognized"
+REVIEW_NO_COMBINATION_MARKER = "multiple_materials_without_combination_marker"
+
+
+@dataclass
+class MaterialComponent:
+    """ONE material present in a source row.
+
+    A row may carry several.  ``purity_key`` is the token as matched in the
+    source (``"18KT"``, ``"SL925"``, ``"SILVER"``); every other field is the
+    resolved form, looked up once at parse time so no consumer re-parses.
+
+    ``has_purity`` is False for a bare metal word.  A renderer MUST NOT print
+    a próba for such a component — that is the "925 invented from nothing"
+    defect this dataclass exists to prevent.
+    """
+
+    purity_key: str
+    metal: str
+    has_purity: bool
+    purity_nominative_pl: str
+    purity_genitive_pl: str
+    purity_genitive_product_pl: str
+    metal_prepositional_pl: str
+    short_code: str
+    en_metal: str
+    en_label: str
+    pl_stem: str
+    display_key: str
+    purity_digits: str
+
+
+@dataclass
+class ParsedMaterial:
+    """Every material the source row states, plus what could not be resolved.
+
+    ``components`` preserves SOURCE ORDER — "SILVER Plain 10kt Gold Com" is
+    silver-then-gold, and the commercial description reads in that order.
+
+    ``description_review_required`` is the honest-uncertainty channel: the
+    parser surfaces ambiguity instead of manufacturing a confident answer.
+    """
+
+    components: list = field(default_factory=list)
+    construction: str = "single"
+    stone_abbr: str = ""
+    stone_pl: Optional[str] = None
+    natural_or_lab: Optional[str] = None
+    description_review_required: bool = False
+    review_reason: str = ""
+
+    @property
+    def metal_keys(self) -> list:
+        """Purity keys in source order — the material identity of the row."""
+        return [c.purity_key for c in self.components]
+
+    @property
+    def is_combination(self) -> bool:
+        return self.construction == "combination"
+
+
+def _build_component(purity_key: str) -> MaterialComponent:
+    """Resolve one matched token into a fully-populated component."""
+    key = purity_key.upper()
+    metal = _MATERIAL_METAL.get(key, "")
+    has_purity = key in GOLD_PURITY
+    display_key = _DISPLAY_KEY.get(key, key)
+    en_metal = _METAL_EN.get(metal, "")
+
+    if has_purity:
+        nominative = GOLD_PURITY[key]
+        genitive = PURITY_GENITIVE.get(key, "")
+        genitive_product = PURITY_GENITIVE_PRODUCT.get(key, "")
+        prepositional = METAL_PREPOSITIONAL.get(key, "")
+        short_code = SHORT_DESC_METAL.get(key, "")
+    else:
+        nominative = BARE_METAL_TOKENS.get(key, "")
+        genitive = BARE_METAL_GENITIVE.get(key, "")
+        genitive_product = BARE_METAL_GENITIVE_PRODUCT.get(key, "")
+        prepositional = BARE_METAL_PREPOSITIONAL.get(key, "")
+        short_code = BARE_METAL_SHORT.get(key, "")
+
+    # English label — the form each renderer places next to the item type.
+    # Gold and platinum lead with the purity code ("18KT Gold", "PT950
+    # Platinum"); silver leads with the metal, matching the wording the
+    # commercial builder has always emitted for silver rows.
+    if not has_purity:
+        en_label = en_metal
+    elif metal == "silver":
+        en_label = f"{en_metal} {display_key}"
+    elif metal == "steel":
+        en_label = "Stainless Steel"
+    else:
+        en_label = f"{display_key} {en_metal}"
+
+    return MaterialComponent(
+        purity_key=key,
+        metal=metal,
+        has_purity=has_purity,
+        purity_nominative_pl=nominative,
+        purity_genitive_pl=genitive,
+        purity_genitive_product_pl=genitive_product,
+        metal_prepositional_pl=prepositional,
+        short_code=short_code,
+        en_metal=en_metal,
+        en_label=en_label,
+        pl_stem=_METAL_PL_STEM.get(metal, ""),
+        display_key=display_key,
+        purity_digits=_PURITY_DIGITS.get(key, ""),
+    )
+
+
+def _resolve_stone(raw: str) -> tuple:
+    """Return ``(stone_abbr, stone_pl, natural_or_lab)`` for a raw row.
+
+    Advisory only — the customs engine keeps its own stone extraction, which is
+    byte-pinned by existing tests.  This is what the commercial side and the
+    review flag consult.
+    """
+    stone_abbr = ""
+    for key in _STONE_KEYS_BY_LENGTH:
+        if _re.search(r"\b" + _re.escape(key) + r"\b", raw, _re.IGNORECASE):
+            stone_abbr = key
+            break
+
+    stone_pl = STONE_ABBR.get(stone_abbr) if stone_abbr else None
+
+    lab = bool(_LAB_GROWN_RE.search(raw))
+    if lab:
+        natural_or_lab = "lab_grown"
+        if stone_pl in _DIAMOND_PL or stone_pl is None and stone_abbr in ("LGD", "LG", "LAB"):
+            stone_pl = _LAB_DIAMOND_PL
+    elif stone_pl in _DIAMOND_PL:
+        natural_or_lab = "natural"
+    else:
+        natural_or_lab = None
+
+    return stone_abbr, stone_pl, natural_or_lab
+
+
+def parse_material_components(raw: str) -> ParsedMaterial:
+    """Identify EVERY material stated in a raw source row.
+
+    This is the single material authority.  It never guesses: a row whose
+    materials cannot be resolved comes back with ``components == []`` and
+    ``description_review_required=True`` rather than a manufactured metal.
+
+    Rules:
+
+    * ALL matches are kept, in source order — never first-match-wins.
+    * A bare metal word is dropped only when the SAME metal also appears with
+      a purity code ("SL925 Silver" is one silver component, not two).
+    * Two spellings of the same próba collapse ("09KT" and "9KT").
+    * Two metals with no ``Com`` marker keep BOTH components and raise the
+      review flag — the ambiguity is surfaced, the material is not discarded.
+
+    Examples::
+
+        parse_material_components("PCS, 18KT Gold,LGD Stud PT950 Com ...")
+            -> components ["18KT", "PT950"], construction "combination"
+        parse_material_components("PCS, SILVER Plain 10kt Gold Com ...")
+            -> components ["SILVER", "10KT"]   (no próba on the silver)
+        parse_material_components("PCS, Fancy Jewell RING")
+            -> components [], description_review_required=True
+    """
+    text = raw or ""
+
+    matched: list = []
+    for m in _ALL_PURITY_RE.finditer(text):
+        key = m.group(1).upper()
+        if key not in matched:
+            matched.append(key)
+
+    # A bare metal word next to the same metal's purity code is the same
+    # material stated twice ("SL925 Silver"), not a second component.
+    metals_with_purity = {
+        _MATERIAL_METAL.get(k) for k in matched if k in GOLD_PURITY
+    }
+    matched = [
+        k for k in matched
+        if k in GOLD_PURITY or _MATERIAL_METAL.get(k) not in metals_with_purity
+    ]
+
+    components: list = []
+    seen_identity: set = set()
+    for key in matched:
+        component = _build_component(key)
+        # "9KT" and "09KT" resolve to the same próba — one material.
+        identity = (component.metal, component.purity_nominative_pl)
+        if identity in seen_identity:
+            continue
+        seen_identity.add(identity)
+        components.append(component)
+
+    stone_abbr, stone_pl, natural_or_lab = _resolve_stone(text)
+    has_marker = bool(COMBINATION_RE.search(text))
+
+    parsed = ParsedMaterial(
+        components=components,
+        construction="combination" if len(components) > 1 else "single",
+        stone_abbr=stone_abbr,
+        stone_pl=stone_pl,
+        natural_or_lab=natural_or_lab,
+    )
+
+    if not components:
+        parsed.description_review_required = True
+        parsed.review_reason = REVIEW_NO_MATERIAL
+    elif len(components) > 1 and not has_marker:
+        # Both metals are kept.  The operator is told the source did not say
+        # which construction it is.
+        parsed.description_review_required = True
+        parsed.review_reason = REVIEW_NO_COMBINATION_MARKER
+
+    return parsed
+
+
+def check_material_completeness(
+    parsed: ParsedMaterial,
+    description_pl: str,
+    description_en: str,
+) -> tuple:
+    """The generation invariant: recognized source materials ⊆ final description.
+
+    Returns ``(ok, reason)``.  ``ok`` is False when a material the source
+    stated is absent from either language — that is a material fact removed by
+    normalization, which is exactly what this campaign forbids.
+
+    Checked at METAL level, not at próba level: a renderer that prints the
+    wrong hallmark is a different (louder) defect, while a renderer that drops
+    "platinum" from a gold+platinum piece is the silent one.  Callers that need
+    próba parity use verify_description_parity() instead.
+
+    A row with no recognized material cannot fail — nothing was recognized, so
+    nothing could be lost; ``description_review_required`` covers that case.
+    """
+    if parsed is None or not parsed.components:
+        return True, ""
+
+    pl = (description_pl or "").lower()
+    en = (description_en or "").lower()
+
+    missing: list = []
+    for c in parsed.components:
+        label = f"{(c.en_metal or c.metal or c.purity_key).lower()} ({c.purity_key})"
+        if c.pl_stem and c.pl_stem not in pl:
+            missing.append(f"{label} missing from PL")
+        if c.en_metal and c.en_metal.lower() not in en:
+            missing.append(f"{label} missing from EN")
+
+    if missing:
+        return False, "material lost in normalization: " + "; ".join(missing)
+    return True, ""
