@@ -600,6 +600,163 @@ def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings):
     return resolved.shipping_account.account_number, resolved.to_dict()
 
 
+# ── Return DRAFT (Slice A) — prepare / get / patch; Live Create = HOLD ────────
+
+
+class PrepareReturnBody(BaseModel):
+    parent_tracking_ref: str
+    client_ref: Optional[str] = None
+    client_contractor_id: Optional[str] = None
+    return_reason: Optional[str] = None
+    pieces: Optional[int] = None
+    weight_kg: Optional[float] = None
+    declared_value: Optional[float] = None
+    currency: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+
+
+class PatchReturnBody(BaseModel):
+    return_reason: Optional[str] = None
+    pieces: Optional[int] = None
+    weight_kg: Optional[float] = None
+    declared_value: Optional[float] = None
+    currency: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    contact_country_code: Optional[str] = None
+    customs_requirement_status: Optional[str] = None
+
+
+@router.post(
+    "/{batch_id}/return/prepare",
+    summary="Prepare linked return DRAFT (no MyDHL create)",
+)
+def prepare_return(
+    batch_id: str,
+    body: PrepareReturnBody,
+    _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
+    db_path: Path = Depends(_get_shipment_db_path),
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Create a linked return draft under carrier_shipments. Zero DHL writes."""
+    from ..core.config import settings
+    from ..services.carrier.return_draft_service import (
+        ReturnDraftError,
+        prepare_return_draft,
+    )
+
+    try:
+        result = prepare_return_draft(
+            storage_root=settings.storage_root,
+            carrier_db_path=db_path,
+            batch_id=batch_id,
+            parent_tracking_ref=body.parent_tracking_ref,
+            client_ref=(body.client_ref or None),
+            client_contractor_id=(body.client_contractor_id or None),
+            return_reason=body.return_reason,
+            pieces=body.pieces,
+            weight_kg=body.weight_kg,
+            declared_value=body.declared_value,
+            currency=body.currency,
+            contact_email=body.contact_email,
+            contact_phone=body.contact_phone,
+            operator=_clean_operator(x_operator),
+        )
+    except ReturnDraftError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail={"error": exc.message, "code": exc.code},
+        ) from exc
+    return JSONResponse(result)
+
+
+@router.get(
+    "/{batch_id}/return",
+    summary="Get linked return DRAFT for batch/parent AWB",
+)
+def get_return(
+    batch_id: str,
+    parent_tracking_ref: Optional[str] = None,
+    client_ref: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    _auth: None = Depends(require_api_key),
+    db_path: Path = Depends(_get_shipment_db_path),
+) -> JSONResponse:
+    from ..services.carrier.return_draft_service import get_return_draft_api
+
+    draft = get_return_draft_api(
+        db_path,
+        batch_id=batch_id,
+        parent_tracking_ref=parent_tracking_ref,
+        client_ref=(client_ref or "").strip() or None,
+        idempotency_key=idempotency_key,
+    )
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No return draft found for batch {batch_id!r}.",
+        )
+    return JSONResponse({"draft": draft})
+
+
+@router.patch(
+    "/{batch_id}/return/{idempotency_key}",
+    summary="Edit linked return DRAFT (still no MyDHL create)",
+)
+def patch_return(
+    batch_id: str,
+    idempotency_key: str,
+    body: PatchReturnBody,
+    _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
+    db_path: Path = Depends(_get_shipment_db_path),
+) -> JSONResponse:
+    from ..services.carrier.return_draft_service import (
+        ReturnDraftError,
+        patch_return_draft,
+    )
+
+    try:
+        draft = patch_return_draft(
+            db_path,
+            batch_id=batch_id,
+            idempotency_key=idempotency_key,
+            return_reason=body.return_reason,
+            pieces=body.pieces,
+            weight_kg=body.weight_kg,
+            declared_value=body.declared_value,
+            currency=body.currency,
+            contact_email=body.contact_email,
+            contact_phone=body.contact_phone,
+            contact_country_code=body.contact_country_code,
+            customs_requirement_status=body.customs_requirement_status,
+        )
+    except ReturnDraftError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail={"error": exc.message, "code": exc.code},
+        ) from exc
+    return JSONResponse({"draft": draft})
+
+
+@router.post(
+    "/{batch_id}/return/create",
+    summary="Live Create Return — HOLD (DHL capability pending)",
+)
+def create_return_blocked(
+    batch_id: str,
+    _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
+) -> JSONResponse:
+    """Explicitly blocked — Slice A does not call MyDHL createShipment."""
+    from ..services.carrier.return_draft_service import assert_create_return_blocked
+
+    status, payload = assert_create_return_blocked()
+    return JSONResponse(payload, status_code=status)
+
+
 @router.post("/{batch_id}/shipment")
 def create_shipment(
     batch_id: str,

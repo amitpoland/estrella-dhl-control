@@ -122,3 +122,25 @@ def compute_idempotency_key(request: ShipmentRequest) -> str:
         payload["client_ref"] = client_ref
     canonical = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def compute_return_idempotency_key(
+    *,
+    batch_id: str,
+    parent_tracking_ref: str,
+    client_ref: Optional[str] = None,
+) -> str:
+    """Idempotency key for a linked return DRAFT — distinct from outbound.
+
+    Includes ``direction=return`` + parent AWB so prepare-return never collides
+    with the outbound ``compute_idempotency_key`` (which has no direction field).
+    """
+    payload = {
+        "direction": "return",
+        "batch_id": batch_id,
+        "parent_tracking_ref": (parent_tracking_ref or "").strip(),
+    }
+    if client_ref:
+        payload["client_ref"] = client_ref
+    canonical = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()

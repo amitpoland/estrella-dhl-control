@@ -75,7 +75,30 @@ _ADDITIVE_COLUMNS = [
     ("dhl_notify_recipient_source", "TEXT"),
     ("dhl_notify_provider", "TEXT"),
     ("dhl_notify_requested_at", "TEXT"),
+    # Slice A — linked return DRAFT (no MyDHL create). NULL direction = outbound
+    # legacy. Return rows use shipment_direction='return' + distinct idempotency
+    # key (direction+parent AWB) so they never collide with outbound bookings.
+    ("shipment_direction", "TEXT"),           # outbound | return (NULL=outbound)
+    ("return_intent_status", "TEXT"),         # prepared | …
+    ("parent_tracking_ref", "TEXT"),
+    ("parent_idempotency_key", "TEXT"),
+    ("return_reason", "TEXT"),
+    ("proposed_shipper_json", "TEXT"),        # preview snapshot only
+    ("proposed_receiver_json", "TEXT"),       # preview snapshot only
+    ("pieces", "INTEGER"),
+    ("customs_requirement_status", "TEXT"),   # not_required|required_pending|incomplete
+    ("contact_email", "TEXT"),                # planned notify contact (normalized)
+    ("contact_phone_e164", "TEXT"),
+    ("contact_country_code", "TEXT"),         # ISO alpha-2 canonical
+    ("contact_needs_review", "INTEGER NOT NULL DEFAULT 0"),
+    ("dhl_return_capability", "TEXT"),        # pending until account confirmed
+    ("create_return_available", "INTEGER NOT NULL DEFAULT 0"),
 ]
+
+# Outbound-only filter — return drafts must never leak into AWB attribution.
+_OUTBOUND_ONLY = (
+    "(shipment_direction IS NULL OR LOWER(shipment_direction) != 'return')"
+)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -185,7 +208,8 @@ def get_shipment_by_batch_id(db_path: Path, batch_id: str) -> Optional[dict]:
     """
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM carrier_shipments WHERE batch_id = ? ORDER BY created_at DESC LIMIT 1",
+            f"SELECT * FROM carrier_shipments WHERE batch_id = ? "
+            f"AND {_OUTBOUND_ONLY} ORDER BY created_at DESC LIMIT 1",
             (batch_id,),
         ).fetchone()
     return dict(row) if row else None
@@ -209,7 +233,8 @@ def get_legacy_shipment(db_path: Path, batch_id: str) -> Optional[dict]:
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM carrier_shipments "
-            "WHERE batch_id = ? AND client_ref IS NULL AND state != 'failed' "
+            f"WHERE batch_id = ? AND client_ref IS NULL AND state != 'failed' "
+            f"AND {_OUTBOUND_ONLY} "
             "ORDER BY created_at DESC LIMIT 1",
             (batch_id,),
         ).fetchone()
@@ -243,7 +268,8 @@ def get_client_shipment(
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM carrier_shipments "
-            "WHERE batch_id = ? AND client_ref = ? AND state != 'failed' "
+            f"WHERE batch_id = ? AND client_ref = ? AND state != 'failed' "
+            f"AND {_OUTBOUND_ONLY} "
             "ORDER BY created_at DESC LIMIT 1",
             (batch_id, client_ref),
         ).fetchone()
@@ -275,13 +301,13 @@ def get_shipment_for_draft(
          per-client row must NOT fall back to "the latest batch row", which is
          precisely the contamination bug.
 
-    Never mutates state — purely read-only.
+    Never mutates state — purely read-only. Return drafts are excluded.
     """
     with _connect(db_path) as conn:
         if client_ref:
             row = conn.execute(
                 "SELECT * FROM carrier_shipments "
-                "WHERE batch_id = ? AND client_ref = ? "
+                f"WHERE batch_id = ? AND client_ref = ? AND {_OUTBOUND_ONLY} "
                 "ORDER BY created_at DESC LIMIT 1",
                 (batch_id, client_ref),
             ).fetchone()
@@ -290,7 +316,8 @@ def get_shipment_for_draft(
 
         if allow_single_client_fallback:
             rows = conn.execute(
-                "SELECT * FROM carrier_shipments WHERE batch_id = ? "
+                f"SELECT * FROM carrier_shipments WHERE batch_id = ? "
+                f"AND {_OUTBOUND_ONLY} "
                 "ORDER BY created_at DESC",
                 (batch_id,),
             ).fetchall()
@@ -502,7 +529,8 @@ def get_shipment_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[d
     Used by the outbound-delivery hook to resolve an AWB back to its owning
     draft context (batch_id, client_ref, created_at) so a customer
     delivery-confirmation email can be routed and its activation boundary
-    checked. Never mutates state.
+    checked. Never mutates state. Return drafts have no tracking_ref and are
+    excluded by the outbound filter as defence-in-depth.
     """
     ref = (tracking_ref or "").strip()
     if not ref or not Path(db_path).exists():
@@ -511,6 +539,7 @@ def get_shipment_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[d
         with _connect(db_path) as conn:
             row = conn.execute(
                 "SELECT * FROM carrier_shipments WHERE tracking_ref = ? "
+                f"AND {_OUTBOUND_ONLY} "
                 "ORDER BY created_at DESC LIMIT 1",
                 (ref,),
             ).fetchone()
@@ -528,7 +557,7 @@ def list_tracked_shipments(
 
     Used by the DHL Logistics Control Tower projection. Never invents AWBs —
     only returns rows where DHL booking already persisted ``tracking_ref``.
-    Excludes nothing by state; the projector classifies active/delivered.
+    Excludes return drafts (no tracking_ref; outbound filter as defence).
     """
     if not Path(db_path).exists():
         return []
@@ -538,12 +567,209 @@ def list_tracked_shipments(
             rows = conn.execute(
                 "SELECT * FROM carrier_shipments "
                 "WHERE tracking_ref IS NOT NULL AND TRIM(tracking_ref) != '' "
+                f"AND {_OUTBOUND_ONLY} "
                 "ORDER BY created_at DESC LIMIT ?",
                 (lim,),
             ).fetchall()
     except sqlite3.OperationalError:
         return []
     return [dict(r) for r in rows]
+
+
+# ── Return DRAFT persistence (Slice A — no MyDHL create) ─────────────────────
+
+
+def insert_return_draft(
+    db_path: Path,
+    *,
+    idempotency_key: str,
+    batch_id: str,
+    parent_tracking_ref: str,
+    parent_idempotency_key: Optional[str] = None,
+    client_ref: Optional[str] = None,
+    return_reason: Optional[str] = None,
+    proposed_shipper_json: Optional[str] = None,
+    proposed_receiver_json: Optional[str] = None,
+    pieces: Optional[int] = None,
+    weight_kg: Optional[float] = None,
+    declared_value: Optional[float] = None,
+    currency: Optional[str] = None,
+    customs_requirement_status: Optional[str] = None,
+    contact_email: Optional[str] = None,
+    contact_phone_e164: Optional[str] = None,
+    contact_country_code: Optional[str] = None,
+    contact_needs_review: int = 0,
+    operator: Optional[str] = None,
+) -> None:
+    """Insert a linked return DRAFT row. Never calls DHL. No tracking_ref.
+
+    mode=shadow + state=pending — draft is local-only until Live Create is
+    enabled (HOLD). create_return_available is always 0; dhl_return_capability
+    is always 'pending'.
+    """
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO carrier_shipments
+                (idempotency_key, batch_id, client_ref, mode, state, error, simulated,
+                 shipment_direction, return_intent_status,
+                 parent_tracking_ref, parent_idempotency_key, return_reason,
+                 proposed_shipper_json, proposed_receiver_json,
+                 pieces, weight_kg, declared_value, currency,
+                 customs_requirement_status,
+                 contact_email, contact_phone_e164, contact_country_code,
+                 contact_needs_review,
+                 dhl_return_capability, create_return_available,
+                 booked_by)
+            VALUES (?, ?, ?, 'shadow', 'pending', NULL, 1,
+                    'return', 'prepared',
+                    ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?,
+                    ?,
+                    ?, ?, ?,
+                    ?,
+                    'pending', 0,
+                    ?)
+            """,
+            (
+                idempotency_key,
+                batch_id,
+                client_ref,
+                parent_tracking_ref,
+                parent_idempotency_key,
+                return_reason,
+                proposed_shipper_json,
+                proposed_receiver_json,
+                pieces,
+                weight_kg,
+                declared_value,
+                currency,
+                customs_requirement_status,
+                contact_email,
+                contact_phone_e164,
+                contact_country_code,
+                int(contact_needs_review or 0),
+                operator,
+            ),
+        )
+
+
+def get_return_draft(
+    db_path: Path,
+    *,
+    batch_id: str,
+    parent_tracking_ref: Optional[str] = None,
+    client_ref: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> Optional[dict]:
+    """Return the newest return DRAFT for the batch/parent, or None."""
+    if not Path(db_path).exists():
+        return None
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        if idempotency_key:
+            row = conn.execute(
+                "SELECT * FROM carrier_shipments WHERE idempotency_key = ? "
+                "AND LOWER(COALESCE(shipment_direction, '')) = 'return'",
+                (idempotency_key,),
+            ).fetchone()
+            return dict(row) if row else None
+
+        clauses = [
+            "LOWER(COALESCE(shipment_direction, '')) = 'return'",
+            "batch_id = ?",
+        ]
+        args: list = [batch_id]
+        if parent_tracking_ref:
+            clauses.append("parent_tracking_ref = ?")
+            args.append(parent_tracking_ref.strip())
+        if client_ref:
+            clauses.append("client_ref = ?")
+            args.append(client_ref)
+        row = conn.execute(
+            f"SELECT * FROM carrier_shipments WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at DESC LIMIT 1",
+            tuple(args),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_return_draft(
+    db_path: Path,
+    idempotency_key: str,
+    *,
+    return_reason: Optional[str] = None,
+    proposed_shipper_json: Optional[str] = None,
+    proposed_receiver_json: Optional[str] = None,
+    pieces: Optional[int] = None,
+    weight_kg: Optional[float] = None,
+    declared_value: Optional[float] = None,
+    currency: Optional[str] = None,
+    customs_requirement_status: Optional[str] = None,
+    contact_email: Optional[str] = None,
+    contact_phone_e164: Optional[str] = None,
+    contact_country_code: Optional[str] = None,
+    contact_needs_review: Optional[int] = None,
+) -> int:
+    """Patch editable return-draft fields. Never touches outbound rows.
+
+    Returns rows updated (0 if missing / not a return draft). Never sets
+    create_return_available or calls DHL.
+    """
+    if not idempotency_key:
+        return 0
+    init_db(db_path)
+    sets, args = [], []
+    if return_reason is not None:
+        sets.append("return_reason = ?")
+        args.append(return_reason)
+    if proposed_shipper_json is not None:
+        sets.append("proposed_shipper_json = ?")
+        args.append(proposed_shipper_json)
+    if proposed_receiver_json is not None:
+        sets.append("proposed_receiver_json = ?")
+        args.append(proposed_receiver_json)
+    if pieces is not None:
+        sets.append("pieces = ?")
+        args.append(int(pieces))
+    if weight_kg is not None:
+        sets.append("weight_kg = ?")
+        args.append(float(weight_kg))
+    if declared_value is not None:
+        sets.append("declared_value = ?")
+        args.append(float(declared_value))
+    if currency is not None:
+        sets.append("currency = ?")
+        args.append(currency)
+    if customs_requirement_status is not None:
+        sets.append("customs_requirement_status = ?")
+        args.append(customs_requirement_status)
+    if contact_email is not None:
+        sets.append("contact_email = ?")
+        args.append(contact_email)
+    if contact_phone_e164 is not None:
+        sets.append("contact_phone_e164 = ?")
+        args.append(contact_phone_e164)
+    if contact_country_code is not None:
+        sets.append("contact_country_code = ?")
+        args.append(contact_country_code)
+    if contact_needs_review is not None:
+        sets.append("contact_needs_review = ?")
+        args.append(int(contact_needs_review))
+    if not sets:
+        return 0
+    sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+    args.extend([idempotency_key])
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            f"UPDATE carrier_shipments SET {', '.join(sets)} "
+            "WHERE idempotency_key = ? "
+            "AND LOWER(COALESCE(shipment_direction, '')) = 'return'",
+            tuple(args),
+        )
+    return int(cur.rowcount or 0)
 
 
 def get_batch_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[str]:

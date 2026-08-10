@@ -735,6 +735,30 @@
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
 
+    // POST /api/v1/carrier/{batch_id}/return/prepare — linked return DRAFT only.
+    // Never calls MyDHL createShipment. Live Create remains HOLD.
+    prepareReturnDraft: (batchId, body) =>
+      _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/return/prepare`, body),
+
+    // GET /api/v1/carrier/{batch_id}/return
+    getReturnDraft: (batchId, params) => {
+      const q = new URLSearchParams();
+      Object.entries(params || {}).forEach(([k, v]) => {
+        if (v !== null && v !== undefined && v !== '') q.set(k, v);
+      });
+      const qs = q.toString();
+      return _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/return`
+        + (qs ? `?${qs}` : ''));
+    },
+
+    // PATCH /api/v1/carrier/{batch_id}/return/{idempotency_key}
+    patchReturnDraft: (batchId, idempotencyKey, body) =>
+      _patch(`${BASE}/carrier/${encodeURIComponent(batchId)}/return/${encodeURIComponent(idempotencyKey)}`, body),
+
+    // POST /api/v1/carrier/{batch_id}/return/create — always blocked (capability pending)
+    createReturnShipment: (batchId, body) =>
+      _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/return/create`, body || {}),
+
     // GET /api/v1/carrier/dhl-account-resolution — read-only pre-flight view of
     // the DHL account decision. Delegates to the ONE canonical authority
     // (dhl_account_resolver). The UI must never derive a default itself.

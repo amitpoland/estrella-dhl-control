@@ -4970,6 +4970,47 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   }, [draft && draft.batch_id, draft && draft.client_name]);
   React.useEffect(() => { loadCarrierShipment(); }, [loadCarrierShipment]);
 
+  // Slice A — linked return DRAFT (prepare only; Live Create = HOLD).
+  const [returnDraft, setReturnDraft] = React.useState(null);
+  const [returnDraftBusy, setReturnDraftBusy] = React.useState(false);
+  const [returnDraftErr, setReturnDraftErr] = React.useState('');
+  const loadReturnDraft = React.useCallback(() => {
+    if (!draft || !draft.batch_id || !window.PzApi.getReturnDraft) return;
+    setReturnDraft(null);
+    const parentAwb = (carrierShipment && carrierShipment.tracking_ref) || '';
+    window.PzApi.getReturnDraft(draft.batch_id, {
+      parent_tracking_ref: parentAwb || undefined,
+      client_ref: draft.client_name || undefined,
+    })
+      .then(r => setReturnDraft(r && r.ok && r.data && r.data.draft ? r.data.draft : null))
+      .catch(() => setReturnDraft(null));
+  }, [draft && draft.batch_id, draft && draft.client_name, carrierShipment && carrierShipment.tracking_ref]);
+  React.useEffect(() => { loadReturnDraft(); }, [loadReturnDraft]);
+  const prepareReturnDraft = React.useCallback(() => {
+    if (!draft || !draft.batch_id || !carrierShipment || !carrierShipment.tracking_ref) return;
+    if (!window.PzApi.prepareReturnDraft) return;
+    setReturnDraftBusy(true);
+    setReturnDraftErr('');
+    window.PzApi.prepareReturnDraft(draft.batch_id, {
+      parent_tracking_ref: carrierShipment.tracking_ref,
+      client_ref: draft.client_name || undefined,
+      client_contractor_id: (liveDraft && liveDraft.client_contractor_id)
+        || draft.client_contractor_id || undefined,
+      weight_kg: carrierShipment.weight_kg,
+      declared_value: carrierShipment.declared_value,
+      currency: carrierShipment.currency || undefined,
+    })
+      .then(r => {
+        if (r && r.ok && r.data && r.data.draft) {
+          setReturnDraft(r.data.draft);
+        } else {
+          setReturnDraftErr((r && r.error) || 'Prepare Return failed');
+        }
+      })
+      .catch(e => setReturnDraftErr((e && e.message) || String(e)))
+      .finally(() => setReturnDraftBusy(false));
+  }, [draft, liveDraft, carrierShipment]);
+
   // R-2 — split-brain conversion-link detection (read-only). The backend
   // report is the SOLE authority (Lesson F rule 5 — the UI never derives
   // this locally). Queried whenever the draft points at a posted proforma whose
@@ -7105,6 +7146,58 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   No DHL AWB recorded for this batch yet. Generate one with ⚡ AWB Generate in the toolbar — the tracking number, service, box profile and label download will appear here.
                 </div>
               )}
+
+              {/* Slice A — Prepare Return draft (no MyDHL create). Lesson M: outbound AWB UI above unchanged. */}
+              <div style={{ marginTop: 16 }} data-testid="pf-logistics-return">
+                <PfSectionLabel>Return shipment</PfSectionLabel>
+                {carrierShipment && carrierShipment.tracking_ref ? (
+                  <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 20px', marginBottom: 8 }}>
+                    {returnDraft ? (
+                      <React.Fragment>
+                        {_kv('Status', returnDraft.return_intent_status || 'prepared', 'pf-logistics-return-status')}
+                        {_kv('Parent AWB', returnDraft.parent_tracking_ref || '—', 'pf-logistics-return-parent')}
+                        {_kv('Customs readiness', returnDraft.customs_requirement_status || '—', 'pf-logistics-return-customs')}
+                        {_kv('DHL return capability', returnDraft.dhl_return_capability || 'pending', 'pf-logistics-return-capability')}
+                        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }} data-testid="pf-logistics-return-disabled-reason">
+                          {returnDraft.create_return_disabled_reason || 'DHL return capability pending'}
+                        </div>
+                      </React.Fragment>
+                    ) : (
+                      <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }} data-testid="pf-logistics-return-empty">
+                        No return draft yet. Prepare Return stores a linked draft only — it does not book DHL.
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
+                      <button
+                        type="button"
+                        data-testid="pf-logistics-prepare-return"
+                        disabled={returnDraftBusy}
+                        onClick={prepareReturnDraft}
+                        style={{ fontSize: 12, fontWeight: 600, padding: '5px 10px', borderRadius: 6, cursor: returnDraftBusy ? 'wait' : 'pointer', background: 'var(--accent)', color: '#fff', border: '1px solid var(--accent)', opacity: returnDraftBusy ? 0.6 : 1 }}>
+                        {returnDraftBusy ? 'Preparing…' : (returnDraft ? 'Refresh Prepare Return' : 'Prepare Return')}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="pf-logistics-create-return"
+                        disabled
+                        title="DHL return capability pending"
+                        style={{ fontSize: 12, fontWeight: 600, padding: '5px 10px', borderRadius: 6, cursor: 'not-allowed', background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)', opacity: 0.7 }}>
+                        Create Return
+                      </button>
+                      <span style={{ fontSize: 10.5, color: 'var(--text-3)' }} data-testid="pf-logistics-create-return-reason">
+                        DHL return capability pending
+                      </span>
+                    </div>
+                    {returnDraftErr ? (
+                      <div style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: 6 }} data-testid="pf-logistics-return-err">{returnDraftErr}</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div style={{ padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)', fontSize: 11.5 }} data-testid="pf-logistics-return-needs-awb">
+                    Prepare Return needs an outbound AWB first.
+                  </div>
+                )}
+              </div>
 
               {/* OUTBOUND tracking (customer AWB) and INBOUND clearance are separate
                   authorities — never merge their timelines. Outbound uses the canonical
