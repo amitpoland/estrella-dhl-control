@@ -191,9 +191,13 @@ _NORMALIZE_RULES: List[Tuple[str, str, float]] = [
     ("customs status updated",                     "CUSTOMS_UNDER_REVIEW",        0.9),
     ("under customs review",                       "CUSTOMS_UNDER_REVIEW",        1.0),
     ("customs processing",                         "CUSTOMS_UNDER_REVIEW",        0.85),
-    # Customs pending — generic customs hit
+    # Customs pending — generic customs / clearance language (NOT Exception)
+    ("processed for clearance",                    "CUSTOMS_PENDING",             1.0),
     ("clearance event",                            "CUSTOMS_PENDING",             0.9),
     ("customs",                                    "CUSTOMS_PENDING",             0.7),
+    # Destination / collection
+    ("awaiting collection",                        "OUT_FOR_DELIVERY",            0.95),
+    ("shipment accepted",                          "IN_TRANSIT",                  0.9),
     # Arrived at destination country
     ("arrived at destination country",             "ARRIVED_DESTINATION_COUNTRY", 1.0),
     ("arrived at customs",                         "ARRIVED_DESTINATION_COUNTRY", 0.9),
@@ -213,6 +217,11 @@ _NORMALIZE_RULES: List[Tuple[str, str, float]] = [
     ("picked up",                                  "PICKED_UP",                   0.9),
     ("collected by dhl",                           "PICKED_UP",                   1.0),
     ("collected",                                  "PICKED_UP",                   0.8),
+    # Explicit carrier exceptions (before unmatched default)
+    ("undeliverable",                              "EXCEPTION",                   1.0),
+    ("shipment on hold",                           "EXCEPTION",                   0.95),
+    ("on hold",                                    "EXCEPTION",                   0.9),
+    ("exception",                                  "EXCEPTION",                   0.85),
     # Label / pre-shipment
     ("shipment information received",              "LABEL_CREATED",               1.0),
     ("shipment information transmitted",           "LABEL_CREATED",               1.0),
@@ -323,7 +332,9 @@ def normalize_tracking_event(
             }
 
     blob = (raw_description + " " + raw_status).lower()
-    matched_stage: str = "EXCEPTION"
+    # Unmatched carrier text defaults to IN_TRANSIT — never invent EXCEPTION.
+    # Hard exceptions must match an explicit rule above.
+    matched_stage: str = "IN_TRANSIT"
     confidence: float = 0.0
     for keyword, stage, conf in _NORMALIZE_RULES:
         if keyword in blob:

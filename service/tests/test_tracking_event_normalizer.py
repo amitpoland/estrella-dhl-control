@@ -105,9 +105,22 @@ class TestDHLRawEventMapping:
 
     def test_unknown_event_requires_review(self):
         ev = normalize_tracking_event(_raw("Zbiorcza operacja magazynowa"), awb="1234")
-        assert ev["normalized_stage"] == "EXCEPTION"
+        # Unmatched text must NOT invent EXCEPTION (transport authority).
+        assert ev["normalized_stage"] == "IN_TRANSIT"
         assert ev["confidence"] == 0.0
         assert ev["requires_manual_review"] is True
+
+    def test_processed_for_clearance_is_customs_pending(self):
+        ev = normalize_tracking_event(_raw("Processed for clearance"), awb="1234")
+        assert ev["normalized_stage"] == "CUSTOMS_PENDING"
+
+    def test_awaiting_collection_not_exception(self):
+        ev = normalize_tracking_event(_raw("Awaiting collection"), awb="1234")
+        assert ev["normalized_stage"] == "OUT_FOR_DELIVERY"
+
+    def test_shipment_accepted_not_exception(self):
+        ev = normalize_tracking_event(_raw("Shipment Accepted"), awb="1234")
+        assert ev["normalized_stage"] == "IN_TRANSIT"
 
     def test_event_fields_present(self):
         ev = normalize_tracking_event(

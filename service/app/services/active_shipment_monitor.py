@@ -3274,6 +3274,45 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
             "status":   audit.get("clearance_status", ""),
         }
 
+        # 0b. Carrier tracking refresh (existing get_tracking_status + TTL).
+        # Permanent rule: keep polling until DHL reports terminal delivery —
+        # customs/SAD/PZ completion must NOT stop carrier refresh.
+        # No second poller: reuse tracking_service with refresh=False (15min TTL).
+        _awb_tr = str(action["awb"] or "").strip()
+        if _awb_tr:
+            try:
+                from .shipment_delivered_guard import is_audit_delivered as _is_del
+                _already_delivered = _is_del(audit)
+            except Exception:
+                _already_delivered = str(
+                    (audit.get("tracking") or {}).get("status") or ""
+                ).lower() == "delivered"
+            if not _already_delivered:
+                try:
+                    from .tracking_service import get_tracking_status as _gts
+                    _carrier = str(audit.get("carrier") or "DHL").strip() or "DHL"
+                    _tr = _gts(
+                        _awb_tr,
+                        carrier=_carrier,
+                        cache_dir=audit_path.parent,
+                        refresh=False,
+                    )
+                    action["tracking_refresh"] = {
+                        "status": _tr.get("status"),
+                        "source": _tr.get("source"),
+                        "api_status": _tr.get("api_status"),
+                        "tracking_stale": _tr.get("tracking_stale"),
+                        "cached_at": _tr.get("cached_at"),
+                        "tracking_last_checked_at": _tr.get("tracking_last_checked_at"),
+                        "tracking_last_success_at": _tr.get("tracking_last_success_at"),
+                        "error": _tr.get("refresh_error") or _tr.get("error"),
+                    }
+                except Exception as _tr_exc:
+                    action["tracking_refresh"] = {
+                        "error": str(_tr_exc),
+                        "tracking_stale": True,
+                    }
+
         # 1. Try cache
         cached = find_existing_email_context(audit)
         if cached and cached.get("matched", 0) > 0 and not cached.get("search_unreliable"):
