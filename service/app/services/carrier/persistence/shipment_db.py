@@ -65,6 +65,16 @@ _ADDITIVE_COLUMNS = [
     # not whoever later replayed the idempotent request. NULL for legacy rows
     # booked before attribution existed (honest missing).
     ("booked_by", "TEXT"),
+    # MyDHL shipmentNotification booking audit (no secrets — masks only).
+    # Written once at COMPLETE when the coordinator persists the Create Shipment
+    # request shape. Distinct from Estrella delivery-confirmation email.
+    ("dhl_notify_email_requested", "INTEGER NOT NULL DEFAULT 0"),
+    ("dhl_notify_sms_requested", "INTEGER NOT NULL DEFAULT 0"),
+    ("dhl_notify_email_masked", "TEXT"),
+    ("dhl_notify_sms_masked", "TEXT"),
+    ("dhl_notify_recipient_source", "TEXT"),
+    ("dhl_notify_provider", "TEXT"),
+    ("dhl_notify_requested_at", "TEXT"),
 ]
 
 
@@ -337,6 +347,55 @@ def update_state(
         conn.execute(
             f"UPDATE carrier_shipments SET {', '.join(sets)} WHERE idempotency_key = ?",
             tuple(args),
+        )
+
+
+def persist_notification_audit(
+    db_path: Path,
+    idempotency_key: str,
+    audit: dict,
+) -> None:
+    """Write MyDHL shipmentNotification booking audit (masks only; no secrets).
+
+    Idempotent for COMPLETE rows that already carry a timestamp: a replay must
+    not invent a second request_at. First write wins when ``dhl_notify_requested_at``
+    is already set.
+    """
+    if not idempotency_key or not isinstance(audit, dict):
+        return
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT dhl_notify_requested_at FROM carrier_shipments "
+            "WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if row is None:
+            return
+        if (row["dhl_notify_requested_at"] or "").strip():
+            return
+        conn.execute(
+            """
+            UPDATE carrier_shipments SET
+                dhl_notify_email_requested = ?,
+                dhl_notify_sms_requested = ?,
+                dhl_notify_email_masked = ?,
+                dhl_notify_sms_masked = ?,
+                dhl_notify_recipient_source = ?,
+                dhl_notify_provider = ?,
+                dhl_notify_requested_at = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE idempotency_key = ?
+            """,
+            (
+                int(audit.get("dhl_notify_email_requested") or 0),
+                int(audit.get("dhl_notify_sms_requested") or 0),
+                audit.get("dhl_notify_email_masked"),
+                audit.get("dhl_notify_sms_masked"),
+                audit.get("dhl_notify_recipient_source"),
+                audit.get("dhl_notify_provider"),
+                audit.get("dhl_notify_requested_at"),
+                idempotency_key,
+            ),
         )
 
 

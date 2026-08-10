@@ -46,6 +46,8 @@ from .persistence.shipment_db import get_shipment_by_batch_id as _db_get_by_batc
 from .persistence.shipment_db import init_db as _init_shipment_db
 from .persistence.shipment_db import insert_shipment as _db_insert
 from .persistence.shipment_db import update_state as _db_update
+from .persistence.shipment_db import persist_notification_audit as _db_persist_notify
+from .notification_audit import build_notification_audit
 from ...core.config import settings
 
 
@@ -230,6 +232,8 @@ class CarrierCoordinator:
 
         # Build a safe request snapshot for the shadow log. operator is part of
         # the booking-attribution audit trail, so it rides along here too.
+        # MyDHL shipmentNotification audit is masks-only (never raw email/phone).
+        notify_audit = build_notification_audit(request.recipient_address)
         log_request = {
             "batch_id": request.batch_id,
             "shipper_account": request.shipper_account,
@@ -237,6 +241,20 @@ class CarrierCoordinator:
             "declared_value": request.declared_value,
             "currency": request.currency,
             "operator": operator,
+            "dhl_notify_audit": {
+                k: notify_audit[k]
+                for k in (
+                    "dhl_notify_email_requested",
+                    "dhl_notify_sms_requested",
+                    "dhl_notify_email_masked",
+                    "dhl_notify_sms_masked",
+                    "dhl_notify_recipient_source",
+                    "dhl_notify_provider",
+                    "dhl_notify_requested_at",
+                    "type_codes",
+                )
+                if k in notify_audit
+            },
         }
 
         # Convert result to a plain dict (enum values as strings) for redaction.
@@ -268,6 +286,10 @@ class CarrierCoordinator:
             mode=raw_result.mode,
             simulated=raw_result.simulated,
         )
+
+        # Booking-time MyDHL shipmentNotification audit (masks only). First
+        # COMPLETE write wins — idempotent replay preserves the original stamp.
+        _db_persist_notify(self._config.shipment_db_path, key, notify_audit)
 
         # Phase 5 — attach request dimensions so they are captured in the DB
         # via the COMPLETE result. service_product is adapter-provided (None
