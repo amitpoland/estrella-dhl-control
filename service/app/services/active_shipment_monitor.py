@@ -3218,6 +3218,11 @@ def is_carrier_tracking_terminal(awb: str, batch_id: str) -> bool:
     Booking ``state=complete``, customs/PZ completion, and Exception are NOT
     terminal for transport polling. Restart-safe: reads batch tracking_cache.json.
     """
+    return _carrier_terminal_flag(awb, batch_id)
+
+
+def _carrier_terminal_flag(awb: str, batch_id: str) -> bool:
+    """True when cache status/events prove terminal even without a timestamp."""
     awb = (awb or "").strip()
     batch_id = (batch_id or "").strip()
     if not awb or not batch_id:
@@ -3251,6 +3256,80 @@ def is_carrier_tracking_terminal(awb: str, batch_id: str) -> bool:
     except Exception as exc:
         log.debug("[monitor] terminal-check failed for %s: %s", awb, exc)
     return False
+
+
+def get_carrier_delivered_at(awb: str, batch_id: str) -> Optional[str]:
+    """ISO timestamp of carrier Delivered from durable tracking_cache, or None.
+
+    Prefer explicit delivered_at / deliveredAt on the cache record, else the
+    timestamp of the first Delivered/CLOSED event. Used to freeze operational
+    duration — never invent a stamp when evidence is absent.
+    """
+    awb = (awb or "").strip()
+    batch_id = (batch_id or "").strip()
+    if not awb or not batch_id:
+        return None
+    try:
+        from .tracking_service import (
+            TERMINAL_STATUSES,
+            _load_cache,
+            select_cached_tracking_record,
+        )
+        cache_dir = _batch_tracking_cache_dir(batch_id)
+        if not (cache_dir / "tracking_cache.json").exists():
+            return None
+        rec = select_cached_tracking_record(_load_cache(cache_dir), awb)
+        if not rec:
+            return None
+        for key in ("delivered_at", "deliveredAt", "delivery_date"):
+            raw = rec.get(key)
+            if raw:
+                return str(raw)
+        st = str(rec.get("status") or "").lower()
+        terminal_status = st in TERMINAL_STATUSES
+        for ev in rec.get("events") or []:
+            if not isinstance(ev, dict):
+                continue
+            blob = " ".join(
+                str(ev.get(k) or "") for k in ("description", "status", "statusCode")
+            ).lower()
+            stage = str(ev.get("normalized_stage") or ev.get("stage") or "").upper()
+            is_del = stage in ("DELIVERED", "CLOSED") or (
+                "delivered" in blob and "not delivered" not in blob
+            )
+            if not is_del:
+                continue
+            ts = ev.get("timestamp") or ev.get("time") or ev.get("date")
+            if ts:
+                return str(ts)
+            if terminal_status:
+                # Terminal without event stamp — still terminal for exclusion;
+                # duration freeze needs a stamp (caller may leave closed_at null).
+                pass
+        if terminal_status:
+            return None  # terminal flag without timestamp handled by _carrier_terminal_flag
+    except Exception as exc:
+        log.debug("[monitor] delivered_at lookup failed for %s: %s", awb, exc)
+    return None
+
+
+def is_operationally_active(
+    audit: Dict[str, Any],
+    batch_id: Optional[str] = None,
+) -> bool:
+    """Customs/audit active AND not carrier-terminal.
+
+    Automation Health / Lane A actionables must consume the SAME carrier
+    Delivered authority as Control Tower polling (``is_carrier_tracking_terminal``).
+    Customs/DSK incompleteness alone must not keep a delivered AWB operational.
+    """
+    if not _is_active(audit):
+        return False
+    awb = (audit.get("awb") or audit.get("tracking_no") or "").strip()
+    bid = (batch_id or audit.get("batch_id") or "").strip()
+    if awb and bid and is_carrier_tracking_terminal(awb, bid):
+        return False
+    return True
 
 
 def list_outbound_tracking_candidates() -> List[Dict[str, Any]]:

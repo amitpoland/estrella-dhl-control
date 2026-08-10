@@ -153,6 +153,7 @@
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
                 {[
                   ['Active shipments', data.summary.active_shipments],
+                  ['Resolved (delivered)', data.summary.resolved_history != null ? data.summary.resolved_history : 0],
                   ['Waiting for DHL', data.summary.waiting_for_dhl],
                   ['Replies sent today', data.summary.replies_sent_today],
                   ['Scanner runs (24h)', data.summary.scanner_runs_24h],
@@ -176,9 +177,11 @@
             <Section title="Lane A Health">
               <div style={{ columns: 2, gap: 24 }}>
                 <Row label="Last run at"         value={_fmt(data.lane_a_health.last_run_at)} />
+                <Row label="Last completed"      value={_fmt(data.lane_a_health.last_run_completed_at)} />
                 <Row label="Last status"          value={data.lane_a_health.last_run_status}
-                     highlight={data.lane_a_health.last_run_status === 'failed'} />
+                     highlight={data.lane_a_health.last_run_status === 'failed' || data.lane_a_health.last_run_status === 'stale'} />
                 <Row label="Last duration"        value={_dur(data.lane_a_health.last_run_duration_s)} />
+                <Row label="Last batches checked" value={_v(data.lane_a_health.last_run_batches_checked)} mono />
                 <Row label="Runs (24h)"           value={_v(data.lane_a_health.runs_24h)} mono />
                 <Row label="Failures (24h)"       value={_v(data.lane_a_health.failed_runs_24h)}
                      highlight={data.lane_a_health.failed_runs_24h > 0} mono />
@@ -236,6 +239,14 @@
             <Section title="Active Shipment Dashboard" count={data.active_shipments.length}>
               <ShipmentTable rows={data.active_shipments} emptyMsg="No active shipments." />
             </Section>
+
+            {/* Resolved History — carrier Delivered; not operational */}
+            {(data.resolved_history || []).length > 0 && (
+              <Section title="Resolved History (carrier Delivered)" count={data.resolved_history.length}>
+                <ShipmentTable rows={data.resolved_history}
+                               emptyMsg="No resolved shipments." />
+              </Section>
+            )}
 
             {/* Exceptions */}
             {data.exceptions.length > 0 && (

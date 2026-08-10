@@ -2127,8 +2127,11 @@ def get_auto_scan_status() -> Dict[str, Any]:
     Returns the last recorded scan outcome from storage_root/dhl_auto_scan_status.json.
     Computes next_run_at as started_at + 10 minutes when status is success/failed.
 
-    Status values: running | success | failed | timed_out | never_run
+    Status values: running | success | failed | timed_out | stale | never_run
     Read-only: never triggers a scan, never modifies audit files, never sends email.
+
+    A status of ``running`` older than the scheduler's max runtime is surfaced as
+    ``stale`` — never invent success; the previous run did not close.
     """
     p = _scan_status_path()
     if not p.exists():
@@ -2146,27 +2149,51 @@ def get_auto_scan_status() -> Dict[str, Any]:
             "errors_count":     None,
             "last_error":       None,
             "next_run_at":      None,
+            "run_id":           None,
         }
     try:
         st = json.loads(p.read_text(encoding="utf-8"))
     except Exception as exc:
         return {"status": "status_read_error", "error": str(exc)}
 
-    # Compute next_run_at from started_at + 10-minute interval
-    next_run: Optional[str] = None
-    if st.get("started_at"):
+    status = st.get("status", "unknown")
+    started_at = st.get("started_at")
+    # Stale-running: scheduler interval is 10 minutes; allow 15 minutes max.
+    if status == "running" and started_at:
         try:
             from datetime import datetime, timezone, timedelta
             started = datetime.fromisoformat(
-                str(st["started_at"]).replace("Z", "+00:00")
+                str(started_at).replace("Z", "+00:00")
+            )
+            if datetime.now(timezone.utc) - started > timedelta(minutes=15):
+                status = "stale"
+        except Exception:
+            pass
+
+    # Compute next_run_at from started_at + 10-minute interval
+    next_run: Optional[str] = None
+    if started_at and status in ("success", "failed", "timed_out", "stale"):
+        try:
+            from datetime import datetime, timezone, timedelta
+            started = datetime.fromisoformat(
+                str(started_at).replace("Z", "+00:00")
+            )
+            next_run = (started + timedelta(minutes=10)).isoformat()
+        except Exception:
+            pass
+    elif started_at and status == "running":
+        try:
+            from datetime import datetime, timedelta
+            started = datetime.fromisoformat(
+                str(started_at).replace("Z", "+00:00")
             )
             next_run = (started + timedelta(minutes=10)).isoformat()
         except Exception:
             pass
 
     return {
-        "status":           st.get("status", "unknown"),
-        "started_at":       st.get("started_at"),
+        "status":           status,
+        "started_at":       started_at,
         "completed_at":     st.get("completed_at"),
         "duration_seconds": st.get("duration_seconds"),
         "batches_checked":  st.get("batches_checked"),
@@ -2178,6 +2205,7 @@ def get_auto_scan_status() -> Dict[str, Any]:
         "errors_count":     st.get("errors_count"),
         "last_error":       st.get("last_error"),
         "next_run_at":      next_run,
+        "run_id":           st.get("run_id"),
     }
 
 
@@ -2224,21 +2252,28 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
     )
     from ..services.active_shipment_monitor import (
         _all_audit_paths   as _audit_paths,
-        _is_active         as _batch_active,
+        is_operationally_active as _batch_active,
         _apply_cache_to_audit,
         _ensure_dhl_reply,
         apply_dhl_email_received_from_evidence as _apply_evidence_dhl,
     )
+    import uuid as _uuid
 
     _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
     _started = _now_iso()
+    _run_id = str(_uuid.uuid4())
 
     # ── Write "running" status at scan start ──────────────────────────────────
-    _write_scan_status({"status": "running", "started_at": _started})
+    _write_scan_status({
+        "status": "running",
+        "started_at": _started,
+        "run_id": _run_id,
+    })
 
     out: Dict[str, Any] = {
         "ok":               True,
         "lane":             "A",
+        "run_id":           _run_id,
         "batches_checked":  0,
         "received_set":     0,
         "b2_triggered":     0,
@@ -2249,6 +2284,7 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
         "ingestion":        {},
     }
 
+    _final_status: Optional[Dict[str, Any]] = None
     try:
         # ── Step 1: one global Zoho scan, results cached per AWB ─────────────
         try:
@@ -2274,12 +2310,12 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
                 out["skipped_excluded"] += 1
                 continue
 
-            if not _batch_active(audit):
+            batch_id = ap.parent.name
+            if not _batch_active(audit, batch_id):
                 out["skipped_inactive"] += 1
                 continue
 
             out["batches_checked"] += 1
-            batch_id = ap.parent.name
 
             try:
                 cached = _find_cache(audit)
@@ -2335,12 +2371,12 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
             len(out["errors"]),
         )
 
-        # ── Write "success" status on clean completion ────────────────────────
-        _write_scan_status({
+        _final_status = {
             "status":           "success",
             "started_at":       _started,
             "completed_at":     _completed,
             "duration_seconds": _dur,
+            "run_id":           _run_id,
             "batches_checked":  out["batches_checked"],
             "received_set":     out["received_set"],
             "b2_triggered":     out["b2_triggered"],
@@ -2349,20 +2385,47 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
             "skipped_excluded": out["skipped_excluded"],
             "errors_count":     len(out["errors"]),
             "last_error":       out["errors"][-1] if out["errors"] else None,
-        })
+        }
 
     except Exception as _fatal:
         _completed = _now_iso()
         log.error("[lane-a] fatal error in scan: %s", _fatal)
-        _write_scan_status({
-            "status":     "failed",
-            "started_at": _started,
-            "completed_at": _completed,
-            "errors_count": 1,
-            "last_error": str(_fatal),
-        })
+        _final_status = {
+            "status":           "failed",
+            "started_at":       _started,
+            "completed_at":     _completed,
+            "run_id":           _run_id,
+            "errors_count":     1,
+            "last_error":       str(_fatal),
+            "batches_checked":  out.get("batches_checked"),
+            "received_set":     out.get("received_set"),
+            "b2_triggered":     out.get("b2_triggered"),
+            "b2_sent":          out.get("b2_sent"),
+            "skipped_inactive": out.get("skipped_inactive"),
+            "skipped_excluded": out.get("skipped_excluded"),
+        }
         out["ok"] = False
         out["errors"].append(str(_fatal))
+    finally:
+        # Always close the run record for THIS run_id — success and failure.
+        # If a newer run already started, do not clobber its "running" row.
+        if _final_status is not None:
+            try:
+                _cur = {}
+                _sp = _scan_status_path()
+                if _sp.exists():
+                    _cur = json.loads(_sp.read_text(encoding="utf-8"))
+                if not _cur or _cur.get("run_id") in (None, _run_id) or _cur.get("started_at") == _started:
+                    _write_scan_status(_final_status)
+                else:
+                    log.info(
+                        "[lane-a] skip status close — newer run owns file "
+                        "(ours=%s current=%s)",
+                        _run_id, _cur.get("run_id"),
+                    )
+            except Exception as _close_exc:
+                log.warning("[lane-a] finally status write failed: %s", _close_exc)
+                _write_scan_status(_final_status)
 
     return out
 
@@ -2378,13 +2441,10 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
       - storage_root/outputs/*/audit.json        (per-shipment state)
       - storage_root/email_queue.json            (sent replies)
 
-    Returns:
-      lane_a_health         — last run, 24h run/fail counts, averages
-      active_shipments      — per-shipment dashboard with DHL state
-      dhl_waiting_queue     — DSK sent, no reply yet (oldest first)
-      lane_b_candidates     — read-only preview of who would qualify
-      exceptions            — scanner failures, missing DSK, excluded
-      summary               — executive counters
+    Operational Active / Exceptions / Waiting / Lane B consume the SAME
+    carrier Delivered terminal authority as Control Tower
+    (``is_carrier_tracking_terminal``). Delivered AWBs appear in
+    ``resolved_history`` with duration frozen at delivered_at.
 
     Read-only: never triggers scan, never sends email, never modifies audits.
     """
@@ -2399,7 +2459,11 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
     lane_a_health: Dict[str, Any] = {
         "last_run_at":       None,
         "last_run_status":   "never_run",
+        "last_run_completed_at": None,
         "last_run_duration_s": None,
+        "last_run_batches_checked": None,
+        "last_run_received_set": None,
+        "last_run_id":       None,
         "runs_24h":          0,
         "failed_runs_24h":   0,
         "avg_duration_s":    None,
@@ -2412,9 +2476,24 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
     if _sp.exists():
         try:
             _st = json.loads(_sp.read_text(encoding="utf-8"))
-            lane_a_health["last_run_at"]        = _st.get("started_at")
-            lane_a_health["last_run_status"]     = _st.get("status", "unknown")
+            _st_status = _st.get("status", "unknown")
+            _st_started = _st.get("started_at")
+            if _st_status == "running" and _st_started:
+                try:
+                    _sdt = datetime.fromisoformat(
+                        str(_st_started).replace("Z", "+00:00")
+                    )
+                    if _now - _sdt > _td(minutes=15):
+                        _st_status = "stale"
+                except Exception:
+                    pass
+            lane_a_health["last_run_at"]        = _st_started
+            lane_a_health["last_run_status"]     = _st_status
+            lane_a_health["last_run_completed_at"] = _st.get("completed_at")
             lane_a_health["last_run_duration_s"] = _st.get("duration_seconds")
+            lane_a_health["last_run_batches_checked"] = _st.get("batches_checked")
+            lane_a_health["last_run_received_set"] = _st.get("received_set")
+            lane_a_health["last_run_id"] = _st.get("run_id")
         except Exception:
             pass
 
@@ -2482,15 +2561,27 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
     # ── Per-batch state ───────────────────────────────────────────────────────
     from ..services.active_shipment_monitor import (
         _all_audit_paths    as _audit_paths,
-        _is_active          as _batch_active,
+        _is_active          as _audit_workflow_active,
+        is_operationally_active as _batch_active,
+        is_carrier_tracking_terminal as _carrier_terminal,
+        get_carrier_delivered_at as _carrier_delivered_at,
         _is_customs_complete,
     )
 
     _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
     active_shipments:   list = []
+    resolved_history:   list = []
     dhl_waiting_queue:  list = []
     lane_b_candidates:  list = []
     exceptions:         list = []
+
+    def _parse_iso(_raw: Optional[str]):
+        if not _raw:
+            return None
+        try:
+            return datetime.fromisoformat(str(_raw).replace("Z", "+00:00"))
+        except Exception:
+            return None
 
     for ap in sorted(_audit_paths(), key=lambda p: p.stat().st_mtime):
         try:
@@ -2500,20 +2591,34 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
             continue
 
         _awb = (audit.get("awb") or audit.get("tracking_no") or "").strip()
+        _batch = ap.parent.name
         _is_excluded = _awb in _EXCLUDED_AWBS
-        _is_act = _batch_active(audit)
+        _workflow_act = _audit_workflow_active(audit)
+        _is_term = bool(_awb) and _carrier_terminal(_awb, _batch)
+        _is_act = _batch_active(audit, _batch)
 
-        # Compute days_open from batch directory month or first timeline event
+        # Duration: open = now - opened_at; terminal = delivered_at - opened_at
+        _opened_at: Optional[str] = None
+        _closed_at: Optional[str] = None
         _days_open: Optional[float] = None
         try:
             _tl = audit.get("timeline") or []
             if _tl:
                 _first_ts = _tl[0].get("ts") or _tl[0].get("timestamp") or ""
                 if _first_ts:
-                    _first_dt = datetime.fromisoformat(
-                        str(_first_ts).replace("Z", "+00:00")
-                    )
-                    _days_open = round((_now - _first_dt).total_seconds() / 86400, 1)
+                    _opened_at = str(_first_ts)
+                    _first_dt = _parse_iso(_first_ts)
+                    if _first_dt is not None:
+                        if _is_term:
+                            _closed_at = _carrier_delivered_at(_awb, _batch) or _opened_at
+                            _close_dt = _parse_iso(_closed_at) or _first_dt
+                            _days_open = round(
+                                max(0.0, (_close_dt - _first_dt).total_seconds() / 86400), 1
+                            )
+                        else:
+                            _days_open = round(
+                                (_now - _first_dt).total_seconds() / 86400, 1
+                            )
         except Exception:
             pass
 
@@ -2529,14 +2634,18 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
 
         _row: Dict[str, Any] = {
             "awb":            _awb or ap.parent.name[:16],
-            "batch_id":       ap.parent.name,
+            "batch_id":       _batch,
             "supplier":       _supplier,
             "clearance_path": _cd.get("clearance_path", "—"),
             "cif_usd":        _cd.get("total_value_usd"),
             "status":         audit.get("clearance_status", audit.get("status", "—")),
             "dhl_received":   _dhl_recv,
             "dsk_sent":       _dsk_sent,
+            "opened_at":      _opened_at,
+            "closed_at":      _closed_at,
             "days_open":      _days_open,
+            "duration_days":  _days_open,
+            "is_terminal":    _is_term,
             "excluded":       _is_excluded,
             "active":         _is_act,
         }
@@ -2544,22 +2653,28 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
         if _is_excluded:
             exceptions.append({
                 "type":    "excluded_awb",
-                "batch":   ap.parent.name,
+                "batch":   _batch,
                 "awb":     _awb,
                 "reason":  "manual exclusion — pending operator decision",
             })
             continue
 
+        # Carrier-delivered → Resolved History (preserve evidence; not Active)
+        if _is_term:
+            if _workflow_act or _dhl_recv or _dsk_sent:
+                resolved_history.append(_row)
+            continue
+
         if not _is_act:
-            continue  # only active batches in the dashboard
+            continue  # only operationally active batches in the dashboard
 
         active_shipments.append(_row)
 
-        # DHL Waiting Queue: DSK sent, no reply yet
+        # DHL Waiting Queue: DSK sent, no reply yet (non-terminal only)
         if _dsk_sent and not _dhl_recv:
             dhl_waiting_queue.append({
                 "awb":         _awb,
-                "batch_id":    ap.parent.name,
+                "batch_id":    _batch,
                 "supplier":    _supplier,
                 "clearance_path": _cd.get("clearance_path", "—"),
                 "dsk_sent_at": _drp.get("queued_at") or _drp.get("sent_at"),
@@ -2567,23 +2682,19 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
                 "ticket":      _dhl_email.get("ticket") or audit.get("dhl_ticket"),
             })
 
-        # Missing DSK exception: received DHL email but no DSK path or reply
+        # Missing DSK exception: operational only while non-terminal
         if _dhl_recv and not _dsk_sent:
             _dsk_path = (audit.get("dsk_path") or "").strip()
             exceptions.append({
                 "type":    "dsk_not_sent",
-                "batch":   ap.parent.name,
+                "batch":   _batch,
                 "awb":     _awb,
                 "reason":  "DHL email received but DSK reply not sent" +
                            (" — dsk_path missing" if not _dsk_path else ""),
             })
 
-        # Lane B candidates: no DHL reply, active, customs NOT complete,
-        # check if follow-up SLA eligible.
-        # Customs-complete check is first: if SAD/ZC429/PZC exists, the batch
-        # is excluded from Lane B regardless of hours_waiting.
+        # Lane B candidates: non-terminal only
         if not _dhl_recv and not _dsk_sent and not _is_customs_complete(audit):
-            # Would follow-up be eligible if Lane B were ON?
             _fu_state = audit.get("dhl_followup") or {}
             _fu_active = bool(_fu_state.get("active"))
             _next_at = _fu_state.get("next_followup_at") or _fu_state.get("first_followup_at")
@@ -2612,7 +2723,7 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
 
             lane_b_candidates.append({
                 "awb":              _awb,
-                "batch_id":         ap.parent.name,
+                "batch_id":         _batch,
                 "supplier":         _supplier,
                 "clearance_path":   _cd.get("clearance_path", "—"),
                 "hours_waiting":    _hours_waiting,
@@ -2629,6 +2740,7 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
 
     # Sort DHL waiting queue oldest first
     dhl_waiting_queue.sort(key=lambda x: x.get("days_open") or 0, reverse=True)
+    resolved_history.sort(key=lambda x: x.get("closed_at") or "", reverse=True)
 
     # ── Email queue counts (replies sent today) ────────────────────────────────
     _replies_today = 0
@@ -2650,6 +2762,7 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
         "generated_at":    _now.isoformat(),
         "lane_a_health":   lane_a_health,
         "active_shipments": active_shipments,
+        "resolved_history": resolved_history,
         "dhl_waiting_queue": dhl_waiting_queue,
         "lane_b_candidates": sorted(
             lane_b_candidates,
@@ -2658,6 +2771,7 @@ def get_dhl_daily_summary() -> Dict[str, Any]:
         "exceptions": exceptions,
         "summary": {
             "active_shipments":    len(active_shipments),
+            "resolved_history":    len(resolved_history),
             "waiting_for_dhl":     len(dhl_waiting_queue),
             "replies_sent_today":  _replies_today,
             "scanner_runs_24h":    lane_a_health["runs_24h"],
