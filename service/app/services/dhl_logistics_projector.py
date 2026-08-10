@@ -46,9 +46,13 @@ _DELIVERED_TIMELINE_EVENTS = frozenset({
 
 # Ordered inbound logistics milestones (only real timeline / audit authorities).
 # Each entry: (stage_id, label, event_names_tuple)
+#
+# dhl_email: timeline event names below are DISPLAY/REACHED hints only.
+# Duration KPIs must use resolve_dhl_email_kpi_timestamp() — never
+# dhl_inbox_scanned / clearance_started / log_event(now) discovery stamps.
 _INBOUND_MILESTONES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("created", "Created / booked", ("batch_created", "awb_uploaded")),
-    ("dhl_email", "DHL email received", ("dhl_email_received", "clearance_started", "dhl_inbox_scanned")),
+    ("dhl_email", "DHL email received", ("dhl_email_received",)),
     ("polish_desc", "Polish description", ("description_ready",)),
     ("dsk", "DSK generated / sent", ("dsk_generated", "dsk_transfer_sent")),
     ("dsk_received", "DSK / cesja received", ("dsk_received", "cesja_received")),
@@ -59,6 +63,29 @@ _INBOUND_MILESTONES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("arrived_pl", "Arrived Poland", ("carrier_arrived_poland", "shipment_arrived_warsaw")),
     ("delivered", "Delivered", ("carrier_delivered", "shipment_delivered")),
 )
+
+# Milestone-source matrix for DHL customs-request email (KPI end of Poland→email).
+# AUTHORITATIVE_EVENT_TIME — original inbound-message receipt (KPI-safe).
+# DISCOVERY/BACKFILL_TIME — when EJ found/applied evidence (audit/scanner only).
+# FALLBACK_NOT_ALLOWED_FOR_KPI — must never close a duration sample.
+DHL_EMAIL_MILESTONE_SOURCE_MAP: Dict[str, str] = {
+    "audit.dhl_email.received_at": "AUTHORITATIVE_EVENT_TIME",
+    "email_evidence.dhl_request.timestamp": "AUTHORITATIVE_EVENT_TIME",
+    "timeline.dhl_email_received": "DISCOVERY/BACKFILL_TIME",
+    "timeline.dhl_inbox_scanned": "DISCOVERY/BACKFILL_TIME",
+    "lane_a_evidence_bridge_applied_at": "DISCOVERY/BACKFILL_TIME",
+    "audit.dhl_email.source.manual_admin": "DISCOVERY/BACKFILL_TIME",
+    "timeline.clearance_started": "FALLBACK_NOT_ALLOWED_FOR_KPI",
+    "clearance_updated_at": "FALLBACK_NOT_ALLOWED_FOR_KPI",
+    "scanner_now": "FALLBACK_NOT_ALLOWED_FOR_KPI",
+}
+
+# received_at written by operators / bridges that stamp apply-time, not message time.
+_DHL_EMAIL_RECEIVED_AT_DISCOVERY_SOURCES = frozenset({
+    "manual_admin",
+})
+
+_DHL_EMAIL_KPI_EXCLUDE_REASON = "missing_original_dhl_email_timestamp"
 
 # Preferred display order for inbound stage ribbon (physical → customs → warehouse).
 _INBOUND_DISPLAY_ORDER = (
@@ -190,6 +217,195 @@ def _first_timeline_ts(timeline: List[Dict[str, Any]], names: Tuple[str, ...]) -
             return _parse_iso(ev.get("ts"))
     return None
 
+
+def _email_evidence_dhl_request_ts(awb: str) -> Optional[datetime]:
+    """Original dhl_request message timestamp from email_evidence (read-only)."""
+    awb = (awb or "").strip()
+    if not awb:
+        return None
+    try:
+        from .email_evidence_store import get_by_awb
+        doc = get_by_awb(awb) or {}
+    except Exception:
+        return None
+    best: Optional[datetime] = None
+    for thread in doc.get("threads") or []:
+        for msg in thread.get("messages") or []:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("event_type") != "dhl_request":
+                continue
+            ts = _parse_iso(
+                msg.get("timestamp")
+                or msg.get("received_at")
+                or msg.get("date")
+            )
+            if ts is None:
+                continue
+            if best is None or ts < best:
+                best = ts
+    return best
+
+
+def _subject_awb_token(subject: str) -> Optional[str]:
+    """Extract AWB-like token from a DHL customs email subject, if present."""
+    s = str(subject or "")
+    m = re.search(r"(?:przesy[lł]ka\s+numer|AWB|tracking)[:\s#]*([0-9]{10,12})", s, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b([0-9]{10,12})\b", s)
+    return m.group(1) if m else None
+
+
+def _dhl_email_subject_is_customs_request(subject: str) -> bool:
+    s = str(subject or "").lower()
+    if not s.strip():
+        return True  # unknown — do not reject solely on empty subject
+    if "zc429" in s or "powiadomienie o odebranym komunikacie" in s:
+        return False
+    if "agencja celna dhl" in s or "t#" in s or "custom clearance" in s or "odpraw" in s:
+        return True
+    return True
+
+
+def resolve_dhl_email_kpi_timestamp(
+    audit: Dict[str, Any],
+    timeline: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Resolve original DHL customs-email receipt time for duration KPIs.
+
+    Never returns discovery/backfill stamps (inbox scan, Lane-A bridge now(),
+    manual_admin apply-time, clearance_started). Prefer email_evidence when
+    audit.received_at is a discovery source. Missing original → exclude with
+    missing_original_dhl_email_timestamp — do not fabricate an end time.
+    """
+    timeline = timeline if isinstance(timeline, list) else (audit.get("timeline") or [])
+    de = audit.get("dhl_email") if isinstance(audit.get("dhl_email"), dict) else {}
+    received_flag = bool(de.get("received"))
+    discovery_present = received_flag or _timeline_has(
+        timeline,
+        ("dhl_email_received", "dhl_inbox_scanned"),
+    )
+    awb = _awb_of(audit)
+    subject = str(de.get("subject") or "")
+    subject_awb = _subject_awb_token(subject)
+    if subject_awb and awb and subject_awb != awb:
+        return {
+            "timestamp": None,
+            "source": None,
+            "source_class": None,
+            "kpi_usable": False,
+            "exclude_reason": "mismatched_awb_in_dhl_email_subject",
+            "discovery_present": discovery_present,
+        }
+    if subject and not _dhl_email_subject_is_customs_request(subject):
+        return {
+            "timestamp": None,
+            "source": None,
+            "source_class": None,
+            "kpi_usable": False,
+            "exclude_reason": "mismatched_non_customs_email_evidence",
+            "discovery_present": discovery_present,
+        }
+
+    field_source = str(de.get("source") or "").strip()
+    received_at = _parse_iso(de.get("received_at"))
+    field_is_discovery = field_source in _DHL_EMAIL_RECEIVED_AT_DISCOVERY_SOURCES
+
+    evidence_ts = _email_evidence_dhl_request_ts(awb)
+
+    if received_at is not None and not field_is_discovery:
+        return {
+            "timestamp": received_at,
+            "source": "audit.dhl_email.received_at",
+            "source_class": DHL_EMAIL_MILESTONE_SOURCE_MAP["audit.dhl_email.received_at"],
+            "kpi_usable": True,
+            "exclude_reason": None,
+            "discovery_present": discovery_present,
+        }
+
+    if evidence_ts is not None:
+        return {
+            "timestamp": evidence_ts,
+            "source": "email_evidence.dhl_request.timestamp",
+            "source_class": DHL_EMAIL_MILESTONE_SOURCE_MAP[
+                "email_evidence.dhl_request.timestamp"
+            ],
+            "kpi_usable": True,
+            "exclude_reason": None,
+            "discovery_present": discovery_present,
+        }
+
+    if received_at is not None and field_is_discovery:
+        return {
+            "timestamp": None,
+            "source": "audit.dhl_email.source.manual_admin",
+            "source_class": DHL_EMAIL_MILESTONE_SOURCE_MAP[
+                "audit.dhl_email.source.manual_admin"
+            ],
+            "kpi_usable": False,
+            "exclude_reason": _DHL_EMAIL_KPI_EXCLUDE_REASON,
+            "discovery_present": True,
+        }
+
+    return {
+        "timestamp": None,
+        "source": None,
+        "source_class": None,
+        "kpi_usable": False,
+        "exclude_reason": _DHL_EMAIL_KPI_EXCLUDE_REASON if discovery_present else None,
+        "discovery_present": discovery_present,
+    }
+
+
+def _apply_dhl_email_kpi_milestone(
+    milestones: List[Dict[str, Any]],
+    audit: Dict[str, Any],
+    timeline: List[Dict[str, Any]],
+    data_quality: List[str],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Replace any timeline/discovery dhl_email milestone with KPI-safe stamp."""
+    kpi = resolve_dhl_email_kpi_timestamp(audit, timeline)
+    cleaned = [m for m in milestones if str(m.get("stage_id") or "") != "dhl_email"]
+    if kpi.get("kpi_usable") and isinstance(kpi.get("timestamp"), datetime):
+        ts: datetime = kpi["timestamp"]
+        cleaned.append({
+            "stage_id": "dhl_email",
+            "label": "DHL email received",
+            "timestamp_utc": ts.isoformat(),
+            "timestamp_warsaw": _to_warsaw_iso(ts),
+            "duration_from_previous_hours": None,
+            "duration_from_previous_human": None,
+            "authority": kpi["source"],
+            "authority_class": kpi["source_class"],
+            "kpi_usable": True,
+            "location": None,
+        })
+        cleaned.sort(key=lambda m: m.get("timestamp_utc") or "")
+    elif kpi.get("exclude_reason"):
+        reason = str(kpi["exclude_reason"])
+        if reason not in data_quality:
+            data_quality.append(reason)
+    return cleaned, kpi
+
+
+def _carrier_authority_present(tracking: Dict[str, Any]) -> bool:
+    """True when projector already bound a carrier cache/db snapshot."""
+    if tracking.get("carrier_cache_present"):
+        return True
+    src = str(tracking.get("source") or "")
+    if src in ("tracking_cache", "tracking_db", "audit.tracking_events", "tracking_cache_failed"):
+        return True
+    if tracking.get("events"):
+        return True
+    return False
+
+
+def _tracking_cache_path(batch_id: str) -> Optional[Path]:
+    bid = str(batch_id or "").strip()
+    if not bid:
+        return None
+    return _storage_root() / "outputs" / bid / "tracking_cache.json"
 
 def _earliest_timeline_ts(timeline: List[Dict[str, Any]]) -> Optional[datetime]:
     earliest: Optional[datetime] = None
@@ -375,6 +591,10 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
     classification = classify_inbound(audit, tracking)
     customs_complete = _is_customs_or_pz_complete(audit, timeline)
     milestones = _build_inbound_milestones(timeline, tracking_events)
+    data_quality: List[str] = []
+    milestones, dhl_email_kpi = _apply_dhl_email_kpi_milestone(
+        milestones, audit, timeline, data_quality
+    )
     # Inject cache-derived Poland arrival / delivered into milestones if missing
     if tracking.get("arrived_pl_at") and not any(m["stage_id"] == "arrived_pl" for m in milestones):
         milestones.append({
@@ -401,18 +621,55 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
         })
         milestones.sort(key=lambda m: m.get("timestamp_utc") or "")
 
+    # Carrier cache present (incl. failed/unknown) + weak timeline Delivered
+    # → never invent Delivered; surface explicit data-quality state.
+    timeline_claims_delivered = _timeline_has(timeline, tuple(_DELIVERED_TIMELINE_EVENTS))
+    terminal_ok = False
+    if batch_id and awb:
+        try:
+            from .active_shipment_monitor import is_carrier_tracking_terminal
+            terminal_ok = bool(is_carrier_tracking_terminal(awb, batch_id))
+        except Exception:
+            terminal_ok = False
+    if (
+        classification != "delivered"
+        and not terminal_ok
+        and (
+            tracking.get("carrier_cache_present")
+            or _carrier_authority_present(tracking)
+        )
+        and (timeline_claims_delivered or _is_physically_delivered(audit, timeline))
+    ):
+        data_quality.append("delivered_claim_without_carrier_terminal")
+
+    # Drop timeline-only Delivered milestones when carrier terminal is absent.
+    if classification != "delivered":
+        milestones = [m for m in milestones if str(m.get("stage_id") or "") != "delivered"]
+
     stage_id, stage_started = _current_stage_from_milestones(milestones, classification)
 
     created_at = _resolve_created_at(audit, timeline, batch_id)
 
-    delivered_at = tracking.get("delivered_at")
-    if delivered_at is None:
-        for m in milestones:
-            if m["stage_id"] == "delivered":
-                delivered_at = _parse_iso(m.get("timestamp_utc"))
-                break
-    if delivered_at is None and classification == "delivered":
-        delivered_at = _first_timeline_ts(timeline, tuple(_DELIVERED_TIMELINE_EVENTS))
+    # Carrier delivery evidence is retained for chronology KPIs even when Tower
+    # must not label the row Delivered (failed cache / non-terminal / excluded).
+    carrier_delivered_at = tracking.get("delivered_at")
+    if isinstance(carrier_delivered_at, datetime):
+        pass
+    else:
+        carrier_delivered_at = _parse_iso(carrier_delivered_at) if carrier_delivered_at else None
+
+    delivered_at = None
+    if classification == "delivered":
+        delivered_at = carrier_delivered_at
+        if delivered_at is None:
+            for m in milestones:
+                if m["stage_id"] == "delivered":
+                    delivered_at = _parse_iso(m.get("timestamp_utc"))
+                    break
+        if delivered_at is None:
+            delivered_at = _first_timeline_ts(timeline, tuple(_DELIVERED_TIMELINE_EVENTS))
+        if carrier_delivered_at is None and isinstance(delivered_at, datetime):
+            carrier_delivered_at = delivered_at
 
     pickup_at = tracking.get("picked_up_at")
     # Total transit: preferential pickup → delivered; freeze at delivery; — if delivered w/o ts
@@ -475,7 +732,7 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
             business_workflow_status = "delivered"
 
     attention_reasons: List[str] = []
-    data_quality: List[str] = []
+    # data_quality may already hold dhl_email KPI / terminal-discrepancy reasons
     # Carrier exception text only when CURRENT transport status is exceptional.
     # Workflow timeline errors (pz_blocked, etc.) are separate attention — not Exception.
     st_now = str(tracking.get("status") or "").lower()
@@ -564,6 +821,11 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
         "pickup_is_authoritative": pickup_at is not None,
         "delivered_at_utc": delivered_at.isoformat() if isinstance(delivered_at, datetime) else None,
         "delivered_at_warsaw": _to_warsaw_iso(delivered_at) if isinstance(delivered_at, datetime) else None,
+        "carrier_delivered_at_utc": (
+            carrier_delivered_at.isoformat()
+            if isinstance(carrier_delivered_at, datetime)
+            else None
+        ),
         "received_by": None,
         "exception": exc,
         "attention_reasons": attention_reasons,
@@ -576,6 +838,16 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
         "customs_pipeline_status": dhl_status,
         "clearance_status": audit.get("clearance_status"),
         "milestones": milestones,
+        "dhl_email_kpi_at_utc": (
+            dhl_email_kpi["timestamp"].isoformat()
+            if dhl_email_kpi.get("kpi_usable") and isinstance(dhl_email_kpi.get("timestamp"), datetime)
+            else None
+        ),
+        "dhl_email_kpi_source": dhl_email_kpi.get("source"),
+        "dhl_email_kpi_source_class": dhl_email_kpi.get("source_class"),
+        "dhl_email_kpi_exclude_reason": dhl_email_kpi.get("exclude_reason"),
+        "dhl_email_subject": str((audit.get("dhl_email") or {}).get("subject") or "") or None,
+        "dhl_email_field_source": str((audit.get("dhl_email") or {}).get("source") or "") or None,
         "latest_event": (milestones[-1]["label"] if milestones else tracking.get("last_event")),
         "latest_event_at_warsaw": (milestones[-1].get("timestamp_warsaw") if milestones else None),
         "dhl_email_requested": None,
@@ -718,6 +990,7 @@ def _outbound_tracking_snapshot(awb: str, batch_id: str) -> Dict[str, Any]:
         "tracking_last_checked_at": None,
         "tracking_last_success_at": None,
         "refresh_error": None,
+        "carrier_cache_present": False,
     }
 
     # --- 1) Canonical cached snapshot (primary for outbound delivery) ---
@@ -730,9 +1003,11 @@ def _outbound_tracking_snapshot(awb: str, batch_id: str) -> Dict[str, Any]:
             )
             cache_dir = _storage_root() / "outputs" / batch_id
             if (cache_dir / "tracking_cache.json").exists():
+                out["carrier_cache_present"] = True
                 rec = select_cached_tracking_record(_load_cache(cache_dir), awb)
                 if rec and _cache_record_is_failed_empty(rec):
                     skipped_failed_cache = True
+                    out["source"] = out["source"] or "tracking_cache_failed"
                     out["tracking_stale"] = True
                     out["refresh_error"] = rec.get("refresh_error") or rec.get("error")
                     out["tracking_last_checked_at"] = (
@@ -819,6 +1094,7 @@ def _inbound_tracking_snapshot(awb: str, batch_id: str, audit: Dict[str, Any]) -
         "tracking_last_checked_at": None,
         "tracking_last_success_at": None,
         "refresh_error": None,
+        "carrier_cache_present": False,
     }
     tr = audit.get("tracking") if isinstance(audit.get("tracking"), dict) else {}
     if tr and not _cache_record_is_failed_empty(tr):
@@ -834,6 +1110,13 @@ def _inbound_tracking_snapshot(awb: str, batch_id: str, audit: Dict[str, Any]) -
 
     # Prefer cache (canonical) over audit.tracking when present and not failed-empty
     cache_snap = _outbound_tracking_snapshot(awb, batch_id)  # same cache reader
+    if cache_snap.get("carrier_cache_present"):
+        out["carrier_cache_present"] = True
+        if cache_snap.get("source") == "tracking_cache_failed" and not out.get("source"):
+            out["source"] = "tracking_cache_failed"
+            out["tracking_stale"] = True
+            out["refresh_error"] = cache_snap.get("refresh_error")
+            out["tracking_last_checked_at"] = cache_snap.get("tracking_last_checked_at")
     if cache_snap.get("events") or (
         cache_snap.get("status") and not _cache_record_is_failed_empty(cache_snap)
     ):
@@ -1006,6 +1289,10 @@ def classify_inbound(audit: Dict[str, Any], tracking: Optional[Dict[str, Any]] =
 
     customs/PZ completion is NOT a transport terminal — it is a separate customs_status.
     Exception requires CURRENT transport status — never a historical latch field.
+
+    When a tracking_cache.json exists for the batch (even failed/unknown), Delivered
+    requires durable carrier terminal proof — timeline shipment_delivered / email
+    delivery_notice latches must not disagree with a non-terminal cache.
     """
     awb = _awb_of(audit)
     if not awb:
@@ -1017,7 +1304,32 @@ def classify_inbound(audit: Dict[str, Any], tracking: Optional[Dict[str, Any]] =
         timeline = []
     tracking = tracking or {}
     st = str(tracking.get("status") or "").lower()
-    if tracking.get("delivered_at") or st == "delivered" or _is_physically_delivered(audit, timeline):
+    carrier_delivered = bool(tracking.get("delivered_at") or st == "delivered")
+    batch_id = str(audit.get("batch_id") or "").strip()
+    cache_path = _tracking_cache_path(batch_id)
+    cache_file_present = bool(
+        tracking.get("carrier_cache_present")
+        or (cache_path is not None and cache_path.exists())
+    )
+
+    if cache_file_present or _carrier_authority_present(tracking):
+        if carrier_delivered:
+            return "delivered"
+        if batch_id:
+            try:
+                from .active_shipment_monitor import is_carrier_tracking_terminal
+                if is_carrier_tracking_terminal(awb, batch_id):
+                    return "delivered"
+            except Exception:
+                pass
+        if st in ("exception", "failure", "on_hold"):
+            return "exception"
+        if not (audit.get("clearance_decision") or audit.get("tracking") or timeline or tracking.get("events")):
+            return "unknown"
+        return "active"
+
+    # No carrier cache file — legacy timeline / audit.tracking only.
+    if carrier_delivered or _is_physically_delivered(audit, timeline):
         return "delivered"
     if st in ("exception", "failure", "on_hold"):
         return "exception"
@@ -1296,12 +1608,15 @@ def _cohort_stats(hours_list: List[float]) -> Dict[str, Any]:
             "median": None,
             "median_human": None,
             "typical_human": None,
+            "p75": None,
+            "p75_human": None,
             "p90": None,
             "p90_human": None,
             "sufficient": False,
         }
     avg = round(statistics.mean(clean), 2)
     med = round(statistics.median(clean), 2) if len(clean) >= 3 else None
+    p75 = _percentile(clean, 75)
     p90 = _percentile(clean, 90)
     return {
         "n": len(clean),
@@ -1310,6 +1625,8 @@ def _cohort_stats(hours_list: List[float]) -> Dict[str, Any]:
         "median": med,
         "median_human": _fmt_duration(med),
         "typical_human": _fmt_duration(med if med is not None else avg),
+        "p75": p75,
+        "p75_human": _fmt_duration(p75),
         "p90": p90,
         "p90_human": _fmt_duration(p90),
         "sufficient": len(clean) >= 3,
@@ -1319,6 +1636,9 @@ def _cohort_stats(hours_list: List[float]) -> Dict[str, Any]:
 def _milestone_ts(row: Dict[str, Any], stage_id: str) -> Optional[datetime]:
     for m in row.get("milestones") or []:
         if str(m.get("stage_id") or "") == stage_id:
+            # Discovery-only dhl_email milestones must not feed duration KPIs.
+            if stage_id == "dhl_email" and m.get("kpi_usable") is False:
+                return None
             return _parse_iso(m.get("timestamp_utc"))
     return None
 
@@ -1344,10 +1664,16 @@ _OUTBOUND_FIXED_TRANSITIONS: Tuple[Tuple[str, str, str], ...] = (
 def _row_timestamp_map(row: Dict[str, Any]) -> Dict[str, Optional[datetime]]:
     """Exact named timestamps for fixed transitions (no predecessor mixing)."""
     pickup = _parse_iso(row.get("pickup_at_utc"))
-    delivered = _parse_iso(row.get("delivered_at_utc"))
+    delivered = _parse_iso(row.get("delivered_at_utc")) or _parse_iso(
+        row.get("carrier_delivered_at_utc")
+    )
     created = _parse_iso(row.get("created_at_utc"))
     departed = _parse_iso(row.get("departed_at_utc"))
     first_movement = _parse_iso(row.get("first_movement_at_utc")) or pickup or departed
+    # Prefer explicit KPI field (authoritative receipt) over milestone display stamp.
+    dhl_email = _parse_iso(row.get("dhl_email_kpi_at_utc"))
+    if dhl_email is None:
+        dhl_email = _milestone_ts(row, "dhl_email")
     return {
         "pickup": pickup,
         "delivered": delivered,
@@ -1355,12 +1681,61 @@ def _row_timestamp_map(row: Dict[str, Any]) -> Dict[str, Optional[datetime]]:
         "first_movement": first_movement,
         "departed": departed,
         "arrived_pl": _milestone_ts(row, "arrived_pl"),
-        "dhl_email": _milestone_ts(row, "dhl_email"),
+        "dhl_email": dhl_email,
         "dsk": _milestone_ts(row, "dsk") or _milestone_ts(row, "dsk_received"),
         "sad": _milestone_ts(row, "sad") or _milestone_ts(row, "agency"),
         "customs_cleared": _milestone_ts(row, "customs_cleared"),
         "pz": _milestone_ts(row, "pz"),
     }
+
+
+def _classify_poland_to_email_inversion(
+    row: Dict[str, Any],
+    arrived: datetime,
+    email_ts: datetime,
+) -> str:
+    """Classify email-before-Poland observations for KPI inclusion.
+
+    Returns:
+      pre_arrival_customs_contact — genuine DHL contact before Poland (include as 0h)
+      lifecycle_mismatch_email_vs_late_poland — late Poland stamp vs earlier lifecycle
+      mismatched_non_customs_email_evidence — ZC429 / non-customs stamped as dhl_email
+      mismatched_awb_in_dhl_email_subject — subject AWB ≠ row AWB
+      inverted_or_invalid — residual unclassified inversion
+    """
+    exclude = row.get("dhl_email_kpi_exclude_reason")
+    if exclude in (
+        "mismatched_non_customs_email_evidence",
+        "mismatched_awb_in_dhl_email_subject",
+    ):
+        return str(exclude)
+
+    subject = str(row.get("dhl_email_subject") or "")
+    if subject and not _dhl_email_subject_is_customs_request(subject):
+        return "mismatched_non_customs_email_evidence"
+    subj_awb = _subject_awb_token(subject)
+    row_awb = str(row.get("awb") or "")
+    if subj_awb and row_awb and subj_awb != row_awb:
+        return "mismatched_awb_in_dhl_email_subject"
+
+    delivered = _parse_iso(row.get("delivered_at_utc")) or _parse_iso(
+        row.get("carrier_delivered_at_utc")
+    )
+    pickup = _parse_iso(row.get("pickup_at_utc"))
+
+    # Late May/June Poland stamp after Feb/Mar delivery = import artifact.
+    if delivered is not None and delivered < arrived:
+        return "lifecycle_mismatch_email_vs_late_poland"
+
+    # Email before pickup is not coherent pre-arrival contact for this AWB.
+    if pickup is not None and email_ts < pickup:
+        return "lifecycle_mismatch_email_vs_late_poland"
+
+    # Same lifecycle: email after pickup (or no pickup), before Poland arrival.
+    if (pickup is None or email_ts >= pickup) and email_ts < arrived:
+        return "pre_arrival_customs_contact"
+
+    return "inverted_or_invalid"
 
 
 def _fixed_transition_analytics(
@@ -1371,14 +1746,48 @@ def _fixed_transition_analytics(
     for key, label, pair in specs:
         start_key, end_key = pair.split("|", 1)
         samples: List[float] = []
+        excluded: Dict[str, int] = {}
         for r in rows:
             tsmap = _row_timestamp_map(r)
             a = tsmap.get(start_key)
             b = tsmap.get(end_key)
-            hours = _hours_between(a, b)
-            if hours is None:
-                continue
-            samples.append(hours)
+            if a is None and b is None:
+                reason = f"missing_{start_key}_and_{end_key}"
+            elif a is None:
+                reason = f"missing_{start_key}"
+            elif b is None:
+                if end_key == "dhl_email" and r.get("dhl_email_kpi_exclude_reason"):
+                    reason = str(r.get("dhl_email_kpi_exclude_reason"))
+                else:
+                    reason = f"missing_{end_key}"
+            else:
+                hours = _hours_between(a, b)
+                if (
+                    hours is None
+                    and key == "poland_to_dhl_email"
+                    and a is not None
+                    and b is not None
+                    and b < a
+                ):
+                    inv = _classify_poland_to_email_inversion(r, a, b)
+                    if inv == "pre_arrival_customs_contact":
+                        # Already contacted before Poland — wait after arrival is 0.
+                        samples.append(0.0)
+                        continue
+                    reason = inv
+                elif hours is None:
+                    reason = "inverted_or_invalid"
+                elif (
+                    key == "origin_pickup_to_poland"
+                    and tsmap.get("delivered") is not None
+                    and b is not None
+                    and tsmap["delivered"] < b
+                ):
+                    reason = "lifecycle_mismatch_delivered_before_poland"
+                else:
+                    samples.append(hours)
+                    continue
+            excluded[reason] = excluded.get(reason, 0) + 1
         stats = _cohort_stats(samples)
         out[key] = {
             "id": key,
@@ -1386,6 +1795,8 @@ def _fixed_transition_analytics(
             "start_key": start_key,
             "end_key": end_key,
             **stats,
+            "excluded_n": sum(excluded.values()),
+            "exclusion_reason_counts": excluded,
         }
     return out
 
