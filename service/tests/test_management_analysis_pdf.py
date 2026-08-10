@@ -61,10 +61,16 @@ def _ar(scope="all_outstanding", currencies=("EUR",)) -> dict:
         "EUR": {"currency": "EUR", "total_receivable": "4500.00", "overdue": "1500.00",
                  "not_due": "3000.00", "customer_credits": "200.00",
                  "customers_outstanding": 3, "oldest_overdue_days": 47,
+                 "aging": {"not_due": "1500.00", "b_1_30": "1500.00", "b_31_90": "0.00",
+                            "b_91_180": "0.00", "b_180_plus": "0.00",
+                            "due_date_unavailable": "0.00"},
                  "reconciliation_ok": True},
         "USD": {"currency": "USD", "total_receivable": "800.00", "overdue": "0.00",
                  "not_due": "800.00", "customer_credits": "0.00",
                  "customers_outstanding": 1, "oldest_overdue_days": 0,
+                 "aging": {"not_due": "800.00", "b_1_30": "0.00", "b_31_90": "0.00",
+                            "b_91_180": "0.00", "b_180_plus": "0.00",
+                            "due_date_unavailable": "0.00"},
                  "reconciliation_ok": True},
     }
     custs = [
@@ -99,10 +105,16 @@ def _ap(currencies=("EUR",)) -> dict:
     sums = {
         "EUR": {"currency": "EUR", "gross_payable": "2200.00", "overdue": "700.00",
                  "not_due": "1500.00", "supplier_credits": "100.00",
-                 "net_payable": "2100.00", "suppliers_outstanding": 2},
+                 "net_payable": "2100.00", "suppliers_outstanding": 2,
+                 "aging": {"not_due": "1500.00", "b_1_30": "700.00", "b_31_90": "0.00",
+                            "b_91_180": "0.00", "b_180_plus": "0.00",
+                            "due_date_unavailable": "0.00"}},
         "USD": {"currency": "USD", "gross_payable": "300.00", "overdue": "0.00",
                  "not_due": "300.00", "supplier_credits": "0.00",
-                 "net_payable": "300.00", "suppliers_outstanding": 1},
+                 "net_payable": "300.00", "suppliers_outstanding": 1,
+                 "aging": {"not_due": "300.00", "b_1_30": "0.00", "b_31_90": "0.00",
+                            "b_91_180": "0.00", "b_180_plus": "0.00",
+                            "due_date_unavailable": "0.00"}},
     }
     sups = [
         {"contractor_id": "S1", "supplier_name": "Gemstone Traders", "currency": "EUR",
@@ -151,24 +163,41 @@ def test_every_currency_summary_figure_appears():
 
 
 def test_pdf_invents_no_figures():
-    """Every money value on the page traces back to the analytics dicts."""
+    """Every money value on the page traces back to the analytics dicts.
+
+    No allowance for renderer-side arithmetic: the currency-level aging
+    subtotals are produced by the analytics layer and carried in
+    ``currency_summaries[].aging``, so the PDF projects them like every other
+    figure. A subtotal the JSON does not contain is a second calculation.
+    """
     ar, ap = _ar(currencies=("EUR", "USD")), _ap(currencies=("EUR", "USD"))
-    known = set()
-    for body, rows_key in ((ar, "customers"), (ap, "suppliers")):
-        for s in body["currency_summaries"]:
-            known |= {str(v) for v in s.values()}
-        for r in body[rows_key]:
-            known |= {str(v) for v in r.values()}
-    # Per-currency bucket subtotals are sums of the rows above, within one
-    # currency only — the same subtotal the screen prints over its aging table.
-    for body, rows_key in ((ar, "customers"), (ap, "suppliers")):
-        for ccy in ("EUR", "USD"):
-            rows = [r for r in body[rows_key] if r["currency"] == ccy]
-            for k in ("not_due", "b_1_30", "b_31_90", "b_91_180", "b_180_plus",
-                       "due_date_unavailable"):
-                known.add(f"{sum(Decimal(str(r.get(k) or '0')) for r in rows):.2f}")
+
+    def collect(node, acc):
+        if isinstance(node, dict):
+            for v in node.values():
+                collect(v, acc)
+        elif isinstance(node, list):
+            for v in node:
+                collect(v, acc)
+        else:
+            acc.add(str(node))
+        return acc
+
+    known = collect(ar, set()) | collect(ap, set())
     printed = set(re.findall(r"\b\d+\.\d{2}\b", _text(render_management_analysis_pdf(ar, ap))))
     assert printed <= known, f"PDF invented figures: {sorted(printed - known)}"
+
+
+def test_aging_row_is_the_summary_aging_not_a_renderer_sum():
+    """Break the DTO's aging block and the page must follow it — proving the
+    renderer reads the summary rather than re-adding the exposure rows."""
+    ar, ap = _ar(), _ap()
+    ar["currency_summaries"][0]["aging"]["b_31_90"] = "12345.67"
+    t = _text(render_management_analysis_pdf(ar, ap))
+    assert "12345.67" in t, (
+        "the aging row must project currency_summaries[].aging — a renderer-side "
+        "sum of the customer rows would silently ignore it"
+    )
 
 
 # ── 3-4. Currencies never combined ────────────────────────────────────────

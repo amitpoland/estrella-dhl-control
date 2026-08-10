@@ -1125,8 +1125,8 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
     out.append(Paragraph("<b>Aging · due date basis</b>", styles["section_header"]))
     out.append(_grid_table(
         bucket_headers,
-        [_bucket_row("Receivables", _ar_bucket_totals(ar_rows)),
-         _bucket_row("Payables", _ar_bucket_totals(ap_rows))],
+        [_bucket_row("Receivables", ar_sum.get("aging")),
+         _bucket_row("Payables", ap_sum.get("aging"))],
         [30 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm],
         right_from=1,
     ))
@@ -1158,23 +1158,6 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
     ))
     out.append(Spacer(1, 10))
     return out
-
-
-def _ar_bucket_totals(rows: List[Dict[str, Any]]) -> Dict[str, str]:
-    """Sum the per-row bucket strings for one currency.
-
-    Presentation-only aggregation of figures the analytics layer already
-    produced, and only ever within a single currency — the same sum the
-    screen shows above its aging table.
-    """
-    acc = {k: Decimal("0") for k, _ in _AP_BUCKETS}
-    for r in rows:
-        for k in acc:
-            try:
-                acc[k] += Decimal(str(r.get(k) or "0"))
-            except Exception:
-                continue
-    return {k: f"{v:.2f}" for k, v in acc.items()}
 
 
 def _appendix_flowables(ar: Dict[str, Any], ap: Dict[str, Any], styles) -> List[Any]:

@@ -35,6 +35,16 @@ const SUP_AGING_BUCKETS = [
   ['b_91_180', '91–180'], ['b_180_plus', '180+'], ['due_date_unavailable', 'due n/a'],
 ];
 
+// currency_summaries[].aging → the shape LdgAgingStrip renders. The analytics
+// layer owns the sum, so this strip and the Management Analysis PDF print the
+// same figures — neither of them adds anything up.
+const agingStripBuckets = (aging) =>
+  SUP_AGING_BUCKETS.map(([k, label]) => ({
+    label,
+    value: (aging && aging[k]) || '0.00',
+    tone: k === 'not_due' || k === 'due_date_unavailable' ? '' : 'red',
+  }));
+
 const LDG_PRESETS = [
   { id: 'this_month', label: 'This Month' },
   { id: 'prev_month', label: 'Previous Month' },
@@ -581,9 +591,9 @@ function ClientHeaderCard({ client: c, stmt, period }) {
 }
 
 // ── Aging strip ────────────────────────────────────────────────────────
-function LdgAgingStrip({ buckets }) {
+function LdgAgingStrip({ buckets, testid }) {
   return (
-    <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 14, borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+    <div data-testid={testid} style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
       <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Aging</span>
       {buckets.map(b => (
         <div key={b.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -961,6 +971,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
             <LdgStatTile label="Net position" value={LDG_FMT.money(s.net_position, s.currency)}
               sub={s.reconciliation_ok ? 'aging reconciles' : '⚠️ aging mismatch'} />
           </div>
+          <LdgAgingStrip testid={`ldg-ma-ar-aging-${s.currency}`} buckets={agingStripBuckets(s.aging)} />
         </div>
       ))}
 
@@ -1074,6 +1085,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
                     <LdgStatTile label="Net Payable" value={LDG_FMT.money(s.net_payable, s.currency)}
                       sub={s.reconciliation_ok ? 'aging reconciles' : '⚠️ aging mismatch'} />
                   </div>
+                  <LdgAgingStrip testid={`ldg-ma-ap-aging-${s.currency}`} buckets={agingStripBuckets(s.aging)} />
                 </div>
               ))}
               <window.Card style={{ padding: 0, overflow: 'auto' }}>

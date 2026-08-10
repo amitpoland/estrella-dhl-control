@@ -56,6 +56,19 @@ def _empty_buckets() -> Dict[str, Decimal]:
     return {b: Decimal("0") for b in _BUCKETS}
 
 
+def _sum_buckets(rows: List[Dict[str, Any]]) -> Dict[str, Decimal]:
+    """Per-bucket totals for one currency's rows.
+
+    The currency-level aging breakdown belongs to this layer, not to the screen
+    or the PDF: both are projections of the summary this returns.
+    """
+    acc = _empty_buckets()
+    for r in rows:
+        for b in _BUCKETS:
+            acc[b] += Decimal(r[b])
+    return acc
+
+
 def _python_filter_by_date(nodes, df: str, dt: str, date_tag: str = "date"):
     if not (df or dt):
         return list(nodes or [])
@@ -302,16 +315,10 @@ def build_portfolio_from_facts(
         ovd = sum((Decimal(r["overdue"]) for r in rows), Decimal("0"))
         nd = sum((Decimal(r["not_due"]) for r in rows), Decimal("0"))
         cr = sum((Decimal(r["credit_balance"]) for r in rows), Decimal("0"))
-        dua = sum((Decimal(r["due_date_unavailable"]) for r in rows), Decimal("0"))
+        buckets = _sum_buckets(rows)
+        dua = buckets["due_date_unavailable"]
         # Invariant pieces
-        aging_sum = (
-            sum((Decimal(r["not_due"]) for r in rows), Decimal("0"))
-            + sum((Decimal(r["b_1_30"]) for r in rows), Decimal("0"))
-            + sum((Decimal(r["b_31_90"]) for r in rows), Decimal("0"))
-            + sum((Decimal(r["b_91_180"]) for r in rows), Decimal("0"))
-            + sum((Decimal(r["b_180_plus"]) for r in rows), Decimal("0"))
-            + dua
-        )
+        aging_sum = sum(buckets.values(), Decimal("0"))
         oldest_days = max((int(r["days_oldest_overdue"]) for r in rows), default=0)
         currency_summaries.append({
             "currency": ccy,
@@ -333,6 +340,7 @@ def build_portfolio_from_facts(
             "invoices_represented": sum(int(r["invoice_count"]) for r in rows),
             "open_invoices": sum(int(r["open_invoice_count"]) for r in rows),
             "aging_plus_unavailable": _q(aging_sum),
+            "aging": {b: _q(v) for b, v in buckets.items()},
             "reconciliation_ok": aging_sum == recv,
             "net_position": _q(recv - cr),
         })
@@ -685,15 +693,9 @@ def build_payables_portfolio_from_facts(
         cr = sum((Decimal(r["credit_balance"]) for r in rows), Decimal("0"))
         ovd = sum((Decimal(r["overdue"]) for r in rows), Decimal("0"))
         nd = sum((Decimal(r["not_due"]) for r in rows), Decimal("0"))
-        dua = sum((Decimal(r["due_date_unavailable"]) for r in rows), Decimal("0"))
-        aging_sum = (
-            nd
-            + sum((Decimal(r["b_1_30"]) for r in rows), Decimal("0"))
-            + sum((Decimal(r["b_31_90"]) for r in rows), Decimal("0"))
-            + sum((Decimal(r["b_91_180"]) for r in rows), Decimal("0"))
-            + sum((Decimal(r["b_180_plus"]) for r in rows), Decimal("0"))
-            + dua
-        )
+        buckets = _sum_buckets(rows)
+        dua = buckets["due_date_unavailable"]
+        aging_sum = sum(buckets.values(), Decimal("0"))
         currency_summaries.append({
             "currency": ccy,
             "gross_payable": _q(gp),
@@ -717,6 +719,7 @@ def build_payables_portfolio_from_facts(
             "expenses_represented": sum(int(r["expense_count"]) for r in rows),
             "open_expenses": sum(int(r["open_expense_count"]) for r in rows),
             "aging_plus_unavailable": _q(aging_sum),
+            "aging": {b: _q(v) for b, v in buckets.items()},
             "reconciliation_ok": aging_sum == gp,
         })
 
