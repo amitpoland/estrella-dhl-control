@@ -803,10 +803,13 @@ def aggregate_statement_from_facts(
                 "wfirma_doc_id": f["id"],
             })
         if f.get("type") == "proforma":
+            # Proforma is commercial — never fiscal AR. Drop here so a
+            # mistaken caller cannot inflate invoiced / outstanding / aging.
             warnings.append({
-                "event":         "proforma_treated_as_debit",
+                "event":         "proforma_excluded_from_fiscal",
                 "wfirma_doc_id": f["id"],
             })
+            continue
         invoice_facts_kept.append(f)
     invoice_facts = invoice_facts_kept
 
@@ -924,15 +927,17 @@ def aggregate_statement_from_facts(
         currencies.add(ccy)
         entries_by_ccy.setdefault(ccy, []).append(_entry_for_invoice(f))
 
-    # Re-walk payments to know which were unmatched, so the entry's
-    # linked_invoice field is blanked appropriately.
+    # Fiscal entries: matched payments only. Proforma-only (or other
+    # non-fiscal / outside-window) links stay in unmatched_payments_*
+    # and must not reduce fiscal received / outstanding / running balance.
     matched_set = matched_payment_ids
     for p in payment_facts:
+        if p["id"] not in matched_set:
+            continue
         ccy = p["currency"] or "PLN"
         currencies.add(ccy)
-        is_unmatched = p["id"] not in matched_set
         entries_by_ccy.setdefault(ccy, []).append(
-            _entry_for_payment(p, is_unmatched=is_unmatched)
+            _entry_for_payment(p, is_unmatched=False)
         )
 
     # Sort each currency bucket by (date, type rank, doc_id).
@@ -957,7 +962,7 @@ def aggregate_statement_from_facts(
         for e in rows:
             d = Decimal(e["debit"])
             c = Decimal(e["credit"])
-            if e["type"] in ("invoice", "correction", "proforma"):
+            if e["type"] in ("invoice", "correction"):
                 invoiced += d
                 credited += c
             elif e["type"] == "payment":

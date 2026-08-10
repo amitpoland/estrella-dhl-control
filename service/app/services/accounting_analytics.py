@@ -94,14 +94,30 @@ def build_portfolio_from_facts(
     cid_f = (contractor_filter or "").strip()
     status_f = (status_filter or "").strip().lower()
 
+    # Fiscal boundary — drop proforma before payment match so a payment
+    # linked only to a proforma cannot settle fiscal AR.
+    fiscal_invoices: List[Dict[str, Any]] = []
+    pre_warnings: List[Dict[str, Any]] = []
+    for inv in invoice_facts or []:
+        if (inv.get("type") or "").strip() == "proforma":
+            pre_warnings.append({
+                "event": "proforma_excluded_from_fiscal",
+                "wfirma_doc_id": inv.get("id") or "",
+            })
+            continue
+        fiscal_invoices.append(inv)
+    invoice_facts = fiscal_invoices
+
     match = match_payments_to_invoices(invoice_facts, payment_facts)
     paid_map: Dict[str, Decimal] = match["paid_against_invoice"]
-    warnings = list(match["warnings"])
+    warnings = list(pre_warnings) + list(match["warnings"])
 
     data_quality: Dict[str, int] = defaultdict(int)
     for w in warnings:
         ev = w.get("event") or "other"
         data_quality[ev] += 1
+    if pre_warnings:
+        data_quality["proforma_excluded_from_fiscal"] += len(pre_warnings)
 
     # Per (contractor_id, currency) accumulators
     CustKey = Tuple[str, str]
@@ -360,10 +376,14 @@ def build_management_analysis(
     currency: str = "",
     contractor_id: str = "",
     status: str = "",
-    types: tuple = ("normal", "correction", "proforma"),
+    types: tuple = (),
     force_refresh: bool = False,
 ) -> Dict[str, Any]:
-    """Live bulk portfolio read — ZERO per-customer wFirma calls."""
+    """Live bulk portfolio read — ZERO per-customer wFirma calls.
+
+    Default invoice types = fiscal AR (normal + correction). Proforma is
+    never part of Management Analysis receivables.
+    """
     df = (date_from or "").strip()
     dt = (date_to or "").strip()
     if not df or not dt:
@@ -372,9 +392,14 @@ def build_management_analysis(
         raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
     ao = (as_of or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    from .ledger_fact_universe import load_ar_fact_universe, timing_fields_from_universe
+    from .ledger_fact_universe import (
+        FISCAL_AR_INVOICE_TYPES,
+        load_ar_fact_universe,
+        timing_fields_from_universe,
+    )
 
-    uni = load_ar_fact_universe(df, dt, types=types, force=force_refresh)
+    type_set = types if types else FISCAL_AR_INVOICE_TYPES
+    uni = load_ar_fact_universe(df, dt, types=type_set, force=force_refresh)
     invoice_facts = uni["invoice_facts"]
     payment_facts = uni["payment_facts"]
     inv_stats = uni.get("inv_stats") or {}

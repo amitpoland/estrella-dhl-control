@@ -195,9 +195,10 @@ def get_client_invoice_ledger(
     }
 
     try:
+        from ..services.ledger_fact_universe import FISCAL_AR_INVOICE_TYPES
         nodes = wfirma_client.fetch_invoices_for_contractor(
             cid, df, dt,
-            types=("normal", "correction", "proforma"),
+            types=FISCAL_AR_INVOICE_TYPES,
         )
     except Exception as exc:
         log.warning(
@@ -329,9 +330,10 @@ def _build_statement_dict(
 
     # Fetch invoices.
     try:
+        from ..services.ledger_fact_universe import FISCAL_AR_INVOICE_TYPES
         invoice_nodes = wfirma_client.fetch_invoices_for_contractor(
             cid, df, dt,
-            types=("normal", "correction", "proforma"),
+            types=FISCAL_AR_INVOICE_TYPES,
         )
     except Exception as exc:
         log.warning(

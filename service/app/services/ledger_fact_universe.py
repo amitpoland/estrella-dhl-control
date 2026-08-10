@@ -33,6 +33,12 @@ from .ledger_aggregator import (
 # Tens of seconds — bridges hub navigations; Refresh always bypasses.
 DEFAULT_TTL_S = 30.0
 
+# Fiscal AR document types for Client Ledger / Client Balance / Management
+# Analysis. Proforma is commercial only — never part of this universe.
+FISCAL_AR_INVOICE_TYPES: tuple = ("normal", "correction")
+# Commercial override for rare non-fiscal registers (not Balance/Ledger/MA).
+COMMERCIAL_AR_INVOICE_TYPES: tuple = ("normal", "correction", "proforma")
+
 _lock = threading.Lock()
 # key -> {"event": Event, "result": dict|None, "error": BaseException|None, "at": float}
 _inflight: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
@@ -162,11 +168,17 @@ def load_ar_fact_universe(
     date_from: str,
     date_to: str,
     *,
-    types: tuple = ("normal", "correction", "proforma"),
+    types: tuple = FISCAL_AR_INVOICE_TYPES,
     force: bool = False,
     ttl_s: float = DEFAULT_TTL_S,
 ) -> Dict[str, Any]:
-    """Bulk invoices + payments for a window. Zero per-customer wFirma calls."""
+    """Bulk fiscal invoices + payments for a window. Zero per-customer wFirma calls.
+
+    Default ``types`` is :data:`FISCAL_AR_INVOICE_TYPES` (normal + correction).
+    Proforma is excluded so Client Balance and Management Analysis cannot
+    diverge into commercial AR. Pass ``COMMERCIAL_AR_INVOICE_TYPES`` only for
+    an explicitly non-fiscal register.
+    """
     df = (date_from or "").strip()
     dt = (date_to or "").strip()
     if not df or not dt:
@@ -286,6 +298,8 @@ def timing_fields_from_universe(uni: Dict[str, Any]) -> Dict[str, Any]:
 
 __all__ = [
     "DEFAULT_TTL_S",
+    "FISCAL_AR_INVOICE_TYPES",
+    "COMMERCIAL_AR_INVOICE_TYPES",
     "clear_fact_universe_cache",
     "load_ar_fact_universe",
     "load_ap_fact_universe",

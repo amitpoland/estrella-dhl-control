@@ -14,8 +14,9 @@ Coverage (per task spec):
   8. Cross-currency payment-vs-invoice mismatch listed as unmatched.
   9. Negative correction reduces totals.outstanding and contributes to
      totals.credited.
- 10. Proforma emits proforma_treated_as_debit warning and appears as
-     a debit entry.
+ 10. Proforma is excluded from fiscal AR (warning proforma_excluded_from_fiscal;
+     contributes 0 to invoiced / outstanding). Payment linked only to a
+     Proforma does not reduce fiscal outstanding.
  11. Multi-currency separation; no cross-currency arithmetic.
  12. Running balance tie-break — invoice before same-day payment.
  13. Aging bucket boundaries at 0/1/30/31/60/61/90/91 days.
@@ -487,22 +488,68 @@ def test_negative_correction_credits_total():
     assert totals["outstanding"] == "150.00"
 
 
-def test_proforma_emits_warning_and_is_debit():
+def test_proforma_excluded_from_fiscal_ar():
+    """Proforma is not a fiscal invoice — 0 to count/invoiced/outstanding."""
     out = _agg(
         invoice_xmls=[
+            _invoice_xml(invoice_id="I-1", type_="normal",
+                          brutto="1000.00", date="2026-04-01",
+                          currency="USD"),
             _invoice_xml(invoice_id="P-1", type_="proforma",
-                          brutto="500.00", date="2026-04-01",
-                          currency="EUR"),
+                          brutto="500.00", date="2026-04-02",
+                          currency="USD"),
+        ],
+        payment_xmls=[
+            _payment_xml(payment_id="PAY-1", invoice_id="I-1",
+                          value="400.00", currency="USD",
+                          date="2026-04-10"),
         ],
     )
-    proforma_warns = [w for w in out["warnings"]
-                       if w["event"] == "proforma_treated_as_debit"]
-    assert len(proforma_warns) == 1
-    assert proforma_warns[0]["wfirma_doc_id"] == "P-1"
-    e = out["entries_per_currency"]["EUR"][0]
-    assert e["type"]   == "proforma"
-    assert e["debit"]  == "500.00"
-    assert e["credit"] == "0.00"
+    excl = [w for w in out["warnings"]
+            if w["event"] == "proforma_excluded_from_fiscal"]
+    assert len(excl) == 1
+    assert excl[0]["wfirma_doc_id"] == "P-1"
+    entries = out["entries_per_currency"]["USD"]
+    types = [e["type"] for e in entries]
+    assert "proforma" not in types
+    assert types.count("invoice") == 1
+    assert types.count("payment") == 1
+    totals = out["totals_per_currency"]["USD"]
+    assert totals["invoiced"] == "1000.00"
+    assert totals["received"] == "400.00"
+    assert totals["outstanding"] == "600.00"
+
+
+def test_payment_linked_only_to_proforma_does_not_affect_fiscal():
+    out = _agg(
+        invoice_xmls=[
+            _invoice_xml(invoice_id="I-1", type_="normal",
+                          brutto="1000.00", date="2026-04-01",
+                          currency="USD"),
+            _invoice_xml(invoice_id="P-1", type_="proforma",
+                          brutto="500.00", date="2026-04-02",
+                          currency="USD"),
+        ],
+        payment_xmls=[
+            _payment_xml(payment_id="PAY-PF", invoice_id="P-1",
+                          value="200.00", currency="USD",
+                          date="2026-04-11"),
+        ],
+    )
+    totals = out["totals_per_currency"]["USD"]
+    assert totals["invoiced"] == "1000.00"
+    assert totals["received"] == "0.00"
+    assert totals["outstanding"] == "1000.00"
+    assert out["aging_per_currency"]["USD"]["total"] == "1000.00"
+    unm_all = []
+    for rows in (out["unmatched_payments_per_currency"] or {}).values():
+        unm_all.extend(rows)
+    assert any(u["wfirma_doc_id"] == "PAY-PF" for u in unm_all)
+    assert any(
+        w["event"] == "payment_links_invoice_outside_window"
+        and w.get("linked_invoice") == "P-1"
+        for w in out["warnings"]
+    )
 
 
 def test_multi_currency_separation():
