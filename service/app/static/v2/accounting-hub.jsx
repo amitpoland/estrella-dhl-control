@@ -845,16 +845,25 @@ function _AccLastSyncKpi({ state }) {
   );
 }
 
-// Overview KPI row — fetches the two reused endpoints; Item 1B tiles stay pending.
+// Overview KPI row — Sales Receivable from bulk MA (zero per-customer calls).
+// Never calls /ledgers/clients?limit=100 (that path was the N+1 timeout).
 function AccountingOverviewKpis() {
   const [recv, setRecv] = React.useState({ loading: true, error: null, receivable: null });
   const [sync, setSync] = React.useState({ loading: true, error: null, sync: null });
   React.useEffect(() => {
     let cancelled = false;
-    window.PzApi.listClientBalances({ limit: 100 }).then(res => {
+    const now = new Date();
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const ytdFrom = `${now.getUTCFullYear()}-01-01`;
+    const today = iso(now);
+    window.PzApi.getManagementAnalysis({ from: ytdFrom, to: today, as_of: today }).then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setRecv({ loading: false, error: (res && res.error) || 'Load failed', receivable: null }); return; }
-      setRecv({ loading: false, error: null, receivable: accReceivableByCurrency((res.data && res.data.rows) || []) });
+      const summaries = ((res.data && res.data.currency_summaries) || []).map(s => ({
+        currency: s.currency,
+        amount: String(s.total_receivable != null ? s.total_receivable : '0.00'),
+      }));
+      setRecv({ loading: false, error: null, receivable: summaries });
     }).catch(e => { if (!cancelled) setRecv({ loading: false, error: (e && e.message) || String(e), receivable: null }); });
     window.PzApi.getAnalyticsPhaseA().then(res => {
       if (cancelled) return;

@@ -996,9 +996,11 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focu
     let gone = false;
     setSuppliers(null); setListErr(null);
     onLoadInfo && onLoadInfo({ status: 'loading', at: null, count: null, error: null });
-    window.PzApi.getPayablesAnalysis({
+    const payParams = {
       from: period.from, to: period.to, as_of: period.to, status: 'outstanding',
-    })
+    };
+    if (refreshKey > 0) payParams.refresh = 1;
+    window.PzApi.getPayablesAnalysis(payParams)
       .then((res) => {
         if (gone) return;
         if (!res || res.ok === false) throw new Error((res && res.error) || 'payables read failed');
@@ -1020,7 +1022,10 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focu
     if (!activeId) { setStmt(null); return; }
     let gone = false;
     setStmtLoading(true); setStmtErr(null); setStmt(null);
-    window.PzApi.getSupplierStatement(activeId, period.from, period.to, period.to)
+    window.PzApi.getSupplierStatement(
+      activeId, period.from, period.to, period.to,
+      refreshKey > 0 ? { refresh: true } : undefined,
+    )
       .then((res) => {
         if (gone) return;
         if (!res || res.ok === false) throw new Error((res && res.error) || 'statement failed');

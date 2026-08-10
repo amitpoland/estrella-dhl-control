@@ -361,6 +361,7 @@ def build_management_analysis(
     contractor_id: str = "",
     status: str = "",
     types: tuple = ("normal", "correction", "proforma"),
+    force_refresh: bool = False,
 ) -> Dict[str, Any]:
     """Live bulk portfolio read — ZERO per-customer wFirma calls."""
     df = (date_from or "").strip()
@@ -371,22 +372,14 @@ def build_management_analysis(
         raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
     ao = (as_of or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    t0 = time.perf_counter()
-    inv_stats: Dict[str, Any] = {}
-    pay_stats: Dict[str, Any] = {}
+    from .ledger_fact_universe import load_ar_fact_universe
 
-    inv_nodes = wfirma_client.fetch_invoices_for_period(
-        df, dt, types=types, stats=inv_stats
-    )
-    pay_nodes = wfirma_client.fetch_payments_for_period(df, dt, stats=pay_stats)
+    uni = load_ar_fact_universe(df, dt, types=types, force=force_refresh)
+    invoice_facts = uni["invoice_facts"]
+    payment_facts = uni["payment_facts"]
+    inv_stats = uni.get("inv_stats") or {}
+    pay_stats = uni.get("pay_stats") or {}
 
-    inv_nodes = _python_filter_by_date(inv_nodes, df, dt, "date")
-    pay_nodes = _python_filter_by_date(pay_nodes, df, dt, "date")
-
-    invoice_facts = [_parse_invoice_fact(n) for n in inv_nodes]
-    payment_facts = [_parse_payment_fact(n) for n in pay_nodes]
-
-    duration_ms = int((time.perf_counter() - t0) * 1000)
     query_stats = {
         "invoice_api_calls": int(inv_stats.get("api_calls") or 0),
         "payment_api_calls": int(pay_stats.get("api_calls") or 0),
@@ -402,8 +395,10 @@ def build_management_analysis(
         ),
         "invoice_stop_reason": inv_stats.get("stopped_reason"),
         "payment_stop_reason": pay_stats.get("stopped_reason"),
-        "duration_ms": duration_ms,
+        "duration_ms": int(uni.get("duration_ms") or 0),
         "per_customer_wfirma_calls": 0,
+        "cache_hit": bool(uni.get("cache_hit")),
+        "coalesced": bool(uni.get("coalesced")),
     }
     health = {
         "ok": True,
@@ -740,6 +735,7 @@ def build_payables_analysis(
     contractor_id: str = "",
     status: str = "",
     aging_bucket: str = "",
+    force_refresh: bool = False,
 ) -> Dict[str, Any]:
     """Live bulk AP portfolio — ZERO per-supplier wFirma calls."""
     df = (date_from or "").strip()
@@ -750,20 +746,14 @@ def build_payables_analysis(
         raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
     ao = (as_of or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    t0 = time.perf_counter()
-    exp_stats: Dict[str, Any] = {}
-    pay_stats: Dict[str, Any] = {}
+    from .ledger_fact_universe import load_ap_fact_universe
 
-    exp_nodes = wfirma_client.fetch_expenses_for_period(df, dt, stats=exp_stats)
-    pay_nodes = wfirma_client.fetch_payments_for_period(df, dt, stats=pay_stats)
+    uni = load_ap_fact_universe(df, dt, force=force_refresh)
+    expense_facts = uni["expense_facts"]
+    payment_facts = uni["payment_facts"]
+    exp_stats = uni.get("exp_stats") or {}
+    pay_stats = uni.get("pay_stats") or {}
 
-    exp_nodes = _python_filter_by_date(exp_nodes, df, dt, "date")
-    pay_nodes = _python_filter_by_date(pay_nodes, df, dt, "date")
-
-    expense_facts = [_parse_expense_fact(n) for n in exp_nodes]
-    payment_facts = [_parse_payment_fact(n) for n in pay_nodes]
-
-    duration_ms = int((time.perf_counter() - t0) * 1000)
     query_stats = {
         "expense_api_calls": int(exp_stats.get("api_calls") or 0),
         "payment_api_calls": int(pay_stats.get("api_calls") or 0),
@@ -779,13 +769,11 @@ def build_payables_analysis(
         ),
         "expense_stop_reason": exp_stats.get("stopped_reason"),
         "payment_stop_reason": pay_stats.get("stopped_reason"),
-        "duration_ms": duration_ms,
+        "duration_ms": int(uni.get("duration_ms") or 0),
         "per_supplier_wfirma_calls": 0,
+        "cache_hit": bool(uni.get("cache_hit")),
+        "coalesced": bool(uni.get("coalesced")),
     }
-    if int(exp_stats.get("duplicate_ids_suppressed") or 0):
-        # Surface into data_quality via source_health note; portfolio builder
-        # also counts duplicate ids if any slip through.
-        pass
     health = {
         "ok": True,
         "expense_cap_hit": exp_stats.get("stopped_reason") == "safety_cap",

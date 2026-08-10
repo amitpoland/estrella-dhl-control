@@ -1,0 +1,137 @@
+{
+  "base": "http://127.0.0.1:8765",
+  "window": {
+    "from": "2026-01-01",
+    "to": "2026-08-10"
+  },
+  "rep": {
+    "bal15": {
+      "ok": true,
+      "status": 200,
+      "ms": 19128,
+      "bytes": 6670,
+      "count": 15,
+      "rows": 15,
+      "qs": {
+        "invoice_api_calls": 2,
+        "payment_api_calls": 4,
+        "invoices_normalized": 365,
+        "payments_normalized": 669,
+        "duration_ms": 19073,
+        "per_customer_wfirma_calls": 0,
+        "cache_hit": false,
+        "coalesced": false,
+        "refresh": false
+      }
+    },
+    "bal15w": {
+      "ok": true,
+      "status": 200,
+      "ms": 42,
+      "bytes": 6669,
+      "count": 15,
+      "rows": 15,
+      "qs": {
+        "invoice_api_calls": 2,
+        "payment_api_calls": 4,
+        "invoices_normalized": 365,
+        "payments_normalized": 669,
+        "duration_ms": 19073,
+        "per_customer_wfirma_calls": 0,
+        "cache_hit": true,
+        "coalesced": false,
+        "refresh": false
+      }
+    },
+    "bal100": {
+      "ok": true,
+      "status": 200,
+      "ms": 28,
+      "bytes": 39699,
+      "count": 100,
+      "rows": 100,
+      "qs": {
+        "invoice_api_calls": 2,
+        "payment_api_calls": 4,
+        "invoices_normalized": 365,
+        "payments_normalized": 669,
+        "duration_ms": 19073,
+        "per_customer_wfirma_calls": 0,
+        "cache_hit": true,
+        "coalesced": false,
+        "refresh": false
+      }
+    },
+    "ma": {
+      "ok": true,
+      "status": 200,
+      "ms": 24,
+      "bytes": 32683,
+      "count": 0,
+      "rows": 0,
+      "qs": {
+        "invoice_api_calls": 2,
+        "payment_api_calls": 4,
+        "invoice_pages": 2,
+        "payment_pages": 4,
+        "invoices_normalized": 365,
+        "payments_normalized": 669,
+        "invoice_duplicates_suppressed": 0,
+        "payment_duplicates_suppressed": 0,
+        "invoice_stop_reason": "short",
+        "payment_stop_reason": "short",
+        "duration_ms": 19073,
+        "per_customer_wfirma_calls": 0,
+        "cache_hit": true,
+        "coalesced": false
+      }
+    },
+    "ap": {
+      "ok": true,
+      "status": 200,
+      "ms": 8323,
+      "bytes": 18801,
+      "count": 14,
+      "rows": 0,
+      "qs": {
+        "expense_api_calls": 3,
+        "payment_api_calls": 4,
+        "expense_pages": 3,
+        "payment_pages": 4,
+        "expenses_normalized": 443,
+        "payments_normalized": 669,
+        "expense_duplicates_suppressed": 0,
+        "payment_duplicates_suppressed": 0,
+        "expense_stop_reason": "short",
+        "payment_stop_reason": "short",
+        "duration_ms": 8285,
+        "per_supplier_wfirma_calls": 0,
+        "cache_hit": false,
+        "coalesced": false
+      }
+    }
+  },
+  "supplier_drill": {
+    "ok": true,
+    "status": 200,
+    "ms": 18,
+    "bytes": 52235,
+    "qs": {
+      "expense_api_calls": 3,
+      "payment_api_calls": 4,
+      "expenses_in_scope": 144,
+      "payments_in_scope": 116,
+      "per_supplier_wfirma_calls": 0,
+      "cache_hit": true,
+      "coalesced": false,
+      "note": "shared AP fact universe + Python contractor filter"
+    }
+  },
+  "client_drill": {
+    "ok": true,
+    "status": 200,
+    "ms": 352,
+    "bytes": 368,
+    "qs": null
+  }
+}

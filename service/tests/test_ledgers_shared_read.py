@@ -84,7 +84,7 @@ def test_cache_key_is_resolved_query_string():
     assert "URLSearchParams(params)" in region, (
         "Cache key must derive from the fully-resolved query params"
     )
-    assert "const key = _clientBalancesQs(params)" in region, (
+    assert "const key = _clientBalancesQs(" in region, (
         "Shared fetch must key the cache by the resolved query string"
     )
 
@@ -186,13 +186,19 @@ def test_both_callers_back_onto_one_shared_fetch():
 
 def test_client_ledger_roster_uses_shared_method():
     led = _ledgers()
-    assert "window.PzApi.listClientBalancesShared({ limit: 100 }" in led, (
-        "Client Ledger roster load must use the shared PzApi method (limit=100)"
+    assert "window.PzApi.listClientBalancesShared(params" in led, (
+        "Client Ledger roster load must use the shared PzApi method"
+    )
+    assert "LDG_LIST_LIMIT = 15" in led, (
+        "Client Ledger roster must page 15 rows (shared register contract)"
     )
     # The old independent direct roster read must be gone (no duplicate live read).
     assert "apiFetch('/api/v1/ledgers/clients?limit=100')" not in led, (
         "The page's own direct /ledgers/clients?limit=100 read must be removed — "
         "the roster now shares Accounting Overview's single read"
+    )
+    assert "limit: 100" not in led, (
+        "Client Ledger must not request a 100-row N+1 roster"
     )
 
 

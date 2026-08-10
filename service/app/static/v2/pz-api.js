@@ -159,10 +159,15 @@
   // matching entry. Backs both listClientBalances (wrapped) and
   // listClientBalancesShared (raw) so identical params share ONE live read.
   function _fetchClientBalancesShared(params, force) {
-    const key = _clientBalancesQs(params);
+    const p = Object.assign({}, params || {});
+    if (force) p.refresh = '1';
+    const key = _clientBalancesQs(p);
     const now = Date.now();
     if (force) {
+      // Evict both refreshed and non-refresh keys for the same page params.
+      const baseKey = _clientBalancesQs(params || {});
       _clientBalancesCache.delete(key);
+      _clientBalancesCache.delete(baseKey);
     } else {
       const hit = _clientBalancesCache.get(key);
       if (hit && (now - hit.at) < _CLIENT_BALANCES_TTL_MS) return hit.promise;
@@ -1449,6 +1454,7 @@
       if (p.currency) qs.set('currency', p.currency);
       if (p.contractor_id) qs.set('contractor_id', p.contractor_id);
       if (p.status) qs.set('status', p.status);
+      if (p.refresh) qs.set('refresh', '1');
       const q = qs.toString();
       return _get(`${BASE}/ledgers/management-analysis.json${q ? `?${q}` : ''}`);
     },
@@ -1456,7 +1462,7 @@
     // GET /api/v1/ledgers/payables-analysis.json
     // Read-only Supplier AP portfolio + creditor aging. Bulk expenses/payments
     // only — zero per-supplier wFirma calls. Currencies stay separate (no FX).
-    // params: { from, to, as_of?, currency?, contractor_id?, status?, aging_bucket? }
+    // params: { from, to, as_of?, currency?, contractor_id?, status?, aging_bucket?, refresh? }
     getPayablesAnalysis: (params) => {
       const p = params || {};
       const qs = new URLSearchParams();
@@ -1467,16 +1473,18 @@
       if (p.contractor_id) qs.set('contractor_id', p.contractor_id);
       if (p.status) qs.set('status', p.status);
       if (p.aging_bucket) qs.set('aging_bucket', p.aging_bucket);
+      if (p.refresh) qs.set('refresh', '1');
       const q = qs.toString();
       return _get(`${BASE}/ledgers/payables-analysis.json${q ? `?${q}` : ''}`);
     },
 
     // GET /api/v1/ledgers/suppliers/{contractor_id}/statement.json
-    getSupplierStatement: (contractorId, from, to, asOf) => {
+    getSupplierStatement: (contractorId, from, to, asOf, opts) => {
       const qs = new URLSearchParams();
       if (from) qs.set('from', from);
       if (to) qs.set('to', to);
       if (asOf) qs.set('as_of', asOf);
+      if (opts && opts.refresh) qs.set('refresh', '1');
       const q = qs.toString();
       return _get(
         `${BASE}/ledgers/suppliers/${encodeURIComponent(contractorId)}/statement.json${q ? `?${q}` : ''}`

@@ -1,0 +1,240 @@
+{
+  "measured_at": "2026-08-10T07:46:48.457085+00:00",
+  "base": "http://127.0.0.1:47213",
+  "head_note": "production NSSM 127.0.0.1:47213",
+  "window": {
+    "from": "2026-01-01",
+    "to": "2026-08-10"
+  },
+  "surfaces": {
+    "client_balance_limit15": {
+      "endpoint": "/api/v1/ledgers/clients",
+      "params": {
+        "limit": 15,
+        "from": "2026-01-01",
+        "to": "2026-08-10"
+      },
+      "elapsed_ms": 19219,
+      "status": 200,
+      "bytes": 6411,
+      "summary": {
+        "count": 15,
+        "rows": 15,
+        "balance_available": 15,
+        "period": {
+          "from": "2026-01-01",
+          "to": "2026-08-10"
+        }
+      },
+      "ok": true,
+      "error": null
+    },
+    "client_balance_limit3": {
+      "endpoint": "/api/v1/ledgers/clients",
+      "params": {
+        "limit": 3,
+        "from": "2026-01-01",
+        "to": "2026-08-10"
+      },
+      "elapsed_ms": 10228,
+      "status": 200,
+      "bytes": 1664,
+      "summary": {
+        "count": 3,
+        "rows": 3,
+        "balance_available": 3,
+        "period": {
+          "from": "2026-01-01",
+          "to": "2026-08-10"
+        }
+      },
+      "ok": true,
+      "error": null
+    },
+    "overview_kpi_limit100": {
+      "endpoint": "/api/v1/ledgers/clients",
+      "params": {
+        "limit": 100,
+        "from": "2026-01-01",
+        "to": "2026-08-10"
+      },
+      "elapsed_ms": 180006,
+      "status": 0,
+      "bytes": 0,
+      "summary": {},
+      "ok": false,
+      "error": "timed out"
+    },
+    "client_ledger_drill": {
+      "endpoint": "/api/v1/ledgers/clients/{id}/statement.json",
+      "contractor_id": "201184867",
+      "elapsed_ms": 2771,
+      "status": 200,
+      "bytes": 368,
+      "summary": {
+        "contractor": "201184867",
+        "currencies": [],
+        "entries": 0,
+        "warnings": 0,
+        "period": {
+          "from": "2026-01-01",
+          "to": "2026-08-10"
+        }
+      },
+      "ok": true,
+      "error": null
+    },
+    "supplier_ledger_landing": {
+      "endpoint": "/api/v1/ledgers/payables-analysis.json",
+      "elapsed_ms": 15086,
+      "status": 200,
+      "bytes": 18297,
+      "summary": {
+        "query_stats": {
+          "expense_api_calls": 3,
+          "payment_api_calls": 4,
+          "expense_pages": 3,
+          "payment_pages": 4,
+          "expenses_normalized": 438,
+          "payments_normalized": 669,
+          "expense_duplicates_suppressed": 0,
+          "payment_duplicates_suppressed": 0,
+          "expense_stop_reason": "short",
+          "payment_stop_reason": "short",
+          "duration_ms": 15058,
+          "per_supplier_wfirma_calls": 0
+        },
+        "source_health": {
+          "ok": true,
+          "expense_cap_hit": false,
+          "payment_cap_hit": false,
+          "expense_paging_stalled": false,
+          "payment_paging_stalled": false,
+          "repeated_paging_page_detected": false
+        },
+        "suppliers": 13,
+        "first_supplier": "38142296",
+        "top_keys": [
+          "as_of",
+          "currency_summaries",
+          "data_quality",
+          "due_date_coverage",
+          "filters",
+          "generated_at",
+          "period",
+          "query_stats",
+          "sign_convention",
+          "source_health",
+          "suppliers",
+          "warnings"
+        ]
+      },
+      "ok": true,
+      "error": null
+    },
+    "supplier_ledger_drill": {
+      "endpoint": "/api/v1/ledgers/suppliers/{id}/statement.json",
+      "contractor_id": "38142296",
+      "elapsed_ms": 14477,
+      "status": 200,
+      "bytes": 51451,
+      "summary": {
+        "contractor": "38142296",
+        "currencies": [
+          "USD"
+        ],
+        "entries": 165,
+        "warnings": 92,
+        "period": {
+          "from": "2026-01-01",
+          "to": "2026-08-10"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "note": "route re-fetches FULL bulk expenses+payments then filters to one contractor"
+    },
+    "customer_master_list": {
+      "endpoint": "/api/v1/customer-master",
+      "elapsed_ms": 39,
+      "status": 200,
+      "bytes": 110796,
+      "row_count": 50,
+      "top_keys": [
+        "count",
+        "customers"
+      ],
+      "ok": true,
+      "error": null
+    },
+    "supplier_master_list": {
+      "endpoint": "/api/v1/suppliers",
+      "elapsed_ms": 7,
+      "status": 200,
+      "bytes": 3171,
+      "row_count": 5,
+      "top_keys": [
+        "count",
+        "suppliers"
+      ],
+      "ok": true,
+      "error": null
+    },
+    "management_analysis": {
+      "endpoint": "/api/v1/ledgers/management-analysis.json",
+      "elapsed_ms": 23334,
+      "status": 200,
+      "bytes": 32648,
+      "summary": {
+        "query_stats": {
+          "invoice_api_calls": 2,
+          "payment_api_calls": 4,
+          "invoice_pages": 2,
+          "payment_pages": 4,
+          "invoices_normalized": 365,
+          "payments_normalized": 669,
+          "invoice_duplicates_suppressed": 0,
+          "payment_duplicates_suppressed": 0,
+          "invoice_stop_reason": "short",
+          "payment_stop_reason": "short",
+          "duration_ms": 23285,
+          "per_customer_wfirma_calls": 0
+        },
+        "source_health": {
+          "ok": true,
+          "invoice_cap_hit": false,
+          "payment_cap_hit": false,
+          "invoice_paging_stalled": false,
+          "payment_paging_stalled": false
+        },
+        "customer_or_row_count": 37,
+        "currencies": null,
+        "top_keys": [
+          "as_of",
+          "currency_summaries",
+          "customers",
+          "data_quality",
+          "due_date_coverage",
+          "filters",
+          "generated_at",
+          "period",
+          "query_stats",
+          "source_health",
+          "warnings"
+        ]
+      },
+      "ok": true,
+      "error": null
+    }
+  },
+  "n_plus_one_evidence": {
+    "limit3_ms": 10228,
+    "limit15_ms": 19219,
+    "limit100_ms": 180006,
+    "ms_per_client_approx_from_15": 1281.3,
+    "ms_per_client_approx_from_3": 3409.3,
+    "scales_with_limit": false,
+    "code_path": "list_client_balances loops page and calls _build_statement_dict per client (contractor preflight + invoices/find + payments/find)",
+    "estimated_wfirma_calls_limit15": ">= 15*(1 preflight + >=1 invoices page + >=1 payments page)"
+  }
+}

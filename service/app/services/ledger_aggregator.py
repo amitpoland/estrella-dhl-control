@@ -775,42 +775,34 @@ def _entry_for_payment(
     }
 
 
-def aggregate_statement(
+def aggregate_statement_from_facts(
     contractor_meta: Dict[str, Any],
-    invoice_nodes:   List[ET.Element],
-    payment_nodes:   List[ET.Element],
+    invoice_facts:   List[Dict[str, Any]],
+    payment_facts:   List[Dict[str, Any]],
     statement_date:  str,
     period:          tuple,
 ) -> Dict[str, Any]:
-    """Build the per-currency Statement of Account.
+    """Build the per-currency Statement of Account from parsed facts.
 
-    Pure: no I/O, no DB, no HTTP. Caller is responsible for date-filtering
-    invoice and payment nodes Python-side BEFORE calling this — the
-    aggregator does not re-filter (so bucketing matches the fetched
-    window exactly).
-
-    Returns the data model documented in
-    ``docs/PHASE10B_STATEMENT_ARCHITECTURE.md`` §4. All decimals are
-    quantised-2dp strings.
+    Pure: no I/O. Same arithmetic as :func:`aggregate_statement` — the
+    node-based entrypoint parses then delegates here so bulk AR roster
+    and single-contractor drill share one authority.
     """
     df, dt = period if period else ("", "")
     warnings: List[Dict[str, Any]] = []
 
-    invoice_facts = [_parse_invoice_fact(n) for n in (invoice_nodes or [])]
-    payment_facts = [_parse_payment_fact(n) for n in (payment_nodes or [])]
-
     # Drop unusable rows; warn if we dropped anything.
     invoice_facts_kept: List[Dict[str, Any]] = []
-    for f in invoice_facts:
-        if not f["id"]:
+    for f in invoice_facts or []:
+        if not f.get("id"):
             warnings.append({"event": "invoice_with_empty_id"})
             continue
-        if not f["currency"]:
+        if not f.get("currency"):
             warnings.append({
                 "event":         "invoice_currency_missing",
                 "wfirma_doc_id": f["id"],
             })
-        if f["type"] == "proforma":
+        if f.get("type") == "proforma":
             warnings.append({
                 "event":         "proforma_treated_as_debit",
                 "wfirma_doc_id": f["id"],
@@ -819,11 +811,13 @@ def aggregate_statement(
     invoice_facts = invoice_facts_kept
 
     payment_facts_kept: List[Dict[str, Any]] = []
-    for f in payment_facts:
-        if not f["id"]:
+    for f in payment_facts or []:
+        if not f.get("id"):
             warnings.append({"event": "payment_with_empty_id"})
             continue
-        if f["value"] < 0:
+        # Mutating currency inheritance below must not leak across callers.
+        f = dict(f)
+        if f.get("value", Decimal("0")) < 0:
             warnings.append({
                 "event":         "reversal_payment",
                 "wfirma_doc_id": f["id"],
@@ -842,9 +836,8 @@ def aggregate_statement(
     matched_payment_ids: set = set()
 
     for p in payment_facts:
-        linked = p["linked_invoice"]
+        linked = p.get("linked_invoice") or ""
         is_unmatched = False
-        inherited_ccy = ""
         if not linked:
             is_unmatched = True
             warnings.append({
@@ -864,7 +857,7 @@ def aggregate_statement(
                 })
             else:
                 # Match on invoice id. Payment value is in document currency.
-                inherited_ccy = inv["currency"] or ""
+                inherited_ccy = inv.get("currency") or ""
                 if not inherited_ccy:
                     warnings.append({
                         "event":         "invoice_currency_missing",
@@ -1030,12 +1023,83 @@ def aggregate_statement(
     }
 
 
+def aggregate_statement(
+    contractor_meta: Dict[str, Any],
+    invoice_nodes:   List[ET.Element],
+    payment_nodes:   List[ET.Element],
+    statement_date:  str,
+    period:          tuple,
+) -> Dict[str, Any]:
+    """Build the per-currency Statement of Account.
+
+    Pure: no I/O, no DB, no HTTP. Caller is responsible for date-filtering
+    invoice and payment nodes Python-side BEFORE calling this — the
+    aggregator does not re-filter (so bucketing matches the fetched
+    window exactly).
+
+    Returns the data model documented in
+    ``docs/PHASE10B_STATEMENT_ARCHITECTURE.md`` §4. All decimals are
+    quantised-2dp strings.
+    """
+    invoice_facts = [_parse_invoice_fact(n) for n in (invoice_nodes or [])]
+    payment_facts = [_parse_payment_fact(n) for n in (payment_nodes or [])]
+    return aggregate_statement_from_facts(
+        contractor_meta,
+        invoice_facts,
+        payment_facts,
+        statement_date,
+        period,
+    )
+
+
+def build_statement_index_by_contractor(
+    invoice_facts: List[Dict[str, Any]],
+    payment_facts: List[Dict[str, Any]],
+    *,
+    statement_date: str,
+    period: tuple,
+) -> Dict[str, Dict[str, Any]]:
+    """One bulk AR fact universe → per-contractor statement dicts.
+
+    Payments are scoped by ``contractor_id`` exactly as
+    ``payments/find`` with contractor filter (no silent inheritance from
+    linked invoice). Used by Client Balance roster so
+    ``per_customer_wfirma_calls=0``.
+    """
+    inv_by_cid: Dict[str, List[Dict[str, Any]]] = {}
+    for inv in invoice_facts or []:
+        cid = (inv.get("contractor_id") or "").strip()
+        if not cid:
+            continue
+        inv_by_cid.setdefault(cid, []).append(inv)
+
+    pay_by_cid: Dict[str, List[Dict[str, Any]]] = {}
+    for pay in payment_facts or []:
+        cid = (pay.get("contractor_id") or "").strip()
+        if not cid:
+            continue
+        pay_by_cid.setdefault(cid, []).append(pay)
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for cid in set(inv_by_cid) | set(pay_by_cid):
+        out[cid] = aggregate_statement_from_facts(
+            {"wfirma_contractor_id": cid},
+            inv_by_cid.get(cid, []),
+            pay_by_cid.get(cid, []),
+            statement_date,
+            period,
+        )
+    return out
+
+
 __all__ = [
     "LEDGER_ENTRY_FIELDS",
     "FORBIDDEN_ENTRY_FIELDS",
     "aggregate_invoice_ledger",
     # Phase 10B
     "aggregate_statement",
+    "aggregate_statement_from_facts",
+    "build_statement_index_by_contractor",
     "remaining_after_payments",
     "match_payments_to_invoices",
     "match_payments_to_expenses",
