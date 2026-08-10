@@ -1,6 +1,7 @@
 ﻿"""Behavioral tests for DHL Logistics Control Tower read-only projector."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -47,6 +48,219 @@ def test_classify_inbound_delivered_via_timeline():
         ]
     )
     assert proj.classify_inbound(delivered) == "delivered"
+
+
+def test_classify_inbound_carrier_nonterminal_blocks_timeline_delivered():
+    """Tower must not label Delivered when carrier snapshot is non-terminal."""
+    audit = _audit(
+        timeline=[
+            {"ts": "2026-08-01T08:00:00+00:00", "event": "batch_created"},
+            {"ts": "2026-08-03T08:00:00+00:00", "event": "carrier_delivered"},
+        ]
+    )
+    tracking = {
+        "status": "in_transit",
+        "source": "tracking_cache",
+        "events": [{"description": "In transit", "timestamp": "2026-08-02T08:00:00+00:00"}],
+        "delivered_at": None,
+    }
+    assert proj.classify_inbound(audit, tracking) == "active"
+
+
+def test_dhl_email_kpi_prefers_received_at_not_discovery_timeline():
+    audit = _audit(
+        dhl_email={
+            "received": True,
+            "received_at": "2026-05-13T09:31:52.331000+00:00",
+            "source": "email_evidence_v2",
+        },
+        timeline=[
+            {"ts": "2026-05-13T07:16:37+00:00", "event": "carrier_arrived_poland"},
+            {"ts": "2026-08-10T10:13:46.368566+00:00", "event": "dhl_email_received"},
+            {"ts": "2026-08-10T10:14:00+00:00", "event": "dhl_inbox_scanned"},
+        ],
+    )
+    row = proj.project_inbound_row(audit)
+    assert row["dhl_email_kpi_at_utc"].startswith("2026-05-13T09:31:52")
+    assert row["dhl_email_kpi_source"] == "audit.dhl_email.received_at"
+    assert row["dhl_email_kpi_source_class"] == "AUTHORITATIVE_EVENT_TIME"
+    assert row["dhl_email_kpi_exclude_reason"] is None
+    email_ms = next(m for m in row["milestones"] if m["stage_id"] == "dhl_email")
+    assert email_ms["timestamp_utc"].startswith("2026-05-13")
+    assert email_ms["authority"] == "audit.dhl_email.received_at"
+
+
+def test_dhl_inbox_scanned_cannot_satisfy_dhl_email_kpi():
+    audit = _audit(
+        dhl_email={},
+        timeline=[
+            {"ts": "2026-05-13T07:16:37+00:00", "event": "carrier_arrived_poland"},
+            {"ts": "2026-08-10T10:14:00+00:00", "event": "dhl_inbox_scanned"},
+        ],
+    )
+    row = proj.project_inbound_row(audit)
+    assert row["dhl_email_kpi_at_utc"] is None
+    assert row["dhl_email_kpi_exclude_reason"] == "missing_original_dhl_email_timestamp"
+    assert "missing_original_dhl_email_timestamp" in row["data_quality"]
+    assert not any(m["stage_id"] == "dhl_email" for m in row["milestones"])
+    # Source map pins discovery as non-KPI
+    assert proj.DHL_EMAIL_MILESTONE_SOURCE_MAP["timeline.dhl_inbox_scanned"] == (
+        "DISCOVERY/BACKFILL_TIME"
+    )
+    assert "dhl_inbox_scanned" not in proj._INBOUND_MILESTONES[1][2]
+
+
+def test_pickup_to_poland_excludes_delivered_before_poland():
+    rows = [
+        {
+            "pickup_at_utc": "2026-02-10T14:32:00+00:00",
+            "delivered_at_utc": "2026-02-13T15:09:00+00:00",
+            "milestones": [
+                {"stage_id": "arrived_pl", "timestamp_utc": "2026-05-17T17:30:12+00:00"},
+            ],
+        },
+        {
+            "pickup_at_utc": "2026-08-01T08:00:00+00:00",
+            "delivered_at_utc": "2026-08-03T08:00:00+00:00",
+            "milestones": [
+                {"stage_id": "arrived_pl", "timestamp_utc": "2026-08-02T08:00:00+00:00"},
+            ],
+        },
+    ]
+    stats = proj._fixed_transition_analytics(rows, proj._INBOUND_FIXED_TRANSITIONS)
+    pl = stats["origin_pickup_to_poland"]
+    assert pl["n"] == 1
+    assert pl["exclusion_reason_counts"]["lifecycle_mismatch_delivered_before_poland"] == 1
+
+
+def test_poland_to_dhl_email_excludes_missing_original_timestamp():
+    rows = [
+        {
+            "direction": "inbound",
+            "dhl_email_kpi_at_utc": "2026-08-01T22:00:00+00:00",
+            "dhl_email_kpi_exclude_reason": None,
+            "milestones": [
+                {"stage_id": "arrived_pl", "timestamp_utc": "2026-08-01T20:00:00+00:00"},
+                {
+                    "stage_id": "dhl_email",
+                    "timestamp_utc": "2026-08-01T22:00:00+00:00",
+                    "kpi_usable": True,
+                },
+            ],
+        },
+        {
+            "direction": "inbound",
+            "dhl_email_kpi_at_utc": None,
+            "dhl_email_kpi_exclude_reason": "missing_original_dhl_email_timestamp",
+            "milestones": [
+                {"stage_id": "arrived_pl", "timestamp_utc": "2026-08-01T20:00:00+00:00"},
+            ],
+        },
+    ]
+    stats = proj._fixed_transition_analytics(rows, proj._INBOUND_FIXED_TRANSITIONS)
+    pl = stats["poland_to_dhl_email"]
+    assert pl["n"] == 1
+    assert pl["exclusion_reason_counts"]["missing_original_dhl_email_timestamp"] == 1
+
+
+def test_failed_tracking_cache_blocks_timeline_delivered(tmp_path, monkeypatch):
+    """2824111912 class: cache exists but non-terminal → never Tower Delivered."""
+    batch = "SHIPMENT_2824111912_TEST"
+    awb = "2824111912"
+    batch_dir = tmp_path / "outputs" / batch
+    batch_dir.mkdir(parents=True)
+    (batch_dir / "tracking_cache.json").write_text(
+        json.dumps({
+            awb: {
+                "tracking_no": awb,
+                "status": "unknown",
+                "source": "error",
+                "api_status": "failed",
+                "events": [],
+                "error": "401",
+                "cached_at": "2026-05-06T09:48:14Z",
+            }
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(proj, "_storage_root", lambda: tmp_path)
+    audit = _audit(
+        awb=awb,
+        batch_id=batch,
+        timeline=[
+            {"ts": "2026-04-26T23:53:04+00:00", "event": "batch_created"},
+            {"ts": "2026-04-29T03:16:43+00:00", "event": "shipment_delivered"},
+        ],
+        dhl_email={
+            "received": True,
+            "received_at": "2026-03-12T07:55:42Z",
+            "source": "active_shipment_monitor",
+            "subject": "Fwd: [T#1WA2603100000499] Re:- Agencja Celna DHL - przesyłka numer: 2824221912",
+        },
+    )
+    row = proj.project_inbound_row(audit)
+    assert row["classification"] != "delivered"
+    assert row["transport_status"] != "Delivered"
+    assert "delivered_claim_without_carrier_terminal" in row["data_quality"]
+    assert row["dhl_email_kpi_exclude_reason"] == "mismatched_awb_in_dhl_email_subject"
+    assert not any(m["stage_id"] == "delivered" for m in row["milestones"])
+
+
+def test_manual_admin_received_at_defers_to_email_evidence(monkeypatch):
+    """2759203252 class: manual_admin apply-time is not original receipt."""
+    monkeypatch.setattr(
+        proj,
+        "_email_evidence_dhl_request_ts",
+        lambda awb: datetime(2026, 2, 18, 13, 53, 18, tzinfo=timezone.utc),
+    )
+    audit = _audit(
+        awb="2759203252",
+        dhl_email={
+            "received": True,
+            "received_at": "2026-05-01T12:57:12.475765+00:00",
+            "source": "manual_admin",
+            "subject": "[T#1WA2602160000033] - Agencja Celna DHL - przesyłka numer: 2759203252",
+        },
+        timeline=[
+            {"ts": "2026-05-01T12:57:12+00:00", "event": "dhl_email_received"},
+        ],
+    )
+    kpi = proj.resolve_dhl_email_kpi_timestamp(audit)
+    assert kpi["kpi_usable"] is True
+    assert kpi["source"] == "email_evidence.dhl_request.timestamp"
+    assert kpi["timestamp"].isoformat().startswith("2026-02-18T13:53:18")
+
+
+def test_pre_arrival_customs_contact_counts_as_zero_hours():
+    rows = [
+        {
+            "awb": "8418664660",
+            "pickup_at_utc": "2026-08-03T14:18:00+00:00",
+            "delivered_at_utc": None,
+            "dhl_email_kpi_at_utc": "2026-08-06T07:17:38+00:00",
+            "dhl_email_subject": "T#1WA2608060000165 - Agencja Celna DHL - przesyłka numer: 8418664660",
+            "milestones": [
+                {"stage_id": "arrived_pl", "timestamp_utc": "2026-08-08T10:35:55+00:00"},
+                {"stage_id": "dhl_email", "timestamp_utc": "2026-08-06T07:17:38+00:00", "kpi_usable": True},
+            ],
+        },
+        {
+            "awb": "8580992114",
+            "pickup_at_utc": "2026-02-10T14:32:00+00:00",
+            "delivered_at_utc": "2026-02-13T15:09:00+00:00",
+            "dhl_email_kpi_at_utc": "2026-02-13T11:06:46+00:00",
+            "dhl_email_subject": "",
+            "milestones": [
+                {"stage_id": "arrived_pl", "timestamp_utc": "2026-05-17T17:30:12+00:00"},
+                {"stage_id": "dhl_email", "timestamp_utc": "2026-02-13T11:06:46+00:00", "kpi_usable": True},
+            ],
+        },
+    ]
+    stats = proj._fixed_transition_analytics(rows, proj._INBOUND_FIXED_TRANSITIONS)
+    pl = stats["poland_to_dhl_email"]
+    assert pl["n"] == 1
+    assert pl["average"] == 0.0
+    assert pl["exclusion_reason_counts"]["lifecycle_mismatch_email_vs_late_poland"] == 1
 
 
 def test_classify_inbound_excluded_awb():
@@ -275,16 +489,26 @@ def test_duration_and_timezone_fields():
     now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
     row = proj.project_inbound_row(
         _audit(
+            dhl_email={
+                "received": True,
+                "received_at": "2026-08-08T10:07:00+00:00",
+                "source": "email_evidence_v2",
+            },
             timeline=[
                 {"ts": "2026-08-08T08:00:00+00:00", "event": "batch_created"},
-                {"ts": "2026-08-08T10:07:00+00:00", "event": "dhl_email_received"},
+                {"ts": "2026-08-08T12:00:00+00:00", "event": "dhl_email_received"},
             ]
         ),
         now=now,
     )
     assert row["created_at_warsaw"] is not None
     assert row["milestones"]
-    assert row["milestones"][1]["duration_from_previous_hours"] == pytest.approx(2.12, abs=0.02)
+    email_ms = next(m for m in row["milestones"] if m["stage_id"] == "dhl_email")
+    created_ms = next(m for m in row["milestones"] if m["stage_id"] == "created")
+    assert email_ms["authority"] == "audit.dhl_email.received_at"
+    # KPI stamp is received_at (10:07), not discovery timeline (12:00)
+    assert email_ms["timestamp_utc"].startswith("2026-08-08T10:07:00")
+    assert created_ms["timestamp_utc"].startswith("2026-08-08T08:00:00")
     assert row["stage_age_hours"] is not None
     assert row["transport_status"]
 
