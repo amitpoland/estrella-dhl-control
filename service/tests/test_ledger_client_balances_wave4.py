@@ -3,9 +3,9 @@ test_ledger_client_balances_wave4.py — Wave 4 Item 4:
 Client Balance roster  GET /api/v1/ledgers/clients
 
 The roster JOINs the Customer Master client list with per-client balances
-computed by REUSING the documented Statement authority (aggregate_statement).
-These tests mock both sides — customer roster and _build_statement_dict — so
-no live wFirma call and no real customer_master.sqlite is needed.
+computed by REUSING the documented Statement authority via ONE bulk AR
+fact universe (``load_ar_fact_universe`` + ``build_statement_index_by_contractor``).
+``per_customer_wfirma_calls`` must stay 0.
 
 Coverage:
   Reducer (pure):
@@ -16,11 +16,12 @@ Coverage:
   Route:
     5. roster returns one row per customer, documented fields populated
     6. Backend-Pending columns are explicitly null + column_status disclosed
-    7. per-client wFirma failure -> balance_available False (roster not failed)
+    7. bulk wFirma failure -> 502 (no fabricated roster)
     8. customer with no contractor id -> unavailable row, no fabricated figures
     9. from > to -> 400
    10. default window is year-to-date when from/to omitted
    11. pagination: start/limit slice the roster
+   12. query_stats.per_customer_wfirma_calls == 0
 """
 from __future__ import annotations
 
@@ -28,7 +29,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
@@ -61,6 +61,19 @@ def _stmt_single(outstanding="600.00", invoiced="1000.00",
                   "1_30": "200.00", "31_60": "0.00", "61_90": "0.00",
                   "90_plus": "300.00", "total": total},
         },
+    }
+
+
+def _ar_universe():
+    return {
+        "invoice_facts": [],
+        "payment_facts": [],
+        "inv_stats": {"api_calls": 2},
+        "pay_stats": {"api_calls": 4},
+        "duration_ms": 12,
+        "cache_hit": False,
+        "coalesced": False,
+        "per_customer_wfirma_calls": 0,
     }
 
 
@@ -114,11 +127,14 @@ def test_sum_ccy_skips_bad_values():
     assert R._sum_ccy({"USD": "10.00", "EUR": "bad", "PLN": "5"}) == Decimal("15")
 
 
-# ── 5-8  Route with mocked roster + statement ───────────────────────────────
+# ── 5-8  Route with mocked roster + bulk statement index ────────────────────
 
 def test_route_roster_populates_documented_fields(client):
     with patch.object(R, "_cm_list_customers", return_value=[_cust("101")]), \
-         patch.object(R, "_build_statement_dict", return_value=_stmt_single()):
+         patch("app.services.ledger_fact_universe.load_ar_fact_universe",
+               return_value=_ar_universe()), \
+         patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
+               return_value={"101": _stmt_single()}):
         r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
     assert r.status_code == 200
     body = r.json()
@@ -128,11 +144,15 @@ def test_route_roster_populates_documented_fields(client):
     assert row["open"] == "600.00"
     assert row["overdue_invoice_age"] == "500.00"
     assert row["ytd_invoiced"] == "1000.00"
+    assert body["query_stats"]["per_customer_wfirma_calls"] == 0
 
 
 def test_route_backend_pending_columns_disclosed(client):
     with patch.object(R, "_cm_list_customers", return_value=[_cust("101")]), \
-         patch.object(R, "_build_statement_dict", return_value=_stmt_single()):
+         patch("app.services.ledger_fact_universe.load_ar_fact_universe",
+               return_value=_ar_universe()), \
+         patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
+               return_value={"101": _stmt_single()}):
         r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
     body = r.json()
     assert body["rows"][0]["last_30d"] is None
@@ -143,22 +163,20 @@ def test_route_backend_pending_columns_disclosed(client):
     assert cs["open"] == "documented"
 
 
-def test_route_per_client_failure_is_fault_isolated(client):
-    with patch.object(R, "_cm_list_customers", return_value=[_cust("101"), _cust("102")]), \
-         patch.object(R, "_build_statement_dict",
-                      side_effect=[_stmt_single(),
-                                   HTTPException(status_code=502, detail="wFirma down")]):
+def test_route_bulk_failure_is_502(client):
+    with patch.object(R, "_cm_list_customers", return_value=[_cust("101")]), \
+         patch("app.services.ledger_fact_universe.load_ar_fact_universe",
+               side_effect=RuntimeError("wFirma down")):
         r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
-    assert r.status_code == 200          # roster NOT failed
-    rows = r.json()["rows"]
-    assert rows[0]["balance_available"] is True
-    assert rows[1]["balance_available"] is False
-    assert rows[1]["open"] is None
-    assert "unavailable" in rows[1]["note"].lower()
+    assert r.status_code == 502
 
 
 def test_route_customer_without_contractor_id(client):
-    with patch.object(R, "_cm_list_customers", return_value=[_cust("")]):
+    with patch.object(R, "_cm_list_customers", return_value=[_cust("")]), \
+         patch("app.services.ledger_fact_universe.load_ar_fact_universe",
+               return_value=_ar_universe()), \
+         patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
+               return_value={}):
         r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
     row = r.json()["rows"][0]
     assert row["balance_available"] is False
@@ -166,7 +184,7 @@ def test_route_customer_without_contractor_id(client):
     assert "contractor id" in row["note"].lower()
 
 
-# ── 9-11  Validation / window / pagination ──────────────────────────────────
+# ── 9-12  Validation / window / pagination / zero N+1 ───────────────────────
 
 def test_route_from_after_to_is_400(client):
     with patch.object(R, "_cm_list_customers", return_value=[]):
@@ -176,7 +194,11 @@ def test_route_from_after_to_is_400(client):
 
 
 def test_route_default_window_is_year_to_date(client):
-    with patch.object(R, "_cm_list_customers", return_value=[]):
+    with patch.object(R, "_cm_list_customers", return_value=[]), \
+         patch("app.services.ledger_fact_universe.load_ar_fact_universe",
+               return_value=_ar_universe()), \
+         patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
+               return_value={}):
         r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
     period = r.json()["period"]
     assert period["from"].endswith("-01-01")
@@ -185,10 +207,26 @@ def test_route_default_window_is_year_to_date(client):
 
 def test_route_pagination_slices_roster(client):
     custs = [_cust(str(i)) for i in range(5)]
+    idx = {str(i): _stmt_single() for i in range(5)}
     with patch.object(R, "_cm_list_customers", return_value=custs), \
-         patch.object(R, "_build_statement_dict", return_value=_stmt_single()):
+         patch("app.services.ledger_fact_universe.load_ar_fact_universe",
+               return_value=_ar_universe()), \
+         patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
+               return_value=idx):
         r = client.get("/api/v1/ledgers/clients?start=1&limit=2",
                        headers=_auth_headers())
     body = r.json()
     assert body["count"] == 2
     assert [row["contractor_id"] for row in body["rows"]] == ["1", "2"]
+
+
+def test_route_zero_per_customer_wfirma_calls(client):
+    with patch.object(R, "_cm_list_customers", return_value=[_cust("101"), _cust("102")]), \
+         patch("app.services.ledger_fact_universe.load_ar_fact_universe",
+               return_value=_ar_universe()) as load_ar, \
+         patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
+               return_value={"101": _stmt_single(), "102": _stmt_single()}):
+        r = client.get("/api/v1/ledgers/clients?limit=15", headers=_auth_headers())
+    assert r.status_code == 200
+    assert r.json()["query_stats"]["per_customer_wfirma_calls"] == 0
+    assert load_ar.call_count == 1

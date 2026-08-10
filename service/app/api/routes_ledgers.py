@@ -613,22 +613,19 @@ def list_client_balances(
     contractor: str = Query("", description="Exact wFirma contractor id"),
     currency: str = Query("", description="Filter by currency code (PLN/EUR/USD/…)"),
     status: str = Query("", description="Filter by state: outstanding|clear|unknown"),
+    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AR fact cache"),
 ) -> JSONResponse:
     """Read-only Client Balance roster (Wave 4 Item 4).
 
     Client identity is owned by the **Customer Master**; balance / invoice /
     payment figures are owned by the existing **Statement authority**
-    (``aggregate_statement``). This endpoint only JOINs the two — it holds no
-    balance state of its own and creates no mirror.
-
-    Balances are computed **live per client** (contractor preflight +
-    invoices/find + payments/find each), so keep ``limit`` small. A per-client
-    wFirma failure yields an honest ``balance_available:false`` row rather than
-    failing the roster.
+    (``aggregate_statement_from_facts`` / shared AR remaining). One bulk
+    invoices+payments load for the window — ``per_customer_wfirma_calls=0``.
 
     Outcomes:
       200 — roster JSON (rows may be empty)
       400 — invalid date / ``from > to``
+      502 — bulk wFirma read failed
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     df = (from_ or "").strip() or f"{today[:4]}-01-01"
@@ -656,6 +653,32 @@ def list_client_balances(
         ]
     page = customers[start:start + limit]
 
+    from ..services.ledger_fact_universe import load_ar_fact_universe
+    from ..services.ledger_aggregator import build_statement_index_by_contractor
+
+    try:
+        uni = load_ar_fact_universe(df, dt, force=bool(refresh))
+        stmt_by_cid = build_statement_index_by_contractor(
+            uni["invoice_facts"],
+            uni["payment_facts"],
+            statement_date=dt,
+            period=(df, dt),
+        )
+    except Exception as exc:
+        log.warning("[client-balances] bulk AR read failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": f"wFirma bulk AR read failed: {exc}",
+                "code": "CLIENT_BALANCES_BULK_FETCH_FAILED",
+            },
+        ) from exc
+
+    empty_stmt = {
+        "totals_per_currency": {},
+        "aging_per_currency": {},
+    }
+
     rows = []
     for cust in page:
         cid = (getattr(cust, "bill_to_contractor_id", "") or "").strip()
@@ -669,12 +692,7 @@ def list_client_balances(
         if not cid:
             rows.append(_unavailable_row(base, default_ccy, "no wFirma contractor id"))
             continue
-        try:
-            stmt = _build_statement_dict(cid, df, dt, dt)
-        except HTTPException:
-            rows.append(_unavailable_row(
-                base, default_ccy, "balance unavailable (wFirma read failed)"))
-            continue
+        stmt = stmt_by_cid.get(cid) or empty_stmt
         rows.append({**base, **_roster_row_from_statement(default_ccy, stmt)})
 
     if currency_f:
@@ -689,6 +707,8 @@ def list_client_balances(
     if status_f:
         rows = [r for r in rows if (r.get("state") or "").lower() == status_f]
 
+    inv_stats = uni.get("inv_stats") or {}
+    pay_stats = uni.get("pay_stats") or {}
     return JSONResponse({
         "period":       {"from": df, "to": dt},
         "start":        start,
@@ -701,6 +721,17 @@ def list_client_balances(
             "status": status_f or None,
             "country": (country or "").strip().upper() or None,
             "q": (q or "").strip() or None,
+        },
+        "query_stats": {
+            "invoice_api_calls": int(inv_stats.get("api_calls") or 0),
+            "payment_api_calls": int(pay_stats.get("api_calls") or 0),
+            "invoices_normalized": len(uni.get("invoice_facts") or []),
+            "payments_normalized": len(uni.get("payment_facts") or []),
+            "duration_ms": int(uni.get("duration_ms") or 0),
+            "per_customer_wfirma_calls": 0,
+            "cache_hit": bool(uni.get("cache_hit")),
+            "coalesced": bool(uni.get("coalesced")),
+            "refresh": bool(refresh),
         },
         "column_status": {
             "open":                 "documented",
@@ -728,6 +759,7 @@ def get_management_analysis(
         "",
         description="Optional: outstanding | overdue | credit",
     ),
+    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AR fact cache"),
 ) -> JSONResponse:
     """Read-only receivables portfolio + due-date aging (Management Analysis).
 
@@ -771,6 +803,7 @@ def get_management_analysis(
             currency=ccy,
             contractor_id=(contractor_id or "").strip(),
             status=st,
+            force_refresh=bool(refresh),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -805,6 +838,7 @@ def get_payables_analysis(
         "",
         description="Optional bucket: not_due|b_1_30|b_31_90|b_91_180|b_180_plus|due_date_unavailable",
     ),
+    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
 ) -> JSONResponse:
     """Read-only payables portfolio + creditor aging (Management Analysis).
 
@@ -859,6 +893,7 @@ def get_payables_analysis(
             contractor_id=(contractor_id or "").strip(),
             status=st,
             aging_bucket=bucket,
+            force_refresh=bool(refresh),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -884,12 +919,13 @@ def get_supplier_statement(
     from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
     to: str = Query("", description="Window end YYYY-MM-DD"),
     as_of: str = Query("", description="As-of date YYYY-MM-DD"),
+    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
 ) -> JSONResponse:
     """Read-only Supplier Ledger drill-down from shared AP facts.
 
-    Bulk expense + payment fetch, then Python-side contractor filter
-    (live wFirma ignores expense contractor.id find conditions).
-    Same remaining equation as Payables portfolio — no second authority.
+    Reuses the shared AP fact universe (same bulk expenses+payments as
+    payables-analysis), then Python-side contractor filter. Same remaining
+    equation as Payables portfolio — no second authority.
     """
     cid = (contractor_id or "").strip()
     if not cid:
@@ -908,17 +944,15 @@ def get_supplier_statement(
         ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     try:
-        exp_stats: Dict[str, Any] = {}
-        pay_stats: Dict[str, Any] = {}
-        exp_nodes = wfirma_client.fetch_expenses_for_period(df, dt, stats=exp_stats)
-        pay_nodes = wfirma_client.fetch_payments_for_period(df, dt, stats=pay_stats)
-        exp_nodes = _python_side_date_filter(exp_nodes, df, dt)
-        pay_nodes = _python_side_date_filter(pay_nodes, df, dt)
+        from ..services.ledger_fact_universe import load_ap_fact_universe
+
+        uni = load_ap_fact_universe(df, dt, force=bool(refresh))
+        exp_stats = uni.get("exp_stats") or {}
+        pay_stats = uni.get("pay_stats") or {}
 
         expense_facts = []
         supplier_name = ""
-        for n in exp_nodes:
-            fact = _parse_expense_fact(n)
+        for fact in uni.get("expense_facts") or []:
             if fact.get("contractor_id") != cid:
                 continue
             if not supplier_name and fact.get("contractor_name"):
@@ -927,8 +961,7 @@ def get_supplier_statement(
 
         expense_ids = {f["id"] for f in expense_facts if f.get("id")}
         payment_facts = []
-        for n in pay_nodes:
-            fact = _parse_payment_fact(n)
+        for fact in uni.get("payment_facts") or []:
             linked = fact.get("linked_expense") or ""
             if fact.get("contractor_id") == cid or (linked and linked in expense_ids):
                 payment_facts.append(fact)
@@ -949,7 +982,9 @@ def get_supplier_statement(
             "expenses_in_scope": len(expense_facts),
             "payments_in_scope": len(payment_facts),
             "per_supplier_wfirma_calls": 0,
-            "note": "bulk find + Python contractor filter (wfirma contractor.id ignored)",
+            "cache_hit": bool(uni.get("cache_hit")),
+            "coalesced": bool(uni.get("coalesced")),
+            "note": "shared AP fact universe + Python contractor filter",
         }
     except Exception as exc:
         log.warning("[supplier-statement] read failed: %s", exc)
