@@ -325,6 +325,12 @@ class Settings(BaseSettings):
     # Default True. Set DHL_AUTO_SCAN_ENABLED=false to disable.
     dhl_auto_scan_enabled: bool = Field(default=True)
 
+    # B2 automatic DSK reply — minimum wait after authoritative inbound
+    # received_at before eligibility. Independent of Lane A sweep cadence and
+    # of DHL_REPLY_AFTER_EMAIL_SLA_MINUTES (overdue SLA only). Env:
+    # DHL_DSK_AUTO_REPLY_DELAY_MINUTES. Equation: now >= received_at + delay.
+    dhl_dsk_auto_reply_delay_minutes: int = Field(default=10)
+
     # Lane B: POST /api/v1/dhl/scheduled-followup-check — DHL follow-up SLA.
     # DEFAULT FALSE — requires explicit operator opt-in.
     # Set DHL_FOLLOWUP_ENABLED=true in .env ONLY after Lane A runs clean.

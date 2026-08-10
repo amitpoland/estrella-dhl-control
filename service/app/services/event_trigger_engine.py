@@ -167,18 +167,51 @@ def route_email(
                         "dhl": res.get("dhl_invoice_received"),
                         "agency": res.get("agency_invoice_received")})
 
-    # ── 4. DHL customs request (no auto-action; just flag for monitor) ───────
-    if role == "dhl" and detected in ("translation", "broker_notification", "carrier_status"):
+    # ── 4. DHL customs request → flag monitor + set dhl_email.received ───────
+    # B2 (_ensure_dhl_reply) gates on audit.dhl_email.received. Historically
+    # this branch only wrote dhl_inbox_flags, so the auto DSK reply never
+    # fired when the request arrived via ingestion rather than scan-inbox.
+    _dhl_request_types = (
+        "translation", "broker_notification", "carrier_status",
+        "dhl_request", "clarification", "unknown",
+    )
+    if role == "dhl" and (
+        detected in _dhl_request_types
+        or email_record.get("dhl_ticket")
+        or email_record.get("ticket")
+    ):
         audit3 = _read_audit(p)
         flags = audit3.get("dhl_inbox_flags") or {}
-        flags[detected] = {
+        flag_key = detected or "dhl_request"
+        flags[flag_key] = {
             "message_id":  msg_id,
             "received_at": email_record.get("received_at"),
             "subject":     email_record.get("subject"),
         }
         audit3["dhl_inbox_flags"] = flags
+        if not (audit3.get("dhl_email") or {}).get("received"):
+            _ticket = (
+                email_record.get("dhl_ticket")
+                or email_record.get("ticket")
+                or ""
+            )
+            audit3["dhl_email"] = {
+                "received":     True,
+                "source":       "event_trigger_engine",
+                "sender":       email_record.get("from") or "",
+                "subject":      email_record.get("subject") or "",
+                "ticket":       _ticket,
+                "request_type": flag_key,
+                "received_at":  email_record.get("received_at") or _now_iso(),
+            }
+            if _ticket and not audit3.get("dhl_ticket"):
+                audit3["dhl_ticket"] = _ticket
+            cur = audit3.get("clearance_status") or ""
+            if cur in ("", "draft", "awaiting_dhl_customs_email"):
+                audit3["clearance_status"] = "dhl_email_received"
+                audit3["clearance_updated_at"] = _now_iso()
         write_json_atomic(p, audit3)
-        actions.append({"action": "flag_dhl_event", "type": detected})
+        actions.append({"action": "flag_dhl_event", "type": flag_key})
 
     # ── 5. DHL email with attachments → classify → validate → register ──────
     if role == "dhl" and paths:

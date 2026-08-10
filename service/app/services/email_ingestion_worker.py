@@ -169,22 +169,22 @@ def run_ingestion_cycle(
     if scan_fn is None:
         # Prefer the in-tree scanner. The legacy ``dhl_email_monitor``
         # name is not present in the package; the canonical scanner
-        # lives at ``email_evidence_ingestor.scan_and_ingest``. We
-        # adapt its signature so the rest of this worker is unchanged.
+        # lives at ``email_evidence_ingestor.scan_and_ingest``.
+        # The per-shipment loop below calls scan_and_ingest directly with
+        # real batch_id/audit_path — scan_fn stays for test injection only.
         try:
             from .email_evidence_ingestor import scan_and_ingest as _evi_scan
+
             def scan_fn(target_awb=None, limit=50, api_base=None,
                          token_provider=None, dhl_ticket=None,
-                         token=None, account_id=None, **_):  # type: ignore
-                # Ingestor expects (awb, batch_id, audit_path, audit, *, limit,
-                # token_provider, scan_fn). The token is threaded via
-                # token_provider (a lambda returning the pre-refreshed token);
-                # account_id is read by the underlying scanner from settings.
-                # We don't have a batch_id at scan-fn level; the per-shipment
-                # caller above already loops batches and calls scan_fn per AWB,
-                # so an empty batch_id is acceptable for the broad scan path.
+                         token=None, account_id=None,
+                         batch_id="", audit_path=None, audit=None,
+                         **_):  # type: ignore
                 return _evi_scan(
-                    target_awb or "", "", None, {},
+                    target_awb or "",
+                    batch_id or "",
+                    audit_path,
+                    audit or {},
                     limit=limit,
                     token_provider=token_provider,
                 )
@@ -253,6 +253,9 @@ def run_ingestion_cycle(
                     api_base=api_base,
                     token_provider=lambda t=token: t,
                     dhl_ticket=_known_ticket,
+                    batch_id=batch_id,
+                    audit_path=audit_path,
+                    audit=audit,
                 )
             except Exception as exc:
                 log.warning("[ingest] scan failed batch=%s awb=%s: %s",
@@ -273,6 +276,25 @@ def run_ingestion_cycle(
                         except Exception as _exc:
                             log.debug("[ingest] could not persist dhl_ticket: %s", _exc)
                         break
+            # Bridge evidence V2 → audit.dhl_email.received so B2 can fire.
+            # scan_and_ingest stores dhl_request in email_evidence but does not
+            # return an emails[] list — without this bridge the Lane A B2 path
+            # never sees dhl_email.received.
+            try:
+                from .active_shipment_monitor import (
+                    apply_dhl_email_received_from_evidence as _bridge,
+                )
+                _audit_live = json.loads(audit_path.read_text(encoding="utf-8"))
+                _br = _bridge(audit_path, _audit_live)
+                if _br.get("wrote"):
+                    log.info(
+                        "[ingest] evidence bridge set dhl_email.received "
+                        "batch=%s ticket=%s",
+                        batch_id, _br.get("ticket") or "",
+                    )
+            except Exception as _br_exc:
+                log.warning("[ingest] evidence bridge failed batch=%s: %s",
+                            batch_id, _br_exc)
             # ── Email Evidence V2 dual-write (default ON; EMAIL_EVIDENCE_V2=0 disables) ──
             v2_on = bool(getattr(settings, "email_evidence_v2", True))
             if v2_on:
@@ -347,6 +369,13 @@ def run_ingestion_cycle(
                     from .email_evidence_store import update_scan_cursor
                     update_scan_cursor(awb, cycle_started)
                 except Exception: pass
+
+            # Prefer scan_and_ingest summary counts when emails[] is absent
+            if not (res.get("emails") or []) and isinstance(res.get("summary"), dict):
+                emails_seen = max(
+                    emails_seen,
+                    int(res.get("ingested") or 0) + int(res.get("already_stored") or 0),
+                )
 
         # ── Update audit.email_ingestion timestamp regardless ────────────────
         try:

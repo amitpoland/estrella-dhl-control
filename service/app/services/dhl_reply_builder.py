@@ -196,7 +196,12 @@ def build_dhl_b2_dsk_only_reply(audit: Dict[str, Any], batch_id: str) -> Dict[st
     audit.dsk_path points to an existing file BEFORE invoking — the gate lives
     in the observer, not the builder. If the DSK file is missing on disk at
     build time (race between gate and build), `missing` list is non-empty.
+
+    Automatic TO comes from audit.dhl_email.reply_to_address (inbound Reply-To
+    else From). Hardcoded DHL_TO is NOT used for automatic B2 eligibility.
     """
+    from ..config.email_routing import resolve_b2_auto_reply_recipient
+
     awb = (
         audit.get("awb")
         or audit.get("tracking_no")
@@ -206,15 +211,24 @@ def build_dhl_b2_dsk_only_reply(audit: Dict[str, Any], batch_id: str) -> Dict[st
     dhl_email = audit.get("dhl_email") or {}
     ticket    = dhl_email.get("ticket") or audit.get("dhl_ticket") or ""
 
-    # Recipients — DHL on TO (same thread DHL initiated), Estrella internal
-    # only on CC. NO _BROKER_CC. NO administracja_centralna addition.
-    to_list = list(DHL_TO)
+    # Recipients — inbound-message authority only (no hardcoded DHL_TO).
+    reply_addr = (dhl_email.get("reply_to_address") or "").strip().lower()
+    if not reply_addr:
+        reply_addr, _src = resolve_b2_auto_reply_recipient(
+            dhl_email.get("reply_to") or "",
+            dhl_email.get("from_header") or "",
+            dhl_email.get("sender") or "",
+        )
+    to_list = [reply_addr] if reply_addr else []
     to_norm = {a.lower() for a in to_list}
     cc_list = [a for a in INTERNAL_CC if a.lower() not in to_norm]
 
     # Attachments — DSK only.
     attachments: List[Dict[str, str]] = []
     missing:     List[str] = []
+
+    if not reply_addr:
+        missing.append("B2 reply recipient missing on inbound dhl_email")
 
     dsk_path_str = (audit.get("dsk_path") or "").strip()
     dsk_filename = (audit.get("dsk_filename") or "").strip()
@@ -227,11 +241,14 @@ def build_dhl_b2_dsk_only_reply(audit: Dict[str, Any], batch_id: str) -> Dict[st
         else:
             attachments.append({"label": f"DSK: {dsk_filename}", "path": str(dsk_path)})
 
-    # Subject — same thread-reply pattern as the existing B2 builder so DHL's
-    # mail client groups the reply with the original ticket thread.
-    subject = f"Request for custom clearance – AWB {awb}" if awb else "Request for custom clearance"
-    if ticket:
-        subject = f"Re: {ticket} – {subject}"
+    # Subject — prefer original inbound subject (ticket preserved).
+    orig_subj = (dhl_email.get("subject") or "").strip()
+    if orig_subj:
+        subject = orig_subj if orig_subj.lower().startswith("re:") else f"Re: {orig_subj}"
+    else:
+        subject = f"Request for custom clearance – AWB {awb}" if awb else "Request for custom clearance"
+        if ticket:
+            subject = f"Re: {ticket} – {subject}"
 
     body_text = _render_b2_body_text(awb, ticket)
     body_html = _render_b2_body_html(body_text)
@@ -249,6 +266,7 @@ def build_dhl_b2_dsk_only_reply(audit: Dict[str, Any], batch_id: str) -> Dict[st
         "attachments":  attachments,
         "missing":      missing,
         "ticket":       ticket,
+        "reply_to_address": reply_addr,
     }
 
 
