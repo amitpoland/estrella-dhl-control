@@ -49,7 +49,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     KeepTogether, PageBreak, Paragraph, SimpleDocTemplate,
-    Spacer, Table, TableStyle,
+    Spacer, Table, TableStyle, Image,
 )
 
 
@@ -218,51 +218,61 @@ def _aging_method_label(method: str) -> str:
     """Always render a human-readable label, never the bare token."""
     if method == "due_date":
         return "Due date"
-    return "Invoice age"   # default + explicit pin per Phase 10B/C contract
+    return "Invoice age"   # only when method token is invoice_age
 
 
 # ── Section builders ───────────────────────────────────────────────────────
 
-def _masthead_flowable(stmt: Dict[str, Any], styles: Dict[str, ParagraphStyle]):
-    """Emerald-to-gold band with EJ logo mark + Statement of Account
-    title. Single-row Table so KeepTogether keeps it intact."""
-    eyebrow = "ESTRELLA JEWELS · DOCUMENT SUITE"
-    title   = "Statement of Account"
+def _masthead_flowable(
+    stmt: Dict[str, Any],
+    styles: Dict[str, ParagraphStyle],
+    *,
+    seller: Optional[Dict[str, str]] = None,
+    logo_path: str = "",
+):
+    """Brand band: reuse document-suite logo asset when present;
+    otherwise CompanyProfile / seller name (no invented EJ glyph)."""
+    seller = seller or {}
+    brand = (seller.get("name") or "").strip() or "Estrella Jewels"
+    title = "Statement of Account"
 
-    # Logo "mark": gold-on-emerald square with EJ initials.
-    mark = Table(
-        [[Paragraph("<b>EJ</b>", ParagraphStyle(
-            "logo_mark", fontName=_FONT_BOLD, fontSize=14,
-            leading=16, textColor=_EJ_GOLD, alignment=TA_CENTER,
-        ))]],
-        colWidths=[10*mm], rowHeights=[10*mm],
-    )
-    mark.setStyle(TableStyle([
-        ("BACKGROUND",   (0,0), (-1,-1), _EJ_BRAND_2),
-        ("BOX",          (0,0), (-1,-1), 1.2, _EJ_GOLD_TINT),
-        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
-        ("ALIGN",        (0,0), (-1,-1), "CENTER"),
-    ]))
+    if logo_path and os.path.isfile(logo_path):
+        try:
+            mark = Image(logo_path, width=14 * mm, height=14 * mm, kind="proportional")
+        except Exception:
+            mark = Paragraph(
+                f"<b>{_safe(brand)}</b>",
+                ParagraphStyle(
+                    "logo_wordmark", fontName=_FONT_BOLD, fontSize=11,
+                    leading=13, textColor=_EJ_GOLD, alignment=TA_LEFT,
+                ),
+            )
+    else:
+        mark = Paragraph(
+            f"<b>{_safe(brand)}</b>",
+            ParagraphStyle(
+                "logo_wordmark", fontName=_FONT_BOLD, fontSize=11,
+                leading=13, textColor=_EJ_GOLD, alignment=TA_LEFT,
+            ),
+        )
 
     text_block = [
-        Paragraph(eyebrow, styles["eyebrow"]),
-        Paragraph(title,   styles["title"]),
+        Paragraph("ESTRELLA JEWELS · DOCUMENT SUITE", styles["eyebrow"]),
+        Paragraph(title, styles["title"]),
     ]
 
     band = Table(
         [[mark, text_block]],
-        colWidths=[14*mm, 166*mm],
+        colWidths=[28 * mm, 152 * mm],
     )
     band.setStyle(TableStyle([
-        ("BACKGROUND",     (0,0), (0,0),   _EJ_BRAND),
-        # Right cell: emerald with a gold strip on the right edge.
-        ("BACKGROUND",     (1,0), (1,0),   _EJ_BRAND),
-        ("LINEAFTER",      (1,0), (1,0),   3, _EJ_GOLD),
-        ("VALIGN",         (0,0), (-1,-1), "MIDDLE"),
-        ("LEFTPADDING",    (0,0), (-1,-1), 8),
-        ("RIGHTPADDING",   (0,0), (-1,-1), 8),
-        ("TOPPADDING",     (0,0), (-1,-1), 6),
-        ("BOTTOMPADDING",  (0,0), (-1,-1), 6),
+        ("BACKGROUND",     (0, 0), (-1, -1), _EJ_BRAND),
+        ("LINEAFTER",      (1, 0), (1, 0), 3, _EJ_GOLD),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
+        ("TOPPADDING",     (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 6),
     ]))
     return band
 
@@ -275,7 +285,7 @@ def _meta_strip_flowable(stmt: Dict[str, Any], styles):
     # blocks share the same hardcoded label in Phase 10B). Fall back
     # to the "Invoice age" literal when there's no aging block.
     aging_blocks = stmt.get("aging_per_currency") or {}
-    method_token = "invoice_age"
+    method_token = stmt.get("aging_method") or "due_date"
     for v in aging_blocks.values():
         method_token = v.get("method", method_token) or method_token
         break
@@ -305,29 +315,48 @@ def _meta_strip_flowable(stmt: Dict[str, Any], styles):
     return t
 
 
-def _customer_block_flowable(stmt: Dict[str, Any], styles):
+def _customer_block_flowable(
+    stmt: Dict[str, Any],
+    styles,
+    *,
+    customer_facing: bool = True,
+):
     c = stmt.get("contractor") or {}
-    name    = _safe(c.get("name") or "")
+    name = _safe(c.get("name") or "")
+    street = _safe(c.get("street") or "")
+    city = _safe(c.get("city") or "")
+    postal = _safe(c.get("postal_code") or "")
     country = _safe(c.get("country") or "")
-    vat_id  = _safe(c.get("vat_id") or "")
-    wfid    = _safe(c.get("wfirma_contractor_id") or "")
+    vat_id = _safe(c.get("vat_id") or "")
 
-    rows = [[Paragraph(
-        f"<b>Customer</b><br/>"
-        f"<font size='10'>{name}</font><br/>"
-        f"<font size='9' color='#475569'>{country}</font>"
-        f"<br/><font size='8' color='#475569'>VAT/Tax ID: {vat_id or '—'}</font>"
-        f"<br/><font size='7' color='#B0892F'>wFirma id · {wfid or '—'}</font>",
-        styles["subtle"],
-    )]]
-    t = Table(rows, colWidths=[180*mm])
+    city_line = ", ".join(p for p in (postal, city) if p)
+    addr_bits = [name]
+    if street:
+        addr_bits.append(street)
+    if city_line:
+        addr_bits.append(city_line)
+    if country:
+        addr_bits.append(country)
+    addr_bits.append(f"VAT/Tax ID: {vat_id or '—'}")
+    if not customer_facing:
+        wfid = _safe(c.get("wfirma_contractor_id") or "")
+        if wfid:
+            addr_bits.append(f"wFirma id · {wfid}")
+
+    body = "<br/>".join(
+        f"<font size='10'>{bit}</font>" if idx == 0
+        else f"<font size='9' color='#475569'>{bit}</font>"
+        for idx, bit in enumerate(addr_bits)
+    )
+    rows = [[Paragraph(f"<b>Customer</b><br/>{body}", styles["subtle"])]]
+    t = Table(rows, colWidths=[180 * mm])
     t.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0), (-1,-1), colors.white),
-        ("BOX",           (0,0), (-1,-1), 0.4, _EJ_LINE),
-        ("LEFTPADDING",   (0,0), (-1,-1), 10),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 10),
-        ("TOPPADDING",    (0,0), (-1,-1), 8),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("BOX", (0, 0), (-1, -1), 0.4, _EJ_LINE),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
     ]))
     return t
 
@@ -402,15 +431,20 @@ def _currency_section_flowables(
     ]))
 
     # Aging card.
-    method = _aging_method_label(aging.get("method") or "invoice_age")
+    method = _aging_method_label(aging.get("method") or "due_date")
     aging_rows = [
         ["current", _safe(aging.get("current") or "0.00")],
         ["1–30",    _safe(aging.get("1_30")    or "0.00")],
         ["31–60",   _safe(aging.get("31_60")   or "0.00")],
         ["61–90",   _safe(aging.get("61_90")   or "0.00")],
         ["90+",     _safe(aging.get("90_plus") or "0.00")],
-        ["total",   _safe(aging.get("total")   or "0.00")],
     ]
+    if aging.get("due_date_unavailable") not in (None, "", "0.00"):
+        aging_rows.append([
+            "due date n/a",
+            _safe(aging.get("due_date_unavailable") or "0.00"),
+        ])
+    aging_rows.append(["total", _safe(aging.get("total") or "0.00")])
     aging_t = Table(
         [[Paragraph(f"<b>Aging</b><br/>"
                      f"<font size='7' color='#B0892F'>method · {method}</font>",
@@ -626,32 +660,52 @@ def _empty_notice_flowables(stmt: Dict[str, Any], styles) -> List[Any]:
 
 # ── Page decorator (footer) ────────────────────────────────────────────────
 
-def _make_footer_drawer(stmt: Dict[str, Any]):
-    """Returns a closure suitable for ``onFirstPage`` / ``onLaterPages``."""
+def _make_footer_drawer(
+    stmt: Dict[str, Any],
+    *,
+    seller: Optional[Dict[str, str]] = None,
+):
+    """Returns a closure suitable for ``onFirstPage`` / ``onLaterPages``.
+
+    Seller line reuses CompanyProfile / packing ``_seller_from_company``
+    fields passed by the route — no duplicated hardcoded legal block.
+    """
     aging_blocks = stmt.get("aging_per_currency") or {}
-    method_token = "invoice_age"
+    method_token = stmt.get("aging_method") or "due_date"
     for v in aging_blocks.values():
         method_token = v.get("method", method_token) or method_token
         break
     method_label = _aging_method_label(method_token)
     generated_at = stmt.get("generated_at") or ""
+    seller = seller or {}
+    seller_name = (seller.get("name") or "").strip() or "Estrella Jewels"
+    seller_addr = " · ".join(
+        p for p in (
+            (seller.get("addr") or "").strip(),
+            (seller.get("city") or "").strip(),
+            (seller.get("country") or "").strip(),
+        ) if p
+    )
+    seller_vat = (seller.get("vat") or "").strip()
+    left = seller_name
+    if seller_addr:
+        left = f"{seller_name} · {seller_addr}"
+    if seller_vat:
+        left = f"{left} · VAT {seller_vat}"
+    # Keep footer readable on A4.
+    if len(left) > 78:
+        left = left[:75] + "…"
 
     def _drawer(canvas, doc):
         canvas.saveState()
-        canvas.setFont(_FONT_REG, 7)
+        canvas.setFont(_FONT_REG, 6.5)
         canvas.setFillColor(_EJ_INK_2)
-        # Left: seller block (Estrella).
-        canvas.drawString(15*mm, 10*mm, "Estrella Jewels Sp. z o.o.")
-        # Center: page X of Y. reportlab knows the current page; total
-        # is provided via ``doc.page`` only after build, so use a
-        # standard "Page X" approximation. For exact "X of Y" we
-        # would need a two-pass render — overkill for Phase 10C.
+        canvas.drawString(15*mm, 10*mm, left)
         page_str = f"Page {canvas.getPageNumber()}"
         canvas.drawCentredString(105*mm, 10*mm, page_str)
-        # Right: aging-method disclaimer.
         canvas.setFont(_FONT_BOLD, 7)
         canvas.setFillColor(_EJ_GOLD_2)
-        right = f"Aging method: {method_label} · Generated {generated_at}"
+        right = f"Aging: {method_label} · {generated_at}"
         canvas.drawRightString(195*mm, 10*mm, right)
         canvas.restoreState()
     return _drawer
@@ -659,17 +713,21 @@ def _make_footer_drawer(stmt: Dict[str, Any]):
 
 # ── Public entry point ────────────────────────────────────────────────────
 
-def render_statement_pdf(statement: Dict[str, Any]) -> bytes:
+def render_statement_pdf(
+    statement: Dict[str, Any],
+    *,
+    customer_facing: bool = True,
+    seller: Optional[Dict[str, str]] = None,
+    logo_path: str = "",
+) -> bytes:
     """Render a Phase 10B Statement-of-Account dict to PDF bytes.
 
-    Pure function. No I/O, no DB, no wFirma calls. Caller (the route)
-    is responsible for producing the dict via the shared
-    ``_build_statement_dict`` helper.
+    Pure relative to ledger arithmetic: no wFirma / no re-aggregation.
+    Optional *seller* / *logo_path* are presentation inputs supplied by
+    the route from CompanyProfile + the shared document-suite asset.
 
-    Raises:
-      ValueError   — input is not a dict.
-      RuntimeError — reportlab build failure (caller catches and
-                     converts to 502 STATEMENT_PDF_RENDER_FAILED).
+    When *customer_facing* is True (default for the PDF route): omit
+    wFirma contractor id and DQ / implementation warnings.
     """
     if not isinstance(statement, dict):
         raise ValueError("statement must be a dict produced by aggregate_statement")
@@ -677,6 +735,7 @@ def render_statement_pdf(statement: Dict[str, Any]) -> bytes:
     # Defence-in-depth: drop any forbidden keys before rendering.
     stmt = _strip_forbidden(statement)
     styles = _styles()
+    seller = seller or {}
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -684,30 +743,32 @@ def render_statement_pdf(statement: Dict[str, Any]) -> bytes:
         leftMargin=15*mm, rightMargin=15*mm,
         topMargin=18*mm,  bottomMargin=15*mm,
         title="Statement of Account",
-        author="Estrella Jewels",
+        author=(seller.get("name") or "Estrella Jewels"),
     )
 
     story: List[Any] = []
-    story.append(_masthead_flowable(stmt, styles))
+    story.append(_masthead_flowable(
+        stmt, styles, seller=seller, logo_path=logo_path or "",
+    ))
     story.append(Spacer(1, 4))
     story.append(_meta_strip_flowable(stmt, styles))
     story.append(Spacer(1, 6))
-    story.append(_customer_block_flowable(stmt, styles))
+    story.append(_customer_block_flowable(
+        stmt, styles, customer_facing=customer_facing,
+    ))
     story.append(Spacer(1, 8))
 
     for ccy in (stmt.get("currencies") or []):
         story.extend(_currency_section_flowables(stmt, ccy, styles))
 
-    # Empty notice (when there's no activity at all).
     story.extend(_empty_notice_flowables(stmt, styles))
 
-    # Warnings band rendered last so any single-page print carries
-    # them visibly. We do NOT force a page break — letting reportlab
-    # decide is friendlier on short statements.
-    story.extend(_warnings_flowables(stmt, styles))
+    # Customer PDF: DQ / operator warnings stay on JSON / internal UI only.
+    if not customer_facing:
+        story.extend(_warnings_flowables(stmt, styles))
 
     try:
-        footer = _make_footer_drawer(stmt)
+        footer = _make_footer_drawer(stmt, seller=seller)
         doc.build(story, onFirstPage=footer, onLaterPages=footer)
     except Exception as exc:
         raise RuntimeError(f"reportlab build failed: {exc}") from exc

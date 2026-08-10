@@ -14,17 +14,17 @@ Coverage (per task spec):
   8. Cross-currency payment-vs-invoice mismatch listed as unmatched.
   9. Negative correction reduces totals.outstanding and contributes to
      totals.credited.
- 10. Proforma is excluded from fiscal AR (warning proforma_excluded_from_fiscal;
+ 10. Proforma is excluded from fiscal AR (silent drop; zero PF warning;
      contributes 0 to invoiced / outstanding). Payment linked only to a
      Proforma does not reduce fiscal outstanding.
  11. Multi-currency separation; no cross-currency arithmetic.
  12. Running balance tie-break — invoice before same-day payment.
  13. Aging bucket boundaries at 0/1/30/31/60/61/90/91 days.
- 14. Aging method label is "invoice_age" on every block.
+ 14. Aging method label is "due_date" by default (invoice_age explicit).
  15. Forbidden fields absent from JSON output.
  16. Route 404 unknown contractor.
  17. Route 400 bad dates / from > to / as_of < from.
- 18. Route 502 wFirma error on invoices/find OR payments/find.
+ 18. Route 502 wFirma error on shared AR fact universe.
  19. Existing /invoice-ledger.json route unchanged.
  20. Wrapper guards — empty contractor, inverted date range, only
      proven filters.
@@ -67,15 +67,18 @@ def _invoice_xml(*,
                   fullnumber: str = "",
                   type_:      str = "normal",
                   date:       str = "2026-04-15",
+                  paymentdate: str = "",
                   currency:   str = "EUR",
                   netto:      str = "100.00",
                   brutto:     str = "123.00") -> str:
+    due = paymentdate or date
     return (
         f"<invoice>"
           f"<id>{invoice_id}</id>"
           f"<fullnumber>{fullnumber}</fullnumber>"
           f"<type>{type_}</type>"
           f"<date>{date}</date>"
+          f"<paymentdate>{due}</paymentdate>"
           f"<currency>{currency}</currency>"
           f"<netto>{netto}</netto>"
           f"<brutto>{brutto}</brutto>"
@@ -90,12 +93,17 @@ def _payment_xml(*,
                   value:      str = "0.00",
                   value_pln:  str = "0.00",
                   date:       str = "2026-04-30",
-                  currency:   str = "EUR") -> str:
+                  currency:   str = "EUR",
+                  contractor_id: str = "C-1") -> str:
     invoice_block = f"<invoice><id>{invoice_id}</id></invoice>" if invoice_id else ""
+    contractor_block = (
+        f"<contractor><id>{contractor_id}</id></contractor>" if contractor_id else ""
+    )
     return (
         f"<payment>"
           f"<id>{payment_id}</id>"
           f"{invoice_block}"
+          f"{contractor_block}"
           f"<value>{value}</value>"
           f"<value_pln>{value_pln}</value_pln>"
           f"<date>{date}</date>"
@@ -506,9 +514,11 @@ def test_proforma_excluded_from_fiscal_ar():
         ],
     )
     excl = [w for w in out["warnings"]
-            if w["event"] == "proforma_excluded_from_fiscal"]
-    assert len(excl) == 1
-    assert excl[0]["wfirma_doc_id"] == "P-1"
+            if w["event"] in (
+                "proforma_excluded_from_fiscal",
+                "proforma_treated_as_debit",
+            )]
+    assert excl == []
     entries = out["entries_per_currency"]["USD"]
     types = [e["type"] for e in entries]
     assert "proforma" not in types
@@ -627,7 +637,7 @@ def test_aging_bucket_boundaries(days_old, expected_bucket):
             )
 
 
-def test_aging_method_label_is_invoice_age():
+def test_aging_method_label_is_due_date_by_default():
     out = _agg(
         invoice_xmls=[
             _invoice_xml(invoice_id="1", brutto="100.00",
@@ -636,8 +646,23 @@ def test_aging_method_label_is_invoice_age():
                           date="2026-04-01", currency="USD"),
         ],
     )
+    assert out["aging_method"] == "due_date"
     for ccy in ("EUR", "USD"):
-        assert out["aging_per_currency"][ccy]["method"] == "invoice_age"
+        assert out["aging_per_currency"][ccy]["method"] == "due_date"
+
+
+def test_aging_method_invoice_age_explicit():
+    out = aggregate_statement(
+        contractor_meta=_meta(),
+        invoice_nodes=[ET.fromstring(_invoice_xml(
+            invoice_id="1", brutto="100.00", date="2026-04-01", currency="EUR",
+        ))],
+        payment_nodes=[],
+        statement_date="2026-05-09",
+        period=("2026-01-01", "2026-12-31"),
+        aging_method="invoice_age",
+    )
+    assert out["aging_per_currency"]["EUR"]["method"] == "invoice_age"
 
 
 @pytest.mark.parametrize("forbidden_field", FORBIDDEN_ENTRY_FIELDS)
@@ -723,12 +748,16 @@ def test_route_400_bad_dates(client, qs):
     assert r.status_code == 400
 
 
-def test_route_502_invoices_fetch_failure(client, monkeypatch):
+def test_route_502_universe_fetch_failure(client, monkeypatch):
     _stub_contractor_ok(monkeypatch)
+    from app.services import ledger_fact_universe as lfu
+    lfu.clear_fact_universe_cache()
+
     def _boom(method, module, action, body=""):
         if module == "invoices":
             return 500, "boom"
         return 200, _envelope_payments("")
+
     monkeypatch.setattr(wfirma_client, "_http_request", _boom)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.json"
@@ -739,14 +768,18 @@ def test_route_502_invoices_fetch_failure(client, monkeypatch):
     assert r.json()["detail"]["code"] == "STATEMENT_INVOICE_FETCH_FAILED"
 
 
-def test_route_502_payments_fetch_failure(client, monkeypatch):
+def test_route_502_payments_in_universe_failure(client, monkeypatch):
     _stub_contractor_ok(monkeypatch)
+    from app.services import ledger_fact_universe as lfu
+    lfu.clear_fact_universe_cache()
+
     def _stub(method, module, action, body=""):
         if module == "invoices":
             return 200, _envelope_invoices("")
         if module == "payments":
             return 500, "boom"
         return 200, "<api/>"
+
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.json"
@@ -754,11 +787,13 @@ def test_route_502_payments_fetch_failure(client, monkeypatch):
         headers=_auth_headers(),
     )
     assert r.status_code == 502
-    assert r.json()["detail"]["code"] == "STATEMENT_PAYMENT_FETCH_FAILED"
+    assert r.json()["detail"]["code"] == "STATEMENT_INVOICE_FETCH_FAILED"
 
 
 def test_route_happy_path_default_as_of(client, monkeypatch):
     _stub_contractor_ok(monkeypatch)
+    from app.services import ledger_fact_universe as lfu
+    lfu.clear_fact_universe_cache()
     invoices = _envelope_invoices(_invoice_xml(
         invoice_id="1", fullnumber="FV 1/2026",
         date="2026-04-01", currency="EUR",
@@ -783,15 +818,18 @@ def test_route_happy_path_default_as_of(client, monkeypatch):
     assert body["totals_per_currency"]["EUR"]["outstanding"] == "0.00"
     # generated_at defaults to today UTC; it is a YYYY-MM-DD string.
     assert len(body["generated_at"]) == 10
-    # Aging method is invoice_age.
-    assert body["aging_per_currency"]["EUR"]["method"] == "invoice_age"
+    # Aging authority default = due_date (paymentdate).
+    assert body["aging_per_currency"]["EUR"]["method"] == "due_date"
+    assert body["aging_method"] == "due_date"
 
 
 def test_route_python_side_payment_date_filter(client, monkeypatch):
     """A payment that wFirma returned outside the requested window
-    must be dropped at the route layer, never reaching the
+    must be dropped at the fact-universe layer, never reaching the
     aggregator."""
     _stub_contractor_ok(monkeypatch)
+    from app.services import ledger_fact_universe as lfu
+    lfu.clear_fact_universe_cache()
     inside  = _payment_xml(payment_id="IN",  invoice_id="X",
                             value="10.00", date="2026-04-15",
                             currency="EUR")

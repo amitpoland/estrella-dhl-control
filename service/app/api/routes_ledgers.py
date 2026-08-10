@@ -231,13 +231,13 @@ def get_client_invoice_ledger(
 # Distinct from /invoice-ledger.json (Phase 10A): the Statement
 # combines invoices + payments, computes per-invoice remaining via
 # payments-driven reconciliation, and emits per-currency totals +
-# invoice-age aging buckets. Architecture pinned by
+# aging buckets. Architecture pinned by
 # ``docs/PHASE10B_STATEMENT_ARCHITECTURE.md``.
 #
-# Aging method is HARDCODED to ``invoice_age``. Switching to
-# ``due_date`` requires the Phase 10A.5 follow-up probe (real invoice
-# id) to confirm <paymentdate> presence on invoices/get responses —
-# until that lands, due-date aging is forbidden (architecture doc §7).
+# Aging authority (2026-08-10): default ``due_date`` = invoice
+# ``paymentdate``, same canonical basis as Management Analysis (100%
+# open coverage on live probe). ``invoice_age`` only when the caller
+# passes ``aging_method=invoice_age`` explicitly — no silent mix.
 
 
 def _python_side_payment_date_filter(payment_nodes, df: str, dt: str):
@@ -259,22 +259,112 @@ def _python_side_payment_date_filter(payment_nodes, df: str, dt: str):
     return out
 
 
+def _normalize_statement_aging_method(raw: str) -> str:
+    from ..services.ledger_aggregator import (
+        AGING_METHOD_DUE_DATE,
+        AGING_METHOD_INVOICE_AGE,
+        _normalize_aging_method,
+    )
+    m = (raw or "").strip().lower()
+    if m and m not in (AGING_METHOD_DUE_DATE, AGING_METHOD_INVOICE_AGE):
+        raise HTTPException(
+            status_code=400,
+            detail="aging_method must be due_date, invoice_age, or empty",
+        )
+    return _normalize_aging_method(m)
+
+
+def _contractor_meta_from_customer_master(cid: str, rcv) -> Dict[str, Any]:
+    """Postal + identity for Statement: Customer Master first, wFirma
+    preflight as fallback for name/country/VAT only."""
+    from ..core.config import settings as _settings
+    meta: Dict[str, Any] = {
+        "wfirma_contractor_id": cid,
+        "name":     getattr(rcv, "name",    "") or "",
+        "country":  getattr(rcv, "country", "") or "",
+        "vat_id":   getattr(rcv, "nip",     "") or "",
+        "street":   "",
+        "city":     "",
+        "postal_code": "",
+        "email":    "",
+        "phone":    "",
+    }
+    try:
+        from ..services.customer_master_db import get_customer
+        cust = get_customer(_settings.storage_root / "customer_master.sqlite", cid)
+    except Exception:
+        cust = None
+    if cust is None:
+        return meta
+    name = (getattr(cust, "bill_to_name", None) or "").strip()
+    if name:
+        meta["name"] = name
+    country = (getattr(cust, "bill_to_country", None)
+               or getattr(cust, "country", None) or "").strip()
+    if country:
+        meta["country"] = country
+    vat = (getattr(cust, "vat_eu_number", None)
+           or getattr(cust, "nip", None) or "").strip()
+    if vat:
+        meta["vat_id"] = vat
+    meta["street"] = (getattr(cust, "bill_to_street", None) or "").strip()
+    meta["city"] = (getattr(cust, "bill_to_city", None) or "").strip()
+    meta["postal_code"] = (getattr(cust, "bill_to_postal_code", None) or "").strip()
+    meta["email"] = (getattr(cust, "bill_to_email", None) or "").strip()
+    meta["phone"] = (getattr(cust, "bill_to_phone", None) or "").strip()
+    return meta
+
+
+def _facts_for_contractor(
+    invoice_facts: list,
+    payment_facts: list,
+    cid: str,
+) -> tuple:
+    """Slice shared AR universe facts down to one contractor.
+
+    Invoices: exact ``contractor_id`` match.
+    Payments: same contractor_id OR linked to an in-slice invoice id
+    (covers bulk payment rows that omit contractor but link a fiscal
+    invoice in the window).
+    """
+    inv = [
+        f for f in (invoice_facts or [])
+        if (f.get("contractor_id") or "").strip() == cid
+    ]
+    inv_ids = {(f.get("id") or "").strip() for f in inv if f.get("id")}
+    pay = []
+    for f in payment_facts or []:
+        pcid = (f.get("contractor_id") or "").strip()
+        linked = (f.get("linked_invoice") or "").strip()
+        if pcid == cid or (linked and linked in inv_ids):
+            pay.append(f)
+    return inv, pay
+
+
 def _build_statement_dict(
     contractor_id: str,
     from_:         str,
     to:            str,
     as_of:         str,
+    *,
+    aging_method: str = "",
 ) -> Dict[str, Any]:
     """Shared builder used by BOTH ``/statement.json`` and
-    ``/statement.pdf`` routes. Performs every validation, preflight,
-    fetch, Python-side filter, and aggregation step. Returns the
-    Phase 10B aggregate_statement output dict.
+    ``/statement.pdf`` routes.
+
+    Consumes the shared fiscal AR fact universe (#1172
+    ``FISCAL_AR_INVOICE_TYPES`` via ``load_ar_fact_universe``) and the
+    shared ``aggregate_statement_from_facts`` authority — Statement does
+    NOT re-fetch a commercial type set or re-implement fiscal filtering.
 
     Raises ``HTTPException`` (400 / 404 / 502) on any failure. The PDF
     route inherits the same error shapes without duplication.
 
     Pure side-effects on wFirma: none. Read-only by construction.
     """
+    from ..services.ledger_aggregator import aggregate_statement_from_facts
+    from ..services.ledger_fact_universe import load_ar_fact_universe
+
     cid = (contractor_id or "").strip()
     if not cid:
         raise HTTPException(status_code=400, detail="contractor_id is required")
@@ -299,6 +389,8 @@ def _build_statement_dict(
             detail=f"as_of {ao!r} is before from {df!r}",
         )
 
+    method = _normalize_statement_aging_method(aging_method)
+
     # Preflight contractor.
     try:
         rcv = _cmd_lookup_contractor(cid)  # C-2b V5
@@ -321,66 +413,37 @@ def _build_statement_dict(
             },
         )
 
-    contractor_meta = {
-        "wfirma_contractor_id": cid,
-        "name":     getattr(rcv, "name",    "") or "",
-        "country":  getattr(rcv, "country", "") or "",
-        "vat_id":   getattr(rcv, "nip",     "") or "",
-    }
+    contractor_meta = _contractor_meta_from_customer_master(cid, rcv)
 
-    # Fetch invoices.
     try:
-        from ..services.ledger_fact_universe import FISCAL_AR_INVOICE_TYPES
-        invoice_nodes = wfirma_client.fetch_invoices_for_contractor(
-            cid, df, dt,
-            types=FISCAL_AR_INVOICE_TYPES,
-        )
+        uni = load_ar_fact_universe(df, dt)
     except Exception as exc:
         log.warning(
-            "[statement %s] fetch_invoices_for_contractor failed: %s",
+            "[statement %s] load_ar_fact_universe failed: %s",
             cid, exc,
         )
         raise HTTPException(
             status_code=502,
             detail={
-                "error": f"wFirma invoices/find failed: {exc}",
+                "error": f"wFirma AR fact universe failed: {exc}",
                 "code":  "STATEMENT_INVOICE_FETCH_FAILED",
                 "wfirma_contractor_id": cid,
             },
-        )
+        ) from exc
 
-    # Fetch payments.
-    try:
-        payment_nodes = wfirma_client.fetch_payments_for_contractor(
-            cid, df, dt,
-        )
-    except Exception as exc:
-        log.warning(
-            "[statement %s] fetch_payments_for_contractor failed: %s",
-            cid, exc,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": f"wFirma payments/find failed: {exc}",
-                "code":  "STATEMENT_PAYMENT_FETCH_FAILED",
-                "wfirma_contractor_id": cid,
-            },
-        )
+    invoice_facts, payment_facts = _facts_for_contractor(
+        uni.get("invoice_facts") or [],
+        uni.get("payment_facts") or [],
+        cid,
+    )
 
-    # Defence-in-depth Python-side date filtering.
-    # Period statement model: issue-date window for invoices and payment-date
-    # window for payments independently. Outside-window invoice links stay
-    # flagged — the window is not silently broadened (no opening-balance mix).
-    invoice_nodes = _python_side_date_filter(invoice_nodes, df, dt)
-    payment_nodes = _python_side_payment_date_filter(payment_nodes, df, dt)
-
-    return aggregate_statement(
-        contractor_meta = contractor_meta,
-        invoice_nodes   = invoice_nodes,
-        payment_nodes   = payment_nodes,
-        statement_date  = ao,
-        period          = (df, dt),
+    return aggregate_statement_from_facts(
+        contractor_meta,
+        invoice_facts,
+        payment_facts,
+        ao,
+        (df, dt),
+        aging_method=method,
     )
 
 
@@ -397,24 +460,32 @@ def get_client_statement(
     as_of:         str = Query("",
                                 description="Aging anchor date, YYYY-MM-DD; "
                                             "default = today UTC"),
+    aging_method:  str = Query(
+        "",
+        description="Aging basis: due_date (default, paymentdate) or "
+                    "invoice_age (explicit opt-in only)",
+    ),
 ) -> JSONResponse:
     """Read-only Statement of Account for one wFirma contractor.
 
-    Combines ``invoices/find`` + ``payments/find`` and emits a
-    per-currency Statement with entries (invoice / correction /
-    proforma / payment), running balance, totals (invoiced / credited /
-    received / outstanding), aging (invoice_age method), unmatched
-    payments, and operator-actionable warnings.
+    Consumes the shared fiscal AR fact universe +
+    ``aggregate_statement_from_facts`` (same authority as Client Balance /
+    Management Analysis). Emits per-currency entries, totals, aging,
+    unmatched payments, and internal warnings.
+
+    Aging authority: default ``due_date`` (invoice ``paymentdate``).
+    Pass ``aging_method=invoice_age`` only for an explicit invoice-age view.
 
     Outcomes:
       200  — JSON Statement (empty per-currency maps when no activity)
       400  — invalid contractor id, invalid date, ``from > to``,
-              ``as_of < from``
+              ``as_of < from``, invalid aging_method
       404  — contractor not found in wFirma
-      502  — wFirma fetch failed (HTTP / parse / non-OK status) on
-              invoices/find OR payments/find.
+      502  — shared AR fact-universe load failed
     """
-    body = _build_statement_dict(contractor_id, from_, to, as_of)
+    body = _build_statement_dict(
+        contractor_id, from_, to, as_of, aging_method=aging_method,
+    )
     return JSONResponse(body)
 
 
@@ -452,26 +523,35 @@ def get_client_statement_pdf(
     as_of:         str = Query("",
                                 description="Aging anchor date, YYYY-MM-DD; "
                                             "default = today UTC"),
+    aging_method:  str = Query(
+        "",
+        description="Aging basis: due_date (default) or invoice_age",
+    ),
 ) -> Response:
     """Read-only PDF rendering of the Statement of Account.
 
     Identical contract to ``/statement.json``: same validation, same
-    preflight, same fetch, same aggregation. The PDF is rendered from
-    the resulting dict — no second wFirma round-trip.
+    shared fiscal universe, same aggregation. The PDF is rendered from
+    the resulting dict — no second arithmetic path.
 
-    Outcomes:
-      200  — application/pdf, ``Content-Disposition: inline``
-      400  — same shapes as the JSON route
-      404  — same
-      502  — STATEMENT_PDF_PREFLIGHT_FAILED |
-              STATEMENT_PDF_INVOICE_FETCH_FAILED |
-              STATEMENT_PDF_PAYMENT_FETCH_FAILED |
-              STATEMENT_PDF_RENDER_FAILED
+    Customer-facing presentation: omits wFirma ids, DQ warnings, and
+    technical labels; reuses Company Profile seller footer + document
+    logo asset when present.
     """
-    statement = _build_statement_dict(contractor_id, from_, to, as_of)
+    statement = _build_statement_dict(
+        contractor_id, from_, to, as_of, aging_method=aging_method,
+    )
+
+    seller = _statement_seller_block()
+    logo_path = _statement_logo_path()
 
     try:
-        pdf_bytes = render_statement_pdf(statement)
+        pdf_bytes = render_statement_pdf(
+            statement,
+            customer_facing=True,
+            seller=seller,
+            logo_path=logo_path,
+        )
     except Exception as exc:
         log.warning(
             "[statement-pdf %s] render_statement_pdf failed: %s",
@@ -493,8 +573,35 @@ def get_client_statement_pdf(
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
         },
     )
+
+
+def _statement_seller_block() -> Dict[str, str]:
+    """Reuse CompanyProfile (same seller authority as packing/proforma)."""
+    from ..core.config import settings as _settings
+    from ..services.master_data_db import get_company_profile
+    from ..services.commercial_packing_list import _seller_from_company
+
+    try:
+        company = get_company_profile(_settings.storage_root / "master_data.sqlite")
+    except Exception:
+        company = None
+    return _seller_from_company(company)
+
+
+def _statement_logo_path() -> str:
+    """Same asset path Proforma Document Suite uses (PNG preferred)."""
+    from pathlib import Path
+    base = Path(__file__).resolve().parents[1] / "static" / "v2" / "assets"
+    for name in ("estrella-logo.png", "estrella-logo.jpg", "estrella-logo.jpeg"):
+        p = base / name
+        if p.is_file():
+            return str(p)
+    return ""
 
 
 # ── Wave 4 Item 4 — Client Balance roster ──────────────────────────────────
