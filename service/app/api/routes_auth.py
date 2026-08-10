@@ -46,6 +46,7 @@ from ..auth.service import (
     set_user_active,
     ROLES,
 )
+from ..auth.permissions import build_authority_fields
 from ..services.email_service import (
     queue_email,
     make_approval_email,
@@ -111,8 +112,8 @@ class SetRoleRequest(BaseModel):
 
 
 def _safe_user(u: dict) -> dict:
-    """Strip sensitive fields before returning to client."""
-    return {
+    """Strip sensitive fields; attach canonical RBAC authority projection."""
+    out = {
         "id":              u["id"],
         "full_name":       u["full_name"],
         "company_name":    u["company_name"],
@@ -125,6 +126,8 @@ def _safe_user(u: dict) -> dict:
         "created_at":      u.get("created_at"),
         "last_login":      u.get("last_login"),
     }
+    out.update(build_authority_fields(u))
+    return out
 
 
 def _set_session_cookie(response: Response, token: str, remember: bool) -> None:

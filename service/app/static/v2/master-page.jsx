@@ -234,7 +234,7 @@ const MAPPING_INFO = {
 // from the capability contract (auth/service.py ROLES). These are the real
 // system-defined roles — never the stale admin/manager/operator/viewer set.
 const STATIC_ROLES_NAMES = [
-  'admin', 'accounts', 'logistics', 'auditor', 'viewer',
+  'admin', 'accounts', 'logistics', 'crm', 'auditor', 'viewer',
   'master_admin', 'master_editor', 'master_viewer',
 ];
 

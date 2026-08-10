@@ -72,17 +72,15 @@ def test_set_role_validates_role_value():
 
 
 def test_role_allowlist_pinned():
-    """ROLES tuple has exactly 5 canonical values."""
+    """ROLES tuple matches the Slice-0 nine-role catalogue (incl. crm)."""
     src = _auth_service_src()
-    m = re.search(r"^ROLES\s*=\s*\(([^)]+)\)", src, re.MULTILINE)
+    m = re.search(r"^ROLES\s*=\s*\(([^)]+)\)", src, re.MULTILINE | re.DOTALL)
     assert m is not None, "ROLES tuple must be defined in auth/service.py"
     items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
-    # Phase 2 (2026-05-28): canonical ROLES extended with three isolated
-    # master-data roles. Legacy ladder is preserved first; master_* names are
-    # appended at the end. Frontend ADMIN_USERS_ROLES depends on this list —
-    # update both together if this list ever changes.
+    # RBAC Slice 0: crm added to legacy ladder; master_* remain isolated at end.
+    # Frontend ADMIN_USERS_ROLES / STATIC_ROLES_NAMES must stay in sync.
     expected = [
-        "admin", "accounts", "logistics", "auditor", "viewer",
+        "admin", "accounts", "logistics", "crm", "auditor", "viewer",
         "master_admin", "master_editor", "master_viewer",
     ]
     assert items == expected, (

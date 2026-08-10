@@ -42,7 +42,9 @@ def init_db(db_path: Path) -> None:
                 email_verified  INTEGER NOT NULL DEFAULT 0,
                 approval_status TEXT NOT NULL DEFAULT 'pending',
                 created_at      TEXT NOT NULL,
-                last_login      TEXT
+                last_login      TEXT,
+                default_surface TEXT NOT NULL DEFAULT 'v2',
+                default_page    TEXT NOT NULL DEFAULT 'dashboard'
             );
 
             CREATE TABLE IF NOT EXISTS reset_tokens (
@@ -61,11 +63,16 @@ def init_db(db_path: Path) -> None:
         # ── Idempotent column migrations (safe on existing DBs) ───────────────
         _add_column_if_missing(con, "users", "email_verified",  "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(con, "users", "approval_status", "TEXT NOT NULL DEFAULT 'pending'")
+        # RBAC Slice 0 — landing authority (separate from role permissions)
+        _add_column_if_missing(con, "users", "default_surface", "TEXT NOT NULL DEFAULT 'v2'")
+        _add_column_if_missing(con, "users", "default_page", "TEXT NOT NULL DEFAULT 'dashboard'")
         # Back-fill approval_status from is_approved for rows created before migration
         con.execute("""
             UPDATE users SET approval_status = 'approved'
             WHERE is_approved = 1 AND approval_status = 'pending'
         """)
+        # Safe landing defaults by role (no permission widening — landing only)
+        _backfill_landing_defaults(con)
 
 
 def _add_column_if_missing(con: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -73,6 +80,26 @@ def _add_column_if_missing(con: sqlite3.Connection, table: str, column: str, def
     cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()]
     if column not in cols:
         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _backfill_landing_defaults(con: sqlite3.Connection) -> None:
+    """Fill empty/invalid landing fields from role defaults (idempotent, non-widening)."""
+    # Local import avoids circular import at module load (permissions does not import database).
+    from .permissions import ROLE_LANDING, VALID_PAGES, VALID_SURFACES
+
+    rows = con.execute("SELECT id, role, default_surface, default_page FROM users").fetchall()
+    for row in rows:
+        role = row["role"] or "viewer"
+        surf_def, page_def = ROLE_LANDING.get(role, ("v2", "dashboard"))
+        surface = (row["default_surface"] or "").strip()
+        page = (row["default_page"] or "").strip()
+        new_surface = surface if surface in VALID_SURFACES else surf_def
+        new_page = page if page in VALID_PAGES else page_def
+        if new_surface != surface or new_page != page or not surface or not page:
+            con.execute(
+                "UPDATE users SET default_surface=?, default_page=? WHERE id=?",
+                (new_surface, new_page, row["id"]),
+            )
 
 
 def _connect() -> sqlite3.Connection:

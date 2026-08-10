@@ -14038,7 +14038,7 @@ function ReportsPage() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Role allow-list — must match service/app/auth/service.py::ROLES exactly.
-const ADMIN_USERS_ROLES = ['admin', 'accounts', 'logistics', 'auditor', 'viewer'];
+const ADMIN_USERS_ROLES = ['admin', 'accounts', 'logistics', 'crm', 'auditor', 'viewer', 'master_admin', 'master_editor', 'master_viewer'];
 
 function AdminUsersPage({ user, onNav, onToast }) {
   const [usersState, setUsersState] = React.useState({ loading: true, error: null, items: [], ts: null });
