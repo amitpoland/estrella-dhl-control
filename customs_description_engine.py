@@ -72,6 +72,9 @@ from description_grammar import (                       # noqa: E402
     STONE_EN                 as _STONE_EN,
     SHORT_DESC_METAL         as _SHORT_DESC_METAL,
     SHORT_DESC_STONE         as _SHORT_DESC_STONE,
+    # Material-component model — the ONE parser both engines share.  Customs
+    # renders its own register; it does not decide which materials a row states.
+    parse_material_components,
 )
 
 # Valid HS chapter ranges for jewellery (prefix → description)
@@ -303,25 +306,44 @@ def normalize_item_description(
     # When resolved_facts is provided by the description resolver, use those
     # facts directly and skip the GOLD_PURITY scan.  The resolver has already
     # determined the canonical metal/purity; re-parsing would risk divergence.
+    # Every material the row states, in source order — from the ONE shared
+    # parser.  Computed even on the resolver path, because it describes the
+    # SOURCE row, not the rendered wording.
+    parsed = parse_material_components(raw)
+
     if resolved_facts is not None:
-        # Resolver path: take facts verbatim, no GOLD_PURITY scan.
+        # Resolver path: take facts verbatim, no material scan.
         purity_raw = (resolved_facts.get("canonical_metal") or "").strip()
         purity_pl  = (resolved_facts.get("material_pl") or "").strip()
         # Caller may supply a pre-computed genitive; fall back to nominative.
         _resolved_purity_gen = (
             resolved_facts.get("purity_gen") or purity_pl
         ).strip()
+        _use_components = False
     else:
-        # Original path: scan GOLD_PURITY from raw text (unchanged).
-        purity_raw  = ""
-        purity_pl   = ""
-        for key, val in GOLD_PURITY.items():
-            pattern = re.compile(r"\b" + re.escape(key) + r"\b", re.IGNORECASE)
-            if pattern.search(raw):
-                purity_raw = key
-                purity_pl  = val
-                break
+        # Was: a first-match-wins scan of GOLD_PURITY.  That dict is ordered
+        # gold → silver → steel → platinum, so gold always won and every other
+        # metal of a combination row was silently discarded.  Normalization may
+        # improve language; it may never remove a material the source states.
+        #
+        # The customs register always states a fineness ("próba 750",
+        # "18-karatowego"), so a row whose ONLY material carries no stated
+        # fineness (bare "SILVER") stays unresolved exactly as before: no
+        # phrase, material_pl "metal szlachetny", and customs_desc_checker
+        # raises its operator proposal.  We decline to render it — we do not
+        # invent a próba for it.  A row that IS resolvable renders EVERY
+        # material it states, bare ones included, so a combination can never
+        # lose a metal.  gold_purity_raw stays a real GOLD_PURITY key for the
+        # legacy single-value SAD consumers; material_components below is the
+        # authority on the full material list.
+        _rated = [c for c in parsed.components if c.has_purity]
+        purity_raw = _rated[0].purity_key if _rated else ""
+        purity_pl  = (
+            " i ".join(c.purity_nominative_pl for c in parsed.components)
+            if _rated else ""
+        )
         _resolved_purity_gen = None  # computed below from _PURITY_GENITIVE
+        _use_components = bool(_rated)
 
     # ── Detect stones ─────────────────────────────────────────────────────────
     stones_raw = ""
@@ -378,6 +400,31 @@ def normalize_item_description(
     def _prep(word: str) -> str:
         return "ze" if word and word[0].lower() in ("z", "ż", "ź") else "z"
 
+    # ── Prepositional metal phrase — one conjunct per stated material ────────
+    # A single-material row yields exactly the previous string, byte for byte.
+    # A purity-less token carries its own preposition ("ze srebra") and must
+    # never acquire a próba it did not state.
+    def _metal_phrase(components) -> str:
+        conjuncts = []
+        for c in components:
+            if not c.has_purity:
+                if c.metal_prepositional_pl:
+                    conjuncts.append(c.metal_prepositional_pl)
+                continue
+            gen = _PURITY_GENITIVE.get(
+                c.purity_key, c.purity_genitive_pl or c.purity_nominative_pl
+            )
+            if gen:
+                conjuncts.append(f"{_prep(gen)} {gen}")
+        return " i ".join(conjuncts)
+
+    if _use_components:
+        purity_phrase = _metal_phrase(parsed.components)
+    elif purity_gen:
+        purity_phrase = f"{_prep(purity_gen)} {purity_gen}"
+    else:
+        purity_phrase = ""
+
     # ── Compose material_pl (nominative — for field display) ─────────────────
     # Uses "oraz" conjunction between metal and stones (nominative listing).
     # "z" is grammatically wrong in nominative context — "z" + instrumental
@@ -396,15 +443,13 @@ def normalize_item_description(
     # Sentence break ". Biżuteria" replaces ", biżuteria".
     # Origin: operator review of AWB 9938632830 (2026-06-08).
     setting_verb = _GENDER_SETTING_VERB.get(item_type_pl, "wysadzany") if stones_instr else ""
-    if purity_gen and stones_instr:
-        prep = _prep(purity_gen)
+    if purity_phrase and stones_instr:
         item_desc = (
-            f"{item_type_pl} {prep} {purity_gen} "
+            f"{item_type_pl} {purity_phrase} "
             f"{setting_verb} {stones_instr}. Biżuteria do noszenia."
         )
-    elif purity_gen:
-        prep = _prep(purity_gen)
-        item_desc = f"{item_type_pl} {prep} {purity_gen}. Biżuteria do noszenia."
+    elif purity_phrase:
+        item_desc = f"{item_type_pl} {purity_phrase}. Biżuteria do noszenia."
     elif stones_instr:
         item_desc = f"{item_type_pl} {setting_verb} {stones_instr}. Biżuteria do noszenia."
     else:
@@ -463,15 +508,33 @@ def normalize_item_description(
         "classification_flag":         hs_validation["classification_flag"],
         "classification_note":         hs_validation["classification_note"],
         "hsn_from_invoice":            hsn_from_invoice,
+        # Material-component model — the complete material truth of the source
+        # row.  gold_purity_raw stays the PRIMARY (first) material for legacy
+        # single-value consumers; material_components is the authority.
+        "material_components":         parsed.metal_keys,
+        "construction":                parsed.construction,
+        "description_review_required": parsed.description_review_required,
+        "review_reason":               parsed.review_reason,
         # Phase 2B - additive renderer outputs
-        "product_description_pl":      render_product_description_pl(purity_raw, stones_pl, _item_key),
-        "product_description_en":      render_product_description_en(_item_key, purity_raw, stones_pl),
-        "short_description":           render_short_description(_item_key, purity_raw, stones_pl),
+        "product_description_pl":      render_product_description_pl(
+            purity_raw, stones_pl, _item_key,
+            parsed_material=parsed if _use_components else None),
+        "product_description_en":      render_product_description_en(
+            _item_key, purity_raw, stones_pl,
+            parsed_material=parsed if _use_components else None),
+        "short_description":           render_short_description(
+            _item_key, purity_raw, stones_pl,
+            parsed_material=parsed if _use_components else None),
     }
 
 
-def render_product_description_pl(purity_raw, stones_pl, item_type):
-    """Polish product description for invoices, proformas, PZ, product master."""
+def render_product_description_pl(purity_raw, stones_pl, item_type, parsed_material=None):
+    """Polish product description for invoices, proformas, PZ, product master.
+
+    ``parsed_material`` (a ParsedMaterial) carries every material the source row
+    stated.  When supplied, all of them are rendered, joined with " i ".  A
+    single-material row produces the same string as before, byte for byte.
+    """
     lookup = (item_type or '').upper().strip()
     noun = ITEM_TYPE_PL.get(lookup, '')
     if not noun and lookup:
@@ -486,17 +549,38 @@ def render_product_description_pl(purity_raw, stones_pl, item_type):
     def _prep_prod(word):
         return 'ze' if word and word[0].lower() in ('z', 'ż', 'ź', 's', 'ś', 'w') else 'z'
 
-    if purity_gen and stones_instr:
-        return f'{noun} {_prep_prod(purity_gen)} {purity_gen} z {stones_instr}'
-    if purity_gen:
-        return f'{noun} {_prep_prod(purity_gen)} {purity_gen}'
+    components = list(parsed_material.components) if parsed_material is not None else []
+    if components:
+        conjuncts = []
+        for c in components:
+            if not c.has_purity:
+                if c.metal_prepositional_pl:
+                    conjuncts.append(c.metal_prepositional_pl)
+                continue
+            g = (_PURITY_GENITIVE_PRODUCT.get(c.purity_key, '')
+                 or c.purity_genitive_product_pl)
+            if g:
+                conjuncts.append(f'{_prep_prod(g)} {g}')
+        purity_phrase = ' i '.join(conjuncts)
+    elif purity_gen:
+        purity_phrase = f'{_prep_prod(purity_gen)} {purity_gen}'
+    else:
+        purity_phrase = ''
+
+    if purity_phrase and stones_instr:
+        return f'{noun} {purity_phrase} z {stones_instr}'
+    if purity_phrase:
+        return f'{noun} {purity_phrase}'
     if stones_instr:
         return f'{noun} z {stones_instr}'
     return noun + ' — wyrób jubilerski'
 
 
-def render_product_description_en(item_type, purity_raw, stones_pl):
-    """English product description: stone-first format."""
+def render_product_description_en(item_type, purity_raw, stones_pl, parsed_material=None):
+    """English product description: stone-first format.
+
+    ``parsed_material`` renders every stated material, joined with " & ".
+    """
     lookup = (item_type or '').upper().strip()
     type_en = ITEM_TYPE_EN.get(lookup, lookup.title() if lookup else '')
 
@@ -511,21 +595,38 @@ def render_product_description_en(item_type, purity_raw, stones_pl):
         'SS':    'Stainless Steel',
         'PT950': 'Platinum 950', 'PT900': 'Platinum 900', 'PT850': 'Platinum 850',
     }
-    metal_label = _METAL_LABEL.get(purity_key, '')
+    components = list(parsed_material.components) if parsed_material is not None else []
+    if components:
+        # A purity-less token has no _METAL_LABEL entry — fall back to the
+        # component's own metal name ("Silver"), never to an invented hallmark.
+        labels = [_METAL_LABEL.get(c.purity_key.upper(), '') or c.en_metal
+                  for c in components]
+        metal_label = ' & '.join(l for l in labels if l)
+    else:
+        metal_label = _METAL_LABEL.get(purity_key, '')
 
     parts = [p for p in (stone_adj, metal_label, type_en) if p]
     return ' '.join(parts) if parts else ''
 
 
-def render_short_description(item_type, purity_raw, stones_pl):
-    """Compact description for PZ notes and audit notes."""
+def render_short_description(item_type, purity_raw, stones_pl, parsed_material=None):
+    """Compact description for PZ notes and audit notes.
+
+    ``parsed_material`` renders every stated material, joined with "+".
+    """
     lookup = (item_type or '').upper().strip()
     type_en = ITEM_TYPE_EN.get(lookup, lookup.title() if lookup else '')
 
     purity_key = (purity_raw or '').upper().strip()
     stone_key  = (stones_pl or '').strip()
 
-    metal_code = _SHORT_DESC_METAL.get(purity_key, '')
+    components = list(parsed_material.components) if parsed_material is not None else []
+    if components:
+        codes = [_SHORT_DESC_METAL.get(c.purity_key.upper(), '') or c.short_code
+                 for c in components]
+        metal_code = '+'.join(c for c in codes if c)
+    else:
+        metal_code = _SHORT_DESC_METAL.get(purity_key, '')
     stone_code = _SHORT_DESC_STONE.get(stone_key, '') if stone_key else ''
 
     parts = [p for p in (type_en, metal_code, stone_code) if p]

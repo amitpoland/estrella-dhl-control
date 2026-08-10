@@ -41,6 +41,15 @@ try:
 except ImportError:
     sys.exit("Missing dependency: pip3 install requests")
 
+# Material identity comes from ONE parser, shared with the customs engine.
+# This module renders commercial wording; description_grammar decides which
+# materials a source row actually states.  See Lesson: normalization may
+# improve language, it may never remove a material component.
+from description_grammar import (
+    parse_material_components,
+    check_material_completeness,
+)
+
 
 # ── Constants ────────────────────────────────────────────────────────────────
 VAT_RATE = 0.23
@@ -157,9 +166,19 @@ def is_suspicious_quantity(q) -> bool:
         return True
     return False
 
-def normalize_family(desc: str) -> str:
+def normalize_family(desc: str, parsed=None) -> str:
+    """Stone/finish family of a source row.
+
+    ``parsed`` is the row's :class:`ParsedMaterial`; it is resolved here when a
+    caller does not already hold one.  The silver branch fires ONLY when silver
+    is the sole metal — it used to fire on any SILVER/SL925 token, which forced
+    family="Silver Plain" on mixed rows and erased the second metal before any
+    renderer ever saw it.
+    """
     t = desc.upper()
-    if "SL925" in t or "SILVER" in t:
+    if parsed is None:
+        parsed = parse_material_components(desc)
+    if parsed.components and {c.metal for c in parsed.components} == {"silver"}:
         return "Silver Plain"
     if "LGD" in t or "LAB GROWN" in t or "LAB-GROWN" in t:
         return "Lab Grown Diamond"
@@ -254,33 +273,161 @@ def compute_invoice_totals(invoices: list) -> dict:
         "qty_validation":        qty_validation,
     }
 
-def get_karat(desc: str) -> str:
+def get_karat(desc: str, parsed=None) -> str:
+    """PRIMARY purity token of a row — a label, NOT the row's material identity.
+
+    On a combination row this returns the first gold/platinum purity; the
+    complete material list lives in ``parsed_material.components`` and is what
+    the renderers use.  Nothing may treat this single token as the full
+    description of the goods.
+
+    Silver-only and unrecognized rows keep the legacy scan (and its "14KT"
+    default) so persisted golden rows do not move.
+    """
+    if parsed is None:
+        parsed = parse_material_components(desc)
+    for c in parsed.components:
+        if c.has_purity and c.metal in ("gold", "platinum"):
+            return c.display_key
+
     t = desc.upper()
-    # Platinum must be checked before gold karats — "PT950" contains no "KT"
-    if "PT950" in t:
-        return "PT950"
-    if "PT900" in t:
-        return "PT900"
-    for k in ["22KT", "18KT", "14KT", "10KT", "9KT"]:
+    # Platinum must be checked before gold karats — "PT950" contains no "KT".
+    # PT850 was missing here: a row stating it fell through to the "14KT"
+    # default below, i.e. the fallback INVENTED a gold purity for a platinum
+    # row.  Same for 24KT.  Listing every fineness GOLD_PURITY already knows
+    # removes invention; it adds no purity the source did not state.
+    for k in ["PT950", "PT900", "PT850"]:
+        if k in t:
+            return k
+    for k in ["24KT", "22KT", "18KT", "14KT", "10KT", "9KT"]:
         if k in t:
             return k
     return "14KT"
 
+
+def build_item_meta(desc_raw: str, item_type: str) -> dict:
+    """Resolve a source row's material identity ONCE, at parse time.
+
+    Every caller that later renders a name must go through this: the builders
+    consume ``parsed_material`` and never re-parse a derived description.
+    Re-deriving material facts from generated text is the lossy round-trip this
+    whole repair exists to remove.
+    """
+    parsed = parse_material_components(desc_raw or "")
+    return {
+        "family":     normalize_family(desc_raw or "", parsed),
+        "karat":      get_karat(desc_raw or "", parsed),
+        "item_type":  item_type,
+        # The exact commercial text this row's material identity came from.
+        # It is a plain string, so it survives JSON persistence — which makes
+        # every later renderer able to re-derive the SAME components from the
+        # SOURCE, never from a generated description.
+        "source_description_raw":     desc_raw or "",
+        "parsed_material":            parsed,
+        "construction":               parsed.construction,
+        "description_review_required": parsed.description_review_required,
+        "review_reason":              parsed.review_reason,
+    }
+
+
+def _log_material_findings(corrections_log: list, fname: str,
+                           desc_raw: str, meta: dict) -> None:
+    """Record what the material parser saw, for the rows that are not trivial.
+
+    This replaces the "auto-corrected silver item" breadcrumb the silver
+    override used to emit.  That message recorded a correction that was itself
+    the defect; these record the two facts an operator actually needs — that a
+    row states more than one material, and that a row's material list could not
+    be read confidently.  Neither changes any value.
+    """
+    parsed = meta.get("parsed_material")
+    if parsed is None:
+        return
+    if meta.get("construction") == "combination":
+        corrections_log.append(
+            f"[{fname}] Combination row — materials preserved: "
+            + ", ".join(c.purity_key for c in parsed.components)
+            + f" ({desc_raw[:60]})"
+        )
+    if meta.get("description_review_required"):
+        corrections_log.append(
+            f"[VERIFY-GAP] [{fname}] Material composition needs review for "
+            f"'{desc_raw[:60]}' — {meta.get('review_reason') or 'ambiguous'}"
+        )
+
+
+def _components_for(item: dict) -> list:
+    """The material components of one item dict, in source order.
+
+    Resolution order is deliberate.  ``parsed_material`` is the in-memory
+    object built once at parse time and is preferred.  ``source_description_raw``
+    is the persisted fallback: re-parsing the RAW SOURCE text is authoritative
+    by definition, and is the opposite of re-parsing a generated description —
+    that round-trip is the loss this repair exists to remove.  A dict carrying
+    neither (a synthetic fixture, or a row built before this repair) resolves to
+    no components and the builders fall back to their pre-repair wording.
+    """
+    parsed = item.get("parsed_material")
+    if parsed is None:
+        raw = (item.get("source_description_raw") or "").strip()
+        if raw:
+            parsed = parse_material_components(raw)
+    return list(parsed.components) if parsed is not None else []
+
+
+def _pl_metal_phrase(c) -> str:
+    """Commercial Polish prepositional phrase for ONE material component.
+
+    Commercial vocabulary, deliberately not the customs vocabulary: this path
+    has always said "ze złota próby 18 karatów" where customs says
+    "z 18-karatowego złota (próba 750)".  Two roles, two registers — unifying
+    the wording here would silently rewrite persisted golden rows.
+
+    A component with no próba evidence gets no próba: bare SILVER renders
+    "ze srebra", never "ze srebra próby 925".
+    """
+    if c.metal == "gold" and c.has_purity:
+        return f"ze złota próby {c.display_key.replace('KT', '')} karatów"
+    if c.metal == "platinum" and c.has_purity:
+        return f"z platyny próby {c.purity_digits}"
+    if c.metal == "silver":
+        return "ze srebra próby 925" if c.has_purity else "ze srebra"
+    if c.metal == "steel":
+        return "ze stali szlachetnej"
+    return c.metal_prepositional_pl or ""
+
 def build_en_name(item: dict) -> str:
-    """Natural English description: 'Diamond Studded 14KT Gold Jewellery RING'."""
+    """Natural English description: 'Diamond Studded 14KT Gold Jewellery RING'.
+
+    Every material the source stated appears, joined with " & ".  Single-metal
+    output is byte-identical to the pre-repair wording.
+    """
     family    = item["family"]
     karat     = item["karat"]
     item_type = item["item_type"]
-    metal = "Platinum" if "PT" in karat else "Gold"
-    if "Silver" in family:
-        return f"Silver SL925 Jewellery {item_type}"
+    components = _components_for(item)
+
+    if not components:
+        # No material resolved — either the row states none (and carries
+        # description_review_required), or the caller passed a bare item dict
+        # built before this repair.  Legacy wording exactly, byte for byte.
+        metal = "Platinum" if "PT" in karat else "Gold"
+        if "Silver" in family:
+            return f"Silver SL925 Jewellery {item_type}"
+        metal_phrase = f"{karat} {metal}"
+    else:
+        metal_phrase = " & ".join(c.en_label for c in components)
+        if "Silver" in family:
+            # Silver is the only metal here (normalize_family guarantees it).
+            # "SL925" is printed only when the source actually carried it.
+            return f"{metal_phrase} Jewellery {item_type}"
     if "Lab Grown" in family:
-        return f"Lab Grown Diamond Studded {karat} {metal} Jewellery {item_type}"
+        return f"Lab Grown Diamond Studded {metal_phrase} Jewellery {item_type}"
     if "Colour Stone" in family:
-        return f"Diamond & Colour Stone {karat} {metal} Jewellery {item_type}"
+        return f"Diamond & Colour Stone {metal_phrase} Jewellery {item_type}"
     if "Diamond Studded" in family:
-        return f"Diamond Studded {karat} {metal} Jewellery {item_type}"
-    return f"Plain {karat} {metal} Jewellery {item_type}"
+        return f"Diamond Studded {metal_phrase} Jewellery {item_type}"
+    return f"Plain {metal_phrase} Jewellery {item_type}"
 
 
 def build_pl_name(item: dict) -> str:
@@ -291,13 +438,23 @@ def build_pl_name(item: dict) -> str:
 
     pl_type = ITEM_PL.get(item_type, item_type.lower())
 
+    components = _components_for(item)
+
     # ── Silver ────────────────────────────────────────────────────────────────
+    # Reached only when silver is the ONLY metal (normalize_family gates it).
+    # "próby 925" is printed only when the source actually stated 925/SL925 —
+    # a bare "SILVER" token must not acquire a purity it never carried.
     if "Silver" in family:
         agree = _SILVER_AGREE.get(pl_type, "srebrny")
+        if components and not any(c.has_purity for c in components):
+            return f"{pl_type} {agree}"
         return f"{pl_type} {agree} próby 925"
 
     # ── Metal base phrase ─────────────────────────────────────────────────────
-    if "PT" in karat_raw:
+    if components:
+        # Every material the source stated, in source order, joined with " i ".
+        base = f"{pl_type} " + " i ".join(_pl_metal_phrase(c) for c in components)
+    elif "PT" in karat_raw:
         purity = karat_raw[2:]          # "950" or "900"
         base   = f"{pl_type} z platyny próby {purity}"
     else:
@@ -1101,8 +1258,16 @@ def _build_invoice_from_authority_rows(pdf_path, fname, audit, rows, corrections
             or ""
         ).strip()
 
-        family = normalize_family(desc_en) if desc_en else ""
-        karat  = get_karat(desc_en) if desc_en else ""
+        # Material identity comes from the row's RAW commercial text when the
+        # row carries it.  Authority rows written before this repair have no
+        # raw field, and for those the generated `description_en` is genuinely
+        # the best evidence available — that is precisely the round-trip this
+        # repair removes going forward, so the fallback is named, not hidden.
+        _material_src = (r.get("source_description_raw") or "").strip() or desc_en
+        _item_meta = build_item_meta(_material_src, item_type)
+        family = _item_meta["family"] if _material_src else ""
+        karat  = _item_meta["karat"]  if _material_src else ""
+        _log_material_findings(corrections_log, fname, _material_src, _item_meta)
 
         item = {
             "description_en": desc_en,
@@ -1117,6 +1282,10 @@ def _build_invoice_from_authority_rows(pdf_path, fname, audit, rows, corrections
             "gross_weight":   0.0,
             "net_weight":     0.0,
             "pl_desc":        pl_desc,
+            "source_description_raw": _material_src,
+            "parsed_material":        _item_meta["parsed_material"],
+            "construction":           _item_meta["construction"],
+            "description_review_required": _item_meta["description_review_required"],
         }
         items.append(item)
 
@@ -1360,14 +1529,19 @@ def parse_invoice_global_jewellery(pdf_path: str, text: str, lines: list,
             )
             continue
 
-        karat  = get_karat(desc_raw)
-        family = normalize_family(desc_raw)
+        # Material identity is resolved ONCE, here, from the raw invoice text.
+        # The old "auto-corrected silver item" override that used to sit under
+        # this line forced family="Silver Plain" on ANY row mentioning
+        # SILVER/SL925 — which on a combination row ("SILVER Plain 10kt Gold
+        # Com") threw the gold away before any renderer saw it.  normalize_family
+        # now returns "Silver Plain" exactly when silver is the SOLE metal, so
+        # the override has no correct work left to do; all it could still do is
+        # erase a second metal.
+        _item_meta = build_item_meta(desc_raw, item_type)
+        family = _item_meta["family"]
+        karat  = _item_meta["karat"]
+        _log_material_findings(corrections_log, fname, desc_raw, _item_meta)
 
-        if ("SILVER" in desc_raw.upper() or "SL925" in desc_raw.upper()) and family != "Silver Plain":
-            family = "Silver Plain"
-            corrections_log.append(f"[{fname}] Global Jewellery: auto-corrected silver item")
-
-        _item_meta = {"family": family, "karat": karat, "item_type": item_type}
         desc_en = build_en_name(_item_meta)
         pl_desc = build_pl_name(_item_meta)
 
@@ -1384,6 +1558,10 @@ def parse_invoice_global_jewellery(pdf_path: str, text: str, lines: list,
             "gross_weight":   0.0,
             "net_weight":     0.0,
             "pl_desc":        pl_desc,
+            "source_description_raw": _item_meta["source_description_raw"],
+            "parsed_material":        _item_meta["parsed_material"],
+            "construction":           _item_meta["construction"],
+            "description_review_required": _item_meta["description_review_required"],
         })
 
     # ── FOB fallback ───────────────────────────────────────────────────────────
@@ -1533,9 +1711,11 @@ def parse_invoice_generic(pdf_path: str, text: str, lines: list,
             )
             continue
 
-        item_type = _gj_infer_item_type(desc_raw) or "ITEM"
-        karat     = get_karat(desc_raw)
-        family    = normalize_family(desc_raw)
+        item_type  = _gj_infer_item_type(desc_raw) or "ITEM"
+        _item_meta = build_item_meta(desc_raw, item_type)
+        karat      = _item_meta["karat"]
+        family     = _item_meta["family"]
+        _log_material_findings(corrections_log, fname, desc_raw, _item_meta)
 
         if item_type == "ITEM":
             desc_en = f"[Needs review] {desc_raw}"
@@ -1544,7 +1724,6 @@ def parse_invoice_generic(pdf_path: str, text: str, lines: list,
                 f"[{fname}] Generic parser: item type not identified for '{desc_raw[:50]}'"
             )
         else:
-            _item_meta = {"family": family, "karat": karat, "item_type": item_type}
             desc_en = build_en_name(_item_meta)
             pl_desc = build_pl_name(_item_meta)
 
@@ -1561,6 +1740,10 @@ def parse_invoice_generic(pdf_path: str, text: str, lines: list,
             "gross_weight":   0.0,
             "net_weight":     0.0,
             "pl_desc":        pl_desc,
+            "source_description_raw": _item_meta["source_description_raw"],
+            "parsed_material":        _item_meta["parsed_material"],
+            "construction":           _item_meta["construction"],
+            "description_review_required": _item_meta["description_review_required"],
         })
 
     if fob_usd <= 0.0 and items:
@@ -1772,17 +1955,15 @@ def parse_invoice(pdf_path: str, corrections_log: list) -> dict:
             )
             continue
 
-        karat  = get_karat(desc_raw)
-        family = normalize_family(desc_raw)
+        # Same single resolution as the other parsers.  The "Auto-corrected
+        # silver item to Silver Plain family" override that used to sit here was
+        # a byte-identical twin of the one in the Global Jewellery parser, and
+        # had the same effect on a combination row: it discarded the gold.
+        _item = build_item_meta(desc_raw, item_type)
+        family = _item["family"]
+        karat  = _item["karat"]
+        _log_material_findings(corrections_log, fname, desc_raw, _item)
 
-        # Silver detection: fix family if normalize_family missed it
-        if ("SILVER" in desc_raw.upper() or "SL925" in desc_raw.upper()) and family != "Silver Plain":
-            family = "Silver Plain"
-            corrections_log.append(
-                f"Auto-corrected silver item to Silver Plain family in {fname}"
-            )
-
-        _item = {"family": family, "karat": karat, "item_type": item_type}
         desc_en = build_en_name(_item)
         pl_desc = build_pl_name(_item)
 
@@ -1799,6 +1980,10 @@ def parse_invoice(pdf_path: str, corrections_log: list) -> dict:
             "gross_weight":   float(m.group("gross")),
             "net_weight":     float(m.group("net")),
             "pl_desc":        pl_desc,
+            "source_description_raw": _item["source_description_raw"],
+            "parsed_material":        _item["parsed_material"],
+            "construction":           _item["construction"],
+            "description_review_required": _item["description_review_required"],
         })
 
     # ── FOB fallback: derive from line totals if still 0 ─────────────────────
@@ -2957,7 +3142,12 @@ def calculate_landed(invoices: list, zc429: dict, nbp: dict, corrections_log: li
             before_duty_pln     = purchase_value_pln + allocated_ship_pln
             total_before_duty_pln += before_duty_pln
 
-            rows.append({
+            # `parsed_material` is a dataclass — an in-memory handle, not a
+            # persisted value.  The builders consume it here, then it is dropped
+            # so the row stays JSON-serialisable.  `source_description_raw` is
+            # the persisted half of the same fact: a later reader can rebuild
+            # the identical components from it without the dataclass.
+            _row = {
                 **item,
                 "invoice_no":          inv["invoice_no"],
                 "invoice_date":        inv["invoice_date"],
@@ -2973,7 +3163,15 @@ def calculate_landed(invoices: list, zc429: dict, nbp: dict, corrections_log: li
                 "allocated_ship_pln":  allocated_ship_pln,
                 "purchase_value_pln":  purchase_value_pln,
                 "before_duty_pln":     before_duty_pln,
-            })
+            }
+            _row.pop("parsed_material", None)
+            # …and from the item itself: `invoices` is part of the returned
+            # result, and callers JSON-serialise it (audit.json, the process
+            # route).  The handle has done its work by this line — both names
+            # above were built from it — so nothing downstream needs it, while
+            # `source_description_raw` survives in both the row and the item.
+            item.pop("parsed_material", None)
+            rows.append(_row)
 
     # ── Validation ────────────────────────────────────────────────────────────
     if zc429["duty_pln"] <= 0:

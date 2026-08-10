@@ -31,7 +31,9 @@ Coverage (the 10 contract tests):
   4. birth records advisory for a blank name_pl after an enrichment miss
   5. birth does NOT store ready/blocked truth anywhere
   6. birth preserves unit_price and price_source untouched
-  7. birth does NOT overwrite an operator-confirmed name_pl
+  7. birth treats a caller name_pl as MACHINE text — product_descriptions
+     replaces it, and it is kept as machine_birth only when nothing stronger
+     exists (migrated: birth cannot establish operator authority)
   8. reset preserves the prior operator-confirmed name_pl (no strip-to-blank)
   9. reset enriches a blank name_pl from the product_descriptions authority
  10. reset records the same non-authoritative advisory as birth
@@ -216,17 +218,51 @@ def test_birth_preserves_unit_price_and_price_source(db_path):
     assert ln["currency"] == "EUR"
 
 
-# ── 7. birth does NOT overwrite operator-confirmed name_pl ───────────────────
+# ── 7. birth-time caller name_pl is MACHINE text, not operator authority ─────
+#
+# MIGRATED (machine_birth provenance campaign). This test previously asserted
+# that a caller-supplied ``name_pl`` survived birth untouched, on the premise
+# that it was "already-confirmed" by an operator. That premise was false and
+# was the defect: ``auto_create_draft_from_sales_packing`` is fed from sales
+# packing / PZ — machine data — and its normaliser does not even carry
+# ``name_pl_source`` across the birth boundary (see the raw_row projection),
+# so no caller can assert human authorship here. Treating the string as
+# operator-owned is what froze stale machine output through 15 resets.
+#
+# The protective half of the old test is kept and strengthened below: the name
+# is still never LOST. It is replaced only by the stronger canonical authority
+# (product_descriptions), and kept as ``machine_birth`` when nothing stronger
+# exists. Genuine operator protection is asserted where it can actually be
+# established — at reset, over a real ``update_draft_line`` edit — in
+# test_proforma_name_pl_provenance.py.
 
-def test_birth_does_not_overwrite_confirmed_name_pl(db_path):
-    # RNG-100 has a PD authority value "Pierścionek złoty", but the caller
-    # supplies an already-confirmed name_pl. Enrichment must not clobber it.
+def test_birth_caller_name_pl_yields_to_product_descriptions(db_path):
+    # RNG-100 HAS a PD authority value. A caller-supplied name carries no
+    # human provenance, so the canonical source wins.
     draft, _ = pildb.auto_create_draft_from_sales_packing(
         db_path, batch_id="B7", client_name="ACME", currency="EUR",
-        lines=[_line("RNG-100", name_pl="Operator Curated Name")],
+        lines=[_line("RNG-100", name_pl="Stale Machine Name")],
         name_pl_lookup=_lookup,
     )
-    assert _editable(draft)[0]["name_pl"] == "Operator Curated Name"
+    ln = _editable(draft)[0]
+    assert ln["name_pl"] == "Pierścionek złoty"
+    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_PD
+    # and birth NEVER mints operator authority
+    assert ln["name_pl_source"] != pildb.NAME_PL_SOURCE_OPERATOR
+
+
+def test_birth_keeps_unreplaceable_name_as_machine_birth(db_path):
+    # UNKNOWN-999 has NO PD authority. The inherited name must survive (never
+    # blanked) but must be stamped machine_birth so a later reset — once PD can
+    # supply a stronger value — is free to regenerate it.
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        db_path, batch_id="B7b", client_name="ACME", currency="EUR",
+        lines=[_line("UNKNOWN-999", name_pl="Inherited Machine Name")],
+        name_pl_lookup=_lookup,
+    )
+    ln = _editable(draft)[0]
+    assert ln["name_pl"] == "Inherited Machine Name", "reset/birth blanked a usable name"
+    assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_MACHINE_BIRTH
 
 
 # ── 8. reset preserves prior operator-confirmed name_pl ──────────────────────
@@ -395,14 +431,21 @@ def test_birth_generated_declines_for_unknown_category(db_path):
     assert ln["name_pl_source"] == pildb.NAME_PL_SOURCE_BLANK
 
 
-# ── PR4-3. name_pl_source: operator / PD / blank (generated retired) ─────────
+# ── PR4-3. name_pl_source: PD / machine_birth / blank at birth ───────────────
+#
+# MIGRATED (machine_birth provenance campaign). The RNG-100 row previously
+# asserted ``operator``; birth cannot establish human authorship (its
+# normaliser drops name_pl_source), so that stamp was a provenance lie. The
+# birth-reachable value set is PD / machine_birth / blank, and the campaign's
+# central claim — birth NEVER mints ``operator`` — is asserted explicitly.
 
-def test_birth_name_pl_source_all_four_values(db_path):
+def test_birth_name_pl_source_values(db_path):
     draft, _ = pildb.auto_create_draft_from_sales_packing(
         db_path, batch_id="P3", client_name="ACME", currency="EUR",
         lines=[
-            _attr_line("RNG-100",     name_pl="Operator Curated"),  # operator
+            _attr_line("RNG-100",     name_pl="Stale Machine"),     # PD replaces
             _attr_line("NCK-200",     name_pl=""),                  # product_descriptions
+            _attr_line("UNKNOWN-777", name_pl="Kept Machine"),      # PD miss → machine_birth
             _attr_line("UNKNOWN-999", name_pl="", ctg="EAR"),       # PD miss → blank
             _attr_line("BLANK-000",   name_pl="", ctg=""),          # blank
         ],
@@ -410,14 +453,19 @@ def test_birth_name_pl_source_all_four_values(db_path):
         desc_generate=generate_name_pl_if_sufficient,
     )
     by_code = {ln["product_code"]: ln for ln in _editable(draft)}
-    assert by_code["RNG-100"]["name_pl_source"]     == pildb.NAME_PL_SOURCE_OPERATOR
-    assert by_code["RNG-100"]["name_pl"]            == "Operator Curated"
+    assert by_code["RNG-100"]["name_pl_source"]     == pildb.NAME_PL_SOURCE_PD
+    assert by_code["RNG-100"]["name_pl"]            == "Pierścionek złoty"
     assert by_code["NCK-200"]["name_pl_source"]     == pildb.NAME_PL_SOURCE_PD
     assert by_code["NCK-200"]["name_pl"]            == "Naszyjnik srebrny"
+    assert by_code["UNKNOWN-777"]["name_pl_source"] == pildb.NAME_PL_SOURCE_MACHINE_BIRTH
+    assert by_code["UNKNOWN-777"]["name_pl"]        == "Kept Machine"
     assert by_code["UNKNOWN-999"]["name_pl_source"] == pildb.NAME_PL_SOURCE_BLANK
     assert by_code["UNKNOWN-999"]["name_pl"]        == ""
     assert by_code["BLANK-000"]["name_pl_source"]   == pildb.NAME_PL_SOURCE_BLANK
     assert by_code["BLANK-000"]["name_pl"]          == ""
+    # the campaign invariant: birth is not an operator-authority minter
+    assert all(ln["name_pl_source"] != pildb.NAME_PL_SOURCE_OPERATOR
+               for ln in by_code.values())
 
 
 # ── PR4-4. missing_product_mapping advisory — only when lookup supplied ───────

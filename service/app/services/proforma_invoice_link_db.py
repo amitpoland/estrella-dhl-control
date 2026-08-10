@@ -38,7 +38,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 # Module logger. Several defensive ``except`` branches (draft-birth block
 # lifecycle, canonical-name migration) call ``log.warning`` — without this
@@ -2098,6 +2098,23 @@ NAME_PL_SOURCE_GENERATED = "generated"  # retained for historical rows; never ne
 NAME_PL_SOURCE_BLANK     = "blank"
 # Diagnostic stamp when PD is absent OR only holds generic/forbidden text.
 NAME_PL_SOURCE_MISSING_PD = "missing_product_descriptions"
+# Machine-generated at draft birth/reset from the source row, with NO human
+# involvement. Distinct from ``operator`` precisely so a stale machine string
+# can be regenerated later: birth used to stamp ANY inherited non-blank name
+# ``operator``, which made old machine output permanently self-protecting.
+NAME_PL_SOURCE_MACHINE_BIRTH = "machine_birth"
+
+# Provenance values a stronger canonical source (product_descriptions) MAY
+# replace. ``operator`` is deliberately absent — a human-authored name is
+# never overwritten by regeneration.
+NAME_PL_SOURCE_MACHINE_REPLACEABLE = frozenset({
+    NAME_PL_SOURCE_MACHINE_BIRTH,
+    NAME_PL_SOURCE_PD,
+    NAME_PL_SOURCE_GENERATED,
+    NAME_PL_SOURCE_BLANK,
+    NAME_PL_SOURCE_MISSING_PD,
+    "",          # unstamped legacy row
+})
 
 
 def _birth_resolve_name_pl(
@@ -2107,15 +2124,24 @@ def _birth_resolve_name_pl(
 ) -> List[Dict[str, Any]]:
     """Resolve each line's ``name_pl`` and stamp ``name_pl_source`` provenance.
 
-    Order: operator (pre-existing non-blank, non-generic name_pl)
-    → product_descriptions via the shared
+    Order: **operator** (a pre-existing name whose stored ``name_pl_source``
+    is already ``operator`` — i.e. a human typed it through
+    :func:`update_draft_line`) → **product_descriptions** via the shared
     :func:`description_engine.validate_product_description_row` policy
-    (``description_pl`` preferred, then ``name_pl``; generics rejected)
-    → blank / ``missing_product_descriptions``.
+    (``description_pl`` preferred, then ``name_pl``; generics rejected) →
+    **machine_birth** (an inherited machine-generated name kept because no
+    canonical source could replace it) → blank / ``missing_product_descriptions``.
+
+    Provenance, not mere non-blankness, decides protection. Before this rule
+    existed, ANY inherited non-blank name was stamped ``operator``, so machine
+    output written at a previous birth became indistinguishable from a human
+    edit and could never be regenerated — reset re-froze it every time. A name
+    is ``operator`` only when the row already says so.
 
     ``desc_generate`` is accepted for call-site compatibility but **ignored** —
     fabricated category-template generators are not an authority. Never
-    overwrites a real operator value; never fabricates on a PD miss.
+    overwrites a real operator value; never fabricates on a PD miss; never
+    blanks a name it cannot replace.
     """
     _ = desc_generate  # no fabrication — signature kept for callers
 
@@ -2132,8 +2158,12 @@ def _birth_resolve_name_pl(
     out: List[Dict[str, Any]] = []
     for ln in lines:
         row = dict(ln)
-        existing = str(row.get("name_pl") or "").strip()
-        if existing and not _contains_forbidden_desc_token(existing):
+        existing  = str(row.get("name_pl") or "").strip()
+        prior_src = str(row.get("name_pl_source") or "").strip()
+        usable_existing = bool(existing) and not _contains_forbidden_desc_token(existing)
+
+        # Human authority: only a row already stamped ``operator`` is frozen.
+        if usable_existing and prior_src == NAME_PL_SOURCE_OPERATOR:
             row["name_pl"] = existing
             row["name_pl_source"] = NAME_PL_SOURCE_OPERATOR
             out.append(row)
@@ -2167,12 +2197,301 @@ def _birth_resolve_name_pl(
             out.append(row)
             continue
 
+        # No canonical source could replace it. Keep the inherited machine text
+        # rather than blanking a line that already reads correctly — but stamp
+        # it ``machine_birth`` so a later reset, once product_descriptions can
+        # supply a stronger value, is free to regenerate it.
+        if usable_existing:
+            row["name_pl"] = existing
+            row["name_pl_source"] = NAME_PL_SOURCE_MACHINE_BIRTH
+            out.append(row)
+            continue
+
         row["name_pl"] = ""
         row["name_pl_source"] = (
             NAME_PL_SOURCE_MISSING_PD if pd_row is not None else NAME_PL_SOURCE_BLANK
         )
         out.append(row)
     return out
+
+
+# ── Legacy ``operator`` reclassification: the evidence model ─────────────────
+#
+# Reproducing the old machine text in order to recognise it is forbidden — that
+# would be a second description generator. The witness is the draft's own
+# append-only event log instead, and the classifier is fail-closed: a
+# historical ``operator`` stamp is demoted only when the evidence it needs is
+# POSITIVELY available, never because evidence is missing or unreadable.
+
+#: Written exactly once, at draft creation, by the two birth authorities:
+#: :func:`auto_create_draft_from_sales_packing` emits
+#: ``created_from_sales_packing``; the adopt route inserts ``adopted_from_audit``
+#: in the same transaction as the draft row (``api/routes_proforma_adopt.py``).
+#: One of these appearing as the OLDEST row proves the log reaches back to the
+#: draft's birth — nothing was trimmed off the front.
+NAME_PL_BIRTH_ANCHOR_EVENTS = frozenset({
+    "created_from_sales_packing",
+    "adopted_from_audit",
+})
+
+#: Verdicts of :func:`classify_legacy_name_pl_verdict`. Only ``confirmed_machine``
+#: permits a demotion; ``unknown`` and ``confirmed_human`` both preserve.
+LEGACY_NAME_PL_CONFIRMED_MACHINE = "confirmed_machine"
+LEGACY_NAME_PL_CONFIRMED_HUMAN   = "confirmed_human"
+LEGACY_NAME_PL_UNKNOWN           = "unknown"
+
+
+@dataclass(frozen=True)
+class NamePlEditHistory:
+    """What a draft's event log can — and cannot — prove about ``name_pl``.
+
+    ``readable`` — the log was retrieved and every row parsed. Only then does
+    *human_values* carry any meaning at all.
+
+    ``complete`` — additionally, the log demonstrably spans the whole life of
+    the draft, so "no ``draft_line_edited`` naming this text" is real evidence
+    of absence rather than a gap in the record. Two *positive* conditions
+    establish it:
+
+    * the oldest row is a birth anchor (:data:`NAME_PL_BIRTH_ANCHOR_EVENTS`) —
+      the log starts exactly where the draft starts; and
+    * the newest row is not older than ``proforma_drafts.updated_at`` — no
+      mutation of the draft post-dates the last thing the log recorded.
+
+    The middle of the log is covered structurally rather than by inspection:
+    events are insert-only (:func:`_record_draft_event`), and the only
+    ``DELETE FROM proforma_draft_events`` in this module is in
+    :func:`purge_cancelled_draft`, which deletes the draft row in the same
+    transaction. A *surviving* draft therefore cannot carry a partially pruned
+    log through any application path.
+
+    ``complete`` is deliberately NOT a claim that the database was never
+    touched by some other mechanism — a DB browser, a hand-written UPDATE. It
+    is the narrower, provable claim that every canonical edit path leaves a
+    trace here and that no trace is missing. Text introduced from outside the
+    application entirely is the residual risk this model cannot close.
+    """
+    readable:     bool
+    complete:     bool
+    reason:       str
+    human_values: Set[str] = frozenset()
+
+
+def read_name_pl_edit_history(
+    db_path:  Path,
+    draft_id: int,
+) -> NamePlEditHistory:
+    """Read the ``name_pl`` edit evidence for one draft, fail-closed.
+
+    The witness of human authorship is :func:`update_draft_line`, which records
+    the accepted ``patch`` verbatim into a ``draft_line_edited`` event — so a
+    name a human submitted through the canonical path is provably present here,
+    and a name that never passed through it provably is not.
+
+    Every failure mode returns ``readable=False`` (unreadable table, missing
+    draft, empty log, a row with no timestamp, unparseable ``detail_json``);
+    every incompleteness returns ``complete=False`` with a naming *reason*.
+    Neither ever raises, and neither ever produces a demotion.
+    """
+    try:
+        conn = _connect(Path(db_path))
+        try:
+            draft_row = conn.execute(
+                "SELECT updated_at FROM proforma_drafts WHERE id = ?",
+                (int(draft_id),),
+            ).fetchone()
+            rows = conn.execute(
+                "SELECT event, detail_json, occurred_at "
+                "FROM proforma_draft_events WHERE draft_id = ? "
+                "ORDER BY occurred_at ASC, id ASC",
+                (int(draft_id),),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return NamePlEditHistory(False, False, "events_unreadable")
+
+    if draft_row is None:
+        return NamePlEditHistory(False, False, "draft_not_found")
+    if not rows:
+        # A draft always gets a birth event, so an empty log means the evidence
+        # is missing — not that nothing ever happened.
+        return NamePlEditHistory(False, False, "no_event_history")
+
+    values: Set[str] = set()
+    for event, detail_json, occurred_at in rows:
+        if not str(occurred_at or "").strip():
+            return NamePlEditHistory(False, False, "event_without_timestamp")
+        try:
+            detail = json.loads(detail_json or "{}")
+        except Exception:
+            return NamePlEditHistory(False, False, "event_detail_unparseable")
+        if str(event or "") != "draft_line_edited":
+            continue
+        if not isinstance(detail, dict):
+            return NamePlEditHistory(False, False, "event_detail_unparseable")
+        patch = detail.get("patch") or {}
+        if not (isinstance(patch, dict) and "name_pl" in patch):
+            continue          # an edit that never touched the name proves nothing
+        values.add(str(patch.get("name_pl") or "").strip())
+        # Only when the name itself was edited is the pre-edit value also
+        # human-owned territory: a human saw it and replaced it, so restoring
+        # it is a human act, not machine output.
+        before = detail.get("before") or {}
+        if isinstance(before, dict) and "name_pl" in before:
+            values.add(str(before.get("name_pl") or "").strip())
+    values.discard("")
+    human = frozenset(values)
+
+    if str(rows[0][0] or "") not in NAME_PL_BIRTH_ANCHOR_EVENTS:
+        return NamePlEditHistory(True, False, "log_does_not_reach_birth", human)
+
+    newest  = str(rows[-1][2] or "")
+    updated = str(draft_row[0] or "")
+    # Both are written by _now_utc_iso() — fixed-width UTC ISO seconds — so a
+    # lexicographic compare is a chronological compare.
+    if updated and newest < updated:
+        return NamePlEditHistory(True, False, "mutation_after_last_event", human)
+
+    return NamePlEditHistory(True, True, "complete", human)
+
+
+def human_edited_name_pl_values(
+    db_path:  Path,
+    draft_id: int,
+) -> Optional[Set[str]]:
+    """Every ``name_pl`` value a human submitted on this draft, or ``None``.
+
+    Thin accessor over :func:`read_name_pl_edit_history` for callers that only
+    need the values. ``None`` means "the evidence could not be read" — treat it
+    as "demote nothing". A readable-but-incomplete log still yields its values:
+    a *positive* human edit is proof of human authorship no matter how much
+    else the log is missing. Completeness is only needed for the opposite
+    inference (absence of an edit), which is why the classifier takes the whole
+    :class:`NamePlEditHistory` rather than this set.
+    """
+    history = read_name_pl_edit_history(db_path, draft_id)
+    return set(history.human_values) if history.readable else None
+
+
+def classify_legacy_name_pl_verdict(
+    *,
+    name_pl:           str,
+    name_pl_source:    str,
+    draft_is_editable: bool,
+    history:           NamePlEditHistory,
+    machine_values:    Optional[Set[str]] = None,
+) -> Tuple[str, str]:
+    """Three-state verdict on a stored ``operator`` stamp: ``(verdict, reason)``.
+
+    * :data:`LEGACY_NAME_PL_CONFIRMED_HUMAN` — a ``draft_line_edited`` event
+      shows a human submitted exactly this text.
+    * :data:`LEGACY_NAME_PL_CONFIRMED_MACHINE` — the log is readable **and**
+      complete, and contains no human edit carrying this text. Only this
+      verdict permits a demotion.
+    * :data:`LEGACY_NAME_PL_UNKNOWN` — everything else. The evidence needed is
+      not positively available, so the stored provenance stands.
+
+    Absence of a ``draft_line_edited`` event is therefore evidence of machine
+    ownership *only* when ``history.complete`` is true — an unreadable, empty,
+    malformed, truncated or stale log all resolve to ``unknown``.
+    """
+    stored = str(name_pl or "").strip()
+    if not draft_is_editable:
+        return LEGACY_NAME_PL_UNKNOWN, "draft_not_editable"
+    if str(name_pl_source or "") != NAME_PL_SOURCE_OPERATOR:
+        return LEGACY_NAME_PL_UNKNOWN, "not_a_legacy_operator_stamp"
+    if not stored:
+        return LEGACY_NAME_PL_UNKNOWN, "blank_name"
+    if not history.readable:
+        return LEGACY_NAME_PL_UNKNOWN, history.reason
+    if stored in (history.human_values or frozenset()):
+        return LEGACY_NAME_PL_CONFIRMED_HUMAN, "human_edit_event_matches"
+    if not history.complete:
+        return LEGACY_NAME_PL_UNKNOWN, history.reason
+    if machine_values is not None and stored not in machine_values:
+        # Corroboration was offered and failed: the text is attributable to
+        # neither a human nor the machine authority. Preserve.
+        return LEGACY_NAME_PL_UNKNOWN, "no_machine_corroboration"
+    return LEGACY_NAME_PL_CONFIRMED_MACHINE, "complete_history_no_human_edit"
+
+
+def classify_legacy_name_pl_source(
+    *,
+    name_pl:             str,
+    name_pl_source:      str,
+    draft_is_editable:   bool,
+    history:             Optional[NamePlEditHistory] = None,
+    human_edited_values: Optional[Set[str]]          = None,
+    machine_values:      Optional[Set[str]]          = None,
+) -> str:
+    """Return the provenance a legacy ``operator`` stamp should really carry.
+
+    Birth used to stamp ``operator`` on any inherited non-blank name, so rows
+    labelled ``operator`` in existing drafts are a mix of genuine human edits
+    and machine output wearing a human's label. This reclassifies **only** the
+    provably-machine ones, and is deliberately generic — it keys on evidence,
+    never on a draft id, a product code, or a document number.
+
+    A thin mapper over :func:`classify_legacy_name_pl_verdict`: only
+    ``confirmed_machine`` yields :data:`NAME_PL_SOURCE_MACHINE_BIRTH`; every
+    other verdict returns the stored provenance unchanged.
+
+    Pass *history* (from :func:`read_name_pl_edit_history`) — that is the form
+    that carries the completeness proof. *human_edited_values* is the older
+    value-only form, kept for direct unit tests: a set means "readable and
+    complete", ``None`` means "no verdict". *machine_values*, when supplied,
+    can only ever protect — it demands positive corroboration that a machine
+    authority produced exactly this string before a demotion is allowed.
+    """
+    if history is None:
+        history = (
+            NamePlEditHistory(False, False, "no_verdict_supplied")
+            if human_edited_values is None else
+            NamePlEditHistory(True, True, "values_supplied",
+                              frozenset(human_edited_values))
+        )
+    verdict, _reason = classify_legacy_name_pl_verdict(
+        name_pl           = name_pl,
+        name_pl_source    = name_pl_source,
+        draft_is_editable = draft_is_editable,
+        history           = history,
+        machine_values    = machine_values,
+    )
+    if verdict == LEGACY_NAME_PL_CONFIRMED_MACHINE:
+        return NAME_PL_SOURCE_MACHINE_BIRTH
+    return name_pl_source
+
+
+def _reset_name_pl_fields(
+    *,
+    incoming_name: str,
+    prior_name:    str,
+    prior_source:  str,
+) -> Dict[str, str]:
+    """Decide the ``name_pl`` / ``name_pl_source`` a rebuilt reset line carries.
+
+    Precedence is by PROVENANCE, not by arrival order:
+
+    1. a prior line whose provenance is ``operator`` wins outright — an
+       incoming sales-packing name is machine output by definition, so letting
+       it win would destroy a human's text on the next reset;
+    2. otherwise an incoming name wins and is stamped ``machine_birth``, so the
+       canonical authority is free to replace it;
+    3. otherwise the prior name is re-inherited, carrying the (possibly
+       reclassified) provenance it earned.
+
+    *prior_source* must already have passed through
+    :func:`classify_legacy_name_pl_source` — this helper trusts it.
+    """
+    incoming = str(incoming_name or "").strip()
+    prior    = str(prior_name or "").strip()
+    if prior and str(prior_source or "") == NAME_PL_SOURCE_OPERATOR:
+        return {"name_pl": prior, "name_pl_source": NAME_PL_SOURCE_OPERATOR}
+    if incoming:
+        return {"name_pl": incoming,
+                "name_pl_source": NAME_PL_SOURCE_MACHINE_BIRTH}
+    return {"name_pl": prior, "name_pl_source": str(prior_source or "")}
 
 
 def _birth_unresolved_lines(
@@ -3369,8 +3688,13 @@ def update_draft_line(
 ) -> ProformaDraft:
     """PATCH a single editable line by ``line_id``.
 
-    Accepted keys (all optional): qty, unit_price, currency,
-    product_code, design_no, client_ref, price_source, remarks.
+    Accepted keys (all optional): the full :data:`EDITABLE_LINE_FIELDS` set —
+    qty, unit_price, currency, product_code, design_no, client_ref,
+    price_source, remarks, item_type, name_pl.
+
+    This is the sole human authoring path for ``name_pl``, and therefore the
+    sole minter of ``name_pl_source='operator'``. A name set here survives
+    every subsequent birth, reset and enrichment.
 
     Validation:
       - ``qty`` must be > 0 if present
@@ -3433,6 +3757,7 @@ def update_draft_line(
     # mentioned in the patch.
     target = dict(lines[target_idx])
     before = {k: target.get(k) for k in EDITABLE_LINE_FIELDS}
+    before["name_pl_source"] = target.get("name_pl_source")
     for k, v in patch.items():
         if k == "currency":
             target[k] = _validate_currency(str(v))
@@ -3440,6 +3765,20 @@ def update_draft_line(
             target[k] = float(v)
         else:
             target[k] = v if v is not None else ""
+
+    # This endpoint is the ONE path a human can author a commercial name, so
+    # it is the only place ``operator`` provenance may be minted. Without this
+    # stamp a real edit inherited whatever machine label the line already had
+    # and was NOT protected by the operator-kept guards in
+    # :func:`_birth_resolve_name_pl` / :func:`enrich_lines_from_product_
+    # descriptions` — the provenance was inverted, protecting machine text and
+    # exposing human text.
+    if "name_pl" in patch:
+        target["name_pl_source"] = (
+            NAME_PL_SOURCE_OPERATOR
+            if str(patch.get("name_pl") or "").strip()
+            else NAME_PL_SOURCE_BLANK
+        )
     lines[target_idx] = target
 
     refreshed = _commit_draft_update(
@@ -4731,17 +5070,35 @@ def reset_draft_from_sales_packing(
 
     d = _load_for_edit(db_path, draft_id, expected_updated_at)
 
-    # Preserve operator-confirmed name_pl across the rebuild: a reset must
-    # not strip a curated commercial description back to blank. Map the
-    # PRIOR draft's non-blank name_pl by product_code so matching rebuilt
-    # lines re-inherit it before product_descriptions enrichment fills any
-    # remaining blanks.
-    prior_names: Dict[str, str] = {}
+    # Preserve the prior name_pl across the rebuild WITH ITS PROVENANCE: a
+    # reset must not strip a curated commercial description back to blank, but
+    # it must also not re-freeze stale machine output. Carrying the name alone
+    # was the defect — the rebuilt line arrived unstamped, birth read "non-blank
+    # ⇒ operator", and every reset re-protected the same stale string.
+    #
+    # Legacy rows stamped ``operator`` by the old birth rule are reclassified
+    # here, generically and on evidence only: a name no human ever submitted
+    # through :func:`update_draft_line` is machine output — but only when the
+    # draft's event log is demonstrably readable AND complete, so that "no such
+    # event" is real evidence of absence. Anything less preserves ``operator``
+    # (see :func:`classify_legacy_name_pl_verdict`).
+    _history  = read_name_pl_edit_history(db_path, d.id)
+    _editable = d.draft_state in EDITABLE_STATES
+    prior_names:   Dict[str, str] = {}
+    prior_sources: Dict[str, str] = {}
     for _pl in (json.loads(d.editable_lines_json or "[]") or []):
         _pc  = str(_pl.get("product_code") or "").strip()
         _npl = str(_pl.get("name_pl") or "").strip()
         if _pc and _npl:
-            prior_names.setdefault(_pc, _npl)
+            if _pc in prior_names:
+                continue
+            prior_names[_pc]   = _npl
+            prior_sources[_pc] = classify_legacy_name_pl_source(
+                name_pl           = _npl,
+                name_pl_source    = str(_pl.get("name_pl_source") or ""),
+                draft_is_editable = _editable,
+                history           = _history,
+            )
 
     # Reshape sales_packing_lines columns into editable_lines shape.
     # Skip rows with no product_code — product_code is required for
@@ -4770,11 +5127,22 @@ def reset_draft_from_sales_packing(
             "client_ref":   str(r.get("client_ref") or ""),
             # Variant identity (sales_packing columns) — display only.
             **_sales_variant_fields(r),
-            # Carry incoming name_pl if present, else re-inherit the prior
-            # operator-confirmed name_pl. Enrichment (below) fills any blank
-            # that survives without overwriting a non-blank value.
-            "name_pl":      (str(r.get("name_pl") or "").strip()
-                             or prior_names.get(product_code, "")),
+            # Provenance travels WITH the value, and provenance — not arrival
+            # order — decides precedence:
+            #   * a prior line a human really authored outranks EVERYTHING,
+            #     including an incoming packing name (an incoming name is
+            #     machine output by definition, so letting it win would
+            #     silently destroy the operator's text);
+            #   * otherwise an incoming packing name wins and is stamped
+            #     machine_birth, so a stronger canonical source may replace it;
+            #   * otherwise the prior name is re-inherited with the (possibly
+            #     reclassified) provenance it earned.
+            # Birth-time resolution below decides what may then be replaced.
+            **_reset_name_pl_fields(
+                incoming_name = str(r.get("name_pl") or "").strip(),
+                prior_name    = prior_names.get(product_code, ""),
+                prior_source  = prior_sources.get(product_code, ""),
+            ),
             # Transient generator attributes for the name_pl fallback; popped
             # after enrichment, never persisted.
             "_gen_attrs":   {
@@ -4808,9 +5176,11 @@ def reset_draft_from_sales_packing(
         rebuilt.extend(manual_preserved)
 
     rebuilt = _ensure_line_ids(rebuilt)
-    # Birth-time name_pl authority (mirrors auto_create): operator/prior →
-    # product_descriptions → generator → blank, stamping name_pl_source. Never
-    # overwrites a non-blank (incoming or re-inherited) value.
+    # Birth-time name_pl authority (mirrors auto_create): operator →
+    # product_descriptions → machine_birth → blank, stamping name_pl_source.
+    # A name stamped ``operator`` is never overwritten. A machine-provenance
+    # name IS replaceable by the stronger product_descriptions authority — that
+    # replaceability is the point of this campaign — but is never blanked.
     rebuilt = _birth_resolve_name_pl(rebuilt, name_pl_lookup, desc_generate)
     for _ln in rebuilt:
         _ln.pop("_gen_attrs", None)
@@ -4886,7 +5256,9 @@ def enrich_lines_from_product_descriptions(
 
     ``enriched_count`` counts lines that received a real commercial name_pl;
     ``missing_count`` counts lines still without one (including PD-present-
-    but-generic). Operator-confirmed non-generic ``name_pl`` is preserved.
+    but-generic). Operator-confirmed non-generic ``name_pl`` is preserved
+    outright; a ``machine_birth`` name is replaced when PD can supply one and
+    otherwise kept as-is — replaceable, but never blanked.
     """
     validate, forbidden = _description_policy()
     enriched: List[Dict[str, Any]] = []
@@ -4900,6 +5272,15 @@ def enrich_lines_from_product_descriptions(
             bool(existing_pl)
             and not forbidden(existing_pl)
             and str(ln.get("name_pl_source") or "") == NAME_PL_SOURCE_OPERATOR
+        )
+        # A machine-generated name is replaceable by product_descriptions but
+        # must never be BLANKED by a PD miss — losing a description the row
+        # already carries is a regression, not a correction. It stays, stamped
+        # machine_birth, and remains eligible for replacement next time.
+        machine_kept = (
+            bool(existing_pl)
+            and not forbidden(existing_pl)
+            and not operator_kept
         )
 
         if row:
@@ -4921,6 +5302,9 @@ def enrich_lines_from_product_descriptions(
                 name_src = NAME_PL_SOURCE_OPERATOR
             elif commercial:
                 name_src = NAME_PL_SOURCE_PD
+            elif machine_kept:
+                commercial = existing_pl
+                name_src = NAME_PL_SOURCE_MACHINE_BIRTH
             else:
                 name_src = NAME_PL_SOURCE_MISSING_PD
 
@@ -4939,9 +5323,12 @@ def enrich_lines_from_product_descriptions(
             enriched.append({
                 **ln,
                 "item_type":             None,
-                "name_pl":               existing_pl or None if operator_kept else None,
+                "name_pl":               (existing_pl or None
+                                          if (operator_kept or machine_kept) else None),
                 "name_pl_source":        (
-                    NAME_PL_SOURCE_OPERATOR if operator_kept else NAME_PL_SOURCE_BLANK
+                    NAME_PL_SOURCE_OPERATOR     if operator_kept else
+                    NAME_PL_SOURCE_MACHINE_BIRTH if machine_kept else
+                    NAME_PL_SOURCE_BLANK
                 ),
                 "description_pl":        None,
                 "description_en":        None,
