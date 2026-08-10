@@ -19,12 +19,14 @@ Coverage:
     7. bulk wFirma failure -> 502 (no fabricated roster)
     8. customer with no contractor id -> unavailable row, no fabricated figures
     9. from > to -> 400
-   10. default window is year-to-date when from/to omitted
+   10. default window is current UTC quarter when from/to omitted
    11. pagination: start/limit slice the roster
    12. query_stats.per_customer_wfirma_calls == 0
+   13. query_stats exposes wfirma_wait_ms / ej_ms timing split
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -193,7 +195,7 @@ def test_route_from_after_to_is_400(client):
     assert r.status_code == 400
 
 
-def test_route_default_window_is_year_to_date(client):
+def test_route_default_window_is_current_quarter(client):
     with patch.object(R, "_cm_list_customers", return_value=[]), \
          patch("app.services.ledger_fact_universe.load_ar_fact_universe",
                return_value=_ar_universe()), \
@@ -201,8 +203,34 @@ def test_route_default_window_is_year_to_date(client):
                return_value={}):
         r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
     period = r.json()["period"]
-    assert period["from"].endswith("-01-01")
-    assert period["from"][:4] == period["to"][:4]
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    assert period["from"] == R._utc_quarter_start(today)
+    assert period["to"] == today
+
+
+def test_route_query_stats_exposes_timing_split(client):
+    uni = _ar_universe()
+    uni.update({
+        "wfirma_wait_ms": 1200,
+        "ej_normalize_ms": 5,
+        "ej_ms": 5,
+        "duration_ms": 1210,
+        "inv_page_wait_ms": [800],
+        "pay_page_wait_ms": [400],
+    })
+    with patch.object(R, "_cm_list_customers", return_value=[]), \
+         patch("app.services.ledger_fact_universe.load_ar_fact_universe",
+               return_value=uni), \
+         patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
+               return_value={}):
+        r = client.get("/api/v1/ledgers/clients?from=2026-07-01&to=2026-08-10",
+                       headers=_auth_headers())
+    qs = r.json()["query_stats"]
+    assert qs["wfirma_wait_ms"] == 1200
+    assert qs["ej_normalize_ms"] == 5
+    assert "ej_ms" in qs
+    assert qs["per_customer_wfirma_calls"] == 0
+    assert isinstance(qs.get("ej_aggregate_ms"), int)
 
 
 def test_route_pagination_slices_roster(client):

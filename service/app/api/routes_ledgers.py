@@ -38,6 +38,7 @@ that has not yet been verified against a live wFirma response.
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -66,6 +67,14 @@ _auth  = Depends(require_api_key)
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 _DATE_LEN = len("YYYY-MM-DD")
+
+
+def _utc_quarter_start(today: str) -> str:
+    """Calendar-quarter start (UTC) for cold-path default ledger window."""
+    y = int(today[:4])
+    m = int(today[5:7])
+    q = ((m - 1) // 3) * 3 + 1
+    return f"{y}-{q:02d}-01"
 
 
 def _validate_date(label: str, value: str) -> str:
@@ -604,7 +613,7 @@ def _unavailable_row(base: Dict[str, Any], default_currency: str,
 @router.get("/clients", dependencies=[_auth])
 def list_client_balances(
     from_:   str = Query("", alias="from",
-                          description="Window start YYYY-MM-DD; default = Jan 1 this year"),
+                          description="Window start YYYY-MM-DD; default = current UTC quarter start"),
     to:      str = Query("", description="Window end YYYY-MM-DD; default = today UTC"),
     start:   int = Query(0, ge=0),
     limit:   int = Query(15, ge=1, le=100),
@@ -628,7 +637,7 @@ def list_client_balances(
       502 — bulk wFirma read failed
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    df = (from_ or "").strip() or f"{today[:4]}-01-01"
+    df = (from_ or "").strip() or _utc_quarter_start(today)
     dt = (to or "").strip() or today
     df = _validate_date("from", df)
     dt = _validate_date("to", dt)
@@ -653,17 +662,23 @@ def list_client_balances(
         ]
     page = customers[start:start + limit]
 
-    from ..services.ledger_fact_universe import load_ar_fact_universe
+    from ..services.ledger_fact_universe import (
+        load_ar_fact_universe,
+        timing_fields_from_universe,
+    )
     from ..services.ledger_aggregator import build_statement_index_by_contractor
 
     try:
+        t_route0 = time.perf_counter()
         uni = load_ar_fact_universe(df, dt, force=bool(refresh))
+        t_agg0 = time.perf_counter()
         stmt_by_cid = build_statement_index_by_contractor(
             uni["invoice_facts"],
             uni["payment_facts"],
             statement_date=dt,
             period=(df, dt),
         )
+        ej_aggregate_ms = int((time.perf_counter() - t_agg0) * 1000)
     except Exception as exc:
         log.warning("[client-balances] bulk AR read failed: %s", exc)
         raise HTTPException(
@@ -709,6 +724,20 @@ def list_client_balances(
 
     inv_stats = uni.get("inv_stats") or {}
     pay_stats = uni.get("pay_stats") or {}
+    qs = {
+        "invoice_api_calls": int(inv_stats.get("api_calls") or 0),
+        "payment_api_calls": int(pay_stats.get("api_calls") or 0),
+        "invoices_normalized": len(uni.get("invoice_facts") or []),
+        "payments_normalized": len(uni.get("payment_facts") or []),
+        "per_customer_wfirma_calls": 0,
+        "cache_hit": bool(uni.get("cache_hit")),
+        "coalesced": bool(uni.get("coalesced")),
+        "refresh": bool(refresh),
+    }
+    qs.update(timing_fields_from_universe(uni))
+    qs["ej_aggregate_ms"] = ej_aggregate_ms
+    qs["ej_ms"] = int(qs.get("ej_normalize_ms") or 0) + ej_aggregate_ms
+    qs["route_wall_ms"] = int((time.perf_counter() - t_route0) * 1000)
     return JSONResponse({
         "period":       {"from": df, "to": dt},
         "start":        start,
@@ -722,17 +751,7 @@ def list_client_balances(
             "country": (country or "").strip().upper() or None,
             "q": (q or "").strip() or None,
         },
-        "query_stats": {
-            "invoice_api_calls": int(inv_stats.get("api_calls") or 0),
-            "payment_api_calls": int(pay_stats.get("api_calls") or 0),
-            "invoices_normalized": len(uni.get("invoice_facts") or []),
-            "payments_normalized": len(uni.get("payment_facts") or []),
-            "duration_ms": int(uni.get("duration_ms") or 0),
-            "per_customer_wfirma_calls": 0,
-            "cache_hit": bool(uni.get("cache_hit")),
-            "coalesced": bool(uni.get("coalesced")),
-            "refresh": bool(refresh),
-        },
+        "query_stats": qs,
         "column_status": {
             "open":                 "documented",
             "currency":             "documented",
@@ -944,7 +963,10 @@ def get_supplier_statement(
         ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     try:
-        from ..services.ledger_fact_universe import load_ap_fact_universe
+        from ..services.ledger_fact_universe import (
+            load_ap_fact_universe,
+            timing_fields_from_universe,
+        )
 
         uni = load_ap_fact_universe(df, dt, force=bool(refresh))
         exp_stats = uni.get("exp_stats") or {}
@@ -976,7 +998,7 @@ def get_supplier_statement(
             period=(df, dt),
             as_of=ao,
         )
-        body["query_stats"] = {
+        qs = {
             "expense_api_calls": int(exp_stats.get("api_calls") or 0),
             "payment_api_calls": int(pay_stats.get("api_calls") or 0),
             "expenses_in_scope": len(expense_facts),
@@ -986,6 +1008,8 @@ def get_supplier_statement(
             "coalesced": bool(uni.get("coalesced")),
             "note": "shared AP fact universe + Python contractor filter",
         }
+        qs.update(timing_fields_from_universe(uni))
+        body["query_stats"] = qs
     except Exception as exc:
         log.warning("[supplier-statement] read failed: %s", exc)
         raise HTTPException(

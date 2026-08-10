@@ -241,7 +241,8 @@
     },
 
     // GET /api/v1/ledgers/clients  (Wave 4 Item 4 — Client Balance roster)
-    // params: { from?, to?, start?, limit?, country?, q?, contractor?, currency?, status? }. Default window = YTD.
+    // params: { from?, to?, start?, limit?, country?, q?, contractor?, currency?, status? }.
+    // Default window = current UTC quarter (YTD via explicit from/to or hub preset).
     // Returns { ok, data: { period, count, rows[], column_status } }
     // rows[]: { contractor_id, name, open, overdue_invoice_age, ytd_invoiced,
     //           last_30d (null · Backend Pending), currency, state, balance_available }

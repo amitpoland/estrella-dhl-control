@@ -136,6 +136,59 @@ def test_ap_universe_zero_per_supplier_and_cache_key_isolated():
     assert fp.call_count == 2
 
 
+def test_cache_hit_zeros_this_request_wfirma_wait():
+    with patch.object(LFU.wfirma_client, "fetch_invoices_for_period", return_value=[]), \
+         patch.object(LFU.wfirma_client, "fetch_payments_for_period", return_value=[]):
+        a = LFU.load_ar_fact_universe("2026-07-01", "2026-08-10")
+        b = LFU.load_ar_fact_universe("2026-07-01", "2026-08-10")
+    assert a["cache_hit"] is False
+    assert b["cache_hit"] is True
+    assert b["wfirma_wait_ms"] == 0
+    assert b["duration_ms"] == 0
+    assert "cached_wfirma_wait_ms" in b
+
+
+def test_paginate_stats_accumulate_wfirma_wait_ms():
+    """Unit: paginator records per-page wait into stats (mocked HTTP)."""
+    from app.services import wfirma_client as WC
+    from xml.etree import ElementTree as ET
+
+    nodes = [ET.fromstring(f"<invoice><id>{i}</id><date>2026-07-0{i}</date></invoice>") for i in (1, 2)]
+
+    def fake_http(method, module, action, body=""):
+        # one short page then stop
+        xml = (
+            '<?xml version="1.0"?><api><status><code>OK</code></status>'
+            "<invoices>"
+            + "".join(ET.tostring(n, encoding="unicode") for n in nodes)
+            + "</invoices></api>"
+        )
+        return 200, xml
+
+    stats: dict = {}
+    with patch.object(WC, "_http_request", side_effect=fake_http):
+        out = WC.fetch_invoices_for_period("2026-07-01", "2026-08-10", stats=stats)
+    assert len(out) == 2
+    assert int(stats.get("wfirma_wait_ms") or 0) >= 0
+    assert stats.get("api_calls") == 1
+    assert isinstance(stats.get("page_wait_ms"), list)
+    assert len(stats["page_wait_ms"]) == 1
+
+
+def test_fe_default_preset_is_quarter_not_ytd():
+    from pathlib import Path
+    hub = (Path(__file__).resolve().parent.parent / "app/static/v2/accounting-hub.jsx").read_text(
+        encoding="utf-8"
+    )
+    # Cold-path defaults (Client + Supplier ledger tabs)
+    assert "useState('quarter')" in hub
+    assert "quarter default · YTD via Client Ledger" in hub
+    ldg = (Path(__file__).resolve().parent.parent / "app/static/v2/ledgers-page.jsx").read_text(
+        encoding="utf-8"
+    )
+    assert "calendar quarter" in ldg or "qStart" in ldg
+
+
 def test_no_wfirma_write_verbs_in_fact_universe_module():
     src = open(LFU.__file__, encoding="utf-8").read()
     for banned in ("/add", "/edit", "/delete", "POST", "payments/add", "invoices/add", "expenses/add"):
@@ -171,6 +224,7 @@ def test_refresh_query_on_clients_forces_universe():
         load_ar.return_value = {
             "invoice_facts": [], "payment_facts": [],
             "inv_stats": {}, "pay_stats": {}, "duration_ms": 1,
+            "wfirma_wait_ms": 0, "ej_normalize_ms": 0, "ej_ms": 0,
             "cache_hit": False, "coalesced": False,
         }
         r = client.get(

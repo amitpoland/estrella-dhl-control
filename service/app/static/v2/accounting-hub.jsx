@@ -334,7 +334,7 @@ function SalesProformaTab() {
 // ═══════════════════════════════════════════════════════════════════════════════
 function ClientLedgerTab() {
   const LedgersPage = window.LedgersPage;
-  const [preset, setPreset] = React.useState('ytd');
+  const [preset, setPreset] = React.useState('quarter');
   const [custom, setCustom] = React.useState({ from: '', to: '' });
   const period = React.useMemo(() => {
     const now = new Date();
@@ -349,14 +349,15 @@ function ClientLedgerTab() {
       const to = new Date(Date.UTC(y, m, 0));
       return { from: iso(from), to: iso(to) };
     }
-    if (preset === 'quarter') {
-      const q = Math.floor(m / 3) * 3;
-      return { from: iso(new Date(Date.UTC(y, q, 1))), to: iso(now) };
+    if (preset === 'ytd') {
+      return { from: `${y}-01-01`, to: iso(now) };
     }
     if (preset === 'custom' && custom.from && custom.to) {
       return { from: custom.from, to: custom.to };
     }
-    return { from: `${y}-01-01`, to: iso(now) };
+    // default + explicit 'quarter'
+    const q = Math.floor(m / 3) * 3;
+    return { from: iso(new Date(Date.UTC(y, q, 1))), to: iso(now) };
   }, [preset, custom.from, custom.to]);
   if (typeof LedgersPage !== 'function') {
     return (
@@ -854,9 +855,12 @@ function AccountingOverviewKpis() {
     let cancelled = false;
     const now = new Date();
     const iso = (d) => d.toISOString().slice(0, 10);
-    const ytdFrom = `${now.getUTCFullYear()}-01-01`;
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth();
+    const q = Math.floor(m / 3) * 3;
+    const quarterFrom = iso(new Date(Date.UTC(y, q, 1)));
     const today = iso(now);
-    window.PzApi.getManagementAnalysis({ from: ytdFrom, to: today, as_of: today }).then(res => {
+    window.PzApi.getManagementAnalysis({ from: quarterFrom, to: today, as_of: today }).then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setRecv({ loading: false, error: (res && res.error) || 'Load failed', receivable: null }); return; }
       const summaries = ((res.data && res.data.currency_summaries) || []).map(s => ({
@@ -1206,7 +1210,14 @@ function AccClientBalance({ onOpenLedger }) {
   React.useEffect(() => {
     let cancelled = false;
     setSt({ loading: true, error: null, rows: null, period: null });
-    window.PzApi.listClientBalances({ limit: 15 }).then(res => {
+    const now = new Date();
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth();
+    const q = Math.floor(m / 3) * 3;
+    const from = iso(new Date(Date.UTC(y, q, 1)));
+    const to = iso(now);
+    window.PzApi.listClientBalances({ limit: 15, from, to }).then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, period: null }); return; }
       const d = res.data || {};
@@ -1230,7 +1241,7 @@ function AccClientBalance({ onOpenLedger }) {
       </div>
       {st.period && (
         <div style={{ fontSize: 10.5, color: 'var(--text-3)', margin: '-6px 0 10px' }}>
-          Period {st.period.from} → {st.period.to} (YTD default) · Overdue = invoice-age basis
+          Period {st.period.from} → {st.period.to} (quarter default · YTD via Client Ledger) · Overdue = invoice-age basis
         </div>
       )}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
@@ -1265,7 +1276,7 @@ function AccSupplierLedger() {
   // Same LedgersPage authority as Client Ledger — open on Supplier tab.
   // No second AP page; no deferred P0 placeholder once AP routes exist.
   const LedgersPage = window.LedgersPage;
-  const [preset, setPreset] = React.useState('ytd');
+  const [preset, setPreset] = React.useState('quarter');
   const [custom, setCustom] = React.useState({ from: '', to: '' });
   const period = React.useMemo(() => {
     const now = new Date();
@@ -1280,14 +1291,14 @@ function AccSupplierLedger() {
       const to = new Date(Date.UTC(y, m, 0));
       return { from: iso(from), to: iso(to) };
     }
-    if (preset === 'quarter') {
-      const q = Math.floor(m / 3) * 3;
-      return { from: iso(new Date(Date.UTC(y, q, 1))), to: iso(now) };
+    if (preset === 'ytd') {
+      return { from: `${y}-01-01`, to: iso(now) };
     }
     if (preset === 'custom' && custom.from && custom.to) {
       return { from: custom.from, to: custom.to };
     }
-    return { from: `${y}-01-01`, to: iso(now) };
+    const q = Math.floor(m / 3) * 3;
+    return { from: iso(new Date(Date.UTC(y, q, 1))), to: iso(now) };
   }, [preset, custom.from, custom.to]);
   if (typeof LedgersPage !== 'function') {
     return (

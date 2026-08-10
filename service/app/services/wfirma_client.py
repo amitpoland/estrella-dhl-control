@@ -16,6 +16,7 @@ from __future__ import annotations
 
 
 import threading as _threading
+import time as _time
 import urllib.parse as _urlparse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -2551,7 +2552,8 @@ def _paginate_find_collection(
 
     Optional *stats* dict is mutated in place with:
       api_calls, pages, items_raw, items_kept, duplicate_ids_suppressed,
-      stopped_reason (``empty``|``short``|``no_new_ids``|``safety_cap``).
+      stopped_reason (``empty``|``short``|``no_new_ids``|``safety_cap``),
+      wfirma_wait_ms (sum of HTTP round-trips), page_wait_ms (per-page list, capped).
     """
     out: List[ET.Element] = []
     seen_ids: set = set()
@@ -2570,9 +2572,15 @@ def _paginate_find_collection(
             f"{_wfirma_sibling_page_xml(page, page_size)}"
             f"</parameters></{module}></api>"
         )
+        t_http0 = _time.perf_counter()
         http_status, response_text = _http_request("GET", module, "find", body)
+        page_ms = int((_time.perf_counter() - t_http0) * 1000)
         if stats is not None:
             stats["api_calls"] = int(stats.get("api_calls") or 0) + 1
+            stats["wfirma_wait_ms"] = int(stats.get("wfirma_wait_ms") or 0) + page_ms
+            page_list = stats.setdefault("page_wait_ms", [])
+            if isinstance(page_list, list) and len(page_list) < 40:
+                page_list.append(page_ms)
         if http_status >= 400:
             raise RuntimeError(
                 f"{module}/find HTTP {http_status} (page={page}): "

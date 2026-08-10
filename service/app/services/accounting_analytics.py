@@ -372,7 +372,7 @@ def build_management_analysis(
         raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
     ao = (as_of or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    from .ledger_fact_universe import load_ar_fact_universe
+    from .ledger_fact_universe import load_ar_fact_universe, timing_fields_from_universe
 
     uni = load_ar_fact_universe(df, dt, types=types, force=force_refresh)
     invoice_facts = uni["invoice_facts"]
@@ -380,6 +380,7 @@ def build_management_analysis(
     inv_stats = uni.get("inv_stats") or {}
     pay_stats = uni.get("pay_stats") or {}
 
+    t_agg0 = time.perf_counter()
     query_stats = {
         "invoice_api_calls": int(inv_stats.get("api_calls") or 0),
         "payment_api_calls": int(pay_stats.get("api_calls") or 0),
@@ -395,11 +396,11 @@ def build_management_analysis(
         ),
         "invoice_stop_reason": inv_stats.get("stopped_reason"),
         "payment_stop_reason": pay_stats.get("stopped_reason"),
-        "duration_ms": int(uni.get("duration_ms") or 0),
         "per_customer_wfirma_calls": 0,
         "cache_hit": bool(uni.get("cache_hit")),
         "coalesced": bool(uni.get("coalesced")),
     }
+    query_stats.update(timing_fields_from_universe(uni))
     health = {
         "ok": True,
         "invoice_cap_hit": inv_stats.get("stopped_reason") == "safety_cap",
@@ -411,7 +412,7 @@ def build_management_analysis(
         health["ok"] = False
         health["note"] = "Safety cap hit — portfolio may be incomplete"
 
-    return build_portfolio_from_facts(
+    portfolio = build_portfolio_from_facts(
         invoice_facts,
         payment_facts,
         as_of=ao,
@@ -422,6 +423,12 @@ def build_management_analysis(
         query_stats=query_stats,
         source_health=health,
     )
+    ej_aggregate_ms = int((time.perf_counter() - t_agg0) * 1000)
+    qs = portfolio.get("query_stats") or query_stats
+    qs["ej_aggregate_ms"] = ej_aggregate_ms
+    qs["ej_ms"] = int(qs.get("ej_normalize_ms") or 0) + ej_aggregate_ms
+    portfolio["query_stats"] = qs
+    return portfolio
 
 
 def build_payables_portfolio_from_facts(
@@ -746,7 +753,7 @@ def build_payables_analysis(
         raise ValueError(f"date_from {df!r} is after date_to {dt!r}")
     ao = (as_of or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    from .ledger_fact_universe import load_ap_fact_universe
+    from .ledger_fact_universe import load_ap_fact_universe, timing_fields_from_universe
 
     uni = load_ap_fact_universe(df, dt, force=force_refresh)
     expense_facts = uni["expense_facts"]
@@ -754,6 +761,7 @@ def build_payables_analysis(
     exp_stats = uni.get("exp_stats") or {}
     pay_stats = uni.get("pay_stats") or {}
 
+    t_agg0 = time.perf_counter()
     query_stats = {
         "expense_api_calls": int(exp_stats.get("api_calls") or 0),
         "payment_api_calls": int(pay_stats.get("api_calls") or 0),
@@ -769,11 +777,11 @@ def build_payables_analysis(
         ),
         "expense_stop_reason": exp_stats.get("stopped_reason"),
         "payment_stop_reason": pay_stats.get("stopped_reason"),
-        "duration_ms": int(uni.get("duration_ms") or 0),
         "per_supplier_wfirma_calls": 0,
         "cache_hit": bool(uni.get("cache_hit")),
         "coalesced": bool(uni.get("coalesced")),
     }
+    query_stats.update(timing_fields_from_universe(uni))
     health = {
         "ok": True,
         "expense_cap_hit": exp_stats.get("stopped_reason") == "safety_cap",
@@ -787,7 +795,7 @@ def build_payables_analysis(
         health["ok"] = False
         health["note"] = "Safety cap hit — portfolio may be incomplete"
 
-    return build_payables_portfolio_from_facts(
+    portfolio = build_payables_portfolio_from_facts(
         expense_facts,
         payment_facts,
         as_of=ao,
@@ -799,6 +807,12 @@ def build_payables_analysis(
         query_stats=query_stats,
         source_health=health,
     )
+    ej_aggregate_ms = int((time.perf_counter() - t_agg0) * 1000)
+    qs = portfolio.get("query_stats") or query_stats
+    qs["ej_aggregate_ms"] = ej_aggregate_ms
+    qs["ej_ms"] = int(qs.get("ej_normalize_ms") or 0) + ej_aggregate_ms
+    portfolio["query_stats"] = qs
+    return portfolio
 
 
 __all__ = [
