@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -227,6 +228,256 @@ def _recent_pending_task_for_awb(awb: str, cooldown_minutes: int = COOLDOWN_MINU
         if ct >= cutoff:
             return t.get("task_id")
     return None
+
+
+_TICKET_RE = re.compile(r"T#\s*([A-Z0-9]+)", re.IGNORECASE)
+
+# clearance_status values that may be advanced TO dhl_email_received.
+# Later workflow states (reply_queued, dsk_generated, …) must not be
+# downgraded when the evidence bridge only needs to flip dhl_email.received.
+_DHL_EMAIL_STATUS_ADVANCEABLE = frozenset({
+    "",
+    "draft",
+    "awaiting_dhl_customs_email",
+})
+
+
+def _extract_dhl_ticket_from_subject(subject: str) -> str:
+    """Extract T#… ticket token from a DHL customs subject line."""
+    if not subject:
+        return ""
+    m = _TICKET_RE.search(subject)
+    return f"T#{m.group(1)}" if m else ""
+
+
+def apply_dhl_email_received_from_evidence(
+    audit_path: Path,
+    audit: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Bridge email_evidence V2 → audit.dhl_email.received for B2 automation.
+
+    Automated Zoho ingestion writes DHL customs requests into
+    ``email_evidence`` (event_type ``dhl_request``). Lane A historically
+    only applied the Cowork/AI-Bridge ``email_intelligence`` cache, which
+    is empty for the automated path — so ``dhl_email.received`` never
+    flipped and ``_ensure_dhl_reply`` (B2 DSK reply) never fired.
+
+    Idempotent. Respects ``_is_active``. Never downgrades clearance_status.
+    """
+    out: Dict[str, Any] = {
+        "wrote": False,
+        "skipped": None,
+        "ticket": "",
+    }
+    if (audit.get("dhl_email") or {}).get("received"):
+        out["skipped"] = "already_received"
+        return out
+    if not _is_active(audit):
+        out["skipped"] = "inactive"
+        return out
+
+    awb = (audit.get("awb") or audit.get("tracking_no") or "").strip()
+    if not awb:
+        out["skipped"] = "no_awb"
+        return out
+
+    try:
+        from .email_evidence_store import get_by_awb
+        doc = get_by_awb(awb) or {}
+    except Exception as exc:
+        out["skipped"] = f"evidence_unavailable:{exc}"
+        return out
+
+    summary = doc.get("summary") or {}
+    if not summary.get("dhl_request_received"):
+        out["skipped"] = "no_dhl_request"
+        return out
+
+    best: Optional[Dict[str, Any]] = None
+    for thread in doc.get("threads") or []:
+        for msg in thread.get("messages") or []:
+            if msg.get("event_type") == "dhl_request":
+                best = msg
+                break
+        if best:
+            break
+    if not best:
+        out["skipped"] = "no_message"
+        return out
+
+    subject = best.get("subject") or ""
+    ticket = _extract_dhl_ticket_from_subject(subject)
+    sender = best.get("sender") or best.get("from") or ""
+    # Authoritative receipt time only — never invent scanner/bridge now().
+    received_at = (best.get("timestamp") or "").strip()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Optional historical recovery: Zoho numeric id → real RFC822 headers.
+    # Never synthesize Message-ID from the Zoho object id.
+    best = _maybe_recover_rfc822_headers(awb, best)
+
+    from ..config.email_routing import resolve_b2_auto_reply_recipient
+    reply_to_raw = (best.get("reply_to") or best.get("Reply-To") or "").strip()
+    from_raw = (
+        best.get("from_header")
+        or best.get("From")
+        or best.get("from")
+        or sender
+        or ""
+    ).strip()
+    reply_addr, reply_src = resolve_b2_auto_reply_recipient(
+        reply_to_raw, from_raw, sender,
+    )
+
+    # Re-read so we merge against the latest on-disk audit.
+    try:
+        live = json.loads(audit_path.read_text(encoding="utf-8"))
+    except Exception:
+        live = dict(audit)
+
+    if (live.get("dhl_email") or {}).get("received"):
+        out["skipped"] = "already_received"
+        return out
+
+    live["dhl_email"] = {
+        "received":     True,
+        "source":       "email_evidence_v2",
+        "sender":       sender,
+        "subject":      subject,
+        "ticket":       ticket,
+        "request_type": "dhl_customs_request",
+        "received_at":  received_at,
+        "applied_via":  "evidence_bridge",
+        # Thread identity for same-thread B2 (HOLD without these).
+        "source_message_id": best.get("message_id") or "",
+        "source_thread_id":  (
+            best.get("thread_id")
+            or (best.get("thread") or {}).get("thread_id")
+            or ""
+        ),
+        "rfc822_message_id": (
+            best.get("rfc822_message_id")
+            or best.get("Message-ID")
+            or best.get("message_id_rfc822")
+            or ""
+        ),
+        "in_reply_to": (
+            best.get("in_reply_to") or best.get("In-Reply-To") or ""
+        ),
+        "references": (
+            best.get("references") or best.get("References") or ""
+        ),
+        "reply_to":            reply_to_raw,
+        "from_header":         from_raw,
+        "reply_to_address":    reply_addr,
+        "reply_recipient_source": reply_src,
+    }
+    if ticket and not live.get("dhl_ticket"):
+        live["dhl_ticket"] = ticket
+
+    cur_status = live.get("clearance_status") or ""
+    if cur_status in _DHL_EMAIL_STATUS_ADVANCEABLE:
+        live["clearance_status"] = "dhl_email_received"
+        live["clearance_updated_at"] = now_iso
+
+    write_json_atomic(audit_path, live)
+    # Keep caller's in-memory audit in sync for the rest of the sweep.
+    audit.clear()
+    audit.update(live)
+
+    try:
+        tl.log_event(
+            audit_path,
+            tl.EV_DHL_EMAIL_RECEIVED,
+            trigger_source="system",
+            actor="evidence_bridge",
+            detail={
+                "ticket":     ticket,
+                "written_by": "apply_dhl_email_received_from_evidence",
+                "source":     "email_evidence_v2",
+            },
+        )
+    except Exception:
+        pass
+
+    out["wrote"] = True
+    out["ticket"] = ticket
+    return out
+
+
+def _maybe_recover_rfc822_headers(
+    awb: str,
+    best: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Read-only Zoho recovery of RFC822 headers for historical evidence that
+    only stored the Zoho object id. Persists recovered fields onto the same
+    evidence message. Fail-closed: returns ``best`` unchanged on any miss.
+    Never invents Message-ID from the Zoho numeric id.
+    """
+    existing_rfc = (
+        best.get("rfc822_message_id")
+        or best.get("Message-ID")
+        or best.get("message_id_rfc822")
+        or ""
+    ).strip()
+    if existing_rfc and _is_rfc822_message_id(existing_rfc):
+        return best
+
+    mid = str(best.get("message_id") or "").strip()
+    if not mid or _is_rfc822_message_id(mid) or not mid.isdigit():
+        return best
+
+    try:
+        import sys
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[3]
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from dhl_email_monitor import fetch_rfc822_headers
+        from .zoho_auth import get_valid_access_token, has_zoho_credentials
+        from ..core.config import settings as _s
+    except Exception:
+        return best
+
+    try:
+        if not has_zoho_credentials():
+            return best
+        token = get_valid_access_token()
+        account_id = (getattr(_s, "zoho_mail_account_id", None) or "").strip()
+        api_base = (
+            getattr(_s, "zoho_mail_api_base", None)
+            or "https://zmail.zoho.in/api"
+        )
+        if not (token and account_id):
+            return best
+
+        hdrs = fetch_rfc822_headers(
+            account_id, mid, token, api_base=api_base,
+        )
+        rfc = (hdrs.get("rfc822_message_id") or "").strip()
+        if not rfc or not _is_rfc822_message_id(rfc):
+            return best
+
+        patch = {
+            "rfc822_message_id": rfc,
+            "from_header": (hdrs.get("from_header") or "").strip(),
+            "reply_to": (hdrs.get("reply_to") or "").strip(),
+            "references": (hdrs.get("references") or "").strip(),
+            "in_reply_to": (hdrs.get("in_reply_to") or "").strip(),
+        }
+        try:
+            from .email_evidence_store import update_message
+            update_message(awb, mid, patch)
+        except Exception:
+            pass
+        enriched = dict(best)
+        enriched.update(patch)
+        return enriched
+    except Exception as exc:
+        log.debug("[b2] rfc822 recovery failed awb=%s mid=%s: %s", awb, mid, exc)
+        return best
 
 
 def _apply_cache_to_audit(audit_path: Path, audit: Dict[str, Any], cached: Dict[str, Any]) -> Dict[str, Any]:
@@ -458,20 +709,173 @@ def _ensure_dhl_reply(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]
     return out
 
 
+def _is_rfc822_message_id(value: str) -> bool:
+    """True when value looks like an RFC822 Message-ID (<local@domain>)."""
+    v = (value or "").strip()
+    return bool(v) and v.startswith("<") and "@" in v and v.endswith(">")
+
+
+def _parse_iso_utc(value: str):
+    """Parse ISO8601 to aware UTC datetime, or None."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _b2_auto_reply_delay_minutes() -> int:
+    """Configured B2 send delay (minutes). Separate from overdue SLA."""
+    try:
+        n = int(getattr(settings, "dhl_dsk_auto_reply_delay_minutes", 10) or 10)
+    except Exception:
+        n = 10
+    return max(0, n)
+
+
+def _b2_due_at(received_at: str, delay_minutes: Optional[int] = None):
+    """due_at = authoritative_received_at + delay. None if received_at missing."""
+    recv = _parse_iso_utc(received_at)
+    if recv is None:
+        return None
+    mins = _b2_auto_reply_delay_minutes() if delay_minutes is None else max(0, int(delay_minutes))
+    return recv + timedelta(minutes=mins)
+
+
+def _b2_delay_gate(audit: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """
+    Explicit receipt-based eligibility: now >= received_at + delay.
+
+    Returns dict with keys: eligible (bool), due_at, received_at, reason.
+    """
+    de = audit.get("dhl_email") or {}
+    received_at = (de.get("received_at") or "").strip()
+    if not received_at:
+        return {
+            "eligible": False,
+            "due_at": None,
+            "received_at": "",
+            "reason": "missing_received_at",
+        }
+    due = _b2_due_at(received_at)
+    if due is None:
+        return {
+            "eligible": False,
+            "due_at": None,
+            "received_at": received_at,
+            "reason": "unparseable_received_at",
+        }
+    now_dt = now or datetime.now(timezone.utc)
+    due_iso = due.isoformat()
+    if now_dt < due:
+        return {
+            "eligible": False,
+            "due_at": due_iso,
+            "received_at": received_at,
+            "reason": "before_due_at",
+        }
+    return {
+        "eligible": True,
+        "due_at": due_iso,
+        "received_at": received_at,
+        "reason": None,
+    }
+
+
+def _b2_reply_recipient(audit: Dict[str, Any]) -> Dict[str, str]:
+    """Resolve automatic B2 TO from inbound dhl_email (Reply-To else From)."""
+    from ..config.email_routing import resolve_b2_auto_reply_recipient
+    de = audit.get("dhl_email") or {}
+    addr = (de.get("reply_to_address") or "").strip().lower()
+    src = (de.get("reply_recipient_source") or "").strip()
+    if addr:
+        return {"address": addr, "source": src or "reply_to_address", "reason": ""}
+    addr, src = resolve_b2_auto_reply_recipient(
+        de.get("reply_to") or "",
+        de.get("from_header") or "",
+        de.get("sender") or "",
+    )
+    if addr:
+        return {"address": addr, "source": src, "reason": ""}
+    return {"address": "", "source": src or "missing", "reason": "missing_reply_recipient"}
+
+
+def _b2_package_committed(drp: Dict[str, Any]) -> bool:
+    """True when automatic B2 must not re-queue (queued/sent or in-flight build)."""
+    st = (drp.get("status") or "").strip().lower()
+    if st in ("queued", "sent"):
+        return True
+    if st == "failed":
+        return False  # retryable — build_started_at must be cleared on fail
+    if drp.get("build_started_at"):
+        return True  # building / crash-after-queue — keep duplicate protection
+    return False
+
+
+def _b2_mark_failed(audit_path: Path, audit_locked: Dict[str, Any], error: str) -> None:
+    """Record retryable failure; clear build_started_at so a later sweep may retry."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    prev = audit_locked.get("dhl_reply_package") or {}
+    if (prev.get("status") or "").strip().lower() in ("queued", "sent"):
+        return
+    audit_locked["dhl_reply_package"] = {
+        "status": "failed",
+        "last_error": error,
+        "failed_at": now_iso,
+        # intentionally omit build_started_at — allows retry without weakening
+        # duplicate protection for queued/sent.
+        "due_at": prev.get("due_at") or "",
+    }
+    write_json_atomic(audit_path, audit_locked)
+
+
+def _b2_thread_identity(audit: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Resolve same-thread identity for B2 from audit.dhl_email (+ evidence fallback).
+
+    SMTP same-thread reply requires an RFC822 Message-ID for In-Reply-To.
+    A Zoho-only numeric message_id is NOT sufficient for SMTP threading.
+    """
+    de = audit.get("dhl_email") or {}
+    rfc = (de.get("rfc822_message_id") or "").strip()
+    src_mid = (de.get("source_message_id") or "").strip()
+    src_tid = (de.get("source_thread_id") or "").strip()
+    in_reply = (de.get("in_reply_to") or "").strip()
+    refs = (de.get("references") or "").strip()
+
+    # If source_message_id itself is RFC822-shaped, promote it.
+    if not rfc and _is_rfc822_message_id(src_mid):
+        rfc = src_mid
+
+    return {
+        "rfc822_message_id": rfc,
+        "source_message_id": src_mid,
+        "source_thread_id":  src_tid,
+        "in_reply_to":       in_reply or rfc,
+        "references":        refs or (rfc if rfc else ""),
+        "has_smtp_thread":   "1" if rfc else "",
+    }
+
+
 def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:
     """B2 (Path B reply when DHL emails for the customs package).
 
-    Phase 3.2 changes:
-      * Switched from build_dhl_reply_package (full-doc-set) to
-        build_dhl_b2_dsk_only_reply (spec rule 5: DSK only, internal CC only).
-      * Added DSK precondition gate: skips silently when audit.dsk_filename is
-        empty or the file doesn't exist on disk. Operator generates DSK via
-        the existing /api/v1/dsk/generate endpoint; the observer fires on the
-        next sweep once dsk_filename is populated.
-      * Wrapped critical section in proposal_write_lock(batch_id).
-      * Pre-marker (build_started_at) written inside the lock BEFORE
-        queue_email so a crash mid-fire does not result in re-queue.
-      * Entry gate rejects when EITHER status OR build_started_at is set.
+    Phase 3.2 + receipt-delay / inbound-recipient / same-thread gates:
+      * build_dhl_b2_dsk_only_reply (spec rule 5: DSK only, internal CC only).
+      * DSK precondition gate.
+      * proposal_write_lock + build_started_at pre-marker.
+      * Same-thread HOLD: RFC822 Message-ID required.
+      * Receipt delay: now >= authoritative received_at + configured delay.
+      * Recipient: inbound Reply-To else From (@dhl.com); no hardcoded TO.
+      * Package authority: ONLY audit.dhl_reply_package.
+      * Queue/build failure -> status=failed (retryable); queued/sent stay blocked.
     """
     from ..utils.proposal_lock import proposal_write_lock as _b2_lock
 
@@ -479,12 +883,16 @@ def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> D
                            "path": "agency_clearance"}
     batch_id = audit_path.parent.name
 
-    # ── Idempotency pre-check (cheap; in-lock re-check is authoritative) ──
+    # -- Idempotency pre-check (cheap; in-lock re-check is authoritative) --
     drp = audit.get("dhl_reply_package") or {}
-    if drp.get("status") or drp.get("build_started_at"):
+    if _b2_package_committed(drp):
+        out["error"] = "already_started_or_sent"
         return out
 
-    # ── B2 DSK gate: skip silently if DSK not yet generated ──────────────
+    # -- Authority guard: agency_reply_package must NEVER satisfy B2 ------
+    _ = audit.get("agency_reply_package")  # noqa: F841 — intentional non-use
+
+    # -- B2 DSK gate ------------------------------------------------------
     dsk_filename = (audit.get("dsk_filename") or "").strip()
     dsk_path_str = (audit.get("dsk_path") or "").strip()
     dsk_present = (
@@ -493,8 +901,6 @@ def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> D
         and Path(dsk_path_str).is_file()
     )
     if not dsk_present:
-        # Decision-trail field for incident debugging; NOT an idempotency
-        # marker (does not block re-fire on next sweep once DSK lands).
         try:
             audit_skip = json.loads(audit_path.read_text(encoding="utf-8"))
             audit_skip["b2_dsk_skip_reason"] = {
@@ -504,33 +910,113 @@ def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> D
             write_json_atomic(audit_path, audit_skip)
         except Exception:
             pass
+        out["error"] = "dsk_not_yet_generated"
         return out
 
-    # ── GUARANTEE-1 — single critical section ────────────────────────────
+    # -- Receipt delay gate (authoritative received_at + configured delay) -
+    delay = _b2_delay_gate(audit)
+    if not delay["eligible"]:
+        try:
+            audit_skip = json.loads(audit_path.read_text(encoding="utf-8"))
+            audit_skip["b2_dsk_skip_reason"] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "reason":    delay["reason"],
+                "received_at": delay.get("received_at") or "",
+                "due_at": delay.get("due_at") or "",
+                "delay_minutes": _b2_auto_reply_delay_minutes(),
+            }
+            write_json_atomic(audit_path, audit_skip)
+        except Exception:
+            pass
+        out["error"] = delay["reason"]
+        out["due_at"] = delay.get("due_at")
+        return out
+
+    # -- Same-thread HOLD gate --------------------------------------------
+    thread_id = _b2_thread_identity(audit)
+    if not thread_id.get("has_smtp_thread"):
+        try:
+            audit_skip = json.loads(audit_path.read_text(encoding="utf-8"))
+            audit_skip["b2_dsk_skip_reason"] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "reason":    "missing_rfc822_thread_identity",
+                "detail": (
+                    "B2 SMTP reply requires RFC822 Message-ID on "
+                    "audit.dhl_email.rfc822_message_id for In-Reply-To. "
+                    "Zoho-only numeric message_id is insufficient. "
+                    "HOLD — do not send a new standalone email."
+                ),
+                "source_message_id": thread_id.get("source_message_id") or "",
+                "source_thread_id":  thread_id.get("source_thread_id") or "",
+            }
+            write_json_atomic(audit_path, audit_skip)
+        except Exception:
+            pass
+        out["error"] = "missing_rfc822_thread_identity"
+        return out
+
+    # -- Inbound recipient gate (no hardcoded DHL_TO for automatic B2) ----
+    recip = _b2_reply_recipient(audit)
+    if not recip.get("address"):
+        try:
+            audit_skip = json.loads(audit_path.read_text(encoding="utf-8"))
+            audit_skip["b2_dsk_skip_reason"] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "reason":    "missing_reply_recipient",
+                "detail": (
+                    "Automatic B2 requires inbound Reply-To or From "
+                    "resolving to a valid @dhl.com address."
+                ),
+            }
+            write_json_atomic(audit_path, audit_skip)
+        except Exception:
+            pass
+        out["error"] = "missing_reply_recipient"
+        return out
+
+    # -- GUARANTEE-1 — single critical section ----------------------------
     with _b2_lock(batch_id):
-        # Re-read audit inside the lock (authoritative state).
         audit_locked = json.loads(audit_path.read_text(encoding="utf-8"))
 
-        # Re-check idempotency markers under fresh state.
         drp_locked = audit_locked.get("dhl_reply_package") or {}
-        if drp_locked.get("status") or drp_locked.get("build_started_at"):
+        if _b2_package_committed(drp_locked):
+            out["error"] = "already_started_or_sent"
             return out
 
-        # Re-check DSK presence (file may have been removed between gate
-        # check and lock acquisition).
         dsk_filename_locked = (audit_locked.get("dsk_filename") or "").strip()
         dsk_path_locked     = (audit_locked.get("dsk_path") or "").strip()
         if not (dsk_filename_locked and dsk_path_locked
                 and Path(dsk_path_locked).is_file()):
+            out["error"] = "dsk_not_yet_generated"
             return out
 
-        # Pre-marker: write BEFORE queue_email so a crash leaves an
-        # idempotency mark on disk. Builder runs after this write; if it
-        # raises, the marker stays set and re-fires are blocked until
-        # operator clears.
+        delay_locked = _b2_delay_gate(audit_locked)
+        if not delay_locked["eligible"]:
+            out["error"] = delay_locked["reason"]
+            out["due_at"] = delay_locked.get("due_at")
+            return out
+
+        thread_locked = _b2_thread_identity(audit_locked)
+        if not thread_locked.get("has_smtp_thread"):
+            out["error"] = "missing_rfc822_thread_identity"
+            return out
+
+        recip_locked = _b2_reply_recipient(audit_locked)
+        if not recip_locked.get("address"):
+            out["error"] = "missing_reply_recipient"
+            return out
+
+        # Ensure builder sees the resolved recipient.
+        de_locked = audit_locked.setdefault("dhl_email", {})
+        de_locked["reply_to_address"] = recip_locked["address"]
+        de_locked["reply_recipient_source"] = recip_locked.get("source") or ""
+
         pre_marker_iso = datetime.now(timezone.utc).isoformat()
-        audit_locked.setdefault("dhl_reply_package", {})
-        audit_locked["dhl_reply_package"]["build_started_at"] = pre_marker_iso
+        audit_locked["dhl_reply_package"] = {
+            "status": "building",
+            "build_started_at": pre_marker_iso,
+            "due_at": delay_locked.get("due_at") or "",
+        }
         write_json_atomic(audit_path, audit_locked)
 
         try:
@@ -538,11 +1024,14 @@ def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> D
             from .email_service     import queue_email
             pkg = build_dhl_b2_dsk_only_reply(audit_locked, batch_id)
 
-            # Validate attachments exist (defensive — gate already checked)
             existing = [a for a in pkg.get("attachments", [])
                         if Path(a.get("path", "")).is_file()]
-            if not existing or pkg.get("missing"):
-                out["error"] = "no_attachments_on_disk"
+            if not existing or pkg.get("missing") or not pkg.get("to"):
+                err = "no_attachments_on_disk" if not existing else (
+                    "missing_reply_recipient" if not pkg.get("to") else "builder_missing"
+                )
+                _b2_mark_failed(audit_path, audit_locked, err)
+                out["error"] = err
                 return out
 
             body_text = pkg["body_text"]
@@ -555,6 +1044,10 @@ def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> D
                 from_address=pkg.get("from_address", ""),
                 email_type=pkg.get("email_type", "dhl_b2_dsk_only_reply"),
                 attachments=existing,
+                reply_to_message_id=thread_locked.get("source_message_id") or "",
+                reply_to_thread_id=thread_locked.get("source_thread_id") or "",
+                in_reply_to=thread_locked.get("in_reply_to") or "",
+                references=thread_locked.get("references") or "",
             )
 
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -572,39 +1065,49 @@ def _ensure_dhl_dsk_transfer_reply(audit_path: Path, audit: Dict[str, Any]) -> D
                 "email_id":     email_id,
                 "status":       "queued",
                 "queued_at":    now_iso,
-                "source":       "monitor_auto_after_dhl_email",
+                "due_at":       delay_locked.get("due_at") or "",
                 "build_started_at": pre_marker_iso,
+                "email_type":   pkg.get("email_type", "dhl_b2_dsk_only_reply"),
+                "reply_to_address": recip_locked.get("address") or "",
+                "reply_recipient_source": recip_locked.get("source") or "",
+                "reply_to_message_id": thread_locked.get("source_message_id") or "",
+                "reply_to_thread_id":  thread_locked.get("source_thread_id") or "",
+                "in_reply_to":         thread_locked.get("in_reply_to") or "",
+                "references":          thread_locked.get("references") or "",
+                "rfc822_message_id":   thread_locked.get("rfc822_message_id") or "",
             }
-            audit = audit_locked
+            audit_locked.pop("b2_dsk_skip_reason", None)
             write_json_atomic(audit_path, audit_locked)
             out["built"] = True
+            out["sent"] = True  # queued; SMTP may confirm asynchronously
             out["email_id"] = email_id
-
+            out["due_at"] = delay_locked.get("due_at")
+            out["queued_at"] = now_iso
             try:
-                tl.log_event(audit_path, "dhl_reply_package_auto_built",
-                             "monitor", "active_shipment_monitor",
-                             detail={"email_id": email_id,
-                                     "ticket": pkg.get("ticket", ""),
-                                     "email_type": "dhl_b2_dsk_only_reply"})
+                tl.log_event(
+                    audit_path, "dhl_reply_package_auto_built",
+                    "monitor", "active_shipment_monitor",
+                    detail={
+                        "email_id": email_id,
+                        "ticket": pkg.get("ticket", ""),
+                        "email_type": "dhl_b2_dsk_only_reply",
+                        "in_reply_to": thread_locked.get("in_reply_to") or "",
+                        "due_at": delay_locked.get("due_at") or "",
+                        "reply_to_address": recip_locked.get("address") or "",
+                    },
+                )
             except Exception:
                 pass
-
-            # Auto-send if SMTP is configured
-            from .email_sender import send_queued_email, _smtp_configured
-            if _smtp_configured():
-                send_result = send_queued_email(email_id, method="smtp")
-                if send_result.get("ok") and send_result.get("status") == "sent":
-                    out["sent"] = True
-                    out["provider_message_id"] = send_result.get("provider_message_id")
-                else:
-                    out["error"] = f"send_failed: {send_result.get('error')}"
-            else:
-                out["error"] = "smtp_not_configured"
-
+            return out
         except Exception as exc:
-            out["error"] = f"build_failed: {exc}"
-
-        return out
+            err = f"{type(exc).__name__}: {exc}"
+            out["error"] = err
+            log.exception("[b2] queue failed batch=%s", batch_id)
+            try:
+                _b2_mark_failed(audit_path, audit_locked, err)
+            except Exception:
+                pass
+            return out
 
 
 def _DEPRECATED_ensure_dhl_dsk_transfer_reply_legacy(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any]:

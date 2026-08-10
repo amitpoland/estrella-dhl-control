@@ -119,6 +119,10 @@ def queue_email(
     from_address: str = "",   # override default sender (e.g. "import@estrellajewels.eu")
     email_type:   str = "",   # "agency" | "dhl_reply" | "" (default)
     attachments:  Optional[list] = None,  # list of {"label": str, "path": str} dicts
+    reply_to_message_id: str = "",  # Zoho/provider parent message id (MCP reply mode)
+    reply_to_thread_id:  str = "",  # Zoho/provider thread id
+    in_reply_to:         str = "",  # RFC822 In-Reply-To for SMTP same-thread
+    references:          str = "",  # RFC822 References for SMTP same-thread
 ) -> str:
     """
     Add an email to the persistent queue.
@@ -240,6 +244,11 @@ def queue_email(
         # [] (empty list) means "caller explicitly declared no attachments".
         # Only pass attachments= when the caller owns the file list.
         "attachments":  list(attachments) if attachments is not None else None,
+        # Same-thread reply metadata (B2 DSK reply / Zoho MCP reply mode).
+        "reply_to_message_id": (reply_to_message_id or "").strip(),
+        "reply_to_thread_id":  (reply_to_thread_id or "").strip(),
+        "in_reply_to":         (in_reply_to or "").strip(),
+        "references":          (references or "").strip(),
     }
     _append_to_queue(entry)
     log.info("Email queued id=%s to=%s cc=%s subject=%r", email_id, to, cc or "—", subject)

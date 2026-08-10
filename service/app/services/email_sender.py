@@ -290,6 +290,8 @@ def _build_mime(
     body_text:  str,
     body_html:  str,
     attachments: List[Path],
+    in_reply_to: str = "",
+    references:  str = "",
 ) -> MIMEMultipart:
     msg = MIMEMultipart("mixed")
     msg["From"]    = _sanitize_header(sender)
@@ -299,6 +301,15 @@ def _build_mime(
     msg["Subject"] = _sanitize_header(subject)
     msg["Date"]    = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid()
+
+    # Same-thread SMTP headers — only when RFC822-shaped values are present.
+    # Subject-only "Re:" is NOT sufficient for thread proof.
+    _irt = (in_reply_to or "").strip()
+    _refs = (references or "").strip()
+    if _irt.startswith("<") and "@" in _irt:
+        msg["In-Reply-To"] = _sanitize_header(_irt)
+    if _refs:
+        msg["References"] = _sanitize_header(_refs)
 
     # Read-receipt request: opt-in via settings.email_read_receipt_enabled.
     # Receipt mailbox defaults to the sender so notifications return to the
@@ -502,6 +513,8 @@ def _validate_attachment_integrity(
                 body_text   = entry.get("body_text", ""),
                 body_html   = entry.get("body_html", ""),
                 attachments = attach_paths,
+                in_reply_to = entry.get("in_reply_to", "") or "",
+                references  = entry.get("references", "") or "",
             )
         except Exception as exc:
             filenames = [p.name for p in attach_paths]
@@ -811,6 +824,8 @@ def send_queued_email(
             body_text=entry.get("body_text", ""),
             body_html=entry.get("body_html", ""),
             attachments=attach_paths,
+            in_reply_to=entry.get("in_reply_to", "") or "",
+            references=entry.get("references", "") or "",
         )
     except Exception as exc:
         log.error("[email_sender] MIME build failed queue=%s: %s", queue_id, exc)

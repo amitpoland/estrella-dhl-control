@@ -2194,8 +2194,10 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
       2. run_ingestion_cycle()  — scan Zoho inbox once, cache matched emails
       3. For each active batch (excluding manually-excluded AWBs):
            a. find_existing_email_context() → _apply_cache_to_audit()
-              writes dhl_email.received when a T# match is found
-           b. _ensure_dhl_reply()     → triggers B2 DSK reply if conditions met
+              (Cowork/AI-Bridge email_intelligence path)
+           b. apply_dhl_email_received_from_evidence()
+              (email_evidence V2 bridge — automated Zoho path)
+           c. _ensure_dhl_reply()     → triggers B2 DSK reply if conditions met
       4. Write final status to dhl_auto_scan_status.json
       5. Return summary {lane, batches_checked, received_set, b2_triggered, errors}
 
@@ -2225,6 +2227,7 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
         _is_active         as _batch_active,
         _apply_cache_to_audit,
         _ensure_dhl_reply,
+        apply_dhl_email_received_from_evidence as _apply_evidence_dhl,
     )
 
     _EXCLUDED_AWBS: frozenset = frozenset({"5665916826"})
@@ -2283,8 +2286,21 @@ def run_scheduled_inbox_check() -> Dict[str, Any]:
                 if cached and cached.get("matched", 0) > 0:
                     _apply_cache_to_audit(ap, audit, cached)
                     audit = json.loads(ap.read_text(encoding="utf-8"))
-                    if (audit.get("dhl_email") or {}).get("received"):
-                        out["received_set"] += 1
+                # V2 evidence bridge: automated Zoho ingestion writes
+                # dhl_request into email_evidence, not email_intelligence.
+                # Without this, dhl_email.received stays unset and B2 never
+                # fires (AWB 5831878861 incident 2026-08-10).
+                if not (audit.get("dhl_email") or {}).get("received"):
+                    _ev_res = _apply_evidence_dhl(ap, audit)
+                    if _ev_res.get("wrote"):
+                        audit = json.loads(ap.read_text(encoding="utf-8"))
+                        log.info(
+                            "[lane-a] evidence bridge set dhl_email.received "
+                            "batch=%s ticket=%s",
+                            batch_id, _ev_res.get("ticket") or "",
+                        )
+                if (audit.get("dhl_email") or {}).get("received"):
+                    out["received_set"] += 1
             except Exception as exc:
                 out["errors"].append(f"{batch_id}:cache:{exc}")
                 log.warning("[lane-a] cache apply failed batch=%s: %s", batch_id, exc)

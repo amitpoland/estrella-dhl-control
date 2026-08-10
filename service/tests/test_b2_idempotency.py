@@ -66,8 +66,19 @@ def _seed_b2(tmp_path: Path, *, batch_id: str = "B_B2_T",
         },
         "invoice_totals":  {"total_cif_usd": 5000.0},
         "verification":    {"invoice_cif_total_usd": 5000.0},
-        "dhl_email":       {"received": dhl_email_received,
-                            "ticket": "T#1WA2604290000028"},
+        "dhl_email":       {
+            "received": dhl_email_received,
+            "ticket": "T#1WA2604290000028",
+            "subject": "T#1WA2604290000028 - Agencja Celna DHL",
+            "received_at": "2026-05-07T09:00:00+00:00",
+            "rfc822_message_id": "<b2-test-1012178215@dhl.com>",
+            "source_message_id": "zoho-b2-test",
+            "reply_to": "odprawacelna@dhl.com",
+            "from_header": "odprawacelna@dhl.com",
+            "reply_to_address": "odprawacelna@dhl.com",
+            "reply_recipient_source": "reply_to",
+            "sender": "odprawacelna@dhl.com",
+        },
         "dhl_ticket":      "T#1WA2604290000028",
     }
     if with_dsk:
@@ -160,7 +171,6 @@ def test_b2_subject_is_thread_reply(tmp_path, monkeypatch):
     pkg = build_dhl_b2_dsk_only_reply(audit, audit["batch_id"])
     assert pkg["subject"].startswith("Re:")
     assert "T#1WA2604290000028" in pkg["subject"]
-    assert "1012178215" in pkg["subject"]
 
 
 def test_b2_builder_missing_when_dsk_absent(tmp_path, monkeypatch):

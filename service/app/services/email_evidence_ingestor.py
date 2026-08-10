@@ -615,6 +615,13 @@ def scan_and_ingest(
                 "event_type":          ev_type,
                 "matched_identifiers": {"awb": True},
                 "attachments":         attachments,
+                # Same-thread B2 reply authority (RFC822 + recipient). Never
+                # invent Message-ID from the Zoho numeric object id.
+                "rfc822_message_id":   (e.get("rfc822_message_id") or "").strip(),
+                "from_header":         (e.get("from_header") or sender or "").strip(),
+                "reply_to":            (e.get("reply_to") or "").strip(),
+                "references":          (e.get("references") or "").strip(),
+                "in_reply_to":         (e.get("in_reply_to") or "").strip(),
             }, source="zoho_rest")
             if action.get("action") in ("inserted", "promoted"):
                 ingested += 1

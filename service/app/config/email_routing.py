@@ -10,9 +10,17 @@ Usage:
 """
 from __future__ import annotations
 
-from typing import List
+import re
+from typing import List, Tuple
 
 from ..core.config import settings
+
+# Automatic B2 reply may only target a @dhl.com address from the inbound
+# message (Reply-To preferred, else From). Hardcoded DHL_TO must not silently
+# satisfy automatic eligibility.
+_B2_DHL_ADDR_RE = re.compile(r"^[a-z0-9._%+\-]+@dhl\.com$", re.IGNORECASE)
+_ANGLE_ADDR_RE = re.compile(r"<([^>]+@[^>]+)>")
+_BARE_ADDR_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 
 # ── Agency (external customs broker) ─────────────────────────────────────────
 
@@ -115,3 +123,49 @@ def is_dsk_source(sender: str) -> bool:
     """
     sender_norm = sender.strip().lower()
     return sender_norm in {s.lower() for s in DHL_DSK_SOURCE}
+
+
+def extract_mailbox_address(raw: str) -> str:
+    """Return bare addr@domain from 'Name <addr@domain>' or a bare address."""
+    if not raw:
+        return ""
+    m = _ANGLE_ADDR_RE.search(raw)
+    if m:
+        return m.group(1).strip().lower()
+    m = _BARE_ADDR_RE.search(raw)
+    return m.group(0).strip().lower() if m else ""
+
+
+def is_allowed_dhl_reply_address(addr: str) -> bool:
+    """True when addr is a bare @dhl.com mailbox (automatic B2 allowlist)."""
+    return bool(addr) and bool(_B2_DHL_ADDR_RE.match(addr.strip()))
+
+
+def resolve_b2_auto_reply_recipient(
+    reply_to: str = "",
+    from_header: str = "",
+    sender: str = "",
+) -> Tuple[str, str]:
+    """
+    Resolve automatic B2 TO from the authoritative inbound DHL message.
+
+    Priority:
+      1. Reply-To (if present and valid @dhl.com)
+      2. From header / sender (if valid @dhl.com)
+      3. empty — caller must HOLD (no hardcoded DHL_TO fallback)
+
+    Returns ``(address, source)`` where source is
+    ``reply_to`` | ``from`` | ``missing`` | ``invalid``.
+    """
+    saw_invalid = False
+    for raw, source in (
+        (reply_to, "reply_to"),
+        (from_header or sender, "from"),
+    ):
+        addr = extract_mailbox_address(raw or "")
+        if not addr:
+            continue
+        if is_allowed_dhl_reply_address(addr):
+            return addr, source
+        saw_invalid = True
+    return "", "invalid" if saw_invalid else "missing"

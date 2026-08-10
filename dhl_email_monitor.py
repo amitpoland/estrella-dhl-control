@@ -594,11 +594,28 @@ def scan_for_dhl_customs_emails(
         if not decision["matched"]:
             continue
 
+        mid = str(msg.get("messageId", ""))
+        # Authoritative RFC822 / reply metadata — never synthesize from Zoho id.
+        hdrs = fetch_rfc822_headers(
+            zoho_account_id,
+            mid,
+            token,
+            api_base=api_base,
+            folder_id=str(msg.get("folderId") or zoho_folder_id or "") or None,
+        )
+        from_header = (hdrs.get("from_header") or sender or "").strip()
+        reply_to = (hdrs.get("reply_to") or "").strip()
+
         matched.append({
-            "message_id":           str(msg.get("messageId", "")),
+            "message_id":           mid,
             "thread_id":            str(msg.get("threadId", "")),
             "subject":              subject,
             "from":                 sender,
+            "from_header":          from_header,
+            "reply_to":             reply_to,
+            "rfc822_message_id":    (hdrs.get("rfc822_message_id") or "").strip(),
+            "references":           (hdrs.get("references") or "").strip(),
+            "in_reply_to":          (hdrs.get("in_reply_to") or "").strip(),
             "received_at":          _ms_to_iso(msg.get("receivedTime")),
             "dhl_ticket":           decision["ticket"],
             "awb":                  decision["awb"],
@@ -844,6 +861,132 @@ def _fetch_body_snippet(
         return body[:max_chars] if body else ""
     except Exception:
         return ""
+
+
+_HDR_MSGID_RE = re.compile(
+    r"(?im)^Message-Id:\s*(.+?)(?:\r?\n(?![ \t])|\Z)",
+)
+_HDR_REPLYTO_RE = re.compile(
+    r"(?im)^Reply-To:\s*(.+?)(?:\r?\n(?![ \t])|\Z)",
+)
+_HDR_FROM_RE = re.compile(
+    r"(?im)^From:\s*(.+?)(?:\r?\n(?![ \t])|\Z)",
+)
+_HDR_REFS_RE = re.compile(
+    r"(?im)^References:\s*(.+?)(?:\r?\n(?![ \t])|\Z)",
+)
+_HDR_IRT_RE = re.compile(
+    r"(?im)^In-Reply-To:\s*(.+?)(?:\r?\n(?![ \t])|\Z)",
+)
+_ADDR_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
+
+
+def _first_header_value(raw: str, pattern: "re.Pattern") -> str:
+    m = pattern.search(raw or "")
+    if not m:
+        return ""
+    return re.sub(r"\r?\n[ \t]+", " ", m.group(1)).strip()
+
+
+def _parse_rfc822_header_block(raw: str) -> dict:
+    """Extract Message-ID / Reply-To / From / References from a raw MIME header block."""
+    raw = raw or ""
+    msgid = _first_header_value(raw, _HDR_MSGID_RE).strip()
+    if msgid and not msgid.startswith("<") and "@" in msgid:
+        msgid = f"<{msgid.strip('<>')}>"
+    return {
+        "rfc822_message_id": msgid,
+        "reply_to": _first_header_value(raw, _HDR_REPLYTO_RE).strip(),
+        "from_header": _first_header_value(raw, _HDR_FROM_RE).strip(),
+        "references": _first_header_value(raw, _HDR_REFS_RE).strip(),
+        "in_reply_to": _first_header_value(raw, _HDR_IRT_RE).strip(),
+    }
+
+
+def extract_email_address(raw: str) -> str:
+    """Return bare addr@domain from 'Name <addr@domain>' or bare address."""
+    if not raw:
+        return ""
+    m = re.search(r"<([^>]+@[^>]+)>", raw)
+    if m:
+        return m.group(1).strip().lower()
+    m = _ADDR_RE.search(raw)
+    return m.group(0).strip().lower() if m else ""
+
+
+def fetch_rfc822_headers(
+    account_id: str,
+    message_id: str,
+    token: str,
+    api_base: str = "https://mail.zoho.eu/api",
+    folder_id: Optional[str] = None,
+) -> dict:
+    """
+    Fetch authoritative RFC822 headers for a Zoho message.
+
+    Prefer ``/messages/{id}/originalmessage`` (no folder — works on .in).
+    Fall back to folder header endpoint when folder_id is known.
+
+    Never invents a Message-ID from the Zoho numeric object id.
+    """
+    if not (account_id and message_id and token):
+        return {}
+    try:
+        import requests as _req
+    except ImportError:
+        return {}
+
+    auth = {"Authorization": f"Zoho-oauthtoken {token}", "Accept": "application/json"}
+    base = api_base.rstrip("/")
+
+    try:
+        url = f"{base}/accounts/{account_id}/messages/{message_id}/originalmessage"
+        resp = _req.get(url, headers=auth, timeout=15)
+        if resp.status_code == 200:
+            content = (resp.json().get("data") or {}).get("content") or ""
+            head = content.split("\r\n\r\n", 1)[0] if content else ""
+            if not head:
+                head = content.split("\n\n", 1)[0] if content else ""
+            parsed = _parse_rfc822_header_block(head)
+            if parsed.get("rfc822_message_id") or parsed.get("from_header"):
+                return parsed
+    except Exception as exc:
+        log.debug("[zoho] originalmessage header fetch failed mid=%s: %s", message_id, exc)
+
+    if folder_id:
+        try:
+            url = (
+                f"{base}/accounts/{account_id}/folders/{folder_id}"
+                f"/messages/{message_id}/header"
+            )
+            resp = _req.get(url, headers=auth, params={"raw": "false"}, timeout=15)
+            if resp.status_code == 200:
+                hc = (resp.json().get("data") or {}).get("headerContent")
+                if isinstance(hc, dict):
+                    def _first(key: str) -> str:
+                        for k, v in hc.items():
+                            if k.lower() == key.lower():
+                                if isinstance(v, list) and v:
+                                    return str(v[0]).strip()
+                                if isinstance(v, str):
+                                    return v.strip()
+                        return ""
+                    msgid = _first("Message-Id") or _first("Message-ID")
+                    if msgid and not msgid.startswith("<") and "@" in msgid:
+                        msgid = f"<{msgid.strip('<>')}>"
+                    return {
+                        "rfc822_message_id": msgid,
+                        "reply_to": _first("Reply-To"),
+                        "from_header": _first("From"),
+                        "references": _first("References"),
+                        "in_reply_to": _first("In-Reply-To"),
+                    }
+                if isinstance(hc, str) and hc.strip():
+                    return _parse_rfc822_header_block(hc)
+        except Exception as exc:
+            log.debug("[zoho] folder header fetch failed mid=%s: %s", message_id, exc)
+
+    return {}
 
 
 def _ms_to_iso(ms_timestamp: Any) -> str:
