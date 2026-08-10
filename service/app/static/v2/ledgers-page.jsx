@@ -15,20 +15,33 @@ const LDG_FMT = {
   },
 };
 
-// Statement window: statement.json / statement.pdf REQUIRE explicit from/to
-// (routes_ledgers.py validates and 400s on ''). Default cold path = current
-// UTC calendar quarter through today — YTD remains available via Accounting Hub
-// period preset "YTD" / custom range (formulas unchanged).
-const LDG_WINDOW = () => {
-  const now = new Date();
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const qStart = Math.floor(m / 3) * 3;
-  return {
-    from: new Date(Date.UTC(y, qStart, 1)).toISOString().slice(0, 10),
-    to: now.toISOString().slice(0, 10),
-  };
-};
+// Period authority: LedgersPage owns ONE normalized filter object and every
+// window comes from window.resolvePeriod (components.jsx). There is no local
+// fallback formula here any more — a second formula is exactly what made the
+// period selector look cosmetic (PR-005: single authority ownership).
+// statement.json / statement.pdf REQUIRE explicit from/to (routes_ledgers.py
+// 400s on ''), so the filter object always carries resolved dates.
+const LDG_TODAY = () => new Date().toISOString().slice(0, 10);
+
+// Compact paging — every roster/table on this page uses the same page size.
+const LDG_LIST_LIMIT = 10;
+const SUP_LIST_LIMIT = 10;
+const MA_TABLE_LIMIT = 10;
+
+// AP aging buckets in report order — same keys the backend emits, so this
+// strip and the Supplier Statement PDF read one authority.
+const SUP_AGING_BUCKETS = [
+  ['not_due', 'not due'], ['b_1_30', '1–30'], ['b_31_90', '31–90'],
+  ['b_91_180', '91–180'], ['b_180_plus', '180+'], ['due_date_unavailable', 'due n/a'],
+];
+
+const LDG_PRESETS = [
+  { id: 'this_month', label: 'This Month' },
+  { id: 'prev_month', label: 'Previous Month' },
+  { id: 'quarter', label: 'Quarter' },
+  { id: 'ytd', label: 'YTD' },
+  { id: 'custom', label: 'Custom' },
+];
 
 // ── Source / read-only badges ──────────────────────────────────────────
 function LdgSourceBadge() {
@@ -100,10 +113,69 @@ function LdgStatTile({ label, value, sub, tone, alert }) {
   );
 }
 
-// ── Header (sub-tabs + global wFirma sync state) ───────────────────────
+// ── Period bar — the single period control for every ledger surface ────
+// Rendered once, by LedgersPage. Switching to Custom PREFILLS both inputs with
+// the currently resolved window, so the half-filled state that used to fall
+// silently back to a preset the operator never chose cannot occur; an inverted
+// range reports inline and the last valid window is held.
+function LdgPeriodBar({ filters, custom, periodErr, onMode, onCustom, inert, inertNote }) {
+  const dateStyle = {
+    marginLeft: 6, padding: '4px 7px', fontSize: 11,
+    border: '1px solid var(--border)', borderRadius: 4,
+    background: inert ? 'var(--bg-subtle)' : 'var(--bg)', color: 'var(--text)',
+  };
+  return (
+    <div data-testid="ldg-period-bar" style={{
+      display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8,
+      padding: '10px 14px', marginBottom: 14, borderRadius: 6,
+      border: '1px solid var(--border)', background: 'var(--card)',
+    }}>
+      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Period</span>
+      {LDG_PRESETS.map(p => {
+        const active = filters.mode === p.id;
+        return (
+          <button key={p.id} type="button" data-testid={`ldg-preset-${p.id}`}
+            disabled={inert} onClick={() => onMode(p.id)}
+            style={{
+              padding: '4px 10px', fontSize: 11, borderRadius: 4, cursor: inert ? 'not-allowed' : 'pointer',
+              border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+              background: active ? 'var(--bg-subtle)' : 'var(--card)',
+              color: active ? 'var(--text)' : 'var(--text-2)',
+              fontWeight: active ? 700 : 500, opacity: inert ? 0.5 : 1,
+            }}>{p.label}</button>
+        );
+      })}
+      {filters.mode === 'custom' && (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-3)' }}>
+          <label>From
+            <input type="date" data-testid="ldg-from" value={custom.from} disabled={inert}
+              onChange={(e) => onCustom({ ...custom, from: e.target.value })} style={dateStyle} />
+          </label>
+          <label>To
+            <input type="date" data-testid="ldg-to" value={custom.to} disabled={inert}
+              onChange={(e) => onCustom({ ...custom, to: e.target.value })} style={dateStyle} />
+          </label>
+        </span>
+      )}
+      <span data-testid="ldg-period-window" style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-2)', marginLeft: 'auto' }}>
+        {filters.from} → {filters.to}
+      </span>
+      {periodErr && (
+        <div data-testid="ldg-period-error" style={{ flexBasis: '100%', fontSize: 11, color: 'var(--badge-red-text)' }}>
+          {periodErr} — showing {filters.from} → {filters.to}.
+        </div>
+      )}
+      {inert && inertNote && (
+        <div data-testid="ldg-period-inert" style={{ flexBasis: '100%', fontSize: 11, color: 'var(--text-3)' }}>
+          {inertNote}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Header (period bar + sub-tabs + global wFirma sync state) ──────────
 function LedgersPage(props) {
-  const periodFrom = props && props.periodFrom;
-  const periodTo = props && props.periodTo;
   const initialTab = (props && props.initialTab) || 'clients';
   const [tab, setTab] = React.useState(
     initialTab === 'suppliers' || initialTab === 'analysis' || initialTab === 'clients'
@@ -113,6 +185,49 @@ function LedgersPage(props) {
   const [selectedRow, setSelectedRow] = React.useState(null);
   const [focusContractorId, setFocusContractorId] = React.useState('');
   const [focusSupplierId, setFocusSupplierId] = React.useState('');
+
+  // ── THE period authority ──────────────────────────────────────────────
+  // One normalized filter object for every ledger surface on this page. No
+  // child holds its own period state and nothing computes a second default.
+  // Management Analysis opens on the full outstanding portfolio as of today —
+  // a balance-sheet-style exposure, not "documents issued this month" — so its
+  // scope defaults to all_outstanding and the period bar goes inert for it.
+  const today = LDG_TODAY();
+  const [filters, setFilters] = React.useState(() => {
+    const p = window.resolvePeriod('this_month', null, today);
+    return {
+      mode: 'this_month', from: p.from, to: p.to, as_of: today,
+      scope: 'all_outstanding', currency: '',
+      ar_status: 'outstanding', ap_status: 'outstanding',
+    };
+  });
+  const [custom, setCustom] = React.useState({ from: '', to: '' });
+  const [periodErr, setPeriodErr] = React.useState('');
+  const patch = (p) => setFilters(f => ({ ...f, ...p }));
+
+  const onMode = (mode) => {
+    setPeriodErr('');
+    if (mode === 'custom') {
+      // Prefill both inputs from the window currently on screen.
+      setCustom({ from: filters.from, to: filters.to });
+      patch({ mode: 'custom' });
+      return;
+    }
+    const p = window.resolvePeriod(mode, null, today);
+    patch({ mode, from: p.from, to: p.to });
+  };
+
+  const onCustom = (next) => {
+    setCustom(next);
+    const p = window.resolvePeriod('custom', next, today);
+    if (!p) {
+      setPeriodErr(next.from && next.to ? 'From date must be on or before To date' : 'Both dates are required');
+      return;
+    }
+    setPeriodErr('');
+    patch({ mode: 'custom', from: p.from, to: p.to });
+  };
+
   // HONEST load model (replaces the old fabricated static sync-age chip):
   // ledger figures are LIVE on-demand wFirma reads via GET /api/v1/ledgers/*.
   // The chip reports the LAST ACTUAL fetch outcome, lifted from
@@ -120,7 +235,6 @@ function LedgersPage(props) {
   const [loadInfo, setLoadInfo] = React.useState({ status: 'loading', at: null, count: null, error: null });
   const [refreshKey, setRefreshKey] = React.useState(0);
   const _t = (d) => d ? d.toLocaleTimeString('en-GB') : '';
-  React.useEffect(() => { setRefreshKey(k => k + 1); }, [periodFrom, periodTo]);
   React.useEffect(() => {
     if (initialTab === 'suppliers' || initialTab === 'analysis' || initialTab === 'clients') {
       setTab(initialTab);
@@ -180,6 +294,12 @@ function LedgersPage(props) {
         </div>
       </div>
 
+      <LdgPeriodBar
+        filters={filters} custom={custom} periodErr={periodErr}
+        onMode={onMode} onCustom={onCustom}
+        inert={tab === 'analysis' && filters.scope === 'all_outstanding'}
+        inertNote="Management Analysis is showing the full outstanding portfolio as of today. Switch Scope to Custom Period to apply these dates." />
+
       {/* Top-level tab strip — clients / analysis / suppliers share LedgersPage.
           Supplier counts come from live AP reads (no synthetic placeholder). */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 0, marginBottom: 18, borderBottom: '1px solid var(--border)' }}>
@@ -218,23 +338,20 @@ function LedgersPage(props) {
 
       {tab === 'clients' && (
         <ClientLedgerView onSelectRow={setSelectedRow} selectedRow={selectedRow}
-          refreshKey={refreshKey}
-          periodFrom={periodFrom} periodTo={periodTo}
+          refreshKey={refreshKey} filters={filters}
           focusContractorId={focusContractorId}
           onLoadInfo={(info) => setLoadInfo(info)} />
       )}
       {tab === 'analysis' && (
         <ManagementAnalysisView
-          refreshKey={refreshKey}
-          periodFrom={periodFrom} periodTo={periodTo}
+          refreshKey={refreshKey} filters={filters} onFilters={patch}
           onOpenLedger={openClientLedger}
           onOpenSupplierLedger={openSupplierLedger}
           onLoadInfo={(info) => setLoadInfo(info)} />
       )}
       {tab === 'suppliers' && (
         <SupplierLedgerView
-          refreshKey={refreshKey}
-          periodFrom={periodFrom} periodTo={periodTo}
+          refreshKey={refreshKey} filters={filters}
           focusSupplierId={focusSupplierId}
           onLoadInfo={(info) => setLoadInfo(info)} />
       )}
@@ -254,7 +371,7 @@ function LedgersPage(props) {
 // statement. Every figure below now comes from the canonical ledger read
 // authority (routes_ledgers.py → live wFirma reads). No value is fabricated:
 // a failed read renders its own honest state, never a placeholder number.
-function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, periodFrom, periodTo, focusContractorId }) {
+function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, filters, focusContractorId }) {
   const [clients, setClients] = React.useState(null);      // null = loading
   const [listErr, setListErr] = React.useState(null);
   const [active, setActive]   = React.useState('');
@@ -263,8 +380,7 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, pe
   const [statusFilter, setStatusFilter] = React.useState('');
   const [listPage, setListPage] = React.useState(1);
   const [listHasMore, setListHasMore] = React.useState(false);
-  const LDG_LIST_LIMIT = 15;
-  const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
+  const period = { from: filters.from, to: filters.to };
 
   React.useEffect(() => {
     if (focusContractorId) setActive(focusContractorId);
@@ -284,7 +400,9 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, pe
     };
     if (currencyFilter) params.currency = currencyFilter;
     if (statusFilter) params.status = statusFilter;
-    window.PzApi.listClientBalancesShared(params, { force: refreshKey > 0 || !!(periodFrom && periodTo) })
+    // Cache entry is keyed by the resolved query string, so a period change is
+    // already a distinct entry — force is only for the manual ↻ Refresh.
+    window.PzApi.listClientBalancesShared(params, { force: refreshKey > 0 })
       .then(r => {
         if (gone) return;
         const rows = (r && r.rows) || [];
@@ -396,8 +514,7 @@ function ClientHeaderCard({ client: c, stmt, period }) {
   // no ledger authority serves them yet (see backend-pending note below).
   const unavailable = c.balance_available === false;
   const stmtGen = stmt && stmt.status === 'ok' && stmt.data ? (stmt.data.generated_at || '') : '';
-  const w = period || LDG_WINDOW();
-  const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(c.contractor_id)}/statement.pdf?from=${w.from}&to=${w.to}`;
+  const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(c.contractor_id)}/statement.pdf?from=${period.from}&to=${period.to}`;
   return (
     <window.Card>
       <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
@@ -501,8 +618,7 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period }) 
   const entriesBy = d.entries_per_currency || {};
   const totalsBy = d.totals_per_currency || {};
   const agingBy = d.aging_per_currency || {};
-  const w = period || LDG_WINDOW();
-  const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(client.contractor_id)}/statement.pdf?from=${w.from}&to=${w.to}`;
+  const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(client.contractor_id)}/statement.pdf?from=${period.from}&to=${period.to}`;
 
   const TYPE_LABEL = { invoice: 'Invoice', correction: 'Correction', payment: 'Payment', proforma: 'Proforma' };
   const agingBuckets = (a) => {
@@ -602,13 +718,18 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period }) 
 // ── MANAGEMENT ANALYSIS — portfolio receivables + due-date aging ──────────
 // Authority: GET /api/v1/ledgers/management-analysis.json (bulk invoices +
 // payments). Remaining = shared ledger formula. Drill-down reuses Client Ledger.
-function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, onOpenLedger, onOpenSupplierLedger }) {
-  const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
-  const [asOf, setAsOf] = React.useState(period.to);
-  const [currency, setCurrency] = React.useState('');
-  const [status, setStatus] = React.useState('outstanding');
+function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, onOpenLedger, onOpenSupplierLedger }) {
+  // Every period/scope/status value lives in the page-level filter object —
+  // this view holds only its own free-text search boxes and paging. The old
+  // local `asOf` useState snapshotted the period at mount and then silently
+  // lagged it; there is nothing left here to go stale.
+  const period = { from: filters.from, to: filters.to };
+  const scope = filters.scope;
+  const asOf = filters.as_of;
+  const currency = filters.currency;
+  const status = filters.ar_status;
+  const apStatus = filters.ap_status;
   const [q, setQ] = React.useState('');
-  const [apStatus, setApStatus] = React.useState('outstanding');
   const [apQ, setApQ] = React.useState('');
   const [localRefresh, setLocalRefresh] = React.useState(0);
   const [data, setData] = React.useState(null);
@@ -618,16 +739,24 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
   const [loading, setLoading] = React.useState(true);
   const [arTablePage, setArTablePage] = React.useState(1);
   const [apTablePage, setApTablePage] = React.useState(1);
-  const MA_TABLE_LIMIT = 15;
+
+  // Scope decides the window the server resolves. All Outstanding = the full
+  // open portfolio back to the configured floor, as of today (balance-sheet
+  // exposure). Custom Period = the dates chosen in the period bar.
+  const scopeParams = () => (
+    scope === 'all_outstanding'
+      ? { scope: 'all_outstanding', as_of: asOf }
+      : { scope: 'custom_period', from: period.from, to: period.to, as_of: asOf || period.to }
+  );
 
   React.useEffect(() => {
     let gone = false;
     setLoading(true); setErr(null); setApErr(null);
     onLoadInfo && onLoadInfo({ status: 'loading', at: null, count: null, error: null });
-    const params = { from: period.from, to: period.to, as_of: asOf || period.to };
+    const params = scopeParams();
     if (currency) params.currency = currency;
     if (status) params.status = status;
-    const apParams = { from: period.from, to: period.to, as_of: asOf || period.to };
+    const apParams = scopeParams();
     if (currency) apParams.currency = currency;
     if (apStatus) apParams.status = apStatus;
     Promise.all([
@@ -663,21 +792,21 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
         onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: msg });
       });
     return () => { gone = true; };
-  }, [period.from, period.to, asOf, currency, status, apStatus, refreshKey, localRefresh]);
+  }, [scope, period.from, period.to, asOf, currency, status, apStatus, refreshKey, localRefresh]);
 
   const reset = () => {
-    setCurrency('');
-    setStatus('outstanding');
-    setApStatus('outstanding');
+    onFilters({
+      scope: 'all_outstanding', currency: '',
+      ar_status: 'outstanding', ap_status: 'outstanding', as_of: LDG_TODAY(),
+    });
     setQ('');
     setApQ('');
-    setAsOf(period.to);
     setArTablePage(1);
     setApTablePage(1);
   };
 
-  React.useEffect(() => { setArTablePage(1); }, [q, currency, status, period.from, period.to]);
-  React.useEffect(() => { setApTablePage(1); }, [apQ, currency, apStatus, period.from, period.to]);
+  React.useEffect(() => { setArTablePage(1); }, [q, scope, currency, status, period.from, period.to]);
+  React.useEffect(() => { setApTablePage(1); }, [apQ, scope, currency, apStatus, period.from, period.to]);
 
   if (loading && !data) {
     return <div data-testid="ldg-ma-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading receivables portfolio from wFirma…</div>;
@@ -692,6 +821,9 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
   }
 
   const summaries = (data && data.currency_summaries) || [];
+  // The server echoes the window it actually resolved, so the all-outstanding
+  // lookback boundary is visible on screen (and in the PDF) instead of silent.
+  const resolvedFrom = (data && data.period && data.period.from) || '';
   const cov = (data && data.due_date_coverage) || {};
   const qs = (data && data.query_stats) || {};
   const dq = (data && data.data_quality) || {};
@@ -705,6 +837,13 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
   const arTotalPages = Math.max(1, Math.ceil(rowsAll.length / MA_TABLE_LIMIT) || 1);
   const arPageSafe = Math.min(arTablePage, arTotalPages);
   const rows = rowsAll.slice((arPageSafe - 1) * MA_TABLE_LIMIT, arPageSafe * MA_TABLE_LIMIT);
+
+  // One params object for the PDF, built from the same filter values the two
+  // JSON reads above used. AR and AP status travel separately because the one
+  // report renders both portfolios.
+  const pdfParams = Object.assign(scopeParams(), {
+    currency: currency || '', status: status || '', ap_status: apStatus || '',
+  });
 
   const moneyCell = (v, ccy) => (
     <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
@@ -727,15 +866,26 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
         borderRadius: 8, background: 'var(--card)',
       }}>
         <label style={{ fontSize: 11, color: 'var(--text-3)' }}>As of
-          <input data-testid="ldg-ma-asof" type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)}
+          <input data-testid="ldg-ma-asof" type="date" value={asOf} onChange={(e) => onFilters({ as_of: e.target.value })}
             style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }} />
         </label>
+        <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Scope
+          <select data-testid="ldg-ma-scope" value={scope} onChange={(e) => onFilters({ scope: e.target.value })}
+            style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}>
+            <option value="all_outstanding">All Outstanding</option>
+            <option value="custom_period">Custom Period</option>
+          </select>
+        </label>
         <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-          Period
-          <div style={{ marginTop: 4, fontFamily: 'monospace', color: 'var(--text)' }}>{period.from} → {period.to}</div>
+          Window
+          <div data-testid="ldg-ma-window" style={{ marginTop: 4, fontFamily: 'monospace', color: 'var(--text)' }}>
+            {scope === 'all_outstanding'
+              ? `all outstanding${resolvedFrom ? ` since ${resolvedFrom}` : ''} → as of ${asOf}`
+              : `${period.from} → ${period.to}`}
+          </div>
         </div>
         <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Currency
-          <select data-testid="ldg-ma-currency" value={currency} onChange={(e) => setCurrency(e.target.value)}
+          <select data-testid="ldg-ma-currency" value={currency} onChange={(e) => onFilters({ currency: e.target.value })}
             style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}>
             <option value="">All</option>
             <option value="USD">USD</option>
@@ -745,7 +895,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
           </select>
         </label>
         <label style={{ fontSize: 11, color: 'var(--text-3)' }}>AR status
-          <select data-testid="ldg-ma-status" value={status} onChange={(e) => setStatus(e.target.value)}
+          <select data-testid="ldg-ma-status" value={status} onChange={(e) => onFilters({ ar_status: e.target.value })}
             style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}>
             <option value="">All</option>
             <option value="outstanding">Outstanding</option>
@@ -754,7 +904,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
           </select>
         </label>
         <label style={{ fontSize: 11, color: 'var(--text-3)' }}>AP status
-          <select data-testid="ldg-ma-ap-status" value={apStatus} onChange={(e) => setApStatus(e.target.value)}
+          <select data-testid="ldg-ma-ap-status" value={apStatus} onChange={(e) => onFilters({ ap_status: e.target.value })}
             style={{ display: 'block', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}>
             <option value="">All</option>
             <option value="outstanding">Outstanding</option>
@@ -772,6 +922,14 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
         </label>
         <window.Btn small variant="outline" data-testid="ldg-ma-reset" onClick={reset}>Reset</window.Btn>
         <window.Btn small data-testid="ldg-ma-refresh" onClick={() => setLocalRefresh((n) => n + 1)}>Refresh</window.Btn>
+        {/* Read-only projection of exactly these filters — the PDF route calls
+            the same builders as the JSON above, so it cannot show a different
+            number than the screen. */}
+        <a href={window.PzApi.managementAnalysisPdfUrl(pdfParams)} target="_blank" rel="noopener"
+           data-testid="ldg-ma-pdf"
+           style={{ fontSize: 11, fontWeight: 600, padding: '5px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none', background: 'transparent' }}>
+          ↓ Management PDF
+        </a>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12, fontSize: 11, color: 'var(--text-3)' }}>
@@ -983,8 +1141,8 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, periodFrom, periodTo, 
 }
 
 // ── SUPPLIER LEDGER — shared AP facts (statement.json) ─────────────────────
-function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focusSupplierId }) {
-  const period = (periodFrom && periodTo) ? { from: periodFrom, to: periodTo } : LDG_WINDOW();
+function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }) {
+  const period = { from: filters.from, to: filters.to };
   const [suppliers, setSuppliers] = React.useState(null);
   const [listErr, setListErr] = React.useState(null);
   const [activeId, setActiveId] = React.useState(focusSupplierId || '');
@@ -992,11 +1150,15 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focu
   const [stmtErr, setStmtErr] = React.useState(null);
   const [stmtLoading, setStmtLoading] = React.useState(false);
   const [supListPage, setSupListPage] = React.useState(1);
-  const SUP_LIST_LIMIT = 15;
 
   React.useEffect(() => {
     if (focusSupplierId) setActiveId(focusSupplierId);
   }, [focusSupplierId]);
+
+  // Changing the period changes the roster, so page 2 of the old roster is
+  // meaningless. The client and MA tables already did this; the supplier
+  // pager did not, and kept a stale page number across period changes.
+  React.useEffect(() => { setSupListPage(1); }, [period.from, period.to]);
 
   React.useEffect(() => {
     let gone = false;
@@ -1091,11 +1253,22 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focu
         </div>
       </div>
       <div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }} data-testid="ldg-supplier-name">{active.supplier_name}</div>
-          <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
-            Period {period.from} → {period.to} · {active.currency} · open expenses {active.open_expense_count}
+        <div style={{ marginBottom: 12, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }} data-testid="ldg-supplier-name">{active.supplier_name}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
+              Period {period.from} → {period.to} · {active.currency} · open expenses {active.open_expense_count}
+            </div>
           </div>
+          {/* Same AP authority as the statement below — the PDF route calls the
+              same builder, so it cannot print a different total. */}
+          <a href={window.PzApi.supplierStatementPdfUrl(active.contractor_id, {
+                from: period.from, to: period.to, as_of: period.to,
+              })}
+             target="_blank" rel="noopener" data-testid="ldg-supplier-statement-pdf"
+             style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none', flexShrink: 0 }}>
+            ↓ Statement PDF
+          </a>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
           <LdgStatTile label="Gross Payable" value={LDG_FMT.money(active.gross_payable, active.currency)} />
@@ -1108,11 +1281,23 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, periodFrom, periodTo, focu
         {stmt && (stmt.currencies || []).map((ccy) => {
           const rows = (stmt.entries_per_currency && stmt.entries_per_currency[ccy]) || [];
           const tot = (stmt.totals_per_currency && stmt.totals_per_currency[ccy]) || {};
+          const ag = (stmt.aging_per_currency && stmt.aging_per_currency[ccy]) || null;
           return (
             <window.Card key={ccy} style={{ padding: 0, marginBottom: 14, overflow: 'auto' }} data-testid={`ldg-supplier-stmt-${ccy}`}>
               <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 700 }}>
                 {ccy} · outstanding {tot.outstanding} · net {tot.net_payable}
               </div>
+              {/* Aging comes from the statement DTO itself — the PDF prints
+                  these exact figures rather than reading a second endpoint. */}
+              {ag && (
+                <div data-testid={`ldg-supplier-aging-${ccy}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 14, padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
+                  <span style={{ color: 'var(--text-3)' }}>Aging · due date</span>
+                  {SUP_AGING_BUCKETS.map(([k, label]) => (
+                    <span key={k}><span style={{ color: 'var(--text-3)' }}>{label} </span><b style={{ fontFamily: 'monospace' }}>{ag[k]}</b></span>
+                  ))}
+                  <span><span style={{ color: 'var(--text-3)' }}>total </span><b style={{ fontFamily: 'monospace' }}>{ag.total}</b></span>
+                </div>
+              )}
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 720 }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-subtle)' }}>
@@ -1171,7 +1356,7 @@ function LdgFilterPanel({ title, searchPlaceholder, items, activeId, onSelect, e
       <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
         <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Filters</div>
         {(extraFilters || []).length === 0 && (
-          <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>Search above · period presets on Accounting Hub</div>
+          <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>Search above · period presets at the top of this page</div>
         )}
         {(extraFilters || []).map(f => (
           <label key={f.id} style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, padding: '4px 0', color: 'var(--text-2)' }}>

@@ -1445,7 +1445,9 @@
     // GET /api/v1/ledgers/management-analysis.json
     // Read-only portfolio receivables + due-date aging. Bulk invoices/payments
     // only — zero per-customer wFirma calls. Currencies stay separate (no FX).
-    // params: { from, to, as_of?, currency?, contractor_id?, status? }
+    // params: { from, to, as_of?, currency?, contractor_id?, status?, scope? }
+    // scope=all_outstanding lets the server resolve the window (floor → as_of);
+    // from/to stay required for every other scope.
     getManagementAnalysis: (params) => {
       const p = params || {};
       const qs = new URLSearchParams();
@@ -1455,6 +1457,7 @@
       if (p.currency) qs.set('currency', p.currency);
       if (p.contractor_id) qs.set('contractor_id', p.contractor_id);
       if (p.status) qs.set('status', p.status);
+      if (p.scope) qs.set('scope', p.scope);
       if (p.refresh) qs.set('refresh', '1');
       const q = qs.toString();
       return _get(`${BASE}/ledgers/management-analysis.json${q ? `?${q}` : ''}`);
@@ -1474,6 +1477,7 @@
       if (p.contractor_id) qs.set('contractor_id', p.contractor_id);
       if (p.status) qs.set('status', p.status);
       if (p.aging_bucket) qs.set('aging_bucket', p.aging_bucket);
+      if (p.scope) qs.set('scope', p.scope);
       if (p.refresh) qs.set('refresh', '1');
       const q = qs.toString();
       return _get(`${BASE}/ledgers/payables-analysis.json${q ? `?${q}` : ''}`);
@@ -1490,6 +1494,37 @@
       return _get(
         `${BASE}/ledgers/suppliers/${encodeURIComponent(contractorId)}/statement.json${q ? `?${q}` : ''}`
       );
+    },
+
+    // GET /api/v1/ledgers/suppliers/{contractor_id}/statement.pdf
+    // Transport-layer URL builder only (Lesson F) — the caller navigates to it
+    // in a new tab under cookie auth. The route renders the SAME statement dict
+    // getSupplierStatement returns, so screen and PDF cannot disagree.
+    // params: { from, to, as_of? }
+    supplierStatementPdfUrl: (contractorId, params) => {
+      const p = params || {};
+      const qs = new URLSearchParams();
+      if (p.from) qs.set('from', p.from);
+      if (p.to) qs.set('to', p.to);
+      if (p.as_of) qs.set('as_of', p.as_of);
+      const q = qs.toString();
+      return `${BASE}/ledgers/suppliers/${encodeURIComponent(contractorId)}/statement.pdf${q ? `?${q}` : ''}`;
+    },
+
+    // GET /api/v1/ledgers/management-analysis.pdf
+    // Same parameters as the two JSON analytics reads combined — the route
+    // rebuilds both bodies through the shared builders and only lays them out.
+    // params: { from?, to?, as_of?, currency?, contractor_id?, status?,
+    //           ap_status?, aging_bucket?, scope? }
+    managementAnalysisPdfUrl: (params) => {
+      const p = params || {};
+      const qs = new URLSearchParams();
+      ['from', 'to', 'as_of', 'currency', 'contractor_id', 'status',
+       'ap_status', 'aging_bucket', 'scope'].forEach((k) => {
+        if (p[k]) qs.set(k, p[k]);
+      });
+      const q = qs.toString();
+      return `${BASE}/ledgers/management-analysis.pdf${q ? `?${q}` : ''}`;
     },
 
     // ── Proforma — PR B: Customer address + service-charge authority ──

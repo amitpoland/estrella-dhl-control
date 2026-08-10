@@ -587,8 +587,37 @@ function fmtMoney2(v, opts) {
   return currency ? (currency + ' ' + grouped) : grouped;
 }
 
+// resolvePeriod — the ONE calendar formula for ledger/accounting windows.
+// PR-005 (single authority ownership): this window used to be re-derived in
+// five separate places across accounting-hub.jsx and ledgers-page.jsx, which is
+// exactly why the period selector looked cosmetic — every surface computed its
+// own default. Pure UTC date math, zero domain knowledge (Lesson F layering).
+//
+//   mode   this_month | prev_month | quarter | ytd | custom
+//   custom { from, to } — read only when mode === 'custom'
+//   today  'YYYY-MM-DD', injectable for tests; defaults to today UTC
+//
+// Returns { from, to }, or NULL for an incomplete/inverted custom range so the
+// caller can surface validation and hold its last valid window. It must never
+// silently fall back to a preset the operator did not choose.
+function resolvePeriod(mode, custom, today) {
+  const t = today || new Date().toISOString().slice(0, 10);
+  const y = Number(t.slice(0, 4));
+  const m = Number(t.slice(5, 7)) - 1;          // 0-based month
+  const iso = (yy, mm, dd) => new Date(Date.UTC(yy, mm, dd)).toISOString().slice(0, 10);
+  const c = custom || {};
+  if (mode === 'prev_month') return { from: iso(y, m - 1, 1), to: iso(y, m, 0) };
+  if (mode === 'quarter') return { from: iso(y, Math.floor(m / 3) * 3, 1), to: t };
+  if (mode === 'ytd') return { from: iso(y, 0, 1), to: t };
+  if (mode === 'custom') {
+    return (c.from && c.to && c.from <= c.to) ? { from: c.from, to: c.to } : null;
+  }
+  return { from: iso(y, m, 1), to: t };         // this_month — the default
+}
+
 Object.assign(window, {
   Badge, Sidebar, TopBar, PageHeader, Card, Btn, Modal,
   FormField, Input, Select, SectionHeader, InfoRow, fmtMoney2,
   STATUS_MAP, GOLD, DARK_BG, NAV_TREE, NAV_INDEX, SubTabStrip,
+  resolvePeriod,
 });

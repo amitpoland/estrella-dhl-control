@@ -33,13 +33,16 @@ def test_reads_client_balance_authority():
     src = _src()
     # The roster read is routed through the shared PzApi transport authority
     # (pz-api.js: listClientBalancesShared → GET /api/v1/ledgers/clients)
-    # with server-side 15-row paging (bulk AR; per_customer_wfirma_calls=0).
+    # with server-side 10-row paging (bulk AR; per_customer_wfirma_calls=0).
     assert "listClientBalancesShared" in src, (
         "Client roster must read via the shared PzApi.listClientBalancesShared "
         "authority (single live /ledgers/clients read shared with Accounting Overview)"
     )
-    assert "LDG_LIST_LIMIT = 15" in src, (
-        "Client roster must request limit=15 (shared register paging contract)"
+    # Was 15. Deliberate contract change, operator decision: compact 10/page
+    # rosters across all four ledger tables. Server-side paging is unchanged —
+    # only the page size moved.
+    assert "LDG_LIST_LIMIT = 10" in src, (
+        "Client roster must request limit=10 (shared register paging contract)"
     )
     assert "limit: 100" not in src, (
         "Client roster must not request limit=100 (former N+1 timeout path)"
@@ -174,12 +177,19 @@ def test_still_exports_window_ledgers_page():
     )
 
 
-def test_accounting_hub_supplier_rail_uses_ledgers_page():
-    """AccSupplierLedger must mount LedgersPage — no deferred P0 placeholder."""
+def test_accounting_hub_reaches_supplier_ledger_through_one_mount():
+    """The supplier ledger is reachable, and reachable exactly once.
+
+    This pin used to require ``function AccSupplierLedger`` in the hub. That
+    component mounted a SECOND whole LedgersPage with its own period state, so
+    Management Analysis (and its AP Status filter) existed twice, unsynchronised
+    — the "duplicate filter" operators reported. It is deleted. The supplier
+    ledger now lives where it always rendered: the LedgersPage tab strip.
+    """
     hub = (_V2 / "accounting-hub.jsx").read_text(encoding="utf-8", errors="replace")
-    assert "function AccSupplierLedger" in hub
-    assert 'initialTab="suppliers"' in hub or "initialTab: 'suppliers'" in hub or "initialTab=\"suppliers\"" in hub
+    assert "function AccSupplierLedger" not in hub, "no second LedgersPage mount (PR-005)"
+    assert hub.count("<LedgersPage") == 1, "LedgersPage must be mounted exactly once"
     assert "acc-supplier-ledger-p0-note" not in hub
     assert "Supplier payable aging remains deferred" not in hub
     src = _src()
-    assert "initialTab" in src
+    assert "'suppliers'" in src, "LedgersPage must still render the Supplier Ledger tab"

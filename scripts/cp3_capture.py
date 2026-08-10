@@ -513,7 +513,7 @@ def capture_live(browser) -> tuple:
     # WF_ACC_TAB_TEXTS 1:1, so accounting_tab_{i} pairs with the wireframe tab i.
     ACC_RAIL_IDS = [
         "overview", "pi", "inv", "cn", "wz", "pz", "pw", "rw", "mm",
-        "balance", "clientLedger", "supplierLedger", "wfirma",
+        "balance", "clientLedger", "wfirma",
     ]
     # 'sync' and 'master' are group='navigate' — clicking them navigates AWAY
     # from accounting, destroying the rail DOM. Re-navigate to accounting before

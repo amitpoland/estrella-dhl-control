@@ -44,8 +44,9 @@ const ACC_SECTIONS = [
   { id: 'mm',             label: 'MM — Transfer',    icon: '⇄', group: 'live', code: 'MM',  color: 'var(--badge-neutral-text)',grp: 'wh' },
   // LEDGERS
   { id: 'balance',        label: 'Client Balance',   icon: '⊜', group: 'live', code: null,  color: null,                      grp: 'ledger' },
-  { id: 'clientLedger',   label: 'Client Ledger',    icon: '☷', group: 'live', code: 'STM', color: 'var(--badge-green-text)', grp: 'ledger' },
-  { id: 'supplierLedger', label: 'Supplier Ledger',  icon: '☷', group: 'live', code: null,  color: null,                      grp: 'ledger' },
+  // ONE entry: LedgersPage renders its own Client / Management Analysis /
+  // Supplier strip. A second rail entry mounted it twice (PR-005 violation).
+  { id: 'clientLedger',   label: 'Ledgers',          icon: '☷', group: 'live', code: 'STM', color: 'var(--badge-green-text)', grp: 'ledger' },
   // SYSTEM
   { id: 'wfirma',         label: 'wFirma Sync',      icon: '↻', group: 'live', code: null,  color: null,                      grp: 'system' },
   // EJ EXTENSIONS — existing capabilities absent from the HTML; preserved (never deleted), relocated here.
@@ -326,39 +327,18 @@ function SalesProformaTab() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// TAB C — Client Ledger
-// Authority: LedgersPage (ledgers-page.jsx) — embedded.
-// No duplicate: ledgers-page.jsx is the authority; AccountingHub mounts it.
-// The census (AC-5) says "ledgers-page.jsx loaded but not mounted under
-// accounting". This fixes that.
+// TAB C — Ledgers (Client · Management Analysis · Supplier)
+// Authority: LedgersPage (ledgers-page.jsx) — mounted ONCE.
+//
+// This used to be two rail entries (Client Ledger and Supplier Ledger), each
+// mounting the whole LedgersPage with its own period state. Because LedgersPage
+// renders its own Client / Management Analysis / Supplier strip, Management
+// Analysis — and its AP Status filter — was reachable down two paths as two
+// unsynchronised instances. That is the "duplicate filter" operators reported.
+// One entry, one mount, one period authority (PR-005).
 // ═══════════════════════════════════════════════════════════════════════════════
-function ClientLedgerTab() {
+function LedgersTab() {
   const LedgersPage = window.LedgersPage;
-  const [preset, setPreset] = React.useState('quarter');
-  const [custom, setCustom] = React.useState({ from: '', to: '' });
-  const period = React.useMemo(() => {
-    const now = new Date();
-    const iso = (d) => d.toISOString().slice(0, 10);
-    const y = now.getUTCFullYear();
-    const m = now.getUTCMonth();
-    if (preset === 'this_month') {
-      return { from: iso(new Date(Date.UTC(y, m, 1))), to: iso(now) };
-    }
-    if (preset === 'prev_month') {
-      const from = new Date(Date.UTC(y, m - 1, 1));
-      const to = new Date(Date.UTC(y, m, 0));
-      return { from: iso(from), to: iso(to) };
-    }
-    if (preset === 'ytd') {
-      return { from: `${y}-01-01`, to: iso(now) };
-    }
-    if (preset === 'custom' && custom.from && custom.to) {
-      return { from: custom.from, to: custom.to };
-    }
-    // default + explicit 'quarter'
-    const q = Math.floor(m / 3) * 3;
-    return { from: iso(new Date(Date.UTC(y, q, 1))), to: iso(now) };
-  }, [preset, custom.from, custom.to]);
   if (typeof LedgersPage !== 'function') {
     return (
       <div style={{ padding: '32px 28px' }} data-testid="tab-client-ledger-fallback">
@@ -366,33 +346,10 @@ function ClientLedgerTab() {
       </div>
     );
   }
-  const presets = [
-    { id: 'this_month', label: 'This month' },
-    { id: 'prev_month', label: 'Previous month' },
-    { id: 'quarter', label: 'Quarter' },
-    { id: 'ytd', label: 'YTD' },
-    { id: 'custom', label: 'Custom' },
-  ];
+  // No period props: LedgersPage owns the window and renders the period bar.
   return (
     <div style={{ padding: '0 0 40px' }} data-testid="tab-client-ledger">
-      <div data-testid="acc-ledger-period-bar" style={{ padding: '12px 28px 0', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600 }}>Period</span>
-        {presets.map(p => (
-          <button key={p.id} type="button" data-testid={`acc-ledger-preset-${p.id}`}
-            onClick={() => setPreset(p.id)}
-            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: preset === p.id ? 'var(--accent-subtle)' : 'var(--card)', color: 'var(--text)', fontWeight: preset === p.id ? 700 : 500, cursor: 'pointer' }}>
-            {p.label}
-          </button>
-        ))}
-        {preset === 'custom' && (
-          <>
-            <input type="date" data-testid="acc-ledger-from" value={custom.from} onChange={e => setCustom(c => ({ ...c, from: e.target.value }))} style={{ fontSize: 11, padding: '3px 6px' }} />
-            <input type="date" data-testid="acc-ledger-to" value={custom.to} onChange={e => setCustom(c => ({ ...c, to: e.target.value }))} style={{ fontSize: 11, padding: '3px 6px' }} />
-          </>
-        )}
-        <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{period.from} → {period.to}</span>
-      </div>
-      <LedgersPage periodFrom={period.from} periodTo={period.to} />
+      <LedgersPage />
     </div>
   );
 }
@@ -853,14 +810,11 @@ function AccountingOverviewKpis() {
   const [sync, setSync] = React.useState({ loading: true, error: null, sync: null });
   React.useEffect(() => {
     let cancelled = false;
-    const now = new Date();
-    const iso = (d) => d.toISOString().slice(0, 10);
-    const y = now.getUTCFullYear();
-    const m = now.getUTCMonth();
-    const q = Math.floor(m / 3) * 3;
-    const quarterFrom = iso(new Date(Date.UTC(y, q, 1)));
-    const today = iso(now);
-    window.PzApi.getManagementAnalysis({ from: quarterFrom, to: today, as_of: today }).then(res => {
+    // Portfolio exposure tile: the whole open book as of today, not "documents
+    // issued this quarter". scope=all_outstanding lets the server resolve the
+    // window from the configured floor — no date math on this surface.
+    const today = new Date().toISOString().slice(0, 10);
+    window.PzApi.getManagementAnalysis({ as_of: today, scope: 'all_outstanding' }).then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setRecv({ loading: false, error: (res && res.error) || 'Load failed', receivable: null }); return; }
       const summaries = ((res.data && res.data.currency_summaries) || []).map(s => ({
@@ -1210,13 +1164,9 @@ function AccClientBalance({ onOpenLedger }) {
   React.useEffect(() => {
     let cancelled = false;
     setSt({ loading: true, error: null, rows: null, period: null });
-    const now = new Date();
-    const iso = (d) => d.toISOString().slice(0, 10);
-    const y = now.getUTCFullYear();
-    const m = now.getUTCMonth();
-    const q = Math.floor(m / 3) * 3;
-    const from = iso(new Date(Date.UTC(y, q, 1)));
-    const to = iso(now);
+    // One calendar formula (components.jsx). /ledgers/clients has no scope
+    // param, so this tile keeps its quarter window — but no longer derives it.
+    const { from, to } = window.resolvePeriod('quarter', null);
     window.PzApi.listClientBalances({ limit: 15, from, to }).then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, period: null }); return; }
@@ -1241,7 +1191,7 @@ function AccClientBalance({ onOpenLedger }) {
       </div>
       {st.period && (
         <div style={{ fontSize: 10.5, color: 'var(--text-3)', margin: '-6px 0 10px' }}>
-          Period {st.period.from} → {st.period.to} (quarter default · YTD via Client Ledger) · Overdue = invoice-age basis
+          Period {st.period.from} → {st.period.to} (quarter default · other periods via Ledgers) · Overdue = invoice-age basis
         </div>
       )}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
@@ -1269,71 +1219,6 @@ function AccClientBalance({ onOpenLedger }) {
           </tbody>
         </table>
       </div>
-    </div>
-  );
-}
-function AccSupplierLedger() {
-  // Same LedgersPage authority as Client Ledger — open on Supplier tab.
-  // No second AP page; no deferred P0 placeholder once AP routes exist.
-  const LedgersPage = window.LedgersPage;
-  const [preset, setPreset] = React.useState('quarter');
-  const [custom, setCustom] = React.useState({ from: '', to: '' });
-  const period = React.useMemo(() => {
-    const now = new Date();
-    const iso = (d) => d.toISOString().slice(0, 10);
-    const y = now.getUTCFullYear();
-    const m = now.getUTCMonth();
-    if (preset === 'this_month') {
-      return { from: iso(new Date(Date.UTC(y, m, 1))), to: iso(now) };
-    }
-    if (preset === 'prev_month') {
-      const from = new Date(Date.UTC(y, m - 1, 1));
-      const to = new Date(Date.UTC(y, m, 0));
-      return { from: iso(from), to: iso(to) };
-    }
-    if (preset === 'ytd') {
-      return { from: `${y}-01-01`, to: iso(now) };
-    }
-    if (preset === 'custom' && custom.from && custom.to) {
-      return { from: custom.from, to: custom.to };
-    }
-    const q = Math.floor(m / 3) * 3;
-    return { from: iso(new Date(Date.UTC(y, q, 1))), to: iso(now) };
-  }, [preset, custom.from, custom.to]);
-  if (typeof LedgersPage !== 'function') {
-    return (
-      <div style={{ padding: '32px 28px' }} data-testid="acc-supplier-ledger">
-        <AccError msg="LedgersPage component not loaded. Check script load order in index.html." />
-      </div>
-    );
-  }
-  const presets = [
-    { id: 'this_month', label: 'This month' },
-    { id: 'prev_month', label: 'Previous month' },
-    { id: 'quarter', label: 'Quarter' },
-    { id: 'ytd', label: 'YTD' },
-    { id: 'custom', label: 'Custom' },
-  ];
-  return (
-    <div style={{ padding: '0 0 40px' }} data-testid="acc-supplier-ledger">
-      <div data-testid="acc-supplier-ledger-period-bar" style={{ padding: '12px 28px 0', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600 }}>Period</span>
-        {presets.map(p => (
-          <button key={p.id} type="button" data-testid={`acc-supplier-ledger-preset-${p.id}`}
-            onClick={() => setPreset(p.id)}
-            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: preset === p.id ? 'var(--accent-subtle)' : 'var(--card)', color: 'var(--text)', fontWeight: preset === p.id ? 700 : 500, cursor: 'pointer' }}>
-            {p.label}
-          </button>
-        ))}
-        {preset === 'custom' && (
-          <>
-            <input type="date" data-testid="acc-supplier-ledger-from" value={custom.from} onChange={e => setCustom(c => ({ ...c, from: e.target.value }))} style={{ fontSize: 11, padding: '3px 6px' }} />
-            <input type="date" data-testid="acc-supplier-ledger-to" value={custom.to} onChange={e => setCustom(c => ({ ...c, to: e.target.value }))} style={{ fontSize: 11, padding: '3px 6px' }} />
-          </>
-        )}
-        <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{period.from} → {period.to}</span>
-      </div>
-      <LedgersPage periodFrom={period.from} periodTo={period.to} initialTab="suppliers" />
     </div>
   );
 }
@@ -1461,7 +1346,7 @@ function AccountingHub({ onNav }) {
     { label: null,                  ids: ['overview'] },
     { label: 'Sales Documents',     ids: ['pi', 'inv', 'cn'] },
     { label: 'Warehouse Documents', ids: ['wz', 'pz', 'pw', 'rw', 'mm'] },
-    { label: 'Ledgers',             ids: ['balance', 'clientLedger', 'supplierLedger'] },
+    { label: 'Ledgers',             ids: ['balance', 'clientLedger'] },
     { label: 'System',              ids: ['wfirma'] },
     { label: 'EJ Extensions',       ids: ['master', 'audit'] },
   ];
@@ -1486,10 +1371,9 @@ function AccountingHub({ onNav }) {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {section === 'overview'       && <AccountingOverview onJump={setSection} />}
         {section === 'pi'             && <SalesProformaTab />}
-        {section === 'clientLedger'   && <ClientLedgerTab />}
+        {section === 'clientLedger'   && <LedgersTab />}
         {['inv', 'cn', 'wz', 'pz', 'pw', 'rw', 'mm'].includes(section) && <AccDocGrid sectionId={section} onNav={onNav} />}
         {section === 'balance'        && <AccClientBalance onOpenLedger={() => setSection('clientLedger')} />}
-        {section === 'supplierLedger' && <AccSupplierLedger />}
         {section === 'wfirma'         && <AccWfirmaSyncInline onNav={onNav} />}
         {section === 'audit'          && <AuditTrailTab />}
       </div>

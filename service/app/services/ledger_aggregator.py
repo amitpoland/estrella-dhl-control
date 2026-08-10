@@ -699,12 +699,45 @@ def aggregate_supplier_statement(
             "formula_outstanding": _q(outstanding),
         }
 
+    # Due-date aging on the SAME remainings the totals above are built from,
+    # using the SAME bucket boundaries as the payables portfolio (imported, not
+    # re-derived — a second bucket definition would drift). Supplier credits
+    # stay outside the overdue buckets, exactly as in build_payables_analysis.
+    # Local import: accounting_analytics imports this module, so a module-level
+    # import here would be circular.
+    from .accounting_analytics import _BUCKETS, _due_bucket
+
+    aging_by_ccy: Dict[str, Dict[str, Any]] = {}
+    for ccy in entries_by_ccy:
+        buckets = {b: Decimal("0") for b in _BUCKETS}
+        for f in expense_facts:
+            if (f.get("currency") or "") != ccy:
+                continue
+            rem = remaining_after_payments(
+                f.get("brutto") or Decimal("0"),
+                paid_map.get(f["id"], Decimal("0")),
+            )
+            if rem <= 0:
+                continue
+            due = f.get("payment_date") or ""
+            if due and as_of:
+                buckets[_due_bucket(_days_between(as_of, due))] += rem
+            else:
+                buckets["due_date_unavailable"] += rem
+        out = {b: _q(v) for b, v in buckets.items()}
+        out["total"] = _q(sum(buckets.values(), Decimal("0")))
+        out["method"] = "due_date"
+        aging_by_ccy[ccy] = out
+
     return {
         "contractor": {
             "wfirma_contractor_id": str(meta.get("wfirma_contractor_id") or ""),
             "name": str(meta.get("name") or ""),
             "country": str(meta.get("country") or ""),
             "vat_id": str(meta.get("vat_id") or ""),
+            "street": str(meta.get("street") or ""),
+            "city": str(meta.get("city") or ""),
+            "postal_code": str(meta.get("postal_code") or ""),
         },
         "generated_at": as_of or "",
         "as_of": as_of or "",
@@ -712,6 +745,7 @@ def aggregate_supplier_statement(
         "currencies": sorted(entries_by_ccy.keys()),
         "entries_per_currency": entries_by_ccy,
         "totals_per_currency": totals_by_ccy,
+        "aging_per_currency": aging_by_ccy,
         "warnings": warnings,
         "query_stats": {"per_supplier_wfirma_calls": 0},
     }
