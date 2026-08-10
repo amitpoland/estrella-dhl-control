@@ -262,11 +262,21 @@ def maybe_notify_outbound_delivered(
         delivery_location=delivery_location,
     )
 
+    from ..config.email_routing import resolve_customer_delivery_confirmation_cc
+    email_cc = resolve_customer_delivery_confirmation_cc(email_to)
+    if not email_cc:
+        log.warning(
+            "delivery confirmation CC empty (CUSTOMER_DELIVERY_CONFIRMATION_CC) "
+            "for awb=%s — sending To=%s without internal CC",
+            awb, email_to,
+        )
+
     email_id = ""
     try:
         from . import email_service
         email_id = email_service.queue_email(
             to=email_to,
+            cc=email_cc,
             subject=subject,
             body_html=html_body,
             body_text=text_body,
@@ -274,7 +284,12 @@ def maybe_notify_outbound_delivered(
             email_type="customer_delivery_confirmation",
         )
         dcdb.mark_notification_queued(
-            db, awb, email_id=email_id, email_to=email_to, queued_at=_now_utc_iso(),
+            db,
+            awb,
+            email_id=email_id,
+            email_to=email_to,
+            email_cc=email_cc,
+            queued_at=_now_utc_iso(),
         )
     except Exception as exc:
         log.warning("delivery confirmation email queue failed for awb=%s: %s", awb, exc)
@@ -286,6 +301,7 @@ def maybe_notify_outbound_delivered(
         "awb": awb,
         "email_id": email_id,
         "email_to": email_to,
+        "email_cc": email_cc,
         "receipt_link": link,
     }
 

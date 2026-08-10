@@ -116,6 +116,30 @@ def resolve_dhl_cc() -> str:
     return (settings.dhl_customs_cc or "").strip()
 
 
+def resolve_customer_delivery_confirmation_cc(to: str = "") -> str:
+    """Single Estrella CC for automatic customer delivery-confirmation mail.
+
+    Authority: ``settings.customer_delivery_confirmation_cc``
+    (env ``CUSTOMER_DELIVERY_CONFIRMATION_CC``). Does **not** use DHL/customs
+    CC lists. Omits the address when it matches the customer To (no duplicate).
+    Empty config → empty string (caller may still send To-only with a warning).
+    """
+    configured = (settings.customer_delivery_confirmation_cc or "").strip()
+    if not configured:
+        return ""
+    to_norm = {
+        p.strip().lower()
+        for p in (to or "").split(",")
+        if p.strip()
+    }
+    kept = [
+        addr.strip()
+        for addr in configured.split(",")
+        if addr.strip() and addr.strip().lower() not in to_norm
+    ]
+    return format_cc(kept)
+
+
 def is_dsk_source(sender: str) -> bool:
     """
     Return True if `sender` matches one of the known DHL DSK source addresses.

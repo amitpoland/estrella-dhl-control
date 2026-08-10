@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS delivery_notifications (
     client_name          TEXT,
     awb                  TEXT NOT NULL UNIQUE,
     email_to             TEXT,
+    email_cc             TEXT,
     email_id             TEXT,
     queued_at            TEXT,
     sent_at              TEXT,
@@ -87,11 +88,22 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_notification_columns(conn: sqlite3.Connection) -> None:
+    """Additive column migrate for older delivery_confirmations.db files."""
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(delivery_notifications)").fetchall()
+    }
+    if "email_cc" not in cols:
+        conn.execute("ALTER TABLE delivery_notifications ADD COLUMN email_cc TEXT")
+
+
 def init_db(db_path: Path) -> None:
     """Create the delivery-confirmation tables if absent. Idempotent."""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(_DDL)
+        _ensure_notification_columns(conn)
 
 
 # ── Notifications ──────────────────────────────────────────────────────────────
@@ -140,17 +152,25 @@ def create_notification_if_absent(
 
 
 def mark_notification_queued(
-    db_path: Path, awb: str, *, email_id: str, email_to: str, queued_at: str,
+    db_path: Path,
+    awb: str,
+    *,
+    email_id: str,
+    email_to: str,
+    queued_at: str,
+    email_cc: str = "",
 ) -> None:
-    """Record the queued email id/recipient on the notification row."""
+    """Record the queued email id/recipients (To + CC) on the notification row."""
+    init_db(db_path)
     with _connect(db_path) as conn:
         conn.execute(
             """
             UPDATE delivery_notifications
-               SET email_id = ?, email_to = ?, queued_at = ?, status = 'queued'
+               SET email_id = ?, email_to = ?, email_cc = ?,
+                   queued_at = ?, status = 'queued'
              WHERE awb = ?
             """,
-            (email_id, email_to, queued_at, (awb or "").strip()),
+            (email_id, email_to, email_cc or "", queued_at, (awb or "").strip()),
         )
 
 

@@ -591,11 +591,19 @@ class Settings(BaseSettings):
     #     boundary. Empty string means "not activated" → NEVER mass-notify
     #     historical deliveries. Only shipments booked at/after this timestamp
     #     (or whose notification record was created after it) may be notified.
+    #   customer_delivery_confirmation_cc — single Estrella internal CC on
+    #     automatic customer delivery-confirmation mail only (not DHL/customs).
+    #     Default reuses the canonical ops mailbox already used as ZOHO FROM /
+    #     INTERNAL_CC[0]: info@estrellajewels.eu. Empty → send still proceeds
+    #     with To=customer and an audit/log warning (no CC).
     #   public_base_url — external origin used to build the public receipt link
     #     (e.g. https://pz.estrellajewels.eu). Empty → link building falls back
     #     to fastapi_public_url.
     customer_delivery_confirmation_enabled:     bool = Field(default=False)
     customer_delivery_confirmation_activated_at: str = Field(default="")
+    customer_delivery_confirmation_cc:          str = Field(
+        default="info@estrellajewels.eu",
+    )
     public_base_url:                             str = Field(default="")
 
 
