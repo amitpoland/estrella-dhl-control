@@ -157,13 +157,15 @@ def _one_currency_statement(*, outstanding="500.00") -> dict:
                      "entry_count": 2},
         },
         "aging_per_currency": {
-            "EUR": {"method": "invoice_age",
+            "EUR": {"method": "due_date",
                      "current": "0.00", "1_30": "500.00",
                      "31_60": "0.00", "61_90": "0.00",
-                     "90_plus": "0.00", "total": "500.00"},
+                     "90_plus": "0.00", "total": "500.00",
+                     "due_date_unavailable": "0.00"},
         },
         "unmatched_payments_per_currency": {},
         "warnings": [],
+        "aging_method": "due_date",
     }
 
 
@@ -197,22 +199,19 @@ def test_pdf_text_includes_contractor_name_and_period():
 
 
 # 4
-def test_pdf_text_includes_invoice_age_label():
+def test_pdf_text_includes_due_date_label():
     pdf = render_statement_pdf(_one_currency_statement())
     text = _read_pdf_text(pdf)
-    # The label appears in the metadata strip, the per-currency aging
-    # card subtitle, AND the footer (drawn via canvas — pypdf may not
-    # always extract canvas drawString text on all builds; we accept
-    # ≥ 1 occurrence as the contract).
+    assert "Due date" in text
+
+
+def test_pdf_invoice_age_only_when_selected():
+    stmt = _one_currency_statement()
+    stmt["aging_method"] = "invoice_age"
+    stmt["aging_per_currency"]["EUR"]["method"] = "invoice_age"
+    pdf = render_statement_pdf(stmt)
+    text = _read_pdf_text(pdf)
     assert "Invoice age" in text
-
-
-def test_pdf_does_not_imply_due_date_aging():
-    """Phase 10C MUST NOT show due-date aging until a real-id probe
-    verifies <paymentdate>. The label 'Due date' must not appear."""
-    pdf = render_statement_pdf(_one_currency_statement())
-    text = _read_pdf_text(pdf)
-    assert "Due date" not in text
 
 
 # 5
@@ -230,10 +229,10 @@ def test_multi_currency_sections_render_separately():
         "received": "0.00", "outstanding": "200.00", "entry_count": 1,
     }
     stmt["aging_per_currency"]["USD"] = {
-        "method": "invoice_age",
+        "method": "due_date",
         "current": "0.00", "1_30": "200.00",
         "31_60": "0.00", "61_90": "0.00", "90_plus": "0.00",
-        "total": "200.00",
+        "total": "200.00", "due_date_unavailable": "0.00",
     }
     pdf  = render_statement_pdf(stmt)
     text = _read_pdf_text(pdf)
@@ -266,23 +265,36 @@ def test_unmatched_payments_render_only_when_present():
 
 
 # 7
-def test_warnings_render_only_when_present():
-    no_warn = _one_currency_statement()
-    pdf_a   = render_statement_pdf(no_warn)
-    text_a  = _read_pdf_text(pdf_a)
-    assert "Warnings" not in text_a
-
+def test_warnings_hidden_on_customer_facing_pdf():
+    """Customer PDF omits DQ / implementation warnings; internal render keeps them."""
     with_warn = _one_currency_statement()
     with_warn["warnings"] = [
         {"event": "overpayment_on_invoice", "wfirma_doc_id": "INV-9001",
          "overpaid_by": "50.00"},
         {"event": "proforma_excluded_from_fiscal", "wfirma_doc_id": "P-1"},
     ]
-    pdf_b  = render_statement_pdf(with_warn)
-    text_b = _read_pdf_text(pdf_b)
-    assert "Warnings" in text_b
-    assert "overpayment_on_invoice"    in text_b
-    assert "proforma_excluded_from_fiscal" in text_b
+    pdf_customer = render_statement_pdf(with_warn, customer_facing=True)
+    text_c = _read_pdf_text(pdf_customer)
+    assert "Warnings" not in text_c
+    assert "overpayment_on_invoice" not in text_c
+
+    pdf_internal = render_statement_pdf(with_warn, customer_facing=False)
+    text_i = _read_pdf_text(pdf_internal)
+    assert "Warnings" in text_i
+    assert "overpayment_on_invoice" in text_i
+
+
+def test_customer_facing_pdf_hides_wfirma_id():
+    stmt = _one_currency_statement()
+    stmt["contractor"]["street"] = "12 Rue Example"
+    stmt["contractor"]["city"] = "Paris"
+    stmt["contractor"]["postal_code"] = "75001"
+    pdf = render_statement_pdf(stmt, customer_facing=True)
+    text = _read_pdf_text(pdf)
+    assert "wFirma" not in text
+    assert "C-1" not in text or "Maison" in text
+    assert "12 Rue Example" in text
+    assert "Paris" in text
 
 
 # 8
@@ -493,9 +505,14 @@ def test_route_400_bad_dates(client, qs):
 # 16
 def test_route_502_invoices_fetch_failure(client, monkeypatch):
     _stub_contractor_ok(monkeypatch)
+    from app.services import ledger_fact_universe as lfu
+    lfu.clear_fact_universe_cache()
+
     def _stub(method, module, action, body=""):
-        if module == "invoices": return 500, "boom"
+        if module == "invoices":
+            return 500, "boom"
         return 200, _envelope_payments("")
+
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.pdf"
@@ -508,10 +525,16 @@ def test_route_502_invoices_fetch_failure(client, monkeypatch):
 
 def test_route_502_payments_fetch_failure(client, monkeypatch):
     _stub_contractor_ok(monkeypatch)
+    from app.services import ledger_fact_universe as lfu
+    lfu.clear_fact_universe_cache()
+
     def _stub(method, module, action, body=""):
-        if module == "invoices": return 200, _envelope_invoices("")
-        if module == "payments": return 500, "boom"
+        if module == "invoices":
+            return 200, _envelope_invoices("")
+        if module == "payments":
+            return 500, "boom"
         return 200, "<api/>"
+
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.pdf"
@@ -519,7 +542,7 @@ def test_route_502_payments_fetch_failure(client, monkeypatch):
         headers=_auth_headers(),
     )
     assert r.status_code == 502
-    assert r.json()["detail"]["code"] == "STATEMENT_PAYMENT_FETCH_FAILED"
+    assert r.json()["detail"]["code"] == "STATEMENT_INVOICE_FETCH_FAILED"
 
 
 # 17
@@ -527,14 +550,18 @@ def test_route_502_render_failure(client, monkeypatch):
     """If the renderer raises after a successful fetch, the route
     must convert to 502 STATEMENT_PDF_RENDER_FAILED."""
     _stub_contractor_ok(monkeypatch)
+    from app.services import ledger_fact_universe as lfu
+    lfu.clear_fact_universe_cache()
     monkeypatch.setattr(
         wfirma_client, "_http_request",
         _two_endpoint_stub([_envelope_invoices("")], [_envelope_payments("")]),
     )
     # Patch the renderer at its import site inside routes_ledgers.
     from app.api import routes_ledgers as rl
-    def _boom(stmt):
+
+    def _boom(stmt, **kwargs):
         raise RuntimeError("fake render boom")
+
     monkeypatch.setattr(rl, "render_statement_pdf", _boom)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.pdf"

@@ -64,6 +64,10 @@ def test_fixture_invoice_proforma_payment_on_invoice():
     assert t["invoiced"] == "1000.00"
     assert t["received"] == "400.00"
     assert t["outstanding"] == "600.00"
+    assert "proforma" not in [e["type"] for e in stmt["entries_per_currency"]["USD"]]
+    assert not any(
+        w.get("event", "").startswith("proforma") for w in (stmt.get("warnings") or [])
+    )
 
     ma = build_portfolio_from_facts(
         invoices,

@@ -219,7 +219,9 @@ def aggregate_invoice_ledger(
 # Cross-currency invent via currency_label is forbidden (no FX fallback).
 # Empty payment.invoice/id           → payment is unmatched.
 # Negative <brutto> on a correction  → contributes to totals.credited.
-# Aging hardcoded to "invoice_age"   → label exposed on every block.
+# Aging default ``due_date`` (invoice ``paymentdate``) — same canonical
+# basis as Management Analysis. ``invoice_age`` only when the caller
+# passes that method explicitly (no silent per-surface mix).
 #
 # Statement period semantics (period statement model):
 #   invoices with issue date in [from, to] + payments with payment date
@@ -227,6 +229,10 @@ def aggregate_invoice_ledger(
 #   invoice window remain ``payment_links_invoice_outside_window`` —
 #   the window is NOT silently broadened; opening-balance is a separate
 #   model and is not mixed in here.
+
+AGING_METHOD_DUE_DATE = "due_date"
+AGING_METHOD_INVOICE_AGE = "invoice_age"
+_AGING_METHODS = (AGING_METHOD_DUE_DATE, AGING_METHOD_INVOICE_AGE)
 
 # Entry types in chronological output. Numeric tie-break rank below
 # enforces invoice-before-same-day-payment ordering (§5.1 of the spec).
@@ -775,20 +781,33 @@ def _entry_for_payment(
     }
 
 
+def _normalize_aging_method(aging_method: str) -> str:
+    m = (aging_method or "").strip().lower()
+    if m in _AGING_METHODS:
+        return m
+    return AGING_METHOD_DUE_DATE
+
+
 def aggregate_statement_from_facts(
     contractor_meta: Dict[str, Any],
     invoice_facts:   List[Dict[str, Any]],
     payment_facts:   List[Dict[str, Any]],
     statement_date:  str,
     period:          tuple,
+    *,
+    aging_method: str = AGING_METHOD_DUE_DATE,
 ) -> Dict[str, Any]:
     """Build the per-currency Statement of Account from parsed facts.
 
     Pure: no I/O. Same arithmetic as :func:`aggregate_statement` — the
     node-based entrypoint parses then delegates here so bulk AR roster
     and single-contractor drill share one authority.
+
+    *aging_method*: ``due_date`` (default — invoice ``paymentdate``, MA
+    parity) or ``invoice_age`` (explicit opt-in only).
     """
     df, dt = period if period else ("", "")
+    method = _normalize_aging_method(aging_method)
     warnings: List[Dict[str, Any]] = []
 
     # Drop unusable rows; warn if we dropped anything.
@@ -803,12 +822,9 @@ def aggregate_statement_from_facts(
                 "wfirma_doc_id": f["id"],
             })
         if f.get("type") == "proforma":
-            # Proforma is commercial — never fiscal AR. Drop here so a
-            # mistaken caller cannot inflate invoiced / outstanding / aging.
-            warnings.append({
-                "event":         "proforma_excluded_from_fiscal",
-                "wfirma_doc_id": f["id"],
-            })
+            # Proforma is commercial — never fiscal AR. Silent defensive
+            # drop (fiscal callers already exclude via FISCAL_AR_INVOICE_TYPES;
+            # do not emit a customer-facing warning for a boundary miss).
             continue
         invoice_facts_kept.append(f)
     invoice_facts = invoice_facts_kept
@@ -979,11 +995,14 @@ def aggregate_statement_from_facts(
             "entry_count": len(rows),
         }
 
-    # ── Aging per currency (invoice_age method) ───────────────────────
+    # ── Aging per currency ────────────────────────────────────────────
+    # Authority: due_date (paymentdate) by default — Management Analysis
+    # parity. invoice_age only when explicitly selected by the caller.
     aging_by_ccy: Dict[str, Dict[str, Any]] = {}
     for ccy in sorted(currencies):
         bucket: Dict[str, Decimal] = {b: Decimal("0") for b in _AGING_BUCKETS}
         total = Decimal("0")
+        due_unavailable = Decimal("0")
         # Walk invoices in this currency only — payments don't age.
         for inv in invoice_facts:
             if (inv["currency"] or "PLN") != ccy:
@@ -991,31 +1010,47 @@ def aggregate_statement_from_facts(
             if not inv["date"]:
                 continue
             paid = paid_against_invoice.get(inv["id"], Decimal("0"))
-            # Treat correction credit notes (negative brutto) as already
-            # reducing balance; their "remaining" is their absolute
-            # signed value but it's already credited at invoice time.
-            # We only age positive-balance invoices.
             remaining = remaining_after_payments(inv["brutto"], paid)
             if remaining <= 0:
                 continue
-            days_old = _days_between(statement_date, inv["date"])
+            if method == AGING_METHOD_DUE_DATE:
+                anchor = (inv.get("paymentdate") or "").strip()
+                if not anchor:
+                    warnings.append({
+                        "event":         "paymentdate_missing",
+                        "wfirma_doc_id": inv["id"],
+                    })
+                    due_unavailable += remaining
+                    continue
+                days_old = _days_between(statement_date, anchor)
+            else:
+                days_old = _days_between(statement_date, inv["date"])
             b = _bucket_for_days(days_old)
             bucket[b] += remaining
             total += remaining
-        aging_by_ccy[ccy] = {
-            "method":  "invoice_age",
+        block: Dict[str, Any] = {
+            "method":  method,
             **{k: _q(v) for k, v in bucket.items()},
             "total":   _q(total),
         }
+        if method == AGING_METHOD_DUE_DATE:
+            block["due_date_unavailable"] = _q(due_unavailable)
+        aging_by_ccy[ccy] = block
 
+    cmeta = contractor_meta or {}
     return {
         "contractor": {
             "wfirma_contractor_id": str(
-                contractor_meta.get("wfirma_contractor_id") or ""
+                cmeta.get("wfirma_contractor_id") or ""
             ),
-            "name":     str(contractor_meta.get("name")    or ""),
-            "country":  str(contractor_meta.get("country") or ""),
-            "vat_id":   str(contractor_meta.get("vat_id")  or ""),
+            "name":     str(cmeta.get("name")    or ""),
+            "country":  str(cmeta.get("country") or ""),
+            "vat_id":   str(cmeta.get("vat_id")  or ""),
+            "street":   str(cmeta.get("street")  or ""),
+            "city":     str(cmeta.get("city")    or ""),
+            "postal_code": str(cmeta.get("postal_code") or ""),
+            "email":    str(cmeta.get("email")   or ""),
+            "phone":    str(cmeta.get("phone")   or ""),
         },
         "generated_at":   statement_date,
         "period":         {"from": str(df or ""), "to": str(dt or "")},
@@ -1025,6 +1060,7 @@ def aggregate_statement_from_facts(
         "aging_per_currency":            aging_by_ccy,
         "unmatched_payments_per_currency": unmatched_payments_by_ccy,
         "warnings":       warnings,
+        "aging_method":   method,
     }
 
 
@@ -1034,6 +1070,8 @@ def aggregate_statement(
     payment_nodes:   List[ET.Element],
     statement_date:  str,
     period:          tuple,
+    *,
+    aging_method: str = AGING_METHOD_DUE_DATE,
 ) -> Dict[str, Any]:
     """Build the per-currency Statement of Account.
 
@@ -1054,6 +1092,7 @@ def aggregate_statement(
         payment_facts,
         statement_date,
         period,
+        aging_method=aging_method,
     )
 
 
@@ -1063,6 +1102,7 @@ def build_statement_index_by_contractor(
     *,
     statement_date: str,
     period: tuple,
+    aging_method: str = AGING_METHOD_DUE_DATE,
 ) -> Dict[str, Dict[str, Any]]:
     """One bulk AR fact universe → per-contractor statement dicts.
 
@@ -1093,6 +1133,7 @@ def build_statement_index_by_contractor(
             pay_by_cid.get(cid, []),
             statement_date,
             period,
+            aging_method=aging_method,
         )
     return out
 
@@ -1100,6 +1141,8 @@ def build_statement_index_by_contractor(
 __all__ = [
     "LEDGER_ENTRY_FIELDS",
     "FORBIDDEN_ENTRY_FIELDS",
+    "AGING_METHOD_DUE_DATE",
+    "AGING_METHOD_INVOICE_AGE",
     "aggregate_invoice_ledger",
     # Phase 10B
     "aggregate_statement",
