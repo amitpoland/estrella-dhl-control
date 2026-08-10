@@ -3201,6 +3201,130 @@ def _process_dsk_chase(audit_path: Path, audit: Dict[str, Any]) -> Dict[str, Any
     return out
 
 
+# ── Carrier tracking poll helpers (inbound + outbound, one authority) ─────────
+
+def _carrier_shipments_db_path() -> Path:
+    root = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    return Path(root) / "carrier_shipments.db"
+
+
+def _batch_tracking_cache_dir(batch_id: str) -> Path:
+    return settings.storage_root / "outputs" / str(batch_id or "").strip()
+
+
+def is_carrier_tracking_terminal(awb: str, batch_id: str) -> bool:
+    """True when durable tracking_cache proves explicit DHL terminal delivery.
+
+    Booking ``state=complete``, customs/PZ completion, and Exception are NOT
+    terminal for transport polling. Restart-safe: reads batch tracking_cache.json.
+    """
+    awb = (awb or "").strip()
+    batch_id = (batch_id or "").strip()
+    if not awb or not batch_id:
+        return False
+    try:
+        from .tracking_service import (
+            TERMINAL_STATUSES,
+            _load_cache,
+            select_cached_tracking_record,
+        )
+        cache_dir = _batch_tracking_cache_dir(batch_id)
+        if not (cache_dir / "tracking_cache.json").exists():
+            return False
+        rec = select_cached_tracking_record(_load_cache(cache_dir), awb)
+        if not rec:
+            return False
+        st = str(rec.get("status") or "").lower()
+        if st in TERMINAL_STATUSES:
+            return True
+        for ev in rec.get("events") or []:
+            if not isinstance(ev, dict):
+                continue
+            blob = " ".join(
+                str(ev.get(k) or "") for k in ("description", "status", "statusCode")
+            ).lower()
+            stage = str(ev.get("normalized_stage") or ev.get("stage") or "").upper()
+            if stage in ("DELIVERED", "CLOSED"):
+                return True
+            if "delivered" in blob and "not delivered" not in blob:
+                return True
+    except Exception as exc:
+        log.debug("[monitor] terminal-check failed for %s: %s", awb, exc)
+    return False
+
+
+def list_outbound_tracking_candidates() -> List[Dict[str, Any]]:
+    """Canonical outbound AWBs that still need DHL tracking polls.
+
+    Source: carrier_shipments.tracking_ref (booking authority). Excludes
+    do_not_use and carrier-delivered terminals. Booking ``complete`` stays
+    eligible — it is not physical delivery.
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        from .carrier.persistence import shipment_db as csdb
+        rows = csdb.list_tracked_shipments(_carrier_shipments_db_path())
+    except Exception as exc:
+        log.warning("[monitor] outbound candidate list failed: %s", exc)
+        return out
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if int(row.get("do_not_use") or 0) == 1:
+            continue
+        awb = str(row.get("tracking_ref") or "").strip()
+        batch_id = str(row.get("batch_id") or "").strip()
+        if not awb or not batch_id:
+            continue
+        if is_carrier_tracking_terminal(awb, batch_id):
+            continue
+        out.append({
+            "awb": awb,
+            "batch_id": batch_id,
+            "state": row.get("state"),
+            "client_ref": row.get("client_ref"),
+            "direction": "outbound",
+        })
+    return out
+
+
+def _poll_awb_tracking(
+    awb: str,
+    *,
+    batch_id: str,
+    carrier: str = "DHL",
+) -> Dict[str, Any]:
+    """Single tracking authority — existing get_tracking_status + TTL."""
+    from .tracking_service import get_tracking_status
+    cache_dir = _batch_tracking_cache_dir(batch_id)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return get_tracking_status(
+        awb,
+        carrier=(carrier or "DHL").strip() or "DHL",
+        cache_dir=cache_dir,
+        refresh=False,
+    )
+
+
+def _tracking_refresh_summary(tr: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "status": tr.get("status"),
+        "source": tr.get("source"),
+        "api_status": tr.get("api_status"),
+        "tracking_stale": tr.get("tracking_stale"),
+        "cached_at": tr.get("cached_at"),
+        "tracking_last_checked_at": tr.get("tracking_last_checked_at"),
+        "tracking_last_success_at": tr.get("tracking_last_success_at"),
+        "error": tr.get("refresh_error") or tr.get("error"),
+        "tracking_terminal": tr.get("tracking_terminal") or (
+            str(tr.get("status") or "").lower() in ("delivered", "returned", "cancelled")
+        ),
+    }
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
@@ -3241,7 +3365,15 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
         "active":  0,
         "actions": [],
         "ran_at":  datetime.now(timezone.utc).isoformat(),
+        "outbound_tracking": {
+            "candidates": 0,
+            "polled": 0,
+            "skipped_already_polled": 0,
+            "skipped_terminal": 0,
+            "actions": [],
+        },
     }
+    polled_awbs: set = set()
 
     # ── Step 0: autonomous email ingestion (best-effort, never blocks sweep) ─
     try:
@@ -3287,31 +3419,31 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
                 _already_delivered = str(
                     (audit.get("tracking") or {}).get("status") or ""
                 ).lower() == "delivered"
-            if not _already_delivered:
+            if not _already_delivered and not is_carrier_tracking_terminal(
+                _awb_tr, action["batch_id"]
+            ):
                 try:
-                    from .tracking_service import get_tracking_status as _gts
                     _carrier = str(audit.get("carrier") or "DHL").strip() or "DHL"
-                    _tr = _gts(
+                    _tr = _poll_awb_tracking(
                         _awb_tr,
+                        batch_id=action["batch_id"],
                         carrier=_carrier,
-                        cache_dir=audit_path.parent,
-                        refresh=False,
                     )
-                    action["tracking_refresh"] = {
-                        "status": _tr.get("status"),
-                        "source": _tr.get("source"),
-                        "api_status": _tr.get("api_status"),
-                        "tracking_stale": _tr.get("tracking_stale"),
-                        "cached_at": _tr.get("cached_at"),
-                        "tracking_last_checked_at": _tr.get("tracking_last_checked_at"),
-                        "tracking_last_success_at": _tr.get("tracking_last_success_at"),
-                        "error": _tr.get("refresh_error") or _tr.get("error"),
-                    }
+                    polled_awbs.add(_awb_tr)
+                    action["tracking_refresh"] = _tracking_refresh_summary(_tr)
+                    action["direction"] = "inbound"
                 except Exception as _tr_exc:
                     action["tracking_refresh"] = {
                         "error": str(_tr_exc),
                         "tracking_stale": True,
                     }
+            elif _already_delivered or is_carrier_tracking_terminal(
+                _awb_tr, action["batch_id"]
+            ):
+                action["tracking_refresh"] = {
+                    "skipped": "terminal_delivered",
+                    "tracking_terminal": True,
+                }
 
         # 1. Try cache
         cached = find_existing_email_context(audit)
@@ -3675,6 +3807,55 @@ def scan_active_shipments(force: bool = False) -> Dict[str, Any]:
 
         out["actions"].append(action)
 
-    log.info("[monitor] scanned=%d active=%d actions=%d",
-             out["scanned"], out["active"], len(out["actions"]))
+    # ── Outbound AWBs (carrier_shipments) — same get_tracking_status authority ─
+    # Booking complete / customs / PZ must NOT deactivate transport polling.
+    # Explicit DHL Delivered (durable cache) removes the AWB from candidates.
+    try:
+        outbound_cands = list_outbound_tracking_candidates()
+    except Exception as _ob_exc:
+        outbound_cands = []
+        out["outbound_tracking"]["error"] = str(_ob_exc)
+    out["outbound_tracking"]["candidates"] = len(outbound_cands)
+    for cand in outbound_cands:
+        _o_awb = str(cand.get("awb") or "").strip()
+        _o_batch = str(cand.get("batch_id") or "").strip()
+        if not _o_awb or not _o_batch:
+            continue
+        if _o_awb in polled_awbs:
+            out["outbound_tracking"]["skipped_already_polled"] += 1
+            continue
+        if is_carrier_tracking_terminal(_o_awb, _o_batch):
+            out["outbound_tracking"]["skipped_terminal"] += 1
+            continue
+        o_action: Dict[str, Any] = {
+            "batch_id": _o_batch,
+            "awb": _o_awb,
+            "direction": "outbound",
+            "status": cand.get("state"),
+            "client_ref": cand.get("client_ref"),
+        }
+        try:
+            _tr = _poll_awb_tracking(_o_awb, batch_id=_o_batch, carrier="DHL")
+            polled_awbs.add(_o_awb)
+            out["outbound_tracking"]["polled"] += 1
+            o_action["tracking_refresh"] = _tracking_refresh_summary(_tr)
+            if str(_tr.get("status") or "").lower() not in (
+                "delivered", "returned", "cancelled"
+            ):
+                out["active"] += 1
+        except Exception as _tr_exc:
+            o_action["tracking_refresh"] = {
+                "error": str(_tr_exc),
+                "tracking_stale": True,
+            }
+        out["outbound_tracking"]["actions"].append(o_action)
+        out["actions"].append(o_action)
+
+    log.info(
+        "[monitor] scanned=%d active=%d actions=%d outbound_polled=%d",
+        out["scanned"],
+        out["active"],
+        len(out["actions"]),
+        out["outbound_tracking"].get("polled", 0),
+    )
     return out

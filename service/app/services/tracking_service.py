@@ -941,14 +941,22 @@ def get_tracking_status(
             else:
                 fresh = True  # no timestamp → treat as fresh (legacy entry)
             if fresh:
-                # Failed empty cache must not block refresh — prior wipe left
-                # status=unknown with no events; force a new API attempt.
-                failed_empty = (
-                    hit.get("api_status") == "failed"
-                    and not (hit.get("events") or [])
-                    and str(hit.get("status") or "").lower() in ("", "unknown", "not_found")
+                # Empty non-carrier caches (failed wipe OR API 404 not_found)
+                # must not suppress refresh for the TTL window — keep trying
+                # until real events or terminal delivery arrive.
+                empty_no_carrier = (
+                    not (hit.get("events") or [])
+                    and str(hit.get("status") or "").lower()
+                    in ("", "unknown", "not_found")
+                    and (
+                        hit.get("api_status") == "failed"
+                        or hit.get("source") in (
+                            "error", "dhl_api_404", "cache_stale", "no_credentials"
+                        )
+                        or hit.get("tracking_stale") is True
+                    )
                 )
-                if not failed_empty:
+                if not empty_no_carrier:
                     hit["source"] = "cache"
                     # Mark terminal=False explicitly so UI knows refresh button OK
                     hit["tracking_terminal"] = hit.get("status") in TERMINAL_STATUSES
