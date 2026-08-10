@@ -133,7 +133,11 @@ def test_admin_users_role_dropdown_pinned_values():
         "Frontend must declare ADMIN_USERS_ROLES allow-list constant"
     )
     items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
-    assert items == ['admin', 'accounts', 'logistics', 'auditor', 'viewer'], (
+    expected = [
+        'admin', 'accounts', 'logistics', 'crm', 'auditor', 'viewer',
+        'master_admin', 'master_editor', 'master_viewer',
+    ]
+    assert items == expected, (
         f"ADMIN_USERS_ROLES must match backend ROLES exactly; got {items}"
     )
 

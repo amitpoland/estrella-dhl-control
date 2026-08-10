@@ -12,14 +12,25 @@ import bcrypt as _bcrypt
 import jwt
 
 from .database import get_db
+from .permissions import landing_defaults_for_role
 from ..core.config import settings
 
-# Canonical roles. First five are the legacy operator ladder; last three are
-# the master-data isolated namespace added in Phase 2 (operator instruction
-# 2026-05-28). The master_* names are NOT in _ROLE_RANK — holding a master_*
-# role does not grant legacy access, and holding a legacy role does not grant
-# master-data access.
-ROLES = ("admin", "accounts", "logistics", "auditor", "viewer", "master_admin", "master_editor", "master_viewer")
+# Canonical roles (RBAC Slice 0). Legacy operator ladder first (incl. crm),
+# then master-data isolated namespace (Phase 2 / 2026-05-28). master_* names are
+# NOT in _ROLE_RANK — holding a master_* role does not grant legacy access, and
+# holding a legacy role does not grant master-data access. Permission grants
+# live ONLY in auth.permissions.ROLE_PERMISSIONS — never invent a second map.
+ROLES = (
+    "admin",
+    "accounts",
+    "logistics",
+    "crm",
+    "auditor",
+    "viewer",
+    "master_admin",
+    "master_editor",
+    "master_viewer",
+)
 
 
 # ── Password helpers (direct bcrypt — avoids passlib startup compatibility issue) ─
@@ -102,15 +113,18 @@ def create_user(
     approval_status = "approved" if is_approved else "pending"
     # Only set is_active=1 when the account is approved
     is_active       = 1 if is_approved else 0
+    surface, page   = landing_defaults_for_role(role)
     with get_db() as con:
         con.execute(
             """INSERT INTO users
                (id, full_name, company_name, email, password_hash, role,
-                is_active, is_approved, email_verified, approval_status, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                is_active, is_approved, email_verified, approval_status, created_at,
+                default_surface, default_page)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, full_name, company_name, email.lower().strip(),
              ph, role, is_active, 1 if is_approved else 0,
-             1 if email_verified else 0, approval_status, now),
+             1 if email_verified else 0, approval_status, now,
+             surface, page),
         )
     return get_user_by_id(uid)
 
@@ -142,8 +156,14 @@ def reject_user(user_id: str) -> None:
 def set_user_role(user_id: str, role: str) -> None:
     if role not in ROLES:
         raise ValueError(f"Invalid role: {role}")
+    surface, page = landing_defaults_for_role(role)
     with get_db() as con:
-        con.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+        con.execute(
+            """UPDATE users
+               SET role=?, default_surface=?, default_page=?
+               WHERE id=?""",
+            (role, surface, page, user_id),
+        )
 
 
 def set_user_active(user_id: str, active: bool) -> None:
