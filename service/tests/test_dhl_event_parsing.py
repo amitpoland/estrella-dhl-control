@@ -84,10 +84,33 @@ def test_with_delivery_courier_maps_to_out_for_delivery():
     assert key == "out_for_delivery"
 
 
-def test_clearance_complete_maps_to_cleared():
+def test_clearance_complete_maps_to_in_customs():
+    """Customs clearance language is transport In Customs — never Delivered/Exception."""
     raw = [_ev("2026-04-24T19:00Z", "Warsaw", "PL", "Clearance processing complete")]
     key, label = _derive_status_from_events(raw)
-    assert key == "cleared"
+    assert key == "in_customs"
+    assert label == "In Customs"
+
+
+def test_old_exception_does_not_override_newer_movement():
+    raw = [
+        _ev("2026-08-08T10:00Z", "Warsaw", "PL", "Processed for clearance"),
+        _ev("2026-08-09T12:00Z", "Warsaw", "PL", "Departed Facility"),
+    ]
+    key, label = _derive_status_from_events(raw)
+    assert key == "in_transit"
+    assert label == "In Transit"
+
+
+def test_delivered_sticky_even_if_not_latest_description_order():
+    """Delivered anywhere in the stream wins over later non-delivery noise."""
+    raw = [
+        _ev("2026-04-19T10:00Z", "Mumbai", "IN", "Picked up"),
+        _ev("2026-04-25T14:00Z", "Warsaw", "PL", "Delivered"),
+        _ev("2026-04-25T15:00Z", "Warsaw", "PL", "Shipment information received"),
+    ]
+    key, label = _derive_status_from_events(raw)
+    assert key == "delivered"
 
 
 def test_picked_up_maps_to_picked_up():

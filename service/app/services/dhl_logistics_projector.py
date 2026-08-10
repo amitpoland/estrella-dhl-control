@@ -476,9 +476,19 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
 
     attention_reasons: List[str] = []
     data_quality: List[str] = []
-    exc = _inbound_exception(audit, timeline) or tracking.get("exception")
-    if exc:
+    # Carrier exception text only when CURRENT transport status is exceptional.
+    # Workflow timeline errors (pz_blocked, etc.) are separate attention — not Exception.
+    st_now = str(tracking.get("status") or "").lower()
+    exc = None
+    if st_now in ("exception", "failure", "on_hold"):
+        exc = tracking.get("exception") or st_now
         attention_reasons.append(f"exception:{exc}")
+    wf_exc = _inbound_exception(audit, timeline)
+    if wf_exc and wf_exc not in ("exception", "on_hold"):
+        attention_reasons.append(f"workflow:{wf_exc}")
+    if tracking.get("tracking_stale") or tracking.get("refresh_error"):
+        attention_reasons.append("tracking_stale")
+        data_quality.append("tracking_stale")
     # Operational attention only — historical residue is audit/reporting, not Needs Attention.
     if classification == "active" and not has_movement and created_at:
         age = _hours_between(created_at, now)
@@ -557,6 +567,11 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
         "received_by": None,
         "exception": exc,
         "attention_reasons": attention_reasons,
+        "tracking_stale": bool(tracking.get("tracking_stale")),
+        "tracking_last_checked_at": tracking.get("tracking_last_checked_at"),
+        "tracking_last_success_at": tracking.get("tracking_last_success_at"),
+        "tracking_refresh_error": tracking.get("refresh_error"),
+        "tracking_source": tracking.get("source"),
         "needs_attention": bool(attention_reasons) and classification in ("active", "exception"),
         "customs_pipeline_status": dhl_status,
         "clearance_status": audit.get("clearance_status"),
@@ -577,13 +592,111 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
     }
 
 
+def _event_time_key(ev: Dict[str, Any]) -> str:
+    return str(
+        ev.get("timestamp")
+        or ev.get("event_time")
+        or ev.get("date")
+        or ev.get("time")
+        or ""
+    )
+
+
+def _apply_latest_carrier_authority(out: Dict[str, Any], events: List[Any]) -> None:
+    """Set transport status/location/exception/delivered_at from carrier events.
+
+    Permanent rules:
+      * Delivered only from explicit delivery evidence (sticky across stream).
+      * Current status + location come from the LATEST event by timestamp.
+      * Historical EXCEPTION / clearance text never latches as current Exception
+        after newer movement.
+      * Customs stages map to In Customs — not Exception, not Delivered.
+    """
+    ordered = [
+        e for e in events
+        if isinstance(e, dict)
+    ]
+    if not ordered:
+        return
+    ordered = sorted(ordered, key=_event_time_key)
+
+    try:
+        from .tracking_service import _derive_status_from_events
+        status_key, status_label = _derive_status_from_events(ordered)
+    except Exception:
+        status_key, status_label = "in_transit", "In Transit"
+
+    # Sticky delivered_at from any delivery event
+    for ev in ordered:
+        stage = str(ev.get("normalized_stage") or ev.get("stage") or "").upper()
+        blob = " ".join(
+            str(ev.get(k) or "") for k in ("description", "raw_description", "status", "statusCode")
+        ).lower()
+        ts = _parse_iso(ev.get("timestamp") or ev.get("event_time") or ev.get("date"))
+        if stage in ("DELIVERED", "CLOSED") or (
+            "delivered" in blob and "not delivered" not in blob
+        ):
+            out["delivered_at"] = ts or out.get("delivered_at")
+            status_key, status_label = "delivered", "Delivered"
+        if ts and ("picked up" in blob or stage in ("PICKED_UP", "SHIPMENT_PICKED_UP")):
+            if out.get("picked_up_at") is None:
+                out["picked_up_at"] = ts
+        if ts and ("departed" in blob or stage in ("DEPARTED_ORIGIN", "DEPARTED_ORIGIN_HUB")):
+            if out.get("departed_at") is None:
+                out["departed_at"] = ts
+
+    latest = ordered[-1]
+    out["status"] = status_key
+    out["status_label"] = status_label
+    out["last_event"] = (
+        latest.get("description")
+        or latest.get("raw_description")
+        or latest.get("status")
+        or latest.get("stage")
+        or out.get("last_event")
+    )
+    loc = latest.get("location") or latest.get("loc")
+    if loc:
+        out["last_location"] = loc
+    # Exception text only when CURRENT transport status is exceptional
+    if status_key in ("exception", "failure", "on_hold"):
+        out["exception"] = (
+            latest.get("description")
+            or latest.get("raw_description")
+            or status_label
+        )
+    else:
+        out["exception"] = None
+    if status_key == "delivered" and out.get("delivered_at") is None:
+        out["delivered_at"] = _parse_iso(
+            latest.get("timestamp") or latest.get("event_time") or latest.get("date")
+        )
+
+
+def _cache_record_is_failed_empty(rec: Dict[str, Any]) -> bool:
+    """True when a failed refresh wiped carrier events (stale-unknown)."""
+    if not isinstance(rec, dict):
+        return True
+    if rec.get("api_status") == "failed" and not (rec.get("events") or []):
+        return True
+    if (
+        str(rec.get("status") or "").lower() in ("unknown", "")
+        and not (rec.get("events") or [])
+        and rec.get("source") in ("error", "cache_stale")
+    ):
+        return True
+    return False
+
+
 def _outbound_tracking_snapshot(awb: str, batch_id: str) -> Dict[str, Any]:
     """Best-effort read of tracking WITHOUT live MyDHL poll.
 
     Authority order (same truth EJOutboundTrackingCard uses when cache is warm):
       1. per-batch tracking_cache.json via select_cached_tracking_record
+         (skip failed-empty records — fall through to tracking_db)
       2. tracking_db events for the AWB (any direction — writers often omit outbound)
     Never call get_tracking_status(..., refresh=True) from this projector.
+    Transport status/location always re-derived from latest carrier event.
     """
     out: Dict[str, Any] = {
         "status": None,
@@ -598,58 +711,52 @@ def _outbound_tracking_snapshot(awb: str, batch_id: str) -> Dict[str, Any]:
         "received_by": None,
         "exception": None,
         "source": None,
+        "tracking_stale": False,
+        "tracking_last_checked_at": None,
+        "tracking_last_success_at": None,
+        "refresh_error": None,
     }
 
     # --- 1) Canonical cached snapshot (primary for outbound delivery) ---
+    skipped_failed_cache = False
     if batch_id:
         try:
             from .tracking_service import (
-                TERMINAL_STATUSES,
                 _load_cache,
                 select_cached_tracking_record,
             )
             cache_dir = _storage_root() / "outputs" / batch_id
             if (cache_dir / "tracking_cache.json").exists():
                 rec = select_cached_tracking_record(_load_cache(cache_dir), awb)
-                if rec:
-                    out["source"] = "tracking_cache"
-                    out["status"] = rec.get("status")
-                    out["status_label"] = rec.get("status_label")
-                    out["last_location"] = (
-                        rec.get("last_location")
-                        or rec.get("location")
-                        or (rec.get("events") or [{}])[-1].get("location")
-                        if rec.get("events") else None
+                if rec and _cache_record_is_failed_empty(rec):
+                    skipped_failed_cache = True
+                    out["tracking_stale"] = True
+                    out["refresh_error"] = rec.get("refresh_error") or rec.get("error")
+                    out["tracking_last_checked_at"] = (
+                        rec.get("tracking_last_checked_at") or rec.get("cached_at")
                     )
+                elif rec and not _cache_record_is_failed_empty(rec):
+                    out["source"] = "tracking_cache"
+                    out["tracking_last_checked_at"] = (
+                        rec.get("tracking_last_checked_at") or rec.get("cached_at")
+                    )
+                    out["tracking_last_success_at"] = rec.get("tracking_last_success_at")
+                    out["refresh_error"] = rec.get("refresh_error") or (
+                        rec.get("error") if rec.get("api_status") == "failed" else None
+                    )
+                    if rec.get("tracking_stale") or rec.get("api_status") == "failed":
+                        out["tracking_stale"] = True
                     cache_events = list(rec.get("events") or [])
                     out["events"] = cache_events
-                    # Derive pickup / delivered / exception from descriptions + status
-                    for ev in cache_events:
-                        if not isinstance(ev, dict):
-                            continue
-                        ts = _parse_iso(ev.get("timestamp") or ev.get("event_time") or ev.get("date"))
-                        blob = " ".join(
-                            str(ev.get(k) or "") for k in ("description", "status", "statusCode")
-                        ).lower()
-                        if ts and ("picked up" in blob or "pickup" in blob) and out["picked_up_at"] is None:
-                            out["picked_up_at"] = ts
-                        if ts and "departed" in blob and out["departed_at"] is None:
-                            out["departed_at"] = ts
-                        if ts and "delivered" in blob:
-                            out["delivered_at"] = ts
-                        if "exception" in blob or "failure" in blob or "on hold" in blob:
-                            out["exception"] = ev.get("description") or blob
-                        if out["last_event"] is None or ts:
-                            out["last_event"] = ev.get("description") or ev.get("status")
-                    if out["status"] in TERMINAL_STATUSES or str(out["status"] or "").lower() == "delivered":
-                        if out["delivered_at"] is None and cache_events:
-                            # last event timestamp as delivered when status says delivered
-                            last = cache_events[-1]
-                            out["delivered_at"] = _parse_iso(
-                                last.get("timestamp") or last.get("event_time") or last.get("date")
-                            )
-                        out["status"] = "delivered"
-                    # ETA — only if cache actually carries it (do not invent)
+                    if cache_events:
+                        _apply_latest_carrier_authority(out, cache_events)
+                    else:
+                        # Legacy cache with status only — still not invent Delivered
+                        out["status"] = rec.get("status")
+                        out["status_label"] = rec.get("status_label")
+                        out["last_location"] = (
+                            rec.get("last_location") or rec.get("location")
+                        )
                     for key in ("estimated_delivery", "estimatedDeliveryDate", "expected_delivery"):
                         if rec.get(key):
                             out["expected_delivery"] = _parse_iso(rec.get(key))
@@ -661,29 +768,30 @@ def _outbound_tracking_snapshot(awb: str, batch_id: str) -> Dict[str, Any]:
     try:
         from . import tracking_db as tdb
         events = tdb.get_events_for_awb(awb) or []
-        # Prefer AWB-matched events; ignore batch-wide inbound import AWB pollution
         if events:
             if not out["events"]:
                 out["events"] = events
                 out["source"] = out["source"] or "tracking_db"
-            for ev in events:
-                if not isinstance(ev, dict):
-                    continue
-                stage = str(ev.get("normalized_stage") or ev.get("stage") or "").upper()
-                ts = _parse_iso(ev.get("event_time") or ev.get("timestamp"))
-                if stage in ("PICKED_UP", "SHIPMENT_PICKED_UP") and out["picked_up_at"] is None:
-                    out["picked_up_at"] = ts
-                if stage in ("DEPARTED_ORIGIN",) and out["departed_at"] is None:
-                    out["departed_at"] = ts
-                if stage in ("DELIVERED", "CLOSED"):
-                    out["delivered_at"] = ts or out["delivered_at"]
-                    out["status"] = "delivered"
-                if stage == "EXCEPTION":
-                    out["exception"] = ev.get("description") or "exception"
-                if out["last_event"] is None:
-                    out["last_event"] = ev.get("description") or ev.get("stage")
-                    out["last_location"] = out["last_location"] or ev.get("location")
-                    out["status"] = out["status"] or ev.get("status") or ev.get("normalized_stage")
+                if skipped_failed_cache:
+                    out["tracking_stale"] = True
+                _apply_latest_carrier_authority(out, events)
+            else:
+                # Enrich pickup/delivery timestamps only — never latch historical
+                # EXCEPTION stages over the cache-derived current status.
+                for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
+                    stage = str(ev.get("normalized_stage") or ev.get("stage") or "").upper()
+                    ts = _parse_iso(ev.get("event_time") or ev.get("timestamp"))
+                    if stage in ("PICKED_UP", "SHIPMENT_PICKED_UP") and out["picked_up_at"] is None:
+                        out["picked_up_at"] = ts
+                    if stage in ("DEPARTED_ORIGIN",) and out["departed_at"] is None:
+                        out["departed_at"] = ts
+                    if stage in ("DELIVERED", "CLOSED"):
+                        out["delivered_at"] = ts or out["delivered_at"]
+                        out["status"] = "delivered"
+                        out["status_label"] = "Delivered"
+                        out["exception"] = None
     except Exception as exc:
         log.debug("logistics_projector: tracking_db read failed: %s", exc)
 
@@ -704,21 +812,33 @@ def _inbound_tracking_snapshot(awb: str, batch_id: str, audit: Dict[str, Any]) -
         "events": [],
         "exception": None,
         "source": None,
+        "tracking_stale": False,
+        "tracking_last_checked_at": None,
+        "tracking_last_success_at": None,
+        "refresh_error": None,
     }
     tr = audit.get("tracking") if isinstance(audit.get("tracking"), dict) else {}
-    if tr:
+    if tr and not _cache_record_is_failed_empty(tr):
         out["status"] = tr.get("status")
         out["status_label"] = tr.get("status_label")
         out["last_location"] = tr.get("last_location") or tr.get("location")
         out["source"] = "audit.tracking"
+        out["tracking_stale"] = bool(tr.get("tracking_stale"))
+        out["tracking_last_checked_at"] = tr.get("tracking_last_checked_at") or tr.get("cached_at")
+        out["tracking_last_success_at"] = tr.get("tracking_last_success_at")
         if str(tr.get("status") or "").lower() == "delivered":
             out["delivered_at"] = _parse_iso(tr.get("delivered_at") or tr.get("updated_at"))
 
-    # Prefer cache (canonical) over audit.tracking when present
+    # Prefer cache (canonical) over audit.tracking when present and not failed-empty
     cache_snap = _outbound_tracking_snapshot(awb, batch_id)  # same cache reader
-    if cache_snap.get("status") or cache_snap.get("events"):
-        for k in ("status", "status_label", "last_location", "delivered_at", "picked_up_at",
-                  "events", "exception", "source"):
+    if cache_snap.get("events") or (
+        cache_snap.get("status") and not _cache_record_is_failed_empty(cache_snap)
+    ):
+        for k in (
+            "status", "status_label", "last_location", "delivered_at", "picked_up_at",
+            "events", "exception", "source", "tracking_stale",
+            "tracking_last_checked_at", "tracking_last_success_at", "refresh_error",
+        ):
             if cache_snap.get(k) is not None:
                 out[k] = cache_snap.get(k)
         # Poland arrival from cache events
@@ -735,8 +855,10 @@ def _inbound_tracking_snapshot(awb: str, batch_id: str, audit: Dict[str, Any]) -
         from . import tracking_db as tdb
         if batch_id:
             db_events = tdb.get_events_for_batch(batch_id, direction="inbound") or []
-            if not out["events"]:
+            if not out["events"] and db_events:
                 out["events"] = db_events
+                out["source"] = out["source"] or "tracking_db"
+                _apply_latest_carrier_authority(out, db_events)
             for ev in db_events:
                 stage = str(ev.get("normalized_stage") or ev.get("stage") or "").upper()
                 ts = _parse_iso(ev.get("event_time") or ev.get("timestamp"))
@@ -745,10 +867,25 @@ def _inbound_tracking_snapshot(awb: str, batch_id: str, audit: Dict[str, Any]) -
                 if stage in ("DELIVERED", "CLOSED"):
                     out["delivered_at"] = ts or out["delivered_at"]
                     out["status"] = "delivered"
+                    out["status_label"] = "Delivered"
+                    out["exception"] = None
                 if stage in ("PICKED_UP",) and out["picked_up_at"] is None:
                     out["picked_up_at"] = ts
     except Exception as exc:
         log.debug("logistics_projector: inbound tracking_db failed: %s", exc)
+
+    # When cache was wiped by a failed refresh (429), recover from audit.tracking_events.
+    # This is the same carrier evidence the normalizer already persisted — not a second poller.
+    if not out["events"]:
+        audit_events = [
+            e for e in (audit.get("tracking_events") or [])
+            if isinstance(e, dict)
+        ]
+        if audit_events:
+            out["events"] = audit_events
+            out["source"] = out["source"] or "audit.tracking_events"
+            out["tracking_stale"] = True
+            _apply_latest_carrier_authority(out, audit_events)
 
     return out
 
@@ -865,6 +1002,7 @@ def classify_inbound(audit: Dict[str, Any], tracking: Optional[Dict[str, Any]] =
     """Transport-based classification for inbound Active/Delivered filters.
 
     customs/PZ completion is NOT a transport terminal — it is a separate customs_status.
+    Exception requires CURRENT transport status — never a historical latch field.
     """
     awb = _awb_of(audit)
     if not awb:
@@ -878,7 +1016,7 @@ def classify_inbound(audit: Dict[str, Any], tracking: Optional[Dict[str, Any]] =
     st = str(tracking.get("status") or "").lower()
     if tracking.get("delivered_at") or st == "delivered" or _is_physically_delivered(audit, timeline):
         return "delivered"
-    if st in ("exception", "failure") or tracking.get("exception"):
+    if st in ("exception", "failure", "on_hold"):
         return "exception"
     if not (audit.get("clearance_decision") or audit.get("tracking") or timeline or tracking.get("events")):
         return "unknown"
@@ -898,7 +1036,7 @@ def classify_outbound(row: Dict[str, Any], tracking: Dict[str, Any]) -> str:
     if st in ("returned", "cancelled"):
         return "delivered"  # terminal non-active
     state = str(row.get("state") or "")
-    if state == "failed" or st in ("exception", "failure") or tracking.get("exception"):
+    if state == "failed" or st in ("exception", "failure", "on_hold"):
         return "exception"
     if row.get("tracking_ref"):
         return "active"

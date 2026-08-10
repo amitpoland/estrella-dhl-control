@@ -82,50 +82,90 @@ _DHL_STATUS_MAP: Dict[str, tuple[str, str]] = {
 # matched description across the full event stream wins — so a "Delivered"
 # event anywhere overrides a later "still in transit" summary.
 # Order matters: most-final state first.
-_DHL_EVENT_PRIORITY: list[tuple[str, str, str]] = [
-    # (lower-cased substring, status_key, status_label)
+# Single-event transport mapping (most-specific first). Applied to the LATEST
+# carrier event for current status. Delivered is sticky across the whole stream
+# (see _derive_status_from_events) — clearance / customs text is NEVER Exception.
+_DHL_LATEST_EVENT_MAP: list[tuple[str, str, str]] = [
     ("delivered",                      "delivered",        "Delivered"),
     ("with delivery courier",          "out_for_delivery", "Out for Delivery"),
     ("out for delivery",               "out_for_delivery", "Out for Delivery"),
     ("delivery in progress",           "out_for_delivery", "Out for Delivery"),
-    ("clearance processing complete",  "cleared",          "Cleared"),
-    ("customs status updated",         "cleared",          "Cleared"),
-    ("released by customs",            "cleared",          "Cleared"),
-    ("on hold",                        "on_hold",          "On Hold"),
+    ("awaiting collection",            "at_destination",   "At Destination"),
+    ("clearance processing complete",  "in_customs",       "In Customs"),
+    ("released by customs",            "in_customs",       "In Customs"),
+    ("processed for clearance",        "in_customs",       "In Customs"),
     ("clearance event",                "in_customs",       "In Customs"),
+    ("customs status updated",         "in_customs",       "In Customs"),
+    ("customs clearance",              "in_customs",       "In Customs"),
     ("customs",                        "in_customs",       "In Customs"),
+    ("on hold",                        "on_hold",          "On Hold"),
+    ("undeliverable",                  "exception",        "Exception"),
+    ("exception",                      "exception",        "Exception"),
+    ("failure",                        "exception",        "Exception"),
     ("arrived at destination",         "at_destination",   "At Destination"),
+    ("shipment accepted",              "in_transit",       "In Transit"),
     ("departed",                       "in_transit",       "In Transit"),
     ("in transit",                     "in_transit",       "In Transit"),
     ("processed at",                   "in_transit",       "In Transit"),
+    ("arrived at",                     "in_transit",       "In Transit"),
     ("picked up",                      "picked_up",        "Picked Up"),
+    ("shipment information received",  "in_transit",       "In Transit"),
 ]
 
+# Back-compat alias for importers/tests that still reference the old name.
+_DHL_EVENT_PRIORITY = _DHL_LATEST_EVENT_MAP
 
-def _derive_status_from_events(events: list[dict]) -> tuple[str, str]:
-    """
-    Derive a status (key, label) from the full DHL event stream by description
-    priority — final states (Delivered) outrank earlier ones (In Transit).
 
-    Each event dict should have a 'description' (or 'status') field.
-    Returns ("in_transit", "In Transit") as a safe default.
-    """
-    if not events:
-        return ("in_transit", "In Transit")
-    # Concat every event's description+status into one searchable lower-case blob
-    descs = []
-    for ev in events:
-        for k in ("description", "status", "statusCode"):
-            v = ev.get(k)
-            if isinstance(v, str) and v.strip():
-                descs.append(v.lower())
-    blob = " | ".join(descs)
+def _event_text_blob(ev: dict) -> str:
+    parts = []
+    for k in ("description", "status", "statusCode", "stage", "normalized_stage"):
+        v = ev.get(k)
+        if isinstance(v, str) and v.strip():
+            parts.append(v.lower())
+    return " ".join(parts)
+
+
+def _event_sort_key(ev: dict) -> str:
+    return str(
+        ev.get("timestamp")
+        or ev.get("event_time")
+        or ev.get("date")
+        or ev.get("time")
+        or ""
+    )
+
+
+def _map_single_event_status(blob: str) -> tuple[str, str]:
     if not blob:
         return ("in_transit", "In Transit")
-    for kw, key, label in _DHL_EVENT_PRIORITY:
+    for kw, key, label in _DHL_LATEST_EVENT_MAP:
         if kw in blob:
             return (key, label)
     return ("in_transit", "In Transit")
+
+
+def _derive_status_from_events(events: list[dict]) -> tuple[str, str]:
+    """Derive CURRENT transport status from carrier events.
+
+    Authority rules (permanent):
+      * Delivered is sticky — any explicit delivery event → Delivered.
+      * Otherwise the LATEST event by timestamp decides current status.
+      * An old clearance / on-hold / exception event must NOT override newer movement.
+      * Customs clearance language maps to In Customs / In Transit — never Exception.
+    """
+    if not events:
+        return ("in_transit", "In Transit")
+    ordered = sorted(
+        (e for e in events if isinstance(e, dict)),
+        key=_event_sort_key,
+    )
+    if not ordered:
+        return ("in_transit", "In Transit")
+    for ev in ordered:
+        blob = _event_text_blob(ev)
+        if "delivered" in blob and "not delivered" not in blob:
+            return ("delivered", "Delivered")
+    return _map_single_event_status(_event_text_blob(ordered[-1]))
 
 
 def _normalise_dhl_events(raw_events: list[dict]) -> list[dict]:
@@ -901,10 +941,18 @@ def get_tracking_status(
             else:
                 fresh = True  # no timestamp → treat as fresh (legacy entry)
             if fresh:
-                hit["source"] = "cache"
-                # Mark terminal=False explicitly so UI knows refresh button OK
-                hit["tracking_terminal"] = hit.get("status") in TERMINAL_STATUSES
-                return hit
+                # Failed empty cache must not block refresh — prior wipe left
+                # status=unknown with no events; force a new API attempt.
+                failed_empty = (
+                    hit.get("api_status") == "failed"
+                    and not (hit.get("events") or [])
+                    and str(hit.get("status") or "").lower() in ("", "unknown", "not_found")
+                )
+                if not failed_empty:
+                    hit["source"] = "cache"
+                    # Mark terminal=False explicitly so UI knows refresh button OK
+                    hit["tracking_terminal"] = hit.get("status") in TERMINAL_STATUSES
+                    return hit
             log.debug("[tracking] cache expired for %s (age %.0fs) — refreshing", tracking_no, age if cached_at else -1)
 
     # ── Credential check ──────────────────────────────────────────────────────
@@ -939,8 +987,19 @@ def get_tracking_status(
             "tracking_url": tracking_url,
             "available":    True,
             "cached_at":    cached_at,
+            "api_status":   "ok",
             "error":        None,
+            "refresh_error": None,
+            "tracking_stale": False,
+            "tracking_last_checked_at": cached_at,
+            "tracking_last_success_at": cached_at,
         }
+        # Re-derive transport status from the full event stream (latest wins;
+        # Delivered sticky). Never trust a single-event API summary alone.
+        if result.get("events"):
+            _sk, _sl = _derive_status_from_events(result["events"])
+            result["status"] = _sk
+            result["status_label"] = _sl
         # Flag terminal so UI hides the refresh button and future calls skip
         if result.get("status") in TERMINAL_STATUSES:
             result["tracking_terminal"]        = True
@@ -955,7 +1014,16 @@ def get_tracking_status(
         is_404 = ("404" in exc_str) or ("Not Found" in exc_str) or (
             hasattr(exc, "response") and getattr(exc.response, "status_code", 0) == 404
         )
-        if is_404 and carrier == "DHL":
+        prior = cache_for_terminal.get(tracking_no) if isinstance(cache_for_terminal, dict) else None
+        prior = prior if isinstance(prior, dict) else {}
+        prior_events = list(prior.get("events") or [])
+        prior_has_carrier = bool(prior_events) or (
+            str(prior.get("status") or "").lower()
+            not in ("", "unknown", "not_found")
+            and prior.get("api_status") != "failed"
+            and prior.get("source") not in ("error", "no_credentials")
+        )
+        if is_404 and carrier == "DHL" and not prior_has_carrier:
             log.info(
                 "[tracking] DHL API 404 for %s — non-blocking, returning not_found state",
                 tracking_no,
@@ -970,12 +1038,45 @@ def get_tracking_status(
                 "error":        None,   # not a fatal error — do not surface as error
                 "tracking_url": tracking_url,
                 "tracking_terminal": False,
+                "tracking_last_checked_at": cached_at,
+                "tracking_last_success_at": prior.get("tracking_last_success_at"),
+                "tracking_stale": False,
                 # Dashboard amber notice: public tracking may work
                 "not_found_advisory": (
                     "DHL tracking not available (API 404). "
                     "Public DHL tracking may work."
                 ),
             }
+        elif prior_has_carrier:
+            # Permanent rule: never let a failed/429 refresh wipe successful
+            # carrier evidence. Keep last-good events/status; mark stale.
+            log.warning(
+                "[tracking] API call failed for %s/%s — preserving prior carrier cache: %s",
+                carrier, tracking_no, exc,
+            )
+            result = {
+                **prior,
+                "tracking_url": prior.get("tracking_url") or tracking_url,
+                "available": True,
+                "api_status": "failed",
+                "source": "cache_stale",
+                "tracking_stale": True,
+                "error": exc_str,
+                "refresh_error": exc_str,
+                "tracking_last_checked_at": cached_at,
+                "tracking_last_success_at": (
+                    prior.get("tracking_last_success_at")
+                    or prior.get("cached_at")
+                ),
+                # Keep prior cached_at as last-success wall clock for age UI
+                "cached_at": prior.get("cached_at") or cached_at,
+            }
+            if prior_events:
+                _sk, _sl = _derive_status_from_events(prior_events)
+                result["status"] = _sk
+                result["status_label"] = _sl
+                result["events"] = prior_events
+            result["tracking_terminal"] = result.get("status") in TERMINAL_STATUSES
         else:
             log.warning("[tracking] API call failed for %s/%s: %s", carrier, tracking_no, exc)
             result = {
@@ -987,6 +1088,10 @@ def get_tracking_status(
                 "available": False,
                 "cached_at": cached_at,
                 "error":     exc_str,
+                "refresh_error": exc_str,
+                "tracking_stale": True,
+                "tracking_last_checked_at": cached_at,
+                "tracking_last_success_at": None,
             }
 
     # ── Normalize and persist events to audit.tracking_events ────────────────
