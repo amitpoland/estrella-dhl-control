@@ -275,6 +275,29 @@ def get_supplier_by_code(db_path: Path, supplier_code: str) -> Optional[Supplier
     return _row_to_supplier(row) if row else None
 
 
+def get_supplier_by_wfirma_id(db_path: Path, wfirma_id: str) -> Optional[Supplier]:
+    """Return supplier by the soft wFirma contractor ref, or None.
+
+    ``wfirma_id`` is a soft reference, not a unique key — the Supplier Ledger
+    statement reads it for identity/address only, so the newest row wins and a
+    legacy schema without the column degrades to None rather than raising.
+    """
+    db_path = Path(db_path)
+    wid = (wfirma_id or "").strip()
+    if not wid or not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT * FROM suppliers WHERE wfirma_id = ? "
+                "ORDER BY updated_at DESC LIMIT 1", (wid,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return _row_to_supplier(row) if row else None
+
+
 def list_suppliers(
     db_path: Path,
     *,

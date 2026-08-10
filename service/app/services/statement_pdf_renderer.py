@@ -229,12 +229,17 @@ def _masthead_flowable(
     *,
     seller: Optional[Dict[str, str]] = None,
     logo_path: str = "",
+    title: str = "Statement of Account",
 ):
     """Brand band: reuse document-suite logo asset when present;
-    otherwise CompanyProfile / seller name (no invented EJ glyph)."""
+    otherwise CompanyProfile / seller name (no invented EJ glyph).
+
+    *title* is the only thing that varies between the three documents this
+    module renders — the logo band, gold rule and typography are shared so
+    Supplier Statement and Management Analysis are literally the same brand
+    code path as the Client Statement (PR #1176)."""
     seller = seller or {}
     brand = (seller.get("name") or "").strip() or "Estrella Jewels"
-    title = "Statement of Account"
 
     if logo_path and os.path.isfile(logo_path):
         try:
@@ -320,6 +325,7 @@ def _customer_block_flowable(
     styles,
     *,
     customer_facing: bool = True,
+    label: str = "Customer",
 ):
     c = stmt.get("contractor") or {}
     name = _safe(c.get("name") or "")
@@ -348,7 +354,7 @@ def _customer_block_flowable(
         else f"<font size='9' color='#475569'>{bit}</font>"
         for idx, bit in enumerate(addr_bits)
     )
-    rows = [[Paragraph(f"<b>Customer</b><br/>{body}", styles["subtle"])]]
+    rows = [[Paragraph(f"<b>{_safe(label)}</b><br/>{body}", styles["subtle"])]]
     t = Table(rows, colWidths=[180 * mm])
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.white),
@@ -781,4 +787,474 @@ def render_statement_pdf(
     return pdf_bytes
 
 
-__all__ = ["render_statement_pdf"]
+# ══════════════════════════════════════════════════════════════════════════
+# Supplier Statement + Management Analysis
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Both live in this module on purpose: they reuse `_styles`, the masthead,
+# the footer drawer and the already-registered `EJStmt` fonts, so all three
+# documents are one brand implementation. Neither renderer computes money —
+# every figure below is a string the aggregator / analytics layer already
+# produced and the screen already shows (screen DTO == PDF DTO).
+
+# AP aging buckets, in report order. Same keys as ``accounting_analytics._BUCKETS``
+# so Supplier Statement, Payables Analysis and this PDF cannot disagree.
+_AP_BUCKETS: Tuple[Tuple[str, str], ...] = (
+    ("not_due",              "Not due"),
+    ("b_1_30",               "1–30"),
+    ("b_31_90",              "31–90"),
+    ("b_91_180",             "91–180"),
+    ("b_180_plus",           "180+"),
+    ("due_date_unavailable", "Due date n/a"),
+)
+
+# Exposure tables are capped so one currency cannot push the report to 200
+# pages. The cap is printed whenever it bites — a silently truncated exposure
+# table reads as "this is everyone", which is exactly the wrong conclusion.
+_EXPOSURE_ROWS = 25
+
+
+def _kv_card(title: str, rows: List[Tuple[str, str]], styles, *,
+             rule_above: int = -1, width: float = 85 * mm):
+    """Label/value card — the Totals and Aging cards are both this shape.
+
+    *rule_above* draws the brand rule above that body row (0-based over
+    *rows*), used to set a total apart from the lines that make it up.
+    """
+    data = [[Paragraph(f"<b>{_safe(title)}</b>", styles["section_header"]), ""]]
+    for lbl, val in rows:
+        data.append([
+            Paragraph(f"<font color='#475569'>{_safe(lbl)}</font>",
+                      ParagraphStyle("kvk", fontName=_FONT_REG, fontSize=9,
+                                     leading=11, alignment=TA_LEFT)),
+            Paragraph(f"<font name='{_FONT_BOLD}'>{_safe(val)}</font>",
+                      ParagraphStyle("kvv", fontName=_FONT_BOLD, fontSize=10,
+                                     leading=12, alignment=TA_RIGHT)),
+        ])
+    t = Table(data, colWidths=[width * 0.55, width * 0.45])
+    style = [
+        ("SPAN",           (0, 0), (1, 0)),
+        ("BACKGROUND",     (0, 0), (-1, -1), colors.white),
+        ("BOX",            (0, 0), (-1, -1), 0.4, _EJ_LINE),
+        ("LINEBELOW",      (0, 0), (-1, 0), 1.0, _EJ_GOLD),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
+        ("TOPPADDING",     (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
+    ]
+    if 0 <= rule_above < len(rows):
+        r = rule_above + 1          # +1 for the header row
+        style.append(("LINEABOVE", (0, r), (-1, r), 0.6, _EJ_BRAND))
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def _currency_bar(text: str, width: float = 180 * mm):
+    t = Table([[Paragraph(f"<b>{_safe(text)}</b>", ParagraphStyle(
+        "ccy_bar", fontName=_FONT_BOLD, fontSize=12, leading=14,
+        textColor=_EJ_BRAND, alignment=TA_LEFT,
+    ))]], colWidths=[width])
+    t.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), _EJ_BRAND_3),
+        ("LINEBELOW",     (0, 0), (-1, -1), 1.5, _EJ_GOLD),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return t
+
+
+def _grid_table(headers: List[str], rows: List[List[str]],
+                col_widths: List[float], *, right_from: int):
+    """Emerald-header data grid; columns from *right_from* are right-aligned."""
+    head = [
+        Paragraph(f"<b>{_safe(h)}</b>", ParagraphStyle(
+            "gh", fontName=_FONT_BOLD, fontSize=8, textColor=colors.white,
+            alignment=TA_RIGHT if i >= right_from else TA_LEFT,
+        ))
+        for i, h in enumerate(headers)
+    ]
+    t = Table([head] + [[_safe(c) for c in r] for r in rows],
+              colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0), _EJ_BRAND),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",      (0, 0), (-1, 0), _FONT_BOLD),
+        ("FONTNAME",      (0, 1), (-1, -1), _FONT_REG),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("ALIGN",         (right_from, 0), (-1, -1), "RIGHT"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+        ("TOPPADDING",    (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LINEBELOW",     (0, 0), (-1, 0), 0.4, _EJ_GOLD),
+        ("LINEBELOW",     (0, 1), (-1, -1), 0.3, _EJ_LINE),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    return t
+
+
+def _aging_rows(block: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """AP aging card rows — hide an empty ``due date n/a`` line, keep total."""
+    rows: List[Tuple[str, str]] = []
+    for key, label in _AP_BUCKETS:
+        val = str(block.get(key) or "0.00")
+        if key == "due_date_unavailable" and val in ("0.00", "0", ""):
+            continue
+        rows.append((label, val))
+    rows.append(("Total", str(block.get("total") or "0.00")))
+    return rows
+
+
+def _supplier_currency_flowables(stmt: Dict[str, Any], ccy: str, styles) -> List[Any]:
+    """Per-currency block of the Supplier Statement: totals + aging cards,
+    then the chronological ledger."""
+    out: List[Any] = []
+    totals = (stmt.get("totals_per_currency") or {}).get(ccy) or {}
+    aging = (stmt.get("aging_per_currency") or {}).get(ccy) or {}
+
+    totals_card = _kv_card("Totals", [
+        ("Expenses",         str(totals.get("gross_payable") or "0.00")),
+        ("Supplier credits", str(totals.get("supplier_credits") or "0.00")),
+        ("Payments applied", str(totals.get("payments_applied") or "0.00")),
+        ("Outstanding",      str(totals.get("outstanding") or "0.00")),
+        ("Net payable",      str(totals.get("net_payable") or "0.00")),
+        ("Entries",          str(totals.get("entry_count") or 0)),
+    ], styles, rule_above=3)
+    aging_card = _kv_card("Aging · due date", _aging_rows(aging), styles,
+                          rule_above=len(_aging_rows(aging)) - 1)
+
+    cards = Table([[totals_card, aging_card]], colWidths=[90 * mm, 90 * mm])
+    cards.setStyle(TableStyle([
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    out.append(KeepTogether([_currency_bar(f"Currency · {ccy}"), Spacer(1, 4), cards]))
+    out.append(Spacer(1, 6))
+
+    entries = (stmt.get("entries_per_currency") or {}).get(ccy) or []
+    out.append(Paragraph("<b>Ledger</b>", styles["section_header"]))
+    rows = []
+    for e in entries:
+        # Document number only — never the wFirma object id. A payment row
+        # carries no supplier document number, so it prints as a dash.
+        rows.append([
+            e.get("date") or "",
+            (e.get("type") or "").replace("_", " "),
+            e.get("doc_number") or "—",
+            e.get("due_date") or "—",
+            e.get("debit") or "0.00",
+            e.get("credit") or "0.00",
+            e.get("running_balance") or "0.00",
+        ])
+    out.append(_grid_table(
+        ["Date", "Type", "Document", "Due", "Expense", "Credit/Payment", "Balance"],
+        rows, [20 * mm, 22 * mm, 32 * mm, 20 * mm, 26 * mm, 30 * mm, 30 * mm],
+        right_from=4,
+    ))
+    if not entries:
+        out.append(Paragraph(
+            "<i>No entries in this currency for the selected period.</i>",
+            styles["subtle"],
+        ))
+    out.append(Spacer(1, 8))
+    return out
+
+
+def render_supplier_statement_pdf(
+    statement: Dict[str, Any],
+    *,
+    seller: Optional[Dict[str, str]] = None,
+    logo_path: str = "",
+) -> bytes:
+    """Render the ``aggregate_supplier_statement`` dict to PDF bytes.
+
+    Business-facing by construction: no wFirma ids, no NBP / FX labels, no
+    operator warnings, no query stats. Every figure is a string taken from the
+    same statement dict the Supplier Ledger screen renders — this function
+    performs no accounting arithmetic at all.
+    """
+    if not isinstance(statement, dict):
+        raise ValueError(
+            "statement must be a dict produced by aggregate_supplier_statement"
+        )
+    stmt = _strip_forbidden(statement)
+    styles = _styles()
+    seller = seller or {}
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=15 * mm, rightMargin=15 * mm,
+        topMargin=18 * mm, bottomMargin=15 * mm,
+        title="Supplier Statement",
+        author=(seller.get("name") or "Estrella Jewels"),
+    )
+
+    story: List[Any] = [
+        _masthead_flowable(stmt, styles, seller=seller,
+                           logo_path=logo_path or "", title="Supplier Statement"),
+        Spacer(1, 4),
+        _meta_strip_flowable(stmt, styles),
+        Spacer(1, 6),
+        _customer_block_flowable(stmt, styles, customer_facing=True,
+                                 label="Supplier"),
+        Spacer(1, 8),
+    ]
+    for ccy in (stmt.get("currencies") or []):
+        story.extend(_supplier_currency_flowables(stmt, ccy, styles))
+    if not (stmt.get("currencies") or []):
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(
+            "<i>No expenses or payments for this supplier in the selected "
+            "period.</i>", styles["subtle"],
+        ))
+
+    try:
+        footer = _make_footer_drawer(stmt, seller=seller)
+        doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    except Exception as exc:
+        raise RuntimeError(f"reportlab build failed: {exc}") from exc
+
+    pdf_bytes = buf.getvalue()
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise RuntimeError("reportlab produced output that does not look like a PDF")
+    return pdf_bytes
+
+
+# ── Management Analysis ───────────────────────────────────────────────────
+
+def _scope_line(ar: Dict[str, Any]) -> str:
+    """One sentence describing exactly which population the report covers.
+
+    All-outstanding is a balance-sheet-style exposure with a configured
+    lookback floor, so the floor is printed: open items issued before it sit
+    outside this report, and that boundary must never be invisible.
+    """
+    f = ar.get("filters") or {}
+    period = ar.get("period") or {}
+    if (f.get("scope") or "") == "all_outstanding":
+        floor = f.get("outstanding_floor") or period.get("from") or ""
+        return f"All outstanding since {floor} · as of {ar.get('as_of') or ''}"
+    return f"Period {period.get('from') or ''} → {period.get('to') or ''}"
+
+
+def _ma_meta_strip(ar: Dict[str, Any], styles):
+    f = ar.get("filters") or {}
+    cells = [
+        ("Report date", ar.get("generated_at") or ""),
+        ("As of",       ar.get("as_of") or ""),
+        ("Scope",       _scope_line(ar)),
+        ("Filters",     " · ".join(p for p in (
+            f"currency {f.get('currency')}" if f.get("currency") else "",
+            f"AR {f.get('status')}" if f.get("status") else "",
+        ) if p) or "none"),
+    ]
+    rows = [
+        [Paragraph(_safe(lbl), styles["label"]) for lbl, _ in cells],
+        [Paragraph(f"<b>{_safe(val)}</b>", styles["value"]) for _, val in cells],
+    ]
+    t = Table(rows, colWidths=[38 * mm, 30 * mm, 72 * mm, 40 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), _EJ_CREAM),
+        ("BOX",           (0, 0), (-1, -1), 0.4, _EJ_LINE),
+        ("INNERGRID",     (0, 0), (-1, -1), 0.4, _EJ_LINE),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+        ("TOPPADDING",    (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return t
+
+
+def _exposure_flowables(title: str, headers, rows, col_widths, styles,
+                        *, total_rows: int) -> List[Any]:
+    out = [Paragraph(f"<b>{_safe(title)}</b>", styles["section_header"])]
+    if not rows:
+        out.append(Paragraph("<i>None in this currency.</i>", styles["subtle"]))
+        return out
+    out.append(_grid_table(headers, rows, col_widths, right_from=1))
+    if total_rows > len(rows):
+        out.append(Paragraph(
+            f"<i>Showing the {len(rows)} largest of {total_rows}. "
+            f"The currency totals above cover all {total_rows}.</i>",
+            styles["subtle"],
+        ))
+    return out
+
+
+def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
+                           styles) -> List[Any]:
+    """One currency = one self-contained section. Currencies are never added
+    together anywhere in this report."""
+    out: List[Any] = [_currency_bar(f"Currency · {ccy}"), Spacer(1, 4)]
+
+    ar_sum = ar_sum or {}
+    ap_sum = ap_sum or {}
+    recv_card = _kv_card("Receivables", [
+        ("Total receivable", str(ar_sum.get("total_receivable") or "0.00")),
+        ("Overdue",          str(ar_sum.get("overdue") or "0.00")),
+        ("Not due",          str(ar_sum.get("not_due") or "0.00")),
+        ("Customer credits", str(ar_sum.get("customer_credits") or "0.00")),
+        ("Customers open",   str(ar_sum.get("customers_outstanding") or 0)),
+        ("Oldest overdue",   f"{ar_sum.get('oldest_overdue_days') or 0} days"),
+    ], styles, rule_above=0)
+    pay_card = _kv_card("Payables", [
+        ("Gross payable",    str(ap_sum.get("gross_payable") or "0.00")),
+        ("Overdue",          str(ap_sum.get("overdue") or "0.00")),
+        ("Not due",          str(ap_sum.get("not_due") or "0.00")),
+        ("Supplier credits", str(ap_sum.get("supplier_credits") or "0.00")),
+        ("Net payable",      str(ap_sum.get("net_payable") or "0.00")),
+        ("Suppliers open",   str(ap_sum.get("suppliers_outstanding") or 0)),
+    ], styles, rule_above=0)
+    cards = Table([[recv_card, pay_card]], colWidths=[90 * mm, 90 * mm])
+    cards.setStyle(TableStyle([
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    out.append(cards)
+    out.append(Spacer(1, 8))
+
+    bucket_headers = ["", "Not due", "1–30", "31–90", "91–180", "180+", "Due n/a"]
+    def _bucket_row(label, src):
+        return [label] + [str((src or {}).get(k) or "0.00")
+                          for k, _ in _AP_BUCKETS]
+    out.append(Paragraph("<b>Aging · due date basis</b>", styles["section_header"]))
+    out.append(_grid_table(
+        bucket_headers,
+        [_bucket_row("Receivables", ar_sum.get("aging")),
+         _bucket_row("Payables", ap_sum.get("aging"))],
+        [30 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm],
+        right_from=1,
+    ))
+    out.append(Spacer(1, 8))
+
+    shown_ar = ar_rows[:_EXPOSURE_ROWS]
+    out.extend(_exposure_flowables(
+        "Customer exposure",
+        ["Customer", "Outstanding", "Overdue", "Credits", "Oldest due", "Open"],
+        [[r.get("customer_name") or "—", r.get("outstanding") or "0.00",
+          r.get("overdue") or "0.00", r.get("credit_balance") or "0.00",
+          r.get("oldest_due_date") or "—", str(r.get("open_invoice_count") or 0)]
+         for r in shown_ar],
+        [58 * mm, 28 * mm, 28 * mm, 26 * mm, 24 * mm, 16 * mm],
+        styles, total_rows=len(ar_rows),
+    ))
+    out.append(Spacer(1, 8))
+
+    shown_ap = ap_rows[:_EXPOSURE_ROWS]
+    out.extend(_exposure_flowables(
+        "Supplier exposure",
+        ["Supplier", "Gross payable", "Overdue", "Credits", "Oldest due", "Open"],
+        [[r.get("supplier_name") or "—", r.get("gross_payable") or "0.00",
+          r.get("overdue") or "0.00", r.get("credit_balance") or "0.00",
+          r.get("oldest_due_date") or "—", str(r.get("open_expense_count") or 0)]
+         for r in shown_ap],
+        [58 * mm, 28 * mm, 28 * mm, 26 * mm, 24 * mm, 16 * mm],
+        styles, total_rows=len(ap_rows),
+    ))
+    out.append(Spacer(1, 10))
+    return out
+
+
+def _appendix_flowables(ar: Dict[str, Any], ap: Dict[str, Any], styles) -> List[Any]:
+    """Restrained data-quality appendix: how complete the underlying data is,
+    so the figures above can be read with the right confidence."""
+    arc = (ar.get("due_date_coverage") or {}).get("open_coverage_pct")
+    apc = (ap.get("due_date_coverage") or {}).get("open_coverage_pct")
+    ar_ok = bool((ar.get("source_health") or {}).get("ok", True))
+    ap_ok = bool((ap.get("source_health") or {}).get("ok", True))
+    lines = [
+        f"Receivables — due dates present on {arc if arc is not None else '—'}% "
+        f"of open invoices; source {'complete' if ar_ok else 'incomplete'}.",
+        f"Payables — payment dates present on {apc if apc is not None else '—'}% "
+        f"of open expenses; source {'complete' if ap_ok else 'incomplete'}.",
+        "Amounts without a due date are reported under “Due n/a” and are "
+        "included in the currency totals.",
+    ]
+    return [
+        Spacer(1, 6),
+        Paragraph("<b>Data quality</b>", styles["section_header"]),
+    ] + [Paragraph(_safe(t), styles["subtle"]) for t in lines]
+
+
+def render_management_analysis_pdf(
+    ar: Dict[str, Any],
+    ap: Dict[str, Any],
+    *,
+    seller: Optional[Dict[str, str]] = None,
+    logo_path: str = "",
+) -> bytes:
+    """Render the management analysis (AR) + payables analysis (AP) dicts.
+
+    Both arguments are the exact bodies the JSON routes return and the
+    Management Analysis screen renders. This function selects and lays out;
+    it never recomputes a balance and never adds two currencies together.
+    """
+    if not isinstance(ar, dict) or not isinstance(ap, dict):
+        raise ValueError("ar and ap must be the analytics dicts")
+    ar = _strip_forbidden(ar)
+    ap = _strip_forbidden(ap)
+    styles = _styles()
+    seller = seller or {}
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=15 * mm, rightMargin=15 * mm,
+        topMargin=18 * mm, bottomMargin=15 * mm,
+        title="Management Analysis",
+        author=(seller.get("name") or "Estrella Jewels"),
+    )
+
+    ar_sums = {s.get("currency"): s for s in (ar.get("currency_summaries") or [])}
+    ap_sums = {s.get("currency"): s for s in (ap.get("currency_summaries") or [])}
+    currencies = sorted(set(ar_sums) | set(ap_sums))
+
+    story: List[Any] = [
+        _masthead_flowable({}, styles, seller=seller, logo_path=logo_path or "",
+                           title="Management Analysis"),
+        Spacer(1, 4),
+        _ma_meta_strip(ar, styles),
+        Spacer(1, 8),
+    ]
+    for i, ccy in enumerate(currencies):
+        if i:
+            story.append(PageBreak())
+        story.extend(_ma_currency_flowables(
+            ccy, ar_sums.get(ccy), ap_sums.get(ccy),
+            [r for r in (ar.get("customers") or []) if r.get("currency") == ccy],
+            [r for r in (ap.get("suppliers") or []) if r.get("currency") == ccy],
+            styles,
+        ))
+    if not currencies:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(
+            "<i>No open receivables or payables in this scope.</i>",
+            styles["subtle"],
+        ))
+    story.extend(_appendix_flowables(ar, ap, styles))
+
+    # Footer: aging basis is due date on both sides of this report.
+    footer_ctx = {"generated_at": ar.get("generated_at") or "",
+                  "aging_method": "due_date"}
+    try:
+        footer = _make_footer_drawer(footer_ctx, seller=seller)
+        doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    except Exception as exc:
+        raise RuntimeError(f"reportlab build failed: {exc}") from exc
+
+    pdf_bytes = buf.getvalue()
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise RuntimeError("reportlab produced output that does not look like a PDF")
+    return pdf_bytes
+
+
+__all__ = [
+    "render_statement_pdf",
+    "render_supplier_statement_pdf",
+    "render_management_analysis_pdf",
+]

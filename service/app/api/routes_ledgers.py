@@ -100,6 +100,64 @@ def _validate_date(label: str, value: str) -> str:
     return s
 
 
+def _utc_today() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _outstanding_floor() -> str:
+    """Configured lookback floor for ``scope=all_outstanding``.
+
+    A misconfigured floor is an operator/env error, not a client error, so it
+    surfaces as 500 rather than a 400 blamed on the request.
+    """
+    from ..core.config import settings as _settings
+
+    raw = (getattr(_settings, "ledger_outstanding_floor", "") or "").strip()
+    try:
+        return _validate_date("ledger_outstanding_floor", raw)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"LEDGER_OUTSTANDING_FLOOR must be YYYY-MM-DD, got {raw!r}",
+        ) from exc
+
+
+def _resolve_analysis_window(scope: str, from_: str, to: str, as_of: str):
+    """Resolve the (from, to, as_of, scope) window for the analysis routes.
+
+    ``scope`` empty or ``custom_period`` → unchanged legacy contract: from/to
+    are required and the 400 behaviour is byte-identical, including the order
+    in which the validations fire.
+
+    ``scope=all_outstanding`` → the full open portfolio: ``from`` defaults to
+    the configured floor and ``to`` defaults to ``as_of``. Management
+    outstanding is a balance-sheet-style current exposure, not "documents
+    issued this month", so this is the default the UI opens on.
+
+    Returns ``(df, dt, ao, resolved_scope)``.
+    """
+    sc = (scope or "").strip().lower()
+    if sc and sc not in ("all_outstanding", "custom_period"):
+        raise HTTPException(
+            status_code=400,
+            detail="scope must be all_outstanding, custom_period, or empty",
+        )
+    if sc == "all_outstanding":
+        ao = _validate_date("as_of", as_of) if (as_of or "").strip() else _utc_today()
+        df = _validate_date("from", from_) if (from_ or "").strip() else _outstanding_floor()
+        dt = _validate_date("to", to) if (to or "").strip() else ao
+        if df > dt:
+            raise HTTPException(status_code=400, detail=f"from {df!r} is after to {dt!r}")
+        return df, dt, ao, sc
+    df = _validate_date("from", from_)
+    dt = _validate_date("to", to)
+    if df > dt:
+        raise HTTPException(status_code=400, detail=f"from {df!r} is after to {dt!r}")
+    ao = _validate_date("as_of", as_of) if (as_of or "").strip() else _utc_today()
+    return df, dt, ao, (sc or "custom_period")
+
+
 def _python_side_date_filter(invoice_nodes, df: str, dt: str):
     """wFirma's ``<date>`` filter is documented but historically fragile
     — ``wfirma_client.fetch_invoices_for_contractor`` explicitly delegates
@@ -315,6 +373,41 @@ def _contractor_meta_from_customer_master(cid: str, rcv) -> Dict[str, Any]:
     return meta
 
 
+def _supplier_meta_from_master(cid: str, name_from_facts: str) -> Dict[str, Any]:
+    """Identity + postal for the Supplier Statement — the AP mirror of
+    :func:`_contractor_meta_from_customer_master`.
+
+    The AP fact universe carries only the contractor name, so the address and
+    tax id come from Supplier Master (local sqlite, zero wFirma calls). Missing
+    db / row / column degrades to the fact name — the statement still renders,
+    the PDF simply omits the address block.
+    """
+    from ..core.config import settings as _settings
+
+    meta: Dict[str, Any] = {
+        "wfirma_contractor_id": cid,
+        "name": name_from_facts or cid,
+        "country": "", "vat_id": "", "street": "", "city": "", "postal_code": "",
+    }
+    try:
+        from ..services.suppliers_db import get_supplier_by_wfirma_id
+        sup = get_supplier_by_wfirma_id(_settings.storage_root / "suppliers.sqlite", cid)
+    except Exception:
+        sup = None
+    if sup is None:
+        return meta
+    # wFirma is the accounting authority for the name shown on AP documents;
+    # Supplier Master only fills what the facts cannot provide.
+    if not name_from_facts and (sup.name or "").strip():
+        meta["name"] = sup.name.strip()
+    meta["country"] = (sup.country or "").strip()
+    meta["vat_id"] = (sup.vat_id or "").strip()
+    meta["street"] = (sup.street or "").strip()
+    meta["city"] = (sup.city or "").strip()
+    meta["postal_code"] = (sup.postal_code or "").strip()
+    return meta
+
+
 def _facts_for_contractor(
     invoice_facts: list,
     payment_facts: list,
@@ -497,7 +590,11 @@ def get_client_statement(
 # no DB read, no wFirma round-trip).
 
 from fastapi import Response   # noqa: E402  — kept here, route-local
-from ..services.statement_pdf_renderer import render_statement_pdf  # noqa: E402
+from ..services.statement_pdf_renderer import (   # noqa: E402
+    render_statement_pdf,
+    render_supplier_statement_pdf,
+    render_management_analysis_pdf,
+)
 
 
 def _safe_filename(value: str) -> str:
@@ -873,40 +970,23 @@ def list_client_balances(
     })
 
 
-@router.get(
-    "/management-analysis.json",
-    dependencies=[_auth],
-)
-def get_management_analysis(
-    from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
-    to: str = Query("", description="Window end YYYY-MM-DD"),
-    as_of: str = Query("", description="Aging anchor YYYY-MM-DD; default today UTC"),
-    currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN"),
-    contractor_id: str = Query("", description="Optional single contractor filter"),
-    status: str = Query(
-        "",
-        description="Optional: outstanding | overdue | credit",
-    ),
-    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AR fact cache"),
-) -> JSONResponse:
-    """Read-only receivables portfolio + due-date aging (Management Analysis).
+def _build_management_analysis_dict(
+    from_: str,
+    to: str,
+    as_of: str,
+    currency: str,
+    contractor_id: str,
+    status: str,
+    refresh: int,
+    scope: str = "",
+) -> Dict[str, Any]:
+    """Validate → resolve window → build the receivables portfolio dict.
 
-    Bulk ``invoices/find`` + ``payments/find`` only — zero per-customer
-    wFirma calls. Currency portfolios stay separate (no FX grand total).
-    Drill-down remains ``/clients/{id}/statement.json``.
+    The single AR analysis authority: ``management-analysis.json`` and
+    ``management-analysis.pdf`` both call this, so the PDF is a projection of
+    the same numbers the screen renders, not a second calculation.
     """
-    df = _validate_date("from", from_)
-    dt = _validate_date("to", to)
-    if df > dt:
-        raise HTTPException(
-            status_code=400,
-            detail=f"from {df!r} is after to {dt!r}",
-        )
-    if (as_of or "").strip():
-        ao = _validate_date("as_of", as_of)
-    else:
-        from datetime import datetime, timezone
-        ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    df, dt, ao, sc = _resolve_analysis_window(scope, from_, to, as_of)
 
     ccy = (currency or "").strip().upper()
     if ccy and ccy not in ("USD", "EUR", "PLN"):
@@ -945,47 +1025,63 @@ def get_management_analysis(
             },
         ) from exc
 
-    return JSONResponse(body)
+    # Echo the resolved scope so the all-outstanding lookback boundary is
+    # visible on screen and in the PDF instead of being silent.
+    filters = body.setdefault("filters", {})
+    filters["scope"] = sc
+    filters["outstanding_floor"] = df if sc == "all_outstanding" else None
+    return body
 
 
 @router.get(
-    "/payables-analysis.json",
+    "/management-analysis.json",
     dependencies=[_auth],
 )
-def get_payables_analysis(
+def get_management_analysis(
     from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
     to: str = Query("", description="Window end YYYY-MM-DD"),
     as_of: str = Query("", description="Aging anchor YYYY-MM-DD; default today UTC"),
-    currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN|CHF"),
+    currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN"),
     contractor_id: str = Query("", description="Optional single contractor filter"),
     status: str = Query(
         "",
         description="Optional: outstanding | overdue | credit",
     ),
-    aging_bucket: str = Query(
+    scope: str = Query(
         "",
-        description="Optional bucket: not_due|b_1_30|b_31_90|b_91_180|b_180_plus|due_date_unavailable",
+        description="all_outstanding (from defaults to the configured floor, "
+                    "to defaults to as_of) | custom_period | empty (= custom_period)",
     ),
-    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
+    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AR fact cache"),
 ) -> JSONResponse:
-    """Read-only payables portfolio + creditor aging (Management Analysis).
+    """Read-only receivables portfolio + due-date aging (Management Analysis).
 
-    Bulk ``expenses/find`` + ``payments/find`` only — zero per-supplier
+    Bulk ``invoices/find`` + ``payments/find`` only — zero per-customer
     wFirma calls. Currency portfolios stay separate (no FX grand total).
-    Drill-down: ``/suppliers/{id}/statement.json``.
+    Drill-down remains ``/clients/{id}/statement.json``.
     """
-    df = _validate_date("from", from_)
-    dt = _validate_date("to", to)
-    if df > dt:
-        raise HTTPException(
-            status_code=400,
-            detail=f"from {df!r} is after to {dt!r}",
-        )
-    if (as_of or "").strip():
-        ao = _validate_date("as_of", as_of)
-    else:
-        from datetime import datetime, timezone
-        ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return JSONResponse(_build_management_analysis_dict(
+        from_, to, as_of, currency, contractor_id, status, refresh, scope,
+    ))
+
+
+def _build_payables_analysis_dict(
+    from_: str,
+    to: str,
+    as_of: str,
+    currency: str,
+    contractor_id: str,
+    status: str,
+    aging_bucket: str,
+    refresh: int,
+    scope: str = "",
+) -> Dict[str, Any]:
+    """Validate → resolve window → build the payables portfolio dict.
+
+    The single AP analysis authority, shared by ``payables-analysis.json`` and
+    the Management Analysis PDF.
+    """
+    df, dt, ao, sc = _resolve_analysis_window(scope, from_, to, as_of)
 
     ccy = (currency or "").strip().upper()
     if ccy and ccy not in ("USD", "EUR", "PLN", "CHF"):
@@ -1035,25 +1131,61 @@ def get_payables_analysis(
             },
         ) from exc
 
-    return JSONResponse(body)
+    filters = body.setdefault("filters", {})
+    filters["scope"] = sc
+    filters["outstanding_floor"] = df if sc == "all_outstanding" else None
+    return body
 
 
 @router.get(
-    "/suppliers/{contractor_id}/statement.json",
+    "/payables-analysis.json",
     dependencies=[_auth],
 )
-def get_supplier_statement(
-    contractor_id: str,
+def get_payables_analysis(
     from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
     to: str = Query("", description="Window end YYYY-MM-DD"),
-    as_of: str = Query("", description="As-of date YYYY-MM-DD"),
+    as_of: str = Query("", description="Aging anchor YYYY-MM-DD; default today UTC"),
+    currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN|CHF"),
+    contractor_id: str = Query("", description="Optional single contractor filter"),
+    status: str = Query(
+        "",
+        description="Optional: outstanding | overdue | credit",
+    ),
+    aging_bucket: str = Query(
+        "",
+        description="Optional bucket: not_due|b_1_30|b_31_90|b_91_180|b_180_plus|due_date_unavailable",
+    ),
+    scope: str = Query(
+        "",
+        description="all_outstanding (from defaults to the configured floor, "
+                    "to defaults to as_of) | custom_period | empty (= custom_period)",
+    ),
     refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
 ) -> JSONResponse:
-    """Read-only Supplier Ledger drill-down from shared AP facts.
+    """Read-only payables portfolio + creditor aging (Management Analysis).
 
-    Reuses the shared AP fact universe (same bulk expenses+payments as
-    payables-analysis), then Python-side contractor filter. Same remaining
-    equation as Payables portfolio — no second authority.
+    Bulk ``expenses/find`` + ``payments/find`` only — zero per-supplier
+    wFirma calls. Currency portfolios stay separate (no FX grand total).
+    Drill-down: ``/suppliers/{id}/statement.json``.
+    """
+    return JSONResponse(_build_payables_analysis_dict(
+        from_, to, as_of, currency, contractor_id, status, aging_bucket,
+        refresh, scope,
+    ))
+
+
+def _build_supplier_statement_dict(
+    contractor_id: str,
+    from_: str,
+    to: str,
+    as_of: str,
+    refresh: int = 0,
+) -> Dict[str, Any]:
+    """Validate → load shared AP facts → aggregate one supplier statement.
+
+    The single Supplier Ledger authority: ``suppliers/{id}/statement.json``
+    and ``suppliers/{id}/statement.pdf`` both call this, so the PDF cannot
+    print a total the screen does not show.
     """
     cid = (contractor_id or "").strip()
     if not cid:
@@ -1100,10 +1232,7 @@ def get_supplier_statement(
         body = aggregate_supplier_statement(
             expense_facts,
             payment_facts,
-            contractor_meta={
-                "wfirma_contractor_id": cid,
-                "name": supplier_name or cid,
-            },
+            contractor_meta=_supplier_meta_from_master(cid, supplier_name),
             period=(df, dt),
             as_of=ao,
         )
@@ -1119,6 +1248,8 @@ def get_supplier_statement(
         }
         qs.update(timing_fields_from_universe(uni))
         body["query_stats"] = qs
+    except HTTPException:
+        raise
     except Exception as exc:
         log.warning("[supplier-statement] read failed: %s", exc)
         raise HTTPException(
@@ -1129,4 +1260,150 @@ def get_supplier_statement(
             },
         ) from exc
 
-    return JSONResponse(body)
+    return body
+
+
+@router.get(
+    "/suppliers/{contractor_id}/statement.json",
+    dependencies=[_auth],
+)
+def get_supplier_statement(
+    contractor_id: str,
+    from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
+    to: str = Query("", description="Window end YYYY-MM-DD"),
+    as_of: str = Query("", description="As-of date YYYY-MM-DD"),
+    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
+) -> JSONResponse:
+    """Read-only Supplier Ledger drill-down from shared AP facts.
+
+    Reuses the shared AP fact universe (same bulk expenses+payments as
+    payables-analysis), then Python-side contractor filter. Same remaining
+    equation as Payables portfolio — no second authority.
+    """
+    return JSONResponse(
+        _build_supplier_statement_dict(contractor_id, from_, to, as_of, refresh)
+    )
+
+
+@router.get(
+    "/suppliers/{contractor_id}/statement.pdf",
+    dependencies=[_auth],
+)
+def get_supplier_statement_pdf(
+    contractor_id: str,
+    from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
+    to: str = Query("", description="Window end YYYY-MM-DD"),
+    as_of: str = Query("", description="As-of date YYYY-MM-DD"),
+    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
+) -> Response:
+    """Read-only PDF rendering of the Supplier Ledger statement.
+
+    Identical contract to ``/suppliers/{id}/statement.json``: same validation,
+    same shared AP fact universe, same aggregation. The PDF is rendered from
+    the resulting dict — no second arithmetic path.
+
+    Business-facing presentation: reuses the Company Profile seller footer and
+    document logo; omits wFirma ids, raw metadata and DQ warnings.
+    """
+    statement = _build_supplier_statement_dict(
+        contractor_id, from_, to, as_of, refresh,
+    )
+
+    try:
+        pdf_bytes = render_supplier_statement_pdf(
+            statement,
+            seller=_statement_seller_block(),
+            logo_path=_statement_logo_path(),
+        )
+    except Exception as exc:
+        log.warning(
+            "[supplier-statement-pdf %s] render failed: %s", contractor_id, exc,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": f"PDF render failed: {exc}",
+                "code": "SUPPLIER_STATEMENT_PDF_RENDER_FAILED",
+                "wfirma_contractor_id": (contractor_id or "").strip(),
+            },
+        ) from exc
+
+    filename = (
+        f"supplier-statement-{_safe_filename(contractor_id)}-{from_}-{to}.pdf"
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@router.get(
+    "/management-analysis.pdf",
+    dependencies=[_auth],
+)
+def get_management_analysis_pdf(
+    from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
+    to: str = Query("", description="Window end YYYY-MM-DD"),
+    as_of: str = Query("", description="Aging anchor YYYY-MM-DD; default today UTC"),
+    currency: str = Query("", description="Optional ISO filter"),
+    contractor_id: str = Query("", description="Optional single contractor filter"),
+    status: str = Query("", description="AR status: outstanding | overdue | credit"),
+    ap_status: str = Query("", description="AP status: outstanding | overdue | credit"),
+    aging_bucket: str = Query("", description="Optional AP bucket filter"),
+    scope: str = Query("", description="all_outstanding | custom_period | empty"),
+    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL fact caches"),
+) -> Response:
+    """Read-only PDF rendering of Management Analysis (AR + AP).
+
+    Takes the same parameter set as the two JSON routes and calls the same
+    builders, so every figure in the report is the figure on screen. AR and AP
+    status travel separately because one report renders both portfolios.
+    Currencies are reported in separate sections — there is no cross-currency
+    grand total anywhere in the document.
+    """
+    ar = _build_management_analysis_dict(
+        from_, to, as_of, currency, contractor_id, status, refresh, scope,
+    )
+    ap = _build_payables_analysis_dict(
+        from_, to, as_of, currency, contractor_id, ap_status, aging_bucket,
+        refresh, scope,
+    )
+
+    try:
+        pdf_bytes = render_management_analysis_pdf(
+            ar, ap,
+            seller=_statement_seller_block(),
+            logo_path=_statement_logo_path(),
+        )
+    except Exception as exc:
+        log.warning("[management-analysis-pdf] render failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": f"PDF render failed: {exc}",
+                "code": "MANAGEMENT_ANALYSIS_PDF_RENDER_FAILED",
+            },
+        ) from exc
+
+    period = ar.get("period") or {}
+    filename = (
+        "management-analysis-"
+        f"{_safe_filename(str(period.get('from') or ''))}-"
+        f"{_safe_filename(str(period.get('to') or ''))}.pdf"
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )

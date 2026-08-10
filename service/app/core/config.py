@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     # Example: DEPLOY_STATE_MD_PATH=C:\Users\Super Fashion\.claude\projects\C--PZ-verify\memory\TASK_STATE.md
     deploy_state_md_path: Optional[str] = Field(default=None)
 
+    # ── Ledgers ───────────────────────────────────────────────────────────────
+    # Lookback floor for Management Analysis scope=all_outstanding. The wFirma
+    # fact universe filters on ISSUE date, so the full open portfolio needs a
+    # bounded wide window rather than an unbounded one. The resolved floor is
+    # echoed in the API response and printed on screen and in the PDF, so the
+    # boundary is auditable: open items issued before it are outside the view.
+    # Env: LEDGER_OUTSTANDING_FLOOR=YYYY-MM-DD
+    ledger_outstanding_floor: str = "2020-01-01"
+
     # ── Storage ───────────────────────────────────────────────────────────────
     storage_root: Path = Path(__file__).parent.parent / "storage"
     backup_root: str = "C:\\PZ-backups"

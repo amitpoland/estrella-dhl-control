@@ -106,6 +106,31 @@ def test_aging_plus_credit_equation():
     assert Decimal(row["b_180_plus"]) == Decimal("0.00")
 
 
+def test_currency_summary_carries_the_aging_breakdown():
+    """The currency-level bucket split is analytics output, not something the
+    screen or the PDF is allowed to add up for itself. It must be present, cover
+    every bucket, and agree with the rows it summarises."""
+    invoices = [
+        _inv(iid="1", cid="A", name="Alpha", gross="100.00", due="2020-01-01"),
+        _inv(iid="2", cid="B", name="Beta", gross="40.00", due="2021-12-31"),
+    ]
+    out = build_portfolio_from_facts(
+        invoices, [], as_of="2021-12-31", period=("2020-01-01", "2021-12-31")
+    )
+    usd = next(s for s in out["currency_summaries"] if s["currency"] == "USD")
+    aging = usd["aging"]
+    assert set(aging) == {"not_due", "b_1_30", "b_31_90", "b_91_180",
+                          "b_180_plus", "due_date_unavailable"}
+    rows = [c for c in out["customers"] if c["currency"] == "USD"]
+    for bucket, total in aging.items():
+        assert Decimal(total) == sum(Decimal(r[bucket]) for r in rows), bucket
+    assert sum(Decimal(v) for v in aging.values()) == Decimal(
+        usd["aging_plus_unavailable"]
+    )
+    assert Decimal(aging["b_180_plus"]) == Decimal("100.00")
+    assert Decimal(aging["not_due"]) == Decimal("40.00")
+
+
 def test_credits_never_enter_overdue_buckets():
     invoices = [_inv(iid="1", gross="100.00", due="2020-01-01")]
     payments = [_pay(pid="P1", invoice_id="1", value="130.00")]

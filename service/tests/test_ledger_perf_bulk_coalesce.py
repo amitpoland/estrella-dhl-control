@@ -190,18 +190,28 @@ def test_paginate_stats_accumulate_wfirma_wait_ms():
     assert len(stats["page_wait_ms"]) == 1
 
 
-def test_fe_default_preset_is_quarter_not_ytd():
+def test_fe_default_preset_is_bounded_not_ytd():
+    """The cold path must open on a BOUNDED window, never YTD.
+
+    This pin used to require ``useState('quarter')`` in accounting-hub.jsx.
+    That assertion encoded the defect it was guarding: the hub owned period
+    state, so the same quarter formula lived in six places and the operator's
+    preset looked cosmetic. The hub now owns no period at all — LedgersPage is
+    the single authority and opens on ``this_month``, which is *narrower* than
+    the quarter this test was protecting. The perf property (bounded default,
+    never YTD) is unchanged; only its owner moved.
+    """
     from pathlib import Path
     hub = (Path(__file__).resolve().parent.parent / "app/static/v2/accounting-hub.jsx").read_text(
         encoding="utf-8"
     )
-    # Cold-path defaults (Client + Supplier ledger tabs)
-    assert "useState('quarter')" in hub
-    assert "quarter default · YTD via Client Ledger" in hub
+    assert "useState('quarter')" not in hub, "hub must not own period state (PR-005)"
+    assert "Math.floor(m / 3) * 3" not in hub, "quarter math belongs to resolvePeriod only"
     ldg = (Path(__file__).resolve().parent.parent / "app/static/v2/ledgers-page.jsx").read_text(
         encoding="utf-8"
     )
-    assert "calendar quarter" in ldg or "qStart" in ldg
+    assert "mode: 'this_month'" in ldg, "ledger cold path must default to the current month"
+    assert "mode: 'ytd'" not in ldg, "YTD must stay an explicit operator choice, never the default"
 
 
 def test_no_wfirma_write_verbs_in_fact_universe_module():
