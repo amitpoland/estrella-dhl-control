@@ -1237,8 +1237,21 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         "milestones": milestones,
         "latest_event": tracking.get("last_event") or (milestones[-1]["label"] if milestones else None),
         "latest_event_at_warsaw": milestones[-1].get("timestamp_warsaw") if milestones else None,
-        "dhl_email_requested": None,
-        "dhl_sms_requested": None,
+        "dhl_email_requested": (
+            bool(int(row.get("dhl_notify_email_requested") or 0))
+            if row.get("dhl_notify_requested_at")
+            else None
+        ),
+        "dhl_sms_requested": (
+            bool(int(row.get("dhl_notify_sms_requested") or 0))
+            if row.get("dhl_notify_requested_at")
+            else None
+        ),
+        "dhl_notify_email_masked": row.get("dhl_notify_email_masked"),
+        "dhl_notify_sms_masked": row.get("dhl_notify_sms_masked"),
+        "dhl_notify_recipient_source": row.get("dhl_notify_recipient_source"),
+        "dhl_notify_provider": row.get("dhl_notify_provider"),
+        "dhl_notify_requested_at": row.get("dhl_notify_requested_at"),
         "estrella_delivery_confirmation": conf.get("estrella_delivery_confirmation"),
         "customer_response": conf.get("customer_response"),
         "destination_country": None,
@@ -1248,7 +1261,11 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         "do_not_use": bool(int(row.get("do_not_use") or 0)),
         "booking_state": booking_state,
         "data_gaps": [
-            "mydhl_shipmentNotification_request_not_persisted",
+            *(
+                []
+                if row.get("dhl_notify_requested_at")
+                else ["mydhl_shipmentNotification_request_not_persisted"]
+            ),
             "estimated_delivery_not_in_tracking_service",
             "received_by_pod_signatory_not_parsed",
         ],
