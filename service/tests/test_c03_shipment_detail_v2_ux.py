@@ -62,11 +62,59 @@ def test_no_fake_progress_setters():
 
 
 def test_state_is_derived_from_props():
-    """sadUploaded/pzGenerated/etc must be derived consts off the shipment prop."""
+    """sadUploaded/pzGenerated/etc must be derived consts — never local setters.
+
+    sadUploaded prefers full-audit d.sadPresent once detail is loaded (list-row
+    sadStatus can lag after SAD upload). Still references shipment.sadStatus as
+    the pre-detail fallback. pz/dhl remain list-row derived.
+    """
     src = _src()
-    assert "const sadUploaded" in src and "shipment.sadStatus" in src
+    assert "const sadUploaded" in src
+    assert "d.sadPresent" in src
+    assert "shipment.sadStatus" in src
     assert "const pzGenerated" in src and "shipment.pzStatus" in src
     assert "const replySent" in src and "shipment.dhlStatus" in src
+
+
+def test_sad_uploaded_prefers_audit_detail_over_list_row():
+    """After detail loads, SAD Uploaded / PZ unlock must follow audit presence,
+    not a stale list-row 'SAD Pending' (parity with V1 hasSad / derive_sad_status).
+
+    Pins the operator reproduction class: list says missing, detail has MRN/duty
+    → Uploaded ✓ and PZ unlocked. Both missing → PZ Locked remains.
+    """
+    src = _src()
+    assert "d.loaded" in src
+    assert "!!d.sadPresent" in src or "? !!d.sadPresent" in src
+    # Must not be ONLY list-row (stale list-row override class of bug).
+    assert "const sadUploaded     = shipment.sadStatus !== 'SAD Pending';" not in src
+    # Presence must include customs_declaration MRN / duty / zc429 pointers
+    # (same evidence family as backend derive_sad_status).
+    assert "cd.mrn" in src
+    assert "cd.duty_a00_pln" in src
+    assert "inp.zc429" in src
+    assert "inp.zc429_file" in src or "inp.sad_file" in src
+    # PZ tab still gates on sadUploaded (locked when presence false).
+    assert 'data-testid="pz-locked"' in src
+    assert "if (!sadUploaded)" in src
+    assert "Fetched during Run PZ" in src, "NBP empty-state must match V1 copy"
+
+
+def test_polish_dsk_completed_uses_ondisk_flags_not_timeline_alone():
+    """Polish Desc / DSK action Completed must follow on-disk existence flags.
+
+    Timeline milestones alone must not mark Completed when the persisted file
+    evidence is absent (split-authority class of bug).
+    """
+    src = _src()
+    assert "const descCompleted = !!d.polishDescGenerated;" in src
+    assert "const dskCompleted  = !!d.dskGenerated;" in src
+    # Forbidden: timeline coalesce that can override a missing file.
+    assert "_coalesce(_done('polish_description_generated'), d.polishDescGenerated)" not in src
+    assert "_coalesce(_done('dsk_generated'), d.dskGenerated)" not in src
+    # InfoRow still reads the same on-disk-backed fields.
+    assert "d.polishDescGenerated" in src and "d.dskGenerated" in src
+    assert "polish_desc_file_exists" in src and "dsk_file_exists" in src
 
 
 # ── B. Honest backend-pending controls ────────────────────────────────────────
