@@ -172,11 +172,18 @@ def _normalise_dhl_events(raw_events: list[dict]) -> list[dict]:
     """
     Convert DHL's raw events into a flat, sorted-ASC list with consistent fields.
 
+    Accepts Unified Tracking event shape OR MyDHL Express tracking event shape.
     Output shape per event:
       {timestamp, location, status, description}
     """
     out: list[dict] = []
     for ev in raw_events or []:
+        if not isinstance(ev, dict):
+            continue
+        # MyDHL Express: date + time + serviceArea / typeCode
+        if ev.get("date") and (ev.get("time") is not None or ev.get("typeCode")):
+            out.append(_normalise_mydhl_event(ev))
+            continue
         addr = (ev.get("location") or {}).get("address") or {}
         city = addr.get("addressLocality") or ""
         cc   = addr.get("countryCode") or ""
@@ -190,6 +197,35 @@ def _normalise_dhl_events(raw_events: list[dict]) -> list[dict]:
     # DHL returns newest-first; sort ASC for chronological reading
     out.sort(key=lambda e: e.get("timestamp") or "")
     return out
+
+
+def _normalise_mydhl_event(ev: dict) -> dict:
+    """Map one MyDHL Express tracking event into the cache/projector DTO."""
+    date = str(ev.get("date") or "").strip()
+    time = str(ev.get("time") or "00:00:00").strip() or "00:00:00"
+    # MyDHL times are local facility clocks without offset; keep wall time as-is.
+    timestamp = f"{date}T{time}" if date else ""
+    loc = ""
+    areas = ev.get("serviceArea")
+    if isinstance(areas, list) and areas:
+        area = areas[0] if isinstance(areas[0], dict) else {}
+        desc = str(area.get("description") or "").strip()
+        code = str(area.get("code") or "").strip()
+        if desc:
+            # e.g. "Warsaw-PL" → "WARSAW - PL"
+            if "-" in desc and len(desc.split("-")[-1]) == 2:
+                city, cc = desc.rsplit("-", 1)
+                loc = f"{city.strip().upper()} - {cc.strip().upper()}"
+            else:
+                loc = desc.upper()
+        elif code:
+            loc = code.upper()
+    return {
+        "timestamp": timestamp,
+        "location": loc,
+        "status": str(ev.get("typeCode") or ev.get("status") or ""),
+        "description": str(ev.get("description") or ""),
+    }
 
 # ── FedEx status mapping ──────────────────────────────────────────────────────
 
@@ -214,6 +250,63 @@ def _mask(value: Optional[str]) -> str:
 
 
 # ── Date formatting ───────────────────────────────────────────────────────────
+
+def _enrich_tracking_diagnostics(result: Dict[str, Any]) -> None:
+    """Attach provider / rate-limit / event-age diagnostics (in-place)."""
+    if not isinstance(result, dict):
+        return
+    result.setdefault(
+        "tracking_provider",
+        result.get("tracking_provider")
+        or (
+            "mydhl_express"
+            if result.get("source") == "dhl_mydhl_express"
+            else "unified"
+            if result.get("source") in ("dhl_unified_api", "dhl_api", "unified_fallback")
+            else result.get("source")
+        ),
+    )
+    result.setdefault("rate_limited", False)
+    result.setdefault("retry_after", None)
+    result.setdefault("last_http_status", result.get("last_http_status"))
+    age = _last_good_event_age_seconds(result.get("events") or [])
+    result["last_good_event_age_seconds"] = age
+
+
+def _last_good_event_age_seconds(events: list) -> Optional[int]:
+    if not events:
+        return None
+    ordered = sorted(
+        (e for e in events if isinstance(e, dict)),
+        key=_event_sort_key,
+    )
+    if not ordered:
+        return None
+    ts = ordered[-1].get("timestamp") or ordered[-1].get("event_time")
+    if not ts:
+        return None
+    try:
+        s = str(ts).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        # MyDHL local wall times have no offset — treat as UTC for age only.
+        if "T" in s and "+" not in s[10:] and not s.endswith("Z"):
+            dt = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        else:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        return max(
+            0,
+            int(
+                (
+                    datetime.now(timezone.utc) - dt.astimezone(timezone.utc)
+                ).total_seconds()
+            ),
+        )
+    except Exception:
+        return None
+
 
 def format_last_update(dt_str: Optional[str]) -> str:
     """
@@ -654,6 +747,23 @@ def _call_dhl_unified(tracking_no: str) -> Dict[str, Any]:
             f"https://api-eu.dhl.com/track/shipments?trackingNumber={tracking_no}",
             headers={"DHL-API-Key": settings.dhl_tracking_api_key or ""},
         )
+        if track_resp.status_code == 429:
+            retry_after = track_resp.headers.get("Retry-After") or track_resp.headers.get(
+                "retry-after"
+            )
+            err = httpx.HTTPStatusError(
+                "Too Many Requests",
+                request=track_resp.request,
+                response=track_resp,
+            )
+            # Attach diagnostics for callers that catch and preserve cache
+            err.tracking_meta = {  # type: ignore[attr-defined]
+                "tracking_provider": "unified",
+                "last_http_status": 429,
+                "rate_limited": True,
+                "retry_after": retry_after,
+            }
+            raise err
         track_resp.raise_for_status()
         data = track_resp.json()
 
@@ -690,28 +800,141 @@ def _call_dhl_unified(tracking_no: str) -> Dict[str, Any]:
         "origin":              _loc(shipment.get("origin", {})),
         "destination":         _loc(shipment.get("destination", {})),
         "source":              "dhl_unified_api",
+        "tracking_provider":   "unified",
+        "last_http_status":    200,
+        "rate_limited":        False,
+        "retry_after":         None,
         "events":              events,
         "events_count":        len(events),
         "last_event":          _event_summary(last_event),
     }
 
 
+def _call_dhl_mydhl_express(tracking_no: str) -> Dict[str, Any]:
+    """Primary DHL Express tracking via existing MyDHL Express credentials.
+
+    Uses GET /mydhlapi/shipments/{awb}/tracking (BasicAuth key+secret) —
+    the same product that creates outbound AWBs. Independent of the Unified
+    Tracking API key product.
+    """
+    if settings.dhl_tracking_api_status != "active":
+        raise RuntimeError(
+            f"DHL MyDHL tracking blocked: status={settings.dhl_tracking_api_status}"
+        )
+    from .carrier.adapters.live import fetch_express_tracking
+
+    data, meta = fetch_express_tracking(
+        tracking_no,
+        api_key=str(settings.dhl_express_api_key or ""),
+        api_secret=str(settings.dhl_express_api_secret or ""),
+        api_url=str(settings.dhl_express_api_url or "https://express.api.dhl.com"),
+        use_sandbox=bool(settings.dhl_express_use_sandbox),
+    )
+    ships = data.get("shipments") if isinstance(data, dict) else None
+    if not isinstance(ships, list) or not ships:
+        raise RuntimeError("MyDHL tracking response missing shipments[]")
+    shipment = ships[0] if isinstance(ships[0], dict) else {}
+    raw_events = list(shipment.get("events") or [])
+    events = _normalise_dhl_events(raw_events)
+    status_key, status_label = _derive_status_from_events(events)
+    last_event = events[-1] if events else {}
+
+    dest = ""
+    recv = shipment.get("receiverDetails") if isinstance(shipment, dict) else None
+    if isinstance(recv, dict):
+        addr = recv.get("postalAddress") or recv.get("address") or recv
+        if isinstance(addr, dict):
+            city = str(addr.get("cityName") or addr.get("city") or "").strip()
+            cc = str(addr.get("countryCode") or "").strip()
+            dest = f"{city.upper()} - {cc.upper()}" if city and cc else (city.upper() or cc.upper())
+
+    origin = ""
+    shipper = shipment.get("shipperDetails") if isinstance(shipment, dict) else None
+    if isinstance(shipper, dict):
+        addr = shipper.get("postalAddress") or shipper.get("address") or shipper
+        if isinstance(addr, dict):
+            city = str(addr.get("cityName") or addr.get("city") or "").strip()
+            cc = str(addr.get("countryCode") or "").strip()
+            origin = (
+                f"{city.upper()} - {cc.upper()}" if city and cc else (city.upper() or cc.upper())
+            )
+
+    eta = shipment.get("estimatedDeliveryDate") if isinstance(shipment, dict) else None
+    if isinstance(eta, dict):
+        eta = eta.get("estimatedDeliveryDate") or eta.get("date") or eta.get("value")
+
+    return {
+        "status": status_key,
+        "status_label": status_label,
+        "last_update": last_event.get("timestamp"),
+        "last_update_display": format_last_update(last_event.get("timestamp")),
+        "last_location": last_event.get("location") or dest,
+        "origin": origin,
+        "destination": dest,
+        "expected_delivery": eta,
+        "source": "dhl_mydhl_express",
+        "tracking_provider": "mydhl_express",
+        "last_http_status": meta.get("last_http_status"),
+        "rate_limited": bool(meta.get("rate_limited")),
+        "retry_after": meta.get("retry_after"),
+        "events": events,
+        "events_count": len(events),
+        "last_event": _event_summary(last_event),
+    }
+
+
+def _is_dhl_provider_outage(exc: BaseException) -> bool:
+    """True for genuine provider/network outages — not 404/401/422 business misses."""
+    msg = str(exc).lower()
+    if any(tok in msg for tok in ("timeout", "transport error", "connect", "connection")):
+        return True
+    for code in ("500", "502", "503", "504"):
+        if f"dhl api {code}" in msg or f"status code {code}" in msg:
+            return True
+    return False
+
+
 def _call_dhl(tracking_no: str) -> Dict[str, Any]:
     """
-    Route DHL tracking to the right caller.
-    This function is only reached when dhl_tracking_api_status == 'active'.
-    Both callers enforce their own hard block as defense-in-depth.
+    Route DHL tracking to the canonical Express authority first.
+
+    Primary: MyDHL Express Tracking (same BasicAuth product as AWB create).
+    Controlled fallback: Unified / legacy Tracking API only on genuine outage.
+    Unified 404 must never replace successful MyDHL evidence (handled by cache
+    preserve rules when a later fallback fails).
     """
-    # Primary gate — must be active to reach this function
     if settings.dhl_tracking_api_status != "active":
         raise RuntimeError(
             f"_call_dhl reached with status={settings.dhl_tracking_api_status} — "
             "this is a bug; pending block should have fired earlier"
         )
 
-    has_unified = (
-        settings.dhl_tracking_api_key and settings.dhl_tracking_api_secret
+    has_express = bool(
+        (settings.dhl_express_api_key or "").strip()
+        and (settings.dhl_express_api_secret or "").strip()
     )
+    has_unified = bool((settings.dhl_tracking_api_key or "").strip())
+    has_legacy = bool((settings.dhl_api_key or "").strip())
+
+    if has_express:
+        try:
+            return _call_dhl_mydhl_express(tracking_no)
+        except Exception as exc:
+            if _is_dhl_provider_outage(exc) and (has_unified or has_legacy):
+                log.warning(
+                    "[tracking] MyDHL Express outage for %s — controlled Unified/legacy fallback: %s",
+                    tracking_no,
+                    exc,
+                )
+                if has_unified:
+                    result = _call_dhl_unified(tracking_no)
+                else:
+                    result = _call_dhl_legacy(tracking_no)
+                result["tracking_provider"] = "unified_fallback"
+                result["primary_provider_error"] = str(exc)[:400]
+                return result
+            raise
+
     if has_unified:
         return _call_dhl_unified(tracking_no)
     return _call_dhl_legacy(tracking_no)
@@ -960,6 +1183,7 @@ def get_tracking_status(
                     hit["source"] = "cache"
                     # Mark terminal=False explicitly so UI knows refresh button OK
                     hit["tracking_terminal"] = hit.get("status") in TERMINAL_STATUSES
+                    _enrich_tracking_diagnostics(hit)
                     return hit
             log.debug("[tracking] cache expired for %s (age %.0fs) — refreshing", tracking_no, age if cached_at else -1)
 
@@ -973,11 +1197,15 @@ def get_tracking_status(
         base["source"] = "no_credentials"
         return base
 
-    # ── DHL: check at least one credential path is available ─────────────────
+    # ── DHL: Express MyDHL credentials OR Unified/legacy tracking key ─────────
     if carrier == "DHL":
-        has_unified = bool(settings.dhl_tracking_api_key and settings.dhl_tracking_api_secret)
-        has_legacy  = bool(settings.dhl_api_key)
-        if not has_unified and not has_legacy:
+        has_express = bool(
+            (settings.dhl_express_api_key or "").strip()
+            and (settings.dhl_express_api_secret or "").strip()
+        )
+        has_unified = bool((settings.dhl_tracking_api_key or "").strip())
+        has_legacy = bool((settings.dhl_api_key or "").strip())
+        if not has_express and not has_unified and not has_legacy:
             base["source"] = "no_credentials"
             return base
 
@@ -1014,6 +1242,7 @@ def get_tracking_status(
             result["tracking_terminal_reason"] = f"status_{result['status']}"
         else:
             result["tracking_terminal"]        = False
+        _enrich_tracking_diagnostics(result)
     except Exception as exc:
         exc_str = str(exc)
         # Fix 1: DHL API 404 is non-blocking — shipment may be pre-scan or
@@ -1185,6 +1414,14 @@ def get_tracking_status(
         )
     except Exception as exc:
         log.debug("[tracking] intelligence evaluation failed: %s", exc)
+
+    # Diagnostics before persist so cache carries provider/rate-limit truth
+    if "429" in str(result.get("error") or "") or "Too Many Requests" in str(
+        result.get("error") or ""
+    ):
+        result["rate_limited"] = True
+        result["last_http_status"] = result.get("last_http_status") or 429
+    _enrich_tracking_diagnostics(result)
 
     # ── Save to cache ─────────────────────────────────────────────────────────
     try:

@@ -211,25 +211,36 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
         )
 
     def get_shipment(self, tracking_ref: str) -> ShipmentResult:
+        """Resolve Express AWB state via MyDHL Tracking (not GET /shipments/{awb}).
+
+        Plain GET /mydhlapi/shipments/{awb} is not a tracking operation (HTTP 405).
+        Canonical read path: GET .../shipments/{awb}/tracking.
+        Delivered only from explicit carrier event evidence.
+        """
         self._check_credentials()
+        data, _meta = fetch_express_tracking(
+            tracking_ref,
+            api_key=self._config.api_key or "",
+            api_secret=self._config.api_secret or "",
+            api_url=self._config.api_url,
+            use_sandbox=bool(self._config.use_sandbox),
+        )
+        ships = data.get("shipments") if isinstance(data, dict) else None
+        shipment = ships[0] if isinstance(ships, list) and ships else {}
+        events = (shipment or {}).get("events") if isinstance(shipment, dict) else None
+        delivered = False
+        if isinstance(events, list):
+            for ev in events:
+                if not isinstance(ev, dict):
+                    continue
+                blob = " ".join(
+                    str(ev.get(k) or "") for k in ("description", "typeCode", "status")
+                ).lower()
+                if "delivered" in blob and "not delivered" not in blob:
+                    delivered = True
+                    break
+        state = ShipmentState.COMPLETE if delivered else ShipmentState.SUBMITTED
 
-        with httpx.Client(
-            auth=httpx.BasicAuth(self._config.api_key, self._config.api_secret),
-            timeout=30.0,
-        ) as client:
-            resp = client.get(
-                f"{self._config.api_url.rstrip('/')}{self._api_path()}/shipments/{tracking_ref}",
-            )
-
-        if not resp.is_success:
-            _raise_dhl_error(resp)
-
-        data = resp.json()
-        # DHL tracking status → ShipmentState mapping
-        status = (data.get("status") or "").upper()
-        state = ShipmentState.COMPLETE if status in {"DELIVERED", "OK"} else ShipmentState.SUBMITTED
-
-        from ..models.shipment import compute_idempotency_key as _ik
         import hashlib
         key = hashlib.sha256(tracking_ref.encode()).hexdigest()
 
@@ -240,6 +251,22 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             tracking_ref=tracking_ref,
             simulated=False,
         )
+
+    def track_shipment(self, tracking_ref: str) -> dict:
+        """Return MyDHL Tracking JSON for one Express AWB (full checkpoints)."""
+        self._check_credentials()
+        data, meta = fetch_express_tracking(
+            tracking_ref,
+            api_key=self._config.api_key or "",
+            api_secret=self._config.api_secret or "",
+            api_url=self._config.api_url,
+            use_sandbox=bool(self._config.use_sandbox),
+        )
+        if isinstance(data, dict):
+            out = dict(data)
+            out["_tracking_meta"] = meta
+            return out
+        return {"_tracking_meta": meta}
 
     def fetch_electronic_pod(
         self,
@@ -840,6 +867,84 @@ def _build_receiver_details(addr: dict) -> dict:
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+
+def fetch_express_tracking(
+    tracking_ref: str,
+    *,
+    api_key: str,
+    api_secret: str,
+    api_url: str = "https://express.api.dhl.com",
+    use_sandbox: bool = False,
+) -> tuple[dict, dict]:
+    """GET MyDHL Express Tracking for one AWB.
+
+    Canonical path (production):
+      GET {api_url}/mydhlapi/shipments/{awb}/tracking
+          ?trackingView=all-checkpoints&levelOfDetail=all
+
+    Returns ``(json_body, meta)`` where meta carries diagnostics only
+    (never credentials). Raises CarrierGateError on non-success HTTP.
+    Independent of CARRIER_API_STATUS — tracking is a read authority and
+    must work when Express booking credentials exist.
+    """
+    ref = (tracking_ref or "").strip()
+    if not ref:
+        raise CarrierGateError("tracking_ref is required for MyDHL tracking")
+    if not api_key or not api_secret:
+        raise CarrierConfigError(
+            "DHL Express tracking requires DHL_EXPRESS_API_KEY and "
+            "DHL_EXPRESS_API_SECRET"
+        )
+    path = "/mydhlapi/test" if use_sandbox else "/mydhlapi"
+    url = f"{api_url.rstrip('/')}{path}/shipments/{ref}/tracking"
+    params = {"trackingView": "all-checkpoints", "levelOfDetail": "all"}
+    try:
+        with httpx.Client(
+            auth=httpx.BasicAuth(api_key, api_secret),
+            timeout=30.0,
+            headers={"Accept": "application/json"},
+        ) as client:
+            resp = client.get(url, params=params)
+    except httpx.TimeoutException as exc:
+        raise CarrierGateError(f"DHL MyDHL tracking timeout: {exc}") from exc
+    except httpx.TransportError as exc:
+        raise CarrierGateError(f"DHL MyDHL tracking transport error: {exc}") from exc
+
+    meta = _tracking_response_meta(resp, provider="mydhl_express")
+    if not resp.is_success:
+        _raise_dhl_error(resp)
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise CarrierGateError(
+            f"DHL MyDHL tracking returned non-JSON body (HTTP {resp.status_code})"
+        ) from exc
+    if not isinstance(data, dict):
+        raise CarrierGateError("DHL MyDHL tracking body is not an object")
+    return data, meta
+
+
+def _tracking_response_meta(resp: httpx.Response, *, provider: str) -> dict:
+    headers = {k.lower(): v for k, v in resp.headers.items()}
+    retry_after = headers.get("retry-after")
+    rate_limited = resp.status_code == 429 or bool(retry_after)
+    return {
+        "tracking_provider": provider,
+        "last_http_status": resp.status_code,
+        "rate_limited": rate_limited,
+        "retry_after": retry_after,
+        "rate_limit_limit": (
+            headers.get("x-ratelimit-limit")
+            or headers.get("ratelimit-limit")
+            or headers.get("x-quota-limit")
+        ),
+        "rate_limit_remaining": (
+            headers.get("x-ratelimit-remaining")
+            or headers.get("ratelimit-remaining")
+            or headers.get("x-quota-remaining")
+        ),
+    }
 
 
 def _raise_dhl_error(resp: httpx.Response) -> None:
