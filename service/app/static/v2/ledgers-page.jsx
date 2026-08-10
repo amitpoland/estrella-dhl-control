@@ -16,12 +16,18 @@ const LDG_FMT = {
 };
 
 // Statement window: statement.json / statement.pdf REQUIRE explicit from/to
-// (routes_ledgers.py validates and 400s on ''). Use the same default the
-// /ledgers/clients roster applies server-side — Jan 1 of the current year
-// through today (UTC) — so the statement matches the roster figures.
+// (routes_ledgers.py validates and 400s on ''). Default cold path = current
+// UTC calendar quarter through today — YTD remains available via Accounting Hub
+// period preset "YTD" / custom range (formulas unchanged).
 const LDG_WINDOW = () => {
   const now = new Date();
-  return { from: `${now.getUTCFullYear()}-01-01`, to: now.toISOString().slice(0, 10) };
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth();
+  const qStart = Math.floor(m / 3) * 3;
+  return {
+    from: new Date(Date.UTC(y, qStart, 1)).toISOString().slice(0, 10),
+    to: now.toISOString().slice(0, 10),
+  };
 };
 
 // ── Source / read-only badges ──────────────────────────────────────────

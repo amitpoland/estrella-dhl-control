@@ -1,0 +1,105 @@
+{
+  "measured_at": "2026-08-10T10:59:08.170054+00:00",
+  "probes": [
+    {
+      "label": "cold_default_clients",
+      "path": "/api/v1/ledgers/clients",
+      "elapsed_ms": 3877,
+      "period": {
+        "from": "2026-07-01",
+        "to": "2026-08-10"
+      },
+      "qs": {
+        "wfirma_wait_ms": 3634,
+        "ej_ms": 3,
+        "ej_normalize_ms": 2,
+        "ej_aggregate_ms": 1,
+        "duration_ms": 3848,
+        "cache_hit": false,
+        "per_customer_wfirma_calls": 0,
+        "per_supplier_wfirma_calls": null,
+        "refresh": true
+      }
+    },
+    {
+      "label": "warm_default_clients",
+      "path": "/api/v1/ledgers/clients",
+      "elapsed_ms": 31,
+      "period": {
+        "from": "2026-07-01",
+        "to": "2026-08-10"
+      },
+      "qs": {
+        "wfirma_wait_ms": 0,
+        "ej_ms": 2,
+        "ej_normalize_ms": 0,
+        "ej_aggregate_ms": 2,
+        "duration_ms": 0,
+        "cache_hit": true,
+        "per_customer_wfirma_calls": 0,
+        "per_supplier_wfirma_calls": null,
+        "refresh": false
+      }
+    },
+    {
+      "label": "cold_explicit_ytd_clients",
+      "path": "/api/v1/ledgers/clients",
+      "elapsed_ms": 16631,
+      "period": {
+        "from": "2026-01-01",
+        "to": "2026-08-10"
+      },
+      "qs": {
+        "wfirma_wait_ms": 15566,
+        "ej_ms": 25,
+        "ej_normalize_ms": 15,
+        "ej_aggregate_ms": 10,
+        "duration_ms": 16579,
+        "cache_hit": false,
+        "per_customer_wfirma_calls": 0,
+        "per_supplier_wfirma_calls": null,
+        "refresh": true
+      }
+    },
+    {
+      "label": "cold_quarter_ap",
+      "path": "/api/v1/ledgers/payables-analysis.json",
+      "elapsed_ms": 986,
+      "period": {
+        "from": "2026-07-01",
+        "to": "2026-08-10"
+      },
+      "qs": {
+        "wfirma_wait_ms": 948,
+        "ej_ms": 2,
+        "ej_normalize_ms": 2,
+        "ej_aggregate_ms": 0,
+        "duration_ms": 977,
+        "cache_hit": false,
+        "per_customer_wfirma_calls": null,
+        "per_supplier_wfirma_calls": 0,
+        "refresh": null
+      }
+    },
+    {
+      "label": "warm_quarter_ap",
+      "path": "/api/v1/ledgers/payables-analysis.json",
+      "elapsed_ms": 4,
+      "period": {
+        "from": "2026-07-01",
+        "to": "2026-08-10"
+      },
+      "qs": {
+        "wfirma_wait_ms": 0,
+        "ej_ms": 0,
+        "ej_normalize_ms": 0,
+        "ej_aggregate_ms": 0,
+        "duration_ms": 0,
+        "cache_hit": true,
+        "per_customer_wfirma_calls": null,
+        "per_supplier_wfirma_calls": 0,
+        "refresh": null
+      }
+    }
+  ]
+}

@@ -7,6 +7,15 @@ Analysis and Client/Supplier ledgers.
 Process-local only (no cross-user disk, no auth principal in the value).
 ``force=True`` (Refresh) bypasses TTL and starts a new load; in-flight
 callers for the same key still coalesce onto the newest load after eviction.
+
+Timing fields on the payload (also surfaced via route ``query_stats``):
+  wfirma_wait_ms   — sum of upstream HTTP round-trips (paginator)
+  ej_normalize_ms  — Python date-filter + XML→fact parse
+  ej_ms            — EJ work inside the loader (normalize only at this layer)
+  duration_ms      — wall for the loader run (wfirma + normalize)
+  *_page_wait_ms   — per-page upstream timings (capped)
+On cache hit, this-request wait fields are zeroed; originals kept as
+``cached_wfirma_wait_ms`` / ``cached_duration_ms``.
 """
 from __future__ import annotations
 
@@ -64,6 +73,31 @@ def _cache_get(key: Tuple[Any, ...], ttl_s: float) -> Optional[Dict[str, Any]]:
     return hit["payload"]
 
 
+def _mark_cache_hit(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Zero this-request wait; preserve original load cost under cached_*."""
+    out = dict(payload)
+    out["cache_hit"] = True
+    out["coalesced"] = False
+    out["cached_wfirma_wait_ms"] = int(out.get("wfirma_wait_ms") or 0)
+    out["cached_duration_ms"] = int(out.get("duration_ms") or 0)
+    out["wfirma_wait_ms"] = 0
+    out["ej_normalize_ms"] = 0
+    out["ej_ms"] = 0
+    out["duration_ms"] = 0
+    return out
+
+
+def _sum_wait(stats: Dict[str, Any]) -> int:
+    return int(stats.get("wfirma_wait_ms") or 0)
+
+
+def _page_waits(stats: Dict[str, Any]) -> list:
+    raw = stats.get("page_wait_ms") or []
+    if not isinstance(raw, list):
+        return []
+    return [int(x) for x in raw[:40]]
+
+
 def _load_or_coalesce(
     key: Tuple[Any, ...],
     loader: Callable[[], Dict[str, Any]],
@@ -78,10 +112,7 @@ def _load_or_coalesce(
         else:
             cached = _cache_get(key, ttl_s)
             if cached is not None:
-                out = dict(cached)
-                out["cache_hit"] = True
-                out["coalesced"] = False
-                return out
+                return _mark_cache_hit(cached)
         existing = _inflight.get(key)
         if existing is not None:
             waiter = existing
@@ -155,10 +186,13 @@ def load_ar_fact_universe(
             df, dt, types=types, stats=inv_stats
         )
         pay_nodes = wfirma_client.fetch_payments_for_period(df, dt, stats=pay_stats)
+        wfirma_wait_ms = _sum_wait(inv_stats) + _sum_wait(pay_stats)
+        t_n0 = time.perf_counter()
         inv_nodes = _python_filter_by_date(inv_nodes, df, dt, "date")
         pay_nodes = _python_filter_by_date(pay_nodes, df, dt, "date")
         invoice_facts = [_parse_invoice_fact(n) for n in inv_nodes]
         payment_facts = [_parse_payment_fact(n) for n in pay_nodes]
+        ej_normalize_ms = int((time.perf_counter() - t_n0) * 1000)
         duration_ms = int((time.perf_counter() - t0) * 1000)
         return {
             "kind": "ar",
@@ -168,6 +202,11 @@ def load_ar_fact_universe(
             "inv_stats": inv_stats,
             "pay_stats": pay_stats,
             "duration_ms": duration_ms,
+            "wfirma_wait_ms": wfirma_wait_ms,
+            "ej_normalize_ms": ej_normalize_ms,
+            "ej_ms": ej_normalize_ms,
+            "inv_page_wait_ms": _page_waits(inv_stats),
+            "pay_page_wait_ms": _page_waits(pay_stats),
             "per_customer_wfirma_calls": 0,
         }
 
@@ -197,10 +236,13 @@ def load_ap_fact_universe(
         pay_stats: Dict[str, Any] = {}
         exp_nodes = wfirma_client.fetch_expenses_for_period(df, dt, stats=exp_stats)
         pay_nodes = wfirma_client.fetch_payments_for_period(df, dt, stats=pay_stats)
+        wfirma_wait_ms = _sum_wait(exp_stats) + _sum_wait(pay_stats)
+        t_n0 = time.perf_counter()
         exp_nodes = _python_filter_by_date(exp_nodes, df, dt, "date")
         pay_nodes = _python_filter_by_date(pay_nodes, df, dt, "date")
         expense_facts = [_parse_expense_fact(n) for n in exp_nodes]
         payment_facts = [_parse_payment_fact(n) for n in pay_nodes]
+        ej_normalize_ms = int((time.perf_counter() - t_n0) * 1000)
         duration_ms = int((time.perf_counter() - t0) * 1000)
         return {
             "kind": "ap",
@@ -210,10 +252,36 @@ def load_ap_fact_universe(
             "exp_stats": exp_stats,
             "pay_stats": pay_stats,
             "duration_ms": duration_ms,
+            "wfirma_wait_ms": wfirma_wait_ms,
+            "ej_normalize_ms": ej_normalize_ms,
+            "ej_ms": ej_normalize_ms,
+            "exp_page_wait_ms": _page_waits(exp_stats),
+            "pay_page_wait_ms": _page_waits(pay_stats),
             "per_supplier_wfirma_calls": 0,
         }
 
     return _load_or_coalesce(key, _loader, force=force, ttl_s=ttl_s)
+
+
+def timing_fields_from_universe(uni: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact timing block for route/analytics ``query_stats``."""
+    out: Dict[str, Any] = {
+        "wfirma_wait_ms": int(uni.get("wfirma_wait_ms") or 0),
+        "ej_normalize_ms": int(uni.get("ej_normalize_ms") or 0),
+        "ej_ms": int(uni.get("ej_ms") or 0),
+        "duration_ms": int(uni.get("duration_ms") or 0),
+    }
+    if uni.get("inv_page_wait_ms") is not None:
+        out["inv_page_wait_ms"] = list(uni.get("inv_page_wait_ms") or [])
+    if uni.get("exp_page_wait_ms") is not None:
+        out["exp_page_wait_ms"] = list(uni.get("exp_page_wait_ms") or [])
+    if uni.get("pay_page_wait_ms") is not None:
+        out["pay_page_wait_ms"] = list(uni.get("pay_page_wait_ms") or [])
+    if "cached_wfirma_wait_ms" in uni:
+        out["cached_wfirma_wait_ms"] = int(uni.get("cached_wfirma_wait_ms") or 0)
+    if "cached_duration_ms" in uni:
+        out["cached_duration_ms"] = int(uni.get("cached_duration_ms") or 0)
+    return out
 
 
 __all__ = [
@@ -221,4 +289,5 @@ __all__ = [
     "clear_fact_universe_cache",
     "load_ar_fact_universe",
     "load_ap_fact_universe",
+    "timing_fields_from_universe",
 ]
