@@ -674,15 +674,18 @@ def _apply_latest_carrier_authority(out: Dict[str, Any], events: List[Any]) -> N
 
 
 def _cache_record_is_failed_empty(rec: Dict[str, Any]) -> bool:
-    """True when a failed refresh wiped carrier events (stale-unknown)."""
+    """True when a failed/404 refresh left no usable carrier events."""
     if not isinstance(rec, dict):
         return True
     if rec.get("api_status") == "failed" and not (rec.get("events") or []):
         return True
+    st = str(rec.get("status") or "").lower()
+    if st in ("unknown", "", "not_found") and not (rec.get("events") or []):
+        return True
     if (
-        str(rec.get("status") or "").lower() in ("unknown", "")
+        st in ("unknown", "")
         and not (rec.get("events") or [])
-        and rec.get("source") in ("error", "cache_stale")
+        and rec.get("source") in ("error", "cache_stale", "dhl_api_404")
     ):
         return True
     return False
