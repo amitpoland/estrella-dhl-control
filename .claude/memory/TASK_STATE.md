@@ -48,6 +48,72 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 ## Current task
 
+- **Task:** Repair product-description authority (material-component semantics + `name_pl`
+  provenance) — PR #1178 — and converge the affected draft through the normal authority path.
+- **Started:** 2026-08-09 · **Closed:** 2026-08-11
+- **Status:** `COMPLETE` — merged, deployed, operator-verified. **Campaign CLOSED. Do not
+  reopen, do not re-implement, do not re-run the draft convergence.**
+- **Merged:** `3710aa12` (PR #1178, branch `claude/product-description-authority-0126d8`).
+  Independently gated **7/7 GO** at `1707e630`, whose runtime payload is byte-identical to the
+  merge commit.
+- **Deployed:** production runtime SHA **`7150996b75eb12174df3ee79f896bd5510d2eec5`**, deployed
+  2026-08-11 UTC by the operator from `C:\PZ-main` via `Deploy-PZ.ps1 -Release -Scope Both`
+  (elevated Admin shell). Pre-deploy marker in `C:\PZ\version.txt` was `d32efd3a`.
+- **Ride-along disclosed, not hidden:** `-Release` self-resolves `origin/main`, so the
+  deployable unit was the **tip**, not our merge. Composite payload `d32efd3a..7150996b` =
+  **9 files** — 4 from #1178 (`description_grammar.py`, `pz_import_processor.py`,
+  `customs_description_engine.py`, `service/app/services/proforma_invoice_link_db.py`) + 5 from
+  PR #1180 (DHL notify audit). Measured **file-disjoint** (`comm -12` empty); #1180's files are
+  blob-identical to its own gated head `43488f29`, whose parent IS `d32efd3a`. **Lesson J
+  applies** — three of #1178's four files are governed `engine_files`; `-Scope Both` covered the
+  separate engine sync.
+- **Gate evidence:** `latest.json` names `target_sha=7150996b…`, 7/7 `GO`, empty blockers;
+  `python .claude/hooks/gate_evidence.py <file> 7150996b…` → `VALID seven-agent GO`, EXIT=0.
+  **Authored by a concurrent session, not by this campaign session** — recorded per Lesson Q
+  rule 1 (attribute; never present another session's round as your own).
+- **Metered floors at the tip** (`.claude/contracts/test-baseline.md`): PZ `283 passed`
+  (floor 260) · Carrier `646 passed, 4 failed` (floor 604). The 4
+  `test_carrier_config_defaults.py` failures are the registered ENVIRONMENTAL class (real DHL
+  credentials present in the host env), not regressions.
+- **What was fixed** — two defects in one authority layer: (a) lossy single-metal normalization
+  dropped a real material from combination rows and invented a `925` purity on bare `SILVER`;
+  (b) `_birth_resolve_name_pl()` stamped `name_pl_source='operator'` on machine-born names,
+  which then made the row permanently uncorrectable by enrichment. Shape: **ONE** shared
+  multi-metal tokenizer `parse_material_components()` in `description_grammar.py` (stdlib-only
+  leaf) with both engines as consumers — no third generator; `check_material_completeness()` on
+  both paths; `NAME_PL_SOURCE_MACHINE_BIRTH = "machine_birth"` with precedence
+  `operator > product_descriptions > machine_birth > missing_pd/blank`; `update_draft_line`
+  remains the SOLE minter of `operator`; `classify_legacy_name_pl_verdict()` is **fail-closed**
+  — `unknown` ALWAYS preserves `operator`.
+- **Governing invariant (permanent):** *normalization may improve language; it may never remove
+  a material component present in the source.* ≥2 metals with no combination marker ⇒
+  `description_review_required`, never a confident guess.
+- **Operator-verified convergence (2026-08-11), normal authority path only** — no direct SQL, no
+  draft-ID-specific rule: all 4 #1178 + all 5 #1180 runtime files hash-match `C:\PZ-main`
+  (Lesson P content parity, never a robocopy count); promotion dry-run `conflicts=0,
+  skipped_protected=0`; real promotion wrote **29 rows**; `reset-from-sales-packing` run
+  **twice** with identical results (idempotency proven); the two combination lines carry
+  corrected multi-material descriptions with **no invented `925`**; the two single-metal lines
+  unchanged; **draft totals unchanged (4 lines)**; no Post, no Convert, no wFirma mutation.
+- **Layer note (not a discrepancy):** the brief's 29-line / net / gross / duty figures are
+  **source-batch / invoice-level** (matching the 29 promoted rows); the 4-line draft total is
+  **draft-level**. Different layers of the same flow.
+- **Deliberately NOT touched:** the four wFirma goods created 2026-08-07 still carry the OLD
+  wrong names. They are live external **PRODUCT-authority** records; correcting them is a
+  separate, explicit operator action via the gated
+  `POST /api/v1/wfirma/goods/{product_code}/update-and-adopt` (`WFIRMA_EDIT_PRODUCT_ALLOWED`),
+  outside this closed campaign.
+- **Nothing owed.** No deploy, no follow-up PR, no re-verification.
+
+## Prior task — Deploy PR #1043 tracking `last_event` hotfix (COMPLETE; SUPERSEDED)
+
+> **SUPERSEDED 2026-08-11 — retained for audit, not for reliance (Lesson Q rule 5: correct by
+> marking, never by deleting).** The `1ce0e76d` / `423fa3cb` HYBRID production state described
+> below was reconciled by the operator's `-Reconcile -FromSha 423fa3cb -ToSha f43796bc` run on
+> 2026-08-07, and production has since advanced twice more; it is now `7150996b` (see the
+> current task above). **Every production-SHA claim in this block is historical. Re-measure
+> `C:\PZ\version.txt` and `git -C C:\PZ-main rev-parse origin/main` before acting on any of it.**
+
 - **Task:** Deploy PR #1043 (tracking `last_event` React-#31 hotfix) to production.
 - **Started:** 2026-07-31
 - **Status:** `EXECUTION_BLOCKED` — **agent-side COMPLETE, operator handoff** (merge DONE +
@@ -349,6 +415,24 @@ gate_reconfirmed_at: 2026-07-31T (this session; READY-TO-DEPLOY, LOW)
 
 ## History (most recent first)
 
+- 2026-08-11 — **PR #1178 product-description authority MERGED (`3710aa12`) and DEPLOYED inside
+  the `7150996b` tip; campaign CLOSED.** One shared multi-metal tokenizer
+  (`parse_material_components()` in `description_grammar.py`) replaced two independent
+  first-match-wins single-metal parsers that had been silently discarding a real material from
+  combination rows, and inventing a `925` purity on bare `SILVER`; `NAME_PL_SOURCE_MACHINE_BIRTH`
+  ended the `operator`-provenance lie that made machine-born names uncorrectable by enrichment,
+  with `unknown` fail-closed to `operator`. Gated 7/7 GO at `1707e630` (payload-identical to the
+  merge). **Release-targeting lesson recorded:** `-Release` self-resolves `origin/main`
+  (`Deploy-PZ.ps1:1531`) and `Assert-ReviewedTarget` refuses any SHA the tip has advanced beyond
+  (`:793`), so a merged PR is **not** a deployable unit — #1180 landed on top and the deploy
+  necessarily carried both. The two changesets were proven **file-disjoint** by measurement
+  before the gate, and the ride-along was disclosed to the operator rather than shipped
+  silently. Operator deployed `-Release -Scope Both` (Lesson J: 3 of 4 files are governed
+  `engine_files`), then converged the draft through the **normal** `reset-from-sales-packing`
+  authority — dry-run `conflicts=0 skipped_protected=0`, 29 rows promoted, reset run twice with
+  identical results, draft totals unchanged, no Post/Convert, no wFirma mutation. The four
+  wFirma goods keep their old wrong names by design; fixing them is a separate gated operator
+  action. Detail in the current-task block above.
 - 2026-08-07 — **PR #1104 rebased to main + CMR stale-test repair folded in (test-only;
   no new PR — GATE 2 exactly full at #1110/#1109/#1104).** New state: base `main`, head
   `8ddc80c1`, 2 commits, diff vs main = exactly 2 test files
