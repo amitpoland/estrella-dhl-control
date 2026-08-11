@@ -1,0 +1,645 @@
+"""
+dhl_logistics_intelligence.py — Management analytics over logistics projection.
+
+All calculations are projections over existing shipment / carrier / customs /
+attention authorities. Does NOT:
+  - create a second tracking or Delivered authority
+  - invent opaque AI risk scores
+  - hide data-quality exclusions
+  - persist DHL cost / Rating warehouse
+  - execute customs or financial actions
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+from . import dhl_logistics_projector as projector
+from . import dhl_logistics_targets as targets
+
+
+# Deterministic attention → suggested action (advice only — never auto-executes).
+_ATTENTION_ACTIONS: Dict[str, Dict[str, str]] = {
+    "no_carrier_movement_12h": {
+        "issue": "No carrier movement 12h+",
+        "suggested_action": "Check DHL tracking / contact shipper or destination facility",
+        "owner": "logistics",
+        "risk": "action_required",
+    },
+    "expected_delivery_passed": {
+        "issue": "ETA passed",
+        "suggested_action": "Confirm delivery status with DHL; update consignee if delayed",
+        "owner": "logistics",
+        "risk": "action_required",
+    },
+    "missed_delivery_or_ready_for_collection": {
+        "issue": "Awaiting consignee collection / missed delivery",
+        "suggested_action": "Contact consignee to collect or rebook delivery",
+        "owner": "logistics",
+        "risk": "action_required",
+    },
+    "carrier_exception": {
+        "issue": "Carrier exception",
+        "suggested_action": "Review carrier exception text and resolve hold",
+        "owner": "logistics",
+        "risk": "critical",
+    },
+    "tracking_stale": {
+        "issue": "Tracking stale / refresh failed",
+        "suggested_action": "Refresh tracking cache; verify AWB is still valid",
+        "owner": "logistics",
+        "risk": "watch",
+    },
+    "dhl_email_received_dsk_missing": {
+        "issue": "DHL email received, DSK missing",
+        "suggested_action": "Generate / chase DSK for customs package",
+        "owner": "customs",
+        "risk": "action_required",
+    },
+    "poland_arrival_no_customs_progress": {
+        "issue": "Poland arrival beyond target without customs progress",
+        "suggested_action": "Confirm DHL customs email / start clearance workflow",
+        "owner": "customs",
+        "risk": "action_required",
+    },
+    "stage_age_critical": {
+        "issue": "Time in stage critically high",
+        "suggested_action": "Escalate with carrier or customs owner for this stage",
+        "owner": "logistics",
+        "risk": "critical",
+    },
+}
+
+_RISK_RANK = {"critical": 0, "action_required": 1, "watch": 2, "normal": 3}
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    return projector._parse_iso(value)  # noqa: SLF001 — shared ISO parser
+
+
+def _hours_between(a: Optional[datetime], b: Optional[datetime]) -> Optional[float]:
+    return projector._hours_between(a, b)  # noqa: SLF001
+
+
+def _fmt_duration(hours: Optional[float]) -> Optional[str]:
+    return projector._fmt_duration(hours)  # noqa: SLF001
+
+
+def _cohort_stats(hours_list: List[float]) -> Dict[str, Any]:
+    return projector._cohort_stats(hours_list)  # noqa: SLF001
+
+
+def _delta_pct(current: Optional[float], previous: Optional[float]) -> Optional[float]:
+    if current is None or previous is None:
+        return None
+    if previous == 0:
+        return None
+    return round(((current - previous) / previous) * 100.0, 1)
+
+
+def _enrich_inbound_attention(row: Dict[str, Any], now: datetime) -> List[str]:
+    """Extra deterministic inbound intervention signals (advice-only)."""
+    extra: List[str] = []
+    if row.get("classification") not in ("active", "exception"):
+        return extra
+    if row.get("direction") != "inbound":
+        return extra
+
+    tsmap = projector._row_timestamp_map(row)  # noqa: SLF001
+    dhl_email = tsmap.get("dhl_email")
+    dsk = tsmap.get("dsk")
+    arrived = tsmap.get("arrived_pl")
+    if dhl_email is not None and dsk is None:
+        extra.append("dhl_email_received_dsk_missing")
+
+    poland_target = targets.target_hours("poland_to_dhl_email") or 24.0
+    if arrived is not None and dhl_email is None and dsk is None:
+        age = _hours_between(arrived, now)
+        if age is not None and age > poland_target:
+            extra.append("poland_arrival_no_customs_progress")
+    return extra
+
+
+def _risk_for_row(row: Dict[str, Any], reasons: List[str], now: datetime) -> str:
+    if row.get("classification") == "delivered":
+        return "normal"
+    if row.get("classification") not in ("active", "exception"):
+        return "normal"
+
+    ranks: List[int] = []
+    for r in reasons:
+        base = r.split(":", 1)[0]
+        meta = _ATTENTION_ACTIONS.get(base) or _ATTENTION_ACTIONS.get(r)
+        if meta:
+            ranks.append(_RISK_RANK.get(meta["risk"], 3))
+        elif r.startswith("exception:") or r.startswith("workflow:"):
+            ranks.append(_RISK_RANK["critical"] if r.startswith("exception:") else _RISK_RANK["action_required"])
+
+    stage_age = row.get("stage_age_hours")
+    if isinstance(stage_age, (int, float)):
+        if stage_age >= targets.STAGE_AGE_CRITICAL_HOURS:
+            ranks.append(_RISK_RANK["critical"])
+            if "stage_age_critical" not in reasons:
+                reasons.append("stage_age_critical")
+        elif stage_age >= targets.STAGE_AGE_ACTION_HOURS:
+            ranks.append(_RISK_RANK["action_required"])
+        elif stage_age >= targets.STAGE_AGE_WATCH_HOURS:
+            ranks.append(_RISK_RANK["watch"])
+
+    if row.get("classification") == "exception":
+        ranks.append(_RISK_RANK["critical"])
+
+    if not ranks:
+        return "normal"
+    best = min(ranks)
+    for name, rank in _RISK_RANK.items():
+        if rank == best:
+            return name
+    return "normal"
+
+
+def _required_action(reasons: List[str]) -> Optional[str]:
+    for r in reasons:
+        base = r.split(":", 1)[0]
+        meta = _ATTENTION_ACTIONS.get(base) or _ATTENTION_ACTIONS.get(r)
+        if meta and meta["risk"] in ("action_required", "critical"):
+            return meta["suggested_action"]
+    for r in reasons:
+        base = r.split(":", 1)[0]
+        meta = _ATTENTION_ACTIONS.get(base)
+        if meta:
+            return meta["suggested_action"]
+    return None
+
+
+def build_operations_now(rows: List[Dict[str, Any]], *, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    now = now or _now_utc()
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        reasons = list(row.get("attention_reasons") or [])
+        reasons.extend(_enrich_inbound_attention(row, now))
+        # de-dupe preserve order
+        seen = set()
+        uniq: List[str] = []
+        for r in reasons:
+            if r not in seen:
+                seen.add(r)
+                uniq.append(r)
+        reasons = uniq
+
+        classification = row.get("classification")
+        delivered = classification == "delivered"
+        risk = _risk_for_row(row, reasons, now)
+
+        op = {
+            "direction": row.get("direction"),
+            "party": row.get("party"),
+            "party_role": row.get("party_role"),
+            "party_authority": row.get("party_authority"),
+            "awb": row.get("awb"),
+            "batch_id": row.get("batch_id"),
+            "current_stage": row.get("current_stage_label") or row.get("transport_status"),
+            "location": row.get("current_location"),
+            "last_movement": row.get("latest_event"),
+            "last_movement_at_warsaw": row.get("latest_event_at_warsaw"),
+            "time_in_stage_hours": None if delivered else row.get("stage_age_hours"),
+            "time_in_stage_human": None if delivered else row.get("stage_age_human"),
+            "total_transit_hours": row.get("total_elapsed_hours"),
+            "total_transit_human": row.get("total_elapsed_human"),
+            "eta_warsaw": row.get("expected_delivery_warsaw"),
+            "risk": risk,
+            "required_action": None if delivered else _required_action(reasons),
+            "attention_reasons": reasons,
+            "classification": classification,
+            "lane_id": row.get("lane_id"),
+            "explainability": [
+                {"rule": r, "evidence": _evidence_for_reason(row, r)}
+                for r in reasons
+            ],
+        }
+        if delivered:
+            op["delivered_frozen"] = True
+            op["operational_attention"] = False
+        else:
+            op["delivered_frozen"] = False
+            op["operational_attention"] = risk in ("action_required", "critical") or bool(row.get("needs_attention"))
+        out.append(op)
+
+    out.sort(
+        key=lambda r: (
+            _RISK_RANK.get(str(r.get("risk") or "normal"), 9),
+            -(r.get("time_in_stage_hours") or 0),
+            str(r.get("awb") or ""),
+        )
+    )
+    return out
+
+
+def _evidence_for_reason(row: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    base = reason.split(":", 1)[0]
+    ev: Dict[str, Any] = {
+        "awb": row.get("awb"),
+        "classification": row.get("classification"),
+        "stage_age_hours": row.get("stage_age_hours"),
+        "transport_status": row.get("transport_status"),
+    }
+    if base == "expected_delivery_passed":
+        ev["expected_delivery_utc"] = row.get("expected_delivery_utc")
+    if base == "dhl_email_received_dsk_missing":
+        ev["dhl_email_kpi_at_utc"] = row.get("dhl_email_kpi_at_utc")
+        ev["dsk"] = None
+    if reason.startswith("exception:"):
+        ev["exception"] = reason.split(":", 1)[1]
+    return ev
+
+
+def build_intervention_queue(operations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rank non-terminal shipments that require human action (advice only)."""
+    queue: List[Dict[str, Any]] = []
+    for op in operations:
+        if op.get("classification") not in ("active", "exception"):
+            continue
+        if op.get("risk") not in ("action_required", "critical"):
+            continue
+        reasons = op.get("attention_reasons") or []
+        primary = reasons[0] if reasons else "action_required"
+        base = primary.split(":", 1)[0]
+        meta = _ATTENTION_ACTIONS.get(base) or {
+            "issue": primary,
+            "suggested_action": op.get("required_action") or "Review shipment and decide next step",
+            "owner": "logistics",
+        }
+        age = op.get("time_in_stage_hours")
+        queue.append({
+            "awb": op.get("awb"),
+            "party": op.get("party"),
+            "direction": op.get("direction"),
+            "issue": meta["issue"],
+            "evidence": (op.get("explainability") or [{}])[0].get("evidence") if op.get("explainability") else {},
+            "attention_reasons": reasons,
+            "age_hours": age,
+            "age_human": op.get("time_in_stage_human"),
+            "suggested_action": meta["suggested_action"],
+            "action_is_advice_only": True,
+            "owner": meta.get("owner") or "logistics",
+            "risk": op.get("risk"),
+        })
+    queue.sort(
+        key=lambda r: (
+            _RISK_RANK.get(str(r.get("risk") or "normal"), 9),
+            -(r.get("age_hours") or 0),
+        )
+    )
+    return queue
+
+
+def _transition_period_dto(
+    samples: List[Dict[str, Any]],
+    *,
+    transition_id: str,
+    label: str,
+    now: datetime,
+) -> Dict[str, Any]:
+    target = targets.target_hours(transition_id)
+    all_hours = [float(s["hours"]) for s in samples]
+    all_stats = _cohort_stats(all_hours)
+
+    cur_start = now - timedelta(days=30)
+    prev_start = now - timedelta(days=60)
+    current = [float(s["hours"]) for s in samples if s.get("end_ts") and cur_start <= s["end_ts"] < now]
+    previous = [float(s["hours"]) for s in samples if s.get("end_ts") and prev_start <= s["end_ts"] < cur_start]
+    cur_stats = _cohort_stats(current)
+    prev_stats = _cohort_stats(previous)
+
+    typical = all_stats.get("median") if all_stats.get("median") is not None else all_stats.get("average")
+    excess_vs_target = None
+    if target is not None and typical is not None:
+        excess_vs_target = round(float(typical) - float(target), 2)
+
+    cur_typical = cur_stats.get("median") if cur_stats.get("median") is not None else cur_stats.get("average")
+    prev_typical = prev_stats.get("median") if prev_stats.get("median") is not None else prev_stats.get("average")
+
+    return {
+        "id": transition_id,
+        "label": label,
+        "median": all_stats.get("median"),
+        "median_human": all_stats.get("median_human"),
+        "average": all_stats.get("average"),
+        "average_human": all_stats.get("average_human"),
+        "p75": all_stats.get("p75"),
+        "p75_human": all_stats.get("p75_human"),
+        "p90": all_stats.get("p90"),
+        "p90_human": all_stats.get("p90_human"),
+        "typical": typical,
+        "typical_human": all_stats.get("typical_human"),
+        "target_hours": target,
+        "target_human": _fmt_duration(target),
+        "target_source": "explicit_configured",
+        "current_30d": {
+            "n": cur_stats.get("n"),
+            "median": cur_stats.get("median"),
+            "average": cur_stats.get("average"),
+            "typical": cur_typical,
+            "typical_human": cur_stats.get("typical_human"),
+            "p90": cur_stats.get("p90"),
+        },
+        "previous_30d": {
+            "n": prev_stats.get("n"),
+            "median": prev_stats.get("median"),
+            "average": prev_stats.get("average"),
+            "typical": prev_typical,
+            "typical_human": prev_stats.get("typical_human"),
+            "p90": prev_stats.get("p90"),
+        },
+        "delta_pct_vs_previous_30d": _delta_pct(cur_typical, prev_typical),
+        "excess_vs_target_hours": excess_vs_target,
+        "n": all_stats.get("n"),
+        "excluded_n": None,  # filled by caller from projector analytics when available
+    }
+
+
+def build_transition_kpis(
+    inbound_rows: List[Dict[str, Any]],
+    outbound_rows: List[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+    analytics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    now = now or _now_utc()
+    analytics = analytics or {}
+
+    inbound: Dict[str, Any] = {}
+    for key, label, pair in projector._INBOUND_FIXED_TRANSITIONS:  # noqa: SLF001
+        samples = projector.collect_transition_samples(inbound_rows, key, pair)  # noqa: SLF001
+        dto = _transition_period_dto(samples, transition_id=key, label=label, now=now)
+        base = (analytics.get("fixed_transitions_inbound") or {}).get(key) or {}
+        dto["excluded_n"] = base.get("excluded_n")
+        dto["exclusion_reason_counts"] = base.get("exclusion_reason_counts") or {}
+        inbound[key] = dto
+
+    outbound: Dict[str, Any] = {}
+    for key, label, pair in projector._OUTBOUND_FIXED_TRANSITIONS:  # noqa: SLF001
+        samples = projector.collect_transition_samples(outbound_rows, key, pair)  # noqa: SLF001
+        dto = _transition_period_dto(samples, transition_id=key, label=label, now=now)
+        base = (analytics.get("fixed_transitions_outbound") or {}).get(key) or {}
+        dto["excluded_n"] = base.get("excluded_n")
+        dto["exclusion_reason_counts"] = base.get("exclusion_reason_counts") or {}
+        outbound[key] = dto
+
+    return {"inbound": inbound, "outbound": outbound}
+
+
+def build_bottleneck_ranking(transition_kpis: Dict[str, Any]) -> List[Dict[str, Any]]:
+    ranked: List[Dict[str, Any]] = []
+    for scope in ("inbound", "outbound"):
+        for tid, dto in (transition_kpis.get(scope) or {}).items():
+            excess = dto.get("excess_vs_target_hours")
+            n = dto.get("n") or 0
+            if excess is None or n <= 0:
+                continue
+            contribution = round(float(excess) * float(n), 2)
+            ranked.append({
+                "id": tid,
+                "scope": scope,
+                "label": dto.get("label"),
+                "excess_vs_target_hours": excess,
+                "excess_human": _fmt_duration(excess if excess > 0 else 0),
+                "n": n,
+                "contribution_hours": contribution,
+                "typical": dto.get("typical"),
+                "target_hours": dto.get("target_hours"),
+                "delta_pct_vs_previous_30d": dto.get("delta_pct_vs_previous_30d"),
+                "improved": (
+                    dto.get("delta_pct_vs_previous_30d") is not None
+                    and dto.get("delta_pct_vs_previous_30d") < 0
+                ),
+            })
+    ranked.sort(key=lambda r: (-(r.get("contribution_hours") or 0), -(r.get("excess_vs_target_hours") or 0)))
+    return ranked
+
+
+def _lane_id_for_row(row: Dict[str, Any]) -> str:
+    if row.get("lane_id"):
+        return str(row["lane_id"])
+    origin = str(row.get("origin_country") or ("IN" if row.get("direction") == "inbound" else "PL")).upper()
+    dest = str(row.get("destination_country") or ("PL" if row.get("direction") == "inbound" else "XX")).upper()
+    if len(origin) != 2:
+        origin = "XX"
+    if len(dest) != 2:
+        dest = "XX"
+    return f"{origin}→{dest}"
+
+
+def build_lane_performance(
+    rows: List[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    now = now or _now_utc()
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        if row.get("classification") != "delivered":
+            continue
+        hours = row.get("total_elapsed_hours")
+        if not isinstance(hours, (int, float)) or hours < 0:
+            continue
+        lid = _lane_id_for_row(row)
+        buckets.setdefault(lid, []).append(row)
+
+    out: List[Dict[str, Any]] = []
+    cur_start = now - timedelta(days=30)
+    prev_start = now - timedelta(days=60)
+    for lid, members in sorted(buckets.items()):
+        hours_all = [float(r["total_elapsed_hours"]) for r in members]
+        stats = _cohort_stats(hours_all)
+        target = targets.lane_target_hours(lid)
+        hits = 0
+        if target is not None:
+            hits = sum(1 for h in hours_all if h <= target)
+        target_hit_pct = round(100.0 * hits / len(hours_all), 1) if hours_all and target is not None else None
+
+        exceptions = sum(
+            1 for r in members
+            if (r.get("attention_reasons") or r.get("data_quality"))
+        )
+        exception_rate = round(100.0 * exceptions / len(members), 1) if members else None
+
+        cur = [
+            float(r["total_elapsed_hours"])
+            for r in members
+            if (_parse_iso(r.get("delivered_at_utc")) or datetime.min.replace(tzinfo=timezone.utc)) >= cur_start
+        ]
+        prev = [
+            float(r["total_elapsed_hours"])
+            for r in members
+            if prev_start
+            <= (_parse_iso(r.get("delivered_at_utc")) or datetime.min.replace(tzinfo=timezone.utc))
+            < cur_start
+        ]
+        cur_t = _cohort_stats(cur).get("median") or _cohort_stats(cur).get("average")
+        prev_t = _cohort_stats(prev).get("median") or _cohort_stats(prev).get("average")
+
+        out.append({
+            "lane_id": lid,
+            "n": stats.get("n"),
+            "median_transit_hours": stats.get("median"),
+            "median_human": stats.get("median_human"),
+            "p90_hours": stats.get("p90"),
+            "p90_human": stats.get("p90_human"),
+            "target_hours": target,
+            "target_human": _fmt_duration(target),
+            "target_hit_pct": target_hit_pct,
+            "exception_rate_pct": exception_rate,
+            "trend_delta_pct": _delta_pct(cur_t, prev_t),
+            "current_30d_n": len(cur),
+            "previous_30d_n": len(prev),
+        })
+    out.sort(key=lambda r: (-(r.get("n") or 0), r.get("lane_id") or ""))
+    return out
+
+
+def build_cost_intelligence(outbound_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Quoted-cost feasibility only. Actual DHL cost remains unavailable.
+
+    No Rating warehouse / persistence is created here.
+    """
+    quoted_rows: List[Dict[str, Any]] = []
+    currencies_seen = set()
+    for row in outbound_rows:
+        # Carrier shipment may expose weight / declared value — never invent quote.
+        q = row.get("quoted_cost")
+        currency = row.get("quoted_cost_currency") or row.get("currency")
+        if q is not None and currency:
+            currencies_seen.add(str(currency).upper())
+            weight = row.get("weight_kg")
+            value = row.get("declared_value") or row.get("shipment_value")
+            per_kg = None
+            freight_pct = None
+            if isinstance(q, (int, float)) and isinstance(weight, (int, float)) and weight > 0:
+                per_kg = round(float(q) / float(weight), 2)
+            if isinstance(q, (int, float)) and isinstance(value, (int, float)) and value > 0:
+                freight_pct = round(100.0 * float(q) / float(value), 2)
+            quoted_rows.append({
+                "awb": row.get("awb"),
+                "party": row.get("party"),
+                "quoted_cost": q,
+                "currency": str(currency).upper(),
+                "service_product": row.get("service_product"),
+                "destination_country": row.get("destination_country"),
+                "weight_kg": weight,
+                "shipment_value": value,
+                "quote_per_kg": per_kg,
+                "freight_pct_of_value": freight_pct,
+                "label": "Quoted Cost",
+                "is_actual_cost": False,
+            })
+
+    # Never merge cross-currency totals.
+    totals_by_currency: Dict[str, float] = {}
+    for r in quoted_rows:
+        ccy = r["currency"]
+        totals_by_currency[ccy] = round(totals_by_currency.get(ccy, 0.0) + float(r["quoted_cost"]), 2)
+
+    return {
+        "quoted_cost_available": bool(quoted_rows),
+        "actual_cost_available": False,
+        "actual_cost_gap": (
+            "Actual DHL Cost unavailable until a durable billing/invoice authority exists. "
+            "Do not treat MyDHL rates or estimates as actual charges."
+        ),
+        "quoted_cost_gap": (
+            None
+            if quoted_rows
+            else (
+                "Quoted DHL cost is not durably stored on carrier_shipments today "
+                "(rates may be queried at booking). Display only when a valid quote "
+                "authority is present on the row — no Rating warehouse created."
+            )
+        ),
+        "cross_currency_merge": False,
+        "totals_by_currency": totals_by_currency,
+        "rows": quoted_rows,
+        "section_title": "Quoted Cost",
+        "actual_section_title": "Actual DHL Cost",
+        "actual_section_status": "unavailable",
+    }
+
+
+def build_intelligence(
+    *,
+    all_rows: List[Dict[str, Any]],
+    analytics: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    now = now or _now_utc()
+    analytics = analytics or {}
+    inbound = [r for r in all_rows if r.get("direction") == "inbound"]
+    outbound = [r for r in all_rows if r.get("direction") == "outbound"]
+
+    operations = build_operations_now(all_rows, now=now)
+    intervention = build_intervention_queue(operations)
+    transition_kpis = build_transition_kpis(inbound, outbound, now=now, analytics=analytics)
+    bottlenecks = build_bottleneck_ranking(transition_kpis)
+    lanes = build_lane_performance(all_rows, now=now)
+    cost = build_cost_intelligence(outbound)
+
+    active_ops = [o for o in operations if o.get("classification") in ("active", "exception")]
+    slowest = sorted(
+        [o for o in active_ops if isinstance(o.get("time_in_stage_hours"), (int, float))],
+        key=lambda o: -(o.get("time_in_stage_hours") or 0),
+    )[:15]
+
+    dq = analytics.get("data_quality_summary") or {}
+
+    return {
+        "authority": {
+            "timing_universe": "PR#1185 corrected dhl_logistics_projector (frozen)",
+            "carrier_terminal": "canonical tracking_cache / is_carrier_tracking_terminal",
+            "attention": "deterministic attention_reasons + explicit enrichment rules",
+            "party": "supplier/customer masters + source-document fields (never clearance agency)",
+            "targets": targets.TARGETS_AUTHORITY,
+            "actions": "suggested_action is advice only — never auto-executes",
+        },
+        "targets": targets.targets_payload(),
+        "executive_summary": {
+            "operational_active": len(active_ops),
+            "intervention_queue": len(intervention),
+            "critical": sum(1 for o in active_ops if o.get("risk") == "critical"),
+            "action_required": sum(1 for o in active_ops if o.get("risk") == "action_required"),
+            "watch": sum(1 for o in active_ops if o.get("risk") == "watch"),
+            "top_bottleneck": (bottlenecks[0]["label"] if bottlenecks else None),
+            "top_bottleneck_excess_hours": (bottlenecks[0]["excess_vs_target_hours"] if bottlenecks else None),
+        },
+        "operations_now": operations,
+        "intervention_queue": intervention,
+        "transit_performance": transition_kpis,
+        "bottlenecks": bottlenecks,
+        "lane_performance": lanes,
+        "slowest_current_shipments": slowest,
+        "data_quality_notes": dq,
+        "cost_intelligence": cost,
+        "generated_at_utc": now.isoformat(),
+    }
+
+
+def attach_intelligence_to_projection(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Augment a project_logistics payload with the intelligence block.
+
+    Uses the unfiltered row population from analytics when available; otherwise
+    falls back to payload rows (view-filtered). Prefer calling via project_logistics
+    which passes the full population.
+    """
+    rows = payload.get("_intelligence_source_rows") or payload.get("rows") or []
+    intel = build_intelligence(
+        all_rows=rows,
+        analytics=payload.get("analytics") or {},
+        now=_parse_iso(payload.get("generated_at_utc")) or _now_utc(),
+    )
+    out = dict(payload)
+    out["intelligence"] = intel
+    out.pop("_intelligence_source_rows", None)
+    return out

@@ -1299,6 +1299,20 @@
       );
     },
 
+    // GET /api/v1/dhl/logistics/export/pdf — Estrella Logistics Intelligence PDF
+    exportDhlLogisticsPdf: (params = {}) => {
+      const qs = new URLSearchParams();
+      Object.keys(params || {}).forEach((k) => {
+        const v = params[k];
+        if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+      });
+      const q = qs.toString();
+      return _download(
+        `${BASE}/dhl/logistics/export/pdf${q ? '?' + q : ''}`,
+        'logistics_intelligence.pdf',
+      );
+    },
+
     // POST /api/v1/dhl/logistics/shipments/{awb}/resolve — admin reporting only
     resolveDhlLogisticsShipment: (awb, body) =>
       _post(`${BASE}/dhl/logistics/shipments/${encodeURIComponent(awb)}/resolve`, body),
