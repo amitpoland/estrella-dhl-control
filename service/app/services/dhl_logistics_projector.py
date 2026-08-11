@@ -196,16 +196,114 @@ def _awb_of(audit: Dict[str, Any]) -> str:
     return str(audit.get("awb") or audit.get("tracking_no") or "").strip()
 
 
-def _party_inbound(audit: Dict[str, Any]) -> str:
-    for key in ("supplier", "exporter", "shipper", "supplier_name"):
-        v = audit.get(key)
+# Names that are clearance agencies / carriers — never jewellery suppliers.
+_AGENCY_PARTY_MARKERS = (
+    "agencja celna",
+    "customs agent",
+    "customs agency",
+    "clearance agent",
+    "dhl express pl",
+    "dhl express poland",
+    "ganther",
+    "spedycja celna",
+)
+
+
+def _looks_like_clearance_agency(name: str) -> bool:
+    low = (name or "").strip().lower()
+    if not low:
+        return False
+    return any(m in low for m in _AGENCY_PARTY_MARKERS)
+
+
+def _party_candidate_strings(audit: Dict[str, Any]) -> List[str]:
+    """Collect supplier/exporter candidates from source-document authorities.
+
+    Never includes clearance_decision.agency / customs_agent.
+    """
+    out: List[str] = []
+
+    def _push(v: Any) -> None:
         if isinstance(v, str) and v.strip():
-            return v.strip()
-        if isinstance(v, dict):
-            name = v.get("name") or v.get("company") or ""
+            out.append(v.strip())
+        elif isinstance(v, dict):
+            name = v.get("name") or v.get("company") or v.get("exporter_name") or ""
             if str(name).strip():
-                return str(name).strip()
-    return ""
+                out.append(str(name).strip())
+
+    for key in ("supplier", "exporter", "shipper", "supplier_name", "exporter_name"):
+        _push(audit.get(key))
+
+    verification = audit.get("verification") if isinstance(audit.get("verification"), dict) else {}
+    for key in ("invoice_exporter_name", "supplier_name", "exporter_name"):
+        _push(verification.get(key))
+
+    cd = audit.get("customs_declaration") if isinstance(audit.get("customs_declaration"), dict) else {}
+    for key in ("exporter_name", "seller_name", "supplier_name"):
+        _push(cd.get(key))
+
+    # clearance_decision may carry exporter — never agency / agent fields.
+    clr = audit.get("clearance_decision") if isinstance(audit.get("clearance_decision"), dict) else {}
+    for key in ("exporter_name", "seller_name", "supplier_name"):
+        _push(clr.get(key))
+
+    for inv in audit.get("invoices") or []:
+        if isinstance(inv, dict):
+            for key in ("supplier", "exporter", "supplier_name", "exporter_name", "seller"):
+                _push(inv.get(key))
+
+    # Deduplicate preserving order; drop agency-shaped names.
+    seen = set()
+    clean: List[str] = []
+    for name in out:
+        if _looks_like_clearance_agency(name):
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(name)
+    return clean
+
+
+def _inbound_origin_country(audit: Dict[str, Any]) -> str:
+    """Best-effort ISO origin for inbound lanes — never invent from agency."""
+    for key in ("origin_country", "supplier_country", "exporter_country", "shipper_country"):
+        v = audit.get(key)
+        if isinstance(v, str) and len(v.strip()) == 2:
+            return v.strip().upper()
+    cd = audit.get("customs_declaration") if isinstance(audit.get("customs_declaration"), dict) else {}
+    for key in ("exporter_country", "origin_country", "country_of_export"):
+        v = cd.get(key)
+        if isinstance(v, str) and len(v.strip()) == 2:
+            return v.strip().upper()
+    # Jewellery inbound default for Estrella India origin when unspecified.
+    return "IN"
+
+
+def _party_inbound(audit: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+    """Resolve inbound party from supplier/source-document authority.
+
+    Returns (display_name, authority_tag). Never uses clearance agency as supplier.
+    """
+    candidates = _party_candidate_strings(audit)
+    if not candidates:
+        return "", None
+
+    raw = candidates[0]
+    # Optional Supplier Master normalisation — read-only; no new party DB.
+    try:
+        from ..core.config import settings
+        from .suppliers_db import find_by_name_normalized
+        root = getattr(settings, "storage_root", None) or getattr(settings, "STORAGE_ROOT", None)
+        if root:
+            db_path = Path(str(root)) / "suppliers.sqlite"
+            matched = find_by_name_normalized(db_path, raw)
+            if matched and matched.name:
+                return matched.name, "supplier_master"
+    except Exception:
+        pass
+    return raw, "source_document"
 
 
 def _first_timeline_ts(timeline: List[Dict[str, Any]], names: Tuple[str, ...]) -> Optional[datetime]:
@@ -766,9 +864,13 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
         booking_to_delivery = None
     if not tracking.get("events") and not tracking.get("status"):
         data_quality.append("tracking_evidence_missing")
-    party = _party_inbound(audit)
+    party, party_authority = _party_inbound(audit)
     if not party:
         data_quality.append("missing_party_identity")
+        party_authority = None
+
+    origin_country = _inbound_origin_country(audit)
+    lane_id = f"{origin_country}→PL"
 
     # Stage age follows transport evidence, not the latest customs milestone.
     transport_stage_started = None
@@ -797,6 +899,7 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
         "awb": awb,
         "party": party,
         "party_role": "supplier",
+        "party_authority": party_authority,
         "carrier": "DHL",
         "created_at_utc": created_at.isoformat() if created_at else None,
         "created_at_warsaw": _to_warsaw_iso(created_at),
@@ -854,8 +957,10 @@ def project_inbound_row(audit: Dict[str, Any], *, now: Optional[datetime] = None
         "dhl_sms_requested": None,
         "estrella_delivery_confirmation": conf.get("estrella_delivery_confirmation"),
         "customer_response": conf.get("customer_response"),
+        "origin_country": origin_country,
         "destination_country": "PL",
         "destination_city": None,
+        "lane_id": lane_id,
         "draft_id": None,
         "orch_active": None,
         "data_gaps": _inbound_gaps(audit, milestones),
@@ -1508,6 +1613,7 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         "awb": awb,
         "party": client,
         "party_role": "customer",
+        "party_authority": "carrier_shipments.client_ref" if client else None,
         "carrier": "DHL",
         "created_at_utc": created_at.isoformat() if created_at else None,
         "created_at_warsaw": _to_warsaw_iso(created_at),
@@ -1566,8 +1672,16 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         "dhl_notify_requested_at": row.get("dhl_notify_requested_at"),
         "estrella_delivery_confirmation": conf.get("estrella_delivery_confirmation"),
         "customer_response": conf.get("customer_response"),
-        "destination_country": None,
+        "origin_country": "PL",
+        "destination_country": _outbound_destination_country(row, tracking),
         "destination_city": None,
+        "lane_id": f"PL→{_outbound_destination_country(row, tracking) or 'XX'}",
+        "service_product": row.get("service_product"),
+        "weight_kg": row.get("weight_kg"),
+        "declared_value": row.get("declared_value"),
+        "currency": row.get("currency"),
+        "quoted_cost": None,  # no durable quote authority yet
+        "quoted_cost_currency": None,
         "draft_id": None,
         "orch_active": False,
         "do_not_use": bool(int(row.get("do_not_use") or 0)),
@@ -1651,14 +1765,30 @@ _INBOUND_FIXED_TRANSITIONS: Tuple[Tuple[str, str, str], ...] = (
     ("dsk_to_agency_sad", "DSK → Agency/SAD", "dsk|sad"),
     ("sad_to_customs_cleared", "SAD → Customs cleared", "sad|customs_cleared"),
     ("customs_cleared_to_pz", "Customs cleared → PZ", "customs_cleared|pz"),
+    ("sad_to_pz", "SAD → PZ", "sad|pz"),
     ("origin_pickup_to_delivered", "Origin pickup → Delivered", "pickup|delivered"),
 )
 
 _OUTBOUND_FIXED_TRANSITIONS: Tuple[Tuple[str, str, str], ...] = (
+    ("booking_to_acceptance", "Booking → Acceptance", "booked|acceptance"),
+    ("acceptance_to_departure", "Acceptance → Departure", "acceptance|departed"),
+    ("departure_to_destination", "Departure → Destination", "departed|destination"),
+    ("destination_to_delivered", "Destination → Delivered", "destination|delivered"),
+    ("booking_to_delivered", "Booking → Delivered", "booked|delivered"),
+    # Legacy pairs retained for continuity with prior Tower cards.
     ("booking_to_first_movement", "Booking → first carrier movement", "booked|first_movement"),
     ("pickup_to_delivery", "Pickup → delivery", "pickup|delivered"),
     ("departure_to_delivery", "Departure → delivery", "departed|delivered"),
 )
+
+
+def _milestone_ts_any(row: Dict[str, Any], stage_ids: Tuple[str, ...]) -> Optional[datetime]:
+    want = {s.lower() for s in stage_ids}
+    for m in row.get("milestones") or []:
+        sid = str(m.get("stage_id") or "").lower()
+        if sid in want:
+            return _parse_iso(m.get("timestamp_utc"))
+    return None
 
 
 def _row_timestamp_map(row: Dict[str, Any]) -> Dict[str, Optional[datetime]]:
@@ -1674,12 +1804,30 @@ def _row_timestamp_map(row: Dict[str, Any]) -> Dict[str, Optional[datetime]]:
     dhl_email = _parse_iso(row.get("dhl_email_kpi_at_utc"))
     if dhl_email is None:
         dhl_email = _milestone_ts(row, "dhl_email")
+    acceptance = _milestone_ts_any(
+        row,
+        ("acceptance", "accepted", "picked_up", "pickup", "PROCESSED", "processed"),
+    )
+    # Prefer explicit pickup as acceptance only when milestone stage matches pickup semantics.
+    if acceptance is None and pickup is not None:
+        acceptance = pickup
+    destination = _milestone_ts_any(
+        row,
+        (
+            "arrived_destination",
+            "ARRIVED_DESTINATION_COUNTRY",
+            "at_destination",
+            "destination",
+        ),
+    )
     return {
         "pickup": pickup,
         "delivered": delivered,
         "booked": created,
         "first_movement": first_movement,
         "departed": departed,
+        "acceptance": acceptance,
+        "destination": destination,
         "arrived_pl": _milestone_ts(row, "arrived_pl"),
         "dhl_email": dhl_email,
         "dsk": _milestone_ts(row, "dsk") or _milestone_ts(row, "dsk_received"),
@@ -1687,6 +1835,16 @@ def _row_timestamp_map(row: Dict[str, Any]) -> Dict[str, Optional[datetime]]:
         "customs_cleared": _milestone_ts(row, "customs_cleared"),
         "pz": _milestone_ts(row, "pz"),
     }
+
+
+def _outbound_destination_country(row: Dict[str, Any], tracking: Dict[str, Any]) -> str:
+    for key in ("destination_country", "dest_country", "receiver_country"):
+        v = row.get(key)
+        if isinstance(v, str) and len(v.strip()) == 2:
+            return v.strip().upper()
+    # Honest unknown — never invent ISO from free-text location.
+    _ = tracking
+    return "XX"
 
 
 def _classify_poland_to_email_inversion(
@@ -1736,6 +1894,58 @@ def _classify_poland_to_email_inversion(
         return "pre_arrival_customs_contact"
 
     return "inverted_or_invalid"
+
+
+def collect_transition_samples(
+    rows: List[Dict[str, Any]],
+    key: str,
+    pair: str,
+) -> List[Dict[str, Any]]:
+    """Collect valid transition hour samples using the frozen KPI event rules.
+
+    Returns list of {hours, end_ts, awb, include_reason?}. Exclusions are omitted
+    from the list (caller may use _fixed_transition_analytics for exclusion counts).
+    """
+    start_key, end_key = pair.split("|", 1)
+    samples: List[Dict[str, Any]] = []
+    for r in rows:
+        tsmap = _row_timestamp_map(r)
+        a = tsmap.get(start_key)
+        b = tsmap.get(end_key)
+        if a is None or b is None:
+            continue
+        hours = _hours_between(a, b)
+        if (
+            hours is None
+            and key == "poland_to_dhl_email"
+            and a is not None
+            and b is not None
+            and b < a
+        ):
+            inv = _classify_poland_to_email_inversion(r, a, b)
+            if inv == "pre_arrival_customs_contact":
+                samples.append({
+                    "hours": 0.0,
+                    "end_ts": b,
+                    "awb": r.get("awb"),
+                    "include_reason": inv,
+                })
+            continue
+        if hours is None:
+            continue
+        if (
+            key == "origin_pickup_to_poland"
+            and tsmap.get("delivered") is not None
+            and b is not None
+            and tsmap["delivered"] < b
+        ):
+            continue
+        samples.append({
+            "hours": float(hours),
+            "end_ts": b,
+            "awb": r.get("awb"),
+        })
+    return samples
 
 
 def _fixed_transition_analytics(
@@ -2145,7 +2355,7 @@ def project_logistics(
         "customs_complete_still_active": customs_complete_still_active,
     }
 
-    return {
+    payload = {
         "generated_at_utc": now.isoformat(),
         "generated_at_warsaw": _to_warsaw_iso(now),
         "timezone": "Europe/Warsaw",
@@ -2178,7 +2388,17 @@ def project_logistics(
             "mydhl_shipmentNotification_not_persisted_on_booking_row",
             "inbound_india_pickup_timestamp_often_absent",
         ],
+        # Full population for intelligence (view filter must not shrink KPIs).
+        "_intelligence_source_rows": all_rows,
     }
+    try:
+        from . import dhl_logistics_intelligence as intel
+        return intel.attach_intelligence_to_projection(payload)
+    except Exception as exc:
+        log.warning("logistics_projector: intelligence attach failed: %s", exc)
+        payload.pop("_intelligence_source_rows", None)
+        payload["intelligence"] = {"error": "intelligence_unavailable", "detail": str(exc)}
+        return payload
 
 
 def project_shipment_detail(awb: str) -> Optional[Dict[str, Any]]:

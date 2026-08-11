@@ -24,6 +24,7 @@ from ..auth.dependencies import require_admin
 from ..core.security import require_api_key
 from ..services import dhl_logistics_projector as projector
 from ..services import dhl_logistics_resolution_db as resdb
+from ..services.dhl_logistics_intelligence_pdf import render_logistics_intelligence_pdf
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/dhl/logistics", tags=["dhl-logistics"])
@@ -117,6 +118,38 @@ def export_logistics_csv(
     return Response(
         content=body,
         media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            **_NO_STORE_HEADERS,
+        },
+    )
+
+
+@router.get("/export/pdf", dependencies=[_auth])
+def export_logistics_pdf(
+    direction: str = Query("all", pattern="^(all|inbound|outbound)$"),
+    view: str = Query("active", pattern=_VIEW_PATTERN),
+    q: Optional[str] = Query(None, max_length=120),
+    stage: Optional[str] = Query(None, max_length=80),
+    needs_attention_only: bool = Query(False),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+) -> Response:
+    """Estrella-branded Logistics Intelligence PDF (Lesson G no-store)."""
+    payload = projector.project_logistics(
+        direction=direction,
+        view=view,
+        q=q,
+        stage=stage,
+        needs_attention_only=needs_attention_only,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    pdf_bytes = render_logistics_intelligence_pdf(payload)
+    fname = f"logistics_intelligence_{datetime.now(timezone.utc).strftime('%Y%m%d')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="{fname}"',
             **_NO_STORE_HEADERS,

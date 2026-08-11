@@ -67,10 +67,15 @@ function Pill({ children, tone = 'neutral', small }) {
 
 function DhlCustomsPage({ onViewShipment }) {
   const [mainTab, setMainTab] = React.useState('logistics'); // logistics | automation
+  const [intelTab, setIntelTab] = React.useState('operations'); // operations | intervention | performance | cost
   const [view, setView] = React.useState('active'); // active | delivered | attention | historical | resolved
   const [direction, setDirection] = React.useState('all'); // all | inbound | outbound
   const [q, setQ] = React.useState('');
   const [stage, setStage] = React.useState('');
+  const [dateFrom, setDateFrom] = React.useState('');
+  const [dateTo, setDateTo] = React.useState('');
+  const [laneFilter, setLaneFilter] = React.useState('');
+  const [countryFilter, setCountryFilter] = React.useState('');
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
@@ -91,6 +96,8 @@ function DhlCustomsPage({ onViewShipment }) {
     const params = { view, direction };
     if (q.trim()) params.q = q.trim();
     if (stage.trim()) params.stage = stage.trim();
+    if (dateFrom.trim()) params.date_from = dateFrom.trim();
+    if (dateTo.trim()) params.date_to = dateTo.trim();
     const api = window.PzApi && window.PzApi.getDhlLogisticsProjection;
     const req = api
       ? api(params)
@@ -98,7 +105,7 @@ function DhlCustomsPage({ onViewShipment }) {
     Promise.resolve(req)
       .then((d) => { setData(d && d.data !== undefined && d.ok !== undefined ? d.data : d); setLoading(false); })
       .catch((e) => { setError((e && e.message) || String(e)); setLoading(false); });
-  }, [view, direction, q, stage]);
+  }, [view, direction, q, stage, dateFrom, dateTo]);
 
   React.useEffect(() => { if (mainTab === 'logistics') loadProjection(); }, [loadProjection, mainTab]);
 
@@ -110,23 +117,51 @@ function DhlCustomsPage({ onViewShipment }) {
   }, [mainTab, reloadKey]);
 
   const kpis = (data && data.kpis) || {};
-  const rows = (data && data.rows) || [];
+  const rowsRaw = (data && data.rows) || [];
   const analytics = (data && data.analytics) || {};
+  const intelligence = (data && data.intelligence) || {};
+  const rows = rowsRaw.filter((r) => {
+    if (laneFilter && String(r.lane_id || '') !== laneFilter) return false;
+    if (countryFilter) {
+      const cc = countryFilter.toUpperCase();
+      const hit = String(r.origin_country || '').toUpperCase() === cc
+        || String(r.destination_country || '').toUpperCase() === cc;
+      if (!hit) return false;
+    }
+    return true;
+  });
 
-  const exportCsv = () => {
+  const exportParams = () => {
     const params = { view, direction };
     if (q.trim()) params.q = q.trim();
     if (stage.trim()) params.stage = stage.trim();
-    const qs = new URLSearchParams(params).toString();
-    const url = '/api/v1/dhl/logistics/export/csv' + (qs ? ('?' + qs) : '');
+    if (dateFrom.trim()) params.date_from = dateFrom.trim();
+    if (dateTo.trim()) params.date_to = dateTo.trim();
+    return params;
+  };
+
+  const exportCsv = () => {
+    const params = exportParams();
     if (window.PzApi && window.PzApi.exportDhlLogisticsCsv) {
       Promise.resolve(window.PzApi.exportDhlLogisticsCsv(params)).catch((e) => {
         window.alert('CSV export failed: ' + ((e && e.message) || String(e)));
       });
       return;
     }
-    // Fallback when pz-api.js is unavailable — same auth cookie as the page.
-    window.open(url, '_blank', 'noopener');
+    const qs = new URLSearchParams(params).toString();
+    window.open('/api/v1/dhl/logistics/export/csv' + (qs ? ('?' + qs) : ''), '_blank', 'noopener');
+  };
+
+  const exportPdf = () => {
+    const params = exportParams();
+    if (window.PzApi && window.PzApi.exportDhlLogisticsPdf) {
+      Promise.resolve(window.PzApi.exportDhlLogisticsPdf(params)).catch((e) => {
+        window.alert('PDF export failed: ' + ((e && e.message) || String(e)));
+      });
+      return;
+    }
+    const qs = new URLSearchParams(params).toString();
+    window.open('/api/v1/dhl/logistics/export/pdf' + (qs ? ('?' + qs) : ''), '_blank', 'noopener');
   };
 
   const fmt = (v) => (v == null || v === '') ? '—' : String(v);
@@ -139,10 +174,23 @@ function DhlCustomsPage({ onViewShipment }) {
     if (row.classification === 'delivered') return 'green';
     return 'amber';
   };
+  const riskTone = (risk) => {
+    if (risk === 'critical') return 'red';
+    if (risk === 'action_required') return 'amber';
+    if (risk === 'watch') return 'blue';
+    return 'green';
+  };
 
   const operationalActive = (kpis.operational_active != null)
     ? kpis.operational_active
     : ((kpis.active_inbound || 0) + (kpis.active_outbound || 0) + (kpis.operational_exceptions || 0));
+  const exec = intelligence.executive_summary || {};
+  const intervention = intelligence.intervention_queue || [];
+  const bottlenecks = intelligence.bottlenecks || [];
+  const lanes = intelligence.lane_performance || [];
+  const cost = intelligence.cost_intelligence || {};
+  const transitIn = (intelligence.transit_performance && intelligence.transit_performance.inbound) || {};
+  const transitOut = (intelligence.transit_performance && intelligence.transit_performance.outbound) || {};
 
   return (
     <div data-testid="dhl-tower-root" style={{ padding: '20px 24px', overflowY: 'auto', flex: 1, minWidth: 0 }}>
@@ -151,11 +199,12 @@ function DhlCustomsPage({ onViewShipment }) {
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>DHL Logistics</div>
           <h1 style={{ margin: '4px 0 0', fontSize: 22, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>Control Tower</h1>
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4, lineHeight: 1.4 }}>
-            Read-only operational tracking · Europe/Warsaw · inbound clearance + outbound carrier authorities
+            Logistics Intelligence · Live ops → Intervention → Bottlenecks → Lanes → Quoted cost · Europe/Warsaw
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button data-testid="dhl-tower-export" onClick={exportCsv} style={_dhlBtnStyle()}>Export CSV</button>
+          <button data-testid="dhl-tower-export-pdf" onClick={exportPdf} style={_dhlBtnStyle()}>Export PDF</button>
           <button data-testid="dhl-tower-reload" onClick={() => { loadProjection(); setReloadKey((k) => k + 1); }} disabled={loading} style={_dhlBtnStyle()}>↻ Reload</button>
         </div>
       </div>
@@ -172,10 +221,10 @@ function DhlCustomsPage({ onViewShipment }) {
       {mainTab === 'logistics' && (
         <div data-testid="dhl-tower-logistics">
           <div className="grid-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
-            <StatTile label="Operational Active" value={fmt(operationalActive)} sub={'In ' + fmt(kpis.active_inbound) + ' · Out ' + fmt(kpis.active_outbound) + (kpis.operational_exceptions ? (' · Exc ' + kpis.operational_exceptions) : '')} onClick={() => { setDirection('all'); setView('active'); }} />
-            <StatTile label="Needs Attention" value={fmt(kpis.needs_attention)} sub="Exception / no movement 12h+" accent="var(--badge-red-text)" onClick={() => setView('attention')} />
+            <StatTile label="Operational Active" value={fmt(operationalActive)} sub={'In ' + fmt(kpis.active_inbound) + ' · Out ' + fmt(kpis.active_outbound) + (kpis.operational_exceptions ? (' · Exc ' + kpis.operational_exceptions) : '')} onClick={() => { setDirection('all'); setView('active'); setIntelTab('operations'); }} />
+            <StatTile label="Intervention Queue" value={fmt(exec.intervention_queue != null ? exec.intervention_queue : kpis.needs_attention)} sub={'Critical ' + fmt(exec.critical) + ' · Action ' + fmt(exec.action_required)} accent="var(--badge-red-text)" onClick={() => { setView('attention'); setIntelTab('intervention'); }} />
             <StatTile label="Delivered Today" value={fmt(kpis.delivered_today)} sub="Warsaw · in + out" accent="var(--badge-green-text)" onClick={() => setView('delivered')} />
-            <StatTile label="Historical Unresolved" value={fmt(kpis.historical_unresolved)} sub="Customs done · no movement · stale" accent="var(--badge-amber-text)" onClick={() => setView('historical')} />
+            <StatTile label="Top Bottleneck" value={fmt(exec.top_bottleneck || '—')} sub={exec.top_bottleneck_excess_hours != null ? ('+' + exec.top_bottleneck_excess_hours + 'h vs target') : 'vs configured target'} onClick={() => setIntelTab('performance')} />
             <StatTile
               label="Avg Inbound Transit"
               value={fmt(kpis.avg_inbound_transit_human || fmtHours(kpis.avg_inbound_transit_hours))}
@@ -239,6 +288,17 @@ function DhlCustomsPage({ onViewShipment }) {
             />
           </div>
 
+          <Tabs
+            active={intelTab}
+            onChange={setIntelTab}
+            tabs={[
+              { id: 'operations', label: 'Operations Now' },
+              { id: 'intervention', label: 'Intervention', count: intervention.length },
+              { id: 'performance', label: 'Performance' },
+              { id: 'cost', label: 'Cost Intelligence' },
+            ]}
+          />
+
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14, alignItems: 'center' }}>
             {['all', 'inbound', 'outbound'].map((d) => (
               <button key={d} data-testid={'dhl-tower-dir-' + d} onClick={() => setDirection(d)} style={{
@@ -254,7 +314,7 @@ function DhlCustomsPage({ onViewShipment }) {
               onChange={(e) => setQ(e.target.value)}
               placeholder="AWB / client / supplier / batch"
               style={{
-                flex: '1 1 180px', minWidth: 140, maxWidth: 320, padding: '6px 10px',
+                flex: '1 1 160px', minWidth: 120, maxWidth: 280, padding: '6px 10px',
                 border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)',
                 color: 'var(--text)', fontSize: 12,
               }}
@@ -263,24 +323,32 @@ function DhlCustomsPage({ onViewShipment }) {
               data-testid="dhl-tower-stage"
               value={stage}
               onChange={(e) => setStage(e.target.value)}
-              placeholder="Stage / status filter"
+              placeholder="Stage / status"
               style={{
-                flex: '0 1 160px', minWidth: 120, padding: '6px 10px',
+                flex: '0 1 120px', minWidth: 100, padding: '6px 10px',
                 border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)',
                 color: 'var(--text)', fontSize: 12,
               }}
             />
+            <input data-testid="dhl-tower-date-from" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+              style={{ padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)', fontSize: 12 }} />
+            <input data-testid="dhl-tower-date-to" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+              style={{ padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)', fontSize: 12 }} />
+            <input data-testid="dhl-tower-lane" value={laneFilter} onChange={(e) => setLaneFilter(e.target.value)} placeholder="Lane e.g. IN→PL"
+              style={{ flex: '0 1 110px', padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)', fontSize: 12 }} />
+            <input data-testid="dhl-tower-country" value={countryFilter} onChange={(e) => setCountryFilter(e.target.value)} placeholder="Country"
+              style={{ flex: '0 1 90px', padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)', fontSize: 12 }} />
           </div>
 
           {loading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading logistics projection…</div>}
           {error && <div data-testid="dhl-tower-error" style={{ fontSize: 12, color: 'var(--badge-red-text)' }}>{error}</div>}
 
-          {!loading && !error && (
+          {!loading && !error && intelTab === 'operations' && (
             <div data-testid="dhl-tower-table-wrap" style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card)' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 960 }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-                    {['Dir', 'Party', 'AWB', 'Created ↓', 'Current Status', 'Location', 'Stage Age', 'Total Transit', 'Expected', 'Attention'].map((h) => (
+                    {['Dir', 'Party', 'AWB', 'Stage', 'Location', 'Last movement', 'Time in stage', 'ETA', 'Risk', 'Action'].map((h) => (
                       <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
@@ -289,7 +357,11 @@ function DhlCustomsPage({ onViewShipment }) {
                   {rows.length === 0 && (
                     <tr><td colSpan={10} style={{ padding: 16, color: 'var(--text-3)' }}>No shipments match these filters.</td></tr>
                   )}
-                  {rows.map((r) => (
+                  {rows.map((r) => {
+                    const risk = (r.classification === 'delivered')
+                      ? 'normal'
+                      : (r.needs_attention ? 'action_required' : (r.classification === 'exception' ? 'critical' : 'normal'));
+                    return (
                     <tr
                       key={(r.direction || '') + ':' + (r.awb || '') + ':' + (r.batch_id || '')}
                       data-testid={'dhl-tower-row-' + (r.awb || 'x')}
@@ -297,25 +369,62 @@ function DhlCustomsPage({ onViewShipment }) {
                       style={{ borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer' }}
                     >
                       <td style={{ padding: '8px 10px' }}><Pill tone={toneFor(r)} small>{r.direction}</Pill></td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.party)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.party)}</td>
                       <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.awb)}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_dhlShortTs(r.created_at_warsaw)}</td>
                       <td style={{ padding: '8px 10px', color: 'var(--text)', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                        {r.manual_resolution_badge
-                          ? <span><Pill tone="purple" small>Manually resolved</Pill>{' '}<span style={{ fontWeight: 500, color: 'var(--text-2)' }}>{fmt(r.transport_status)}</span></span>
+                        {r.classification === 'delivered'
+                          ? <span><Pill tone="green" small>Delivered</Pill>{' '}<span style={{ fontWeight: 500, color: 'var(--text-3)' }}>{fmt(r.total_elapsed_human)}</span></span>
                           : fmt(r.transport_status || r.current_status)}
                       </td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.current_location)}</td>
-                      <td style={{ padding: '8px 10px', color: r.needs_attention ? 'var(--badge-red-text)' : 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.stage_age_human)}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{fmt(r.total_elapsed_human)}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_dhlShortTs(r.expected_delivery_warsaw)}</td>
-                      <td style={{ padding: '8px 10px', color: 'var(--badge-red-text)', whiteSpace: 'nowrap', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {r.needs_attention
-                          ? ((r.attention_reasons || []).map((a) => (
-                              a === 'no_carrier_movement_12h' ? 'No carrier movement for 12h+' : a
-                            )).join('; ') || 'Yes')
-                          : '—'}
+                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.current_location)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(r.latest_event)}</td>
+                      <td style={{ padding: '8px 10px', color: r.needs_attention ? 'var(--badge-red-text)' : 'var(--text-2)', whiteSpace: 'nowrap' }}>
+                        {r.classification === 'delivered' ? '—' : fmt(r.stage_age_human)}
                       </td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{_dhlShortTs(r.expected_delivery_warsaw)}</td>
+                      <td style={{ padding: '8px 10px' }}><Pill tone={riskTone(risk)} small>{risk.replace('_', ' ')}</Pill></td>
+                      <td style={{ padding: '8px 10px', color: 'var(--badge-red-text)', whiteSpace: 'nowrap', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {r.classification === 'delivered'
+                          ? '—'
+                          : (r.needs_attention
+                            ? ((r.attention_reasons || []).map((a) => (
+                                a === 'no_carrier_movement_12h' ? 'No movement 12h+' : a
+                              )).join('; ') || 'Review')
+                            : '—')}
+                      </td>
+                    </tr>
+                  );})}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {!loading && !error && intelTab === 'intervention' && (
+            <div data-testid="dhl-tower-intervention" style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card)' }}>
+              <div style={{ padding: '10px 14px', fontSize: 11, color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
+                Ranked non-terminal shipments requiring human action. Suggested actions are advice only — never auto-executed.
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 860 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-subtle)' }}>
+                    {['AWB', 'Party', 'Issue', 'Age', 'Suggested action', 'Owner', 'Risk'].map((h) => (
+                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {intervention.length === 0 && (
+                    <tr><td colSpan={7} style={{ padding: 16, color: 'var(--text-3)' }}>No intervention items right now.</td></tr>
+                  )}
+                  {intervention.map((item) => (
+                    <tr key={item.awb} data-testid={'dhl-tower-intervention-' + item.awb} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>{fmt(item.awb)}</td>
+                      <td style={{ padding: '8px 10px' }}>{fmt(item.party)}</td>
+                      <td style={{ padding: '8px 10px' }}>{fmt(item.issue)}</td>
+                      <td style={{ padding: '8px 10px' }}>{fmt(item.age_human)}</td>
+                      <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{fmt(item.suggested_action)}</td>
+                      <td style={{ padding: '8px 10px' }}>{fmt(item.owner)}</td>
+                      <td style={{ padding: '8px 10px' }}><Pill tone={riskTone(item.risk)} small>{fmt(item.risk)}</Pill></td>
                     </tr>
                   ))}
                 </tbody>
@@ -323,35 +432,97 @@ function DhlCustomsPage({ onViewShipment }) {
             </div>
           )}
 
-          {(() => {
-            const inboundT = analytics.fixed_transitions_inbound || {};
-            const outboundT = analytics.fixed_transitions_outbound || {};
-            const cards = []
-              .concat(Object.keys(inboundT).map((k) => ({ ...inboundT[k], scope: 'Inbound' })))
-              .concat(Object.keys(outboundT).map((k) => ({ ...outboundT[k], scope: 'Outbound' })))
-              .filter((s) => s && s.n > 0);
-            if (!cards.length) return null;
-            return (
-              <div data-testid="dhl-tower-analytics" style={{ marginTop: 18 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Fixed transition times</div>
-                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
-                  Each card uses the same start→end pair only. Samples with missing or inverted timestamps are excluded.
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
-                  {cards.slice(0, 12).map((s) => (
-                    <div key={s.id} title={'Median ' + (s.median_human || '—') + ' · P90 ' + (s.p90_human || '—')} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
-                      <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{s.scope}</div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{s.label}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 8 }}>Typical: {fmt(s.typical_human)}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Average: {fmt(s.average_human)}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-2)' }}>90% within: {fmt(s.p90_human)}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>Based on {s.n} shipment{s.n === 1 ? '' : 's'}</div>
+          {!loading && !error && intelTab === 'performance' && (
+            <div data-testid="dhl-tower-performance">
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Bottleneck ranking</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginBottom: 18 }}>
+                {bottlenecks.slice(0, 8).map((b) => (
+                  <div key={b.id} data-testid={'dhl-tower-bottleneck-' + b.id} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase' }}>{b.scope}</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>{b.label}</div>
+                    <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 8 }}>+{fmt(b.excess_vs_target_hours)}h vs target</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>N={fmt(b.n)} · Δ30d {fmt(b.delta_pct_vs_previous_30d)}%</div>
+                  </div>
+                ))}
+                {bottlenecks.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No excess vs configured targets.</div>}
+              </div>
+
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Transit performance</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+                Typical = median. Targets are explicit management constants — not historical P90.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 18 }}>
+                {[]
+                  .concat(Object.keys(transitIn).map((k) => ({ ...transitIn[k], scope: 'Inbound' })))
+                  .concat(Object.keys(transitOut).map((k) => ({ ...transitOut[k], scope: 'Outbound' })))
+                  .filter((s) => s && s.n > 0)
+                  .slice(0, 14)
+                  .map((s) => (
+                    <div key={s.id} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase' }}>{s.scope}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>{s.label}</div>
+                      <div style={{ fontSize: 12, marginTop: 8 }}>Typical: {fmt(s.typical_human)}</div>
+                      <div style={{ fontSize: 12 }}>P90: {fmt(s.p90_human)} · Target: {fmt(s.target_human)}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+                        30d {fmt((s.current_30d && s.current_30d.typical_human) || '—')} · prev {fmt((s.previous_30d && s.previous_30d.typical_human) || '—')} · Δ {fmt(s.delta_pct_vs_previous_30d)}% · N={s.n}
+                      </div>
                     </div>
                   ))}
-                </div>
               </div>
-            );
-          })()}
+
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Lane performance</div>
+              <div data-testid="dhl-tower-lanes" style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card)' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-subtle)' }}>
+                      {['Lane', 'N', 'Median', 'P90', 'Target hit %', 'Exception %', 'Trend Δ'].map((h) => (
+                        <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lanes.length === 0 && <tr><td colSpan={7} style={{ padding: 16, color: 'var(--text-3)' }}>No delivered lane samples.</td></tr>}
+                    {lanes.map((lane) => (
+                      <tr key={lane.lane_id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td style={{ padding: '8px 10px', fontWeight: 600 }}>{fmt(lane.lane_id)}</td>
+                        <td style={{ padding: '8px 10px' }}>{fmt(lane.n)}</td>
+                        <td style={{ padding: '8px 10px' }}>{fmt(lane.median_human)}</td>
+                        <td style={{ padding: '8px 10px' }}>{fmt(lane.p90_human)}</td>
+                        <td style={{ padding: '8px 10px' }}>{fmt(lane.target_hit_pct)}</td>
+                        <td style={{ padding: '8px 10px' }}>{fmt(lane.exception_rate_pct)}</td>
+                        <td style={{ padding: '8px 10px' }}>{fmt(lane.trend_delta_pct)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {!loading && !error && intelTab === 'cost' && (
+            <div data-testid="dhl-tower-cost" style={{ padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card)' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Quoted Cost</div>
+              {cost.quoted_cost_available ? (
+                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                  Totals by currency (no cross-currency merge):{' '}
+                  {Object.keys(cost.totals_by_currency || {}).map((ccy) => ccy + ' ' + cost.totals_by_currency[ccy]).join(' · ') || '—'}
+                  <div style={{ marginTop: 10 }}>
+                    {(cost.rows || []).slice(0, 20).map((r) => (
+                      <div key={r.awb} style={{ padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                        {fmt(r.awb)} · {fmt(r.quoted_cost)} {fmt(r.currency)} · {fmt(r.service_product)} · {fmt(r.destination_country)} · {fmt(r.weight_kg)} kg · freight {fmt(r.freight_pct_of_value)}%
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.45 }}>{fmt(cost.quoted_cost_gap)}</div>
+              )}
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Actual DHL Cost</div>
+                <div style={{ fontSize: 12, color: 'var(--badge-amber-text)' }}>Unavailable — {fmt(cost.actual_cost_gap)}</div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
