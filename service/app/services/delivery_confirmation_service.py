@@ -156,6 +156,7 @@ def maybe_notify_outbound_delivered(
     *,
     draft_id: Optional[int] = None,
     batch_id: Optional[str] = None,
+    origin_batch_id: Optional[str] = None,
     client_name: Optional[str] = None,
     delivered: bool = False,
     carrier_delivered_at: Optional[str] = None,
@@ -175,6 +176,11 @@ def maybe_notify_outbound_delivered(
 
     Idempotency: the notification row's ``UNIQUE(awb)`` means a repeated
     delivered event never queues a second email.
+
+    Identity: outbound ``awb`` + ``client_name`` own customer communication.
+    ``origin_batch_id`` (or legacy ``batch_id`` when only that is passed) is
+    import/sales provenance — never the email-queue / customs-audit namespace.
+    ``queue_email`` always uses ``batch_id=""`` for this email type.
 
     ``delivery_location`` is read-only presentation metadata (the carrier's own
     normalised city + country for the delivered event). It gates nothing, is
@@ -200,6 +206,9 @@ def maybe_notify_outbound_delivered(
     storage_root = _storage_root()
     db = _db_path()
 
+    # Provenance only — never operative customer-email batch authority.
+    origin = (origin_batch_id or batch_id or "").strip() or None
+
     # Resolve customer email if the caller did not supply it.
     email_to = (customer_email or "").strip()
     draft = None
@@ -224,7 +233,8 @@ def maybe_notify_outbound_delivered(
         db,
         awb=awb,
         draft_id=draft_id,
-        batch_id=batch_id,
+        batch_id=None,  # operative communication key is awb, not import batch
+        origin_batch_id=origin,
         client_name=client_name or customer_name,
         email_to=email_to,
         activation_cutoff_ok=activation_cutoff_ok,
@@ -245,7 +255,8 @@ def maybe_notify_outbound_delivered(
         token_hash=_hash_token(token),
         awb=awb,
         draft_id=draft_id,
-        batch_id=batch_id,
+        batch_id=None,
+        origin_batch_id=origin,
         client_name=client_name or customer_name,
         customer_name=customer_name,
         expires_at=expires_at,
@@ -280,7 +291,8 @@ def maybe_notify_outbound_delivered(
             subject=subject,
             body_html=html_body,
             body_text=text_body,
-            batch_id=batch_id or "",
+            # Empty: never bind customer MIME to import/customs audit namespace.
+            batch_id="",
             email_type="customer_delivery_confirmation",
             # Explicit zero: do NOT omit attachments (None → audit fallback can
             # union agency_reply_package / dhl_reply_package onto the customer).
@@ -306,6 +318,7 @@ def maybe_notify_outbound_delivered(
         "email_to": email_to,
         "email_cc": email_cc,
         "receipt_link": link,
+        "origin_batch_id": origin,
     }
 
 

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS delivery_notifications (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     draft_id             INTEGER,
     batch_id             TEXT,
+    origin_batch_id      TEXT,
     client_name          TEXT,
     awb                  TEXT NOT NULL UNIQUE,
     email_to             TEXT,
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS delivery_receipts (
     awb                 TEXT,
     draft_id            INTEGER,
     batch_id            TEXT,
+    origin_batch_id     TEXT,
     client_name         TEXT,
     customer_name       TEXT,
     expires_at          TEXT,
@@ -96,6 +98,22 @@ def _ensure_notification_columns(conn: sqlite3.Connection) -> None:
     }
     if "email_cc" not in cols:
         conn.execute("ALTER TABLE delivery_notifications ADD COLUMN email_cc TEXT")
+    if "origin_batch_id" not in cols:
+        conn.execute(
+            "ALTER TABLE delivery_notifications ADD COLUMN origin_batch_id TEXT"
+        )
+
+
+def _ensure_receipt_columns(conn: sqlite3.Connection) -> None:
+    """Additive column migrate for older delivery_receipts rows."""
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(delivery_receipts)").fetchall()
+    }
+    if "origin_batch_id" not in cols:
+        conn.execute(
+            "ALTER TABLE delivery_receipts ADD COLUMN origin_batch_id TEXT"
+        )
 
 
 def init_db(db_path: Path) -> None:
@@ -104,6 +122,7 @@ def init_db(db_path: Path) -> None:
     with _connect(db_path) as conn:
         conn.executescript(_DDL)
         _ensure_notification_columns(conn)
+        _ensure_receipt_columns(conn)
 
 
 # ── Notifications ──────────────────────────────────────────────────────────────
@@ -119,28 +138,36 @@ def create_notification_if_absent(
     email_to: Optional[str],
     activation_cutoff_ok: bool,
     status: str = "queued",
+    origin_batch_id: Optional[str] = None,
 ) -> tuple[Optional[dict], bool]:
     """Insert a notification row for the AWB, or return the existing one.
 
     Returns ``(row, created)``. ``UNIQUE(awb)`` guarantees only the first caller
     for a given outbound AWB inserts — this is the idempotency anchor that stops
     a repeated delivered event from queuing a second customer email.
+
+    Identity: ``awb`` (+ ``client_name``) is the customer-communication key.
+    ``batch_id`` must NOT be an inbound customs/import batch (leave empty for
+    new rows). ``origin_batch_id`` is optional import/sales provenance only.
     """
     awb = (awb or "").strip()
     if not awb:
         return None, False
     init_db(db_path)
+    # Operative communication batch_id is never the customs namespace.
+    operative_batch = (batch_id or "").strip() or None
+    origin = (origin_batch_id or "").strip() or None
     with _connect(db_path) as conn:
         conn.execute(
             """
             INSERT INTO delivery_notifications
-                (awb, draft_id, batch_id, client_name, email_to,
+                (awb, draft_id, batch_id, origin_batch_id, client_name, email_to,
                  activation_cutoff_ok, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(awb) DO NOTHING
             """,
             (
-                awb, draft_id, batch_id, client_name, email_to,
+                awb, draft_id, operative_batch, origin, client_name, email_to,
                 int(bool(activation_cutoff_ok)), status,
             ),
         )
@@ -254,21 +281,29 @@ def create_receipt_token_row(
     customer_name: Optional[str],
     expires_at: str,
     carrier_delivered_at: Optional[str] = None,
+    origin_batch_id: Optional[str] = None,
 ) -> dict:
     """Insert one public receipt token row. ``token_hash`` is the SHA-256 hex of
-    the opaque token — the token itself is never stored."""
+    the opaque token — the token itself is never stored.
+
+    Receipt ownership is ``awb`` + customer fields resolved via token hash.
+    ``origin_batch_id`` is provenance only and must never drive customs audit
+    or attachment lookups.
+    """
     init_db(db_path)
+    operative_batch = (batch_id or "").strip() or None
+    origin = (origin_batch_id or "").strip() or None
     with _connect(db_path) as conn:
         cur = conn.execute(
             """
             INSERT INTO delivery_receipts
-                (token_hash, awb, draft_id, batch_id, client_name, customer_name,
-                 expires_at, carrier_delivered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (token_hash, awb, draft_id, batch_id, origin_batch_id,
+                 client_name, customer_name, expires_at, carrier_delivered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                token_hash, awb, draft_id, batch_id, client_name, customer_name,
-                expires_at, carrier_delivered_at,
+                token_hash, awb, draft_id, operative_batch, origin,
+                client_name, customer_name, expires_at, carrier_delivered_at,
             ),
         )
         rid = cur.lastrowid

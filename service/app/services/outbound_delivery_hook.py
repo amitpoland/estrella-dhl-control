@@ -117,6 +117,8 @@ def on_outbound_tracking_update(
         booking_created_at = row.get("created_at")
 
         # Best-effort MyDHL ePOD persist — never blocks customer notify.
+        # Uses the carrier booking's parent/import batch_id as storage key
+        # (operational lineage). That same value is NOT customer-email authority.
         try:
             from .carrier.epod_service import ensure_epod_persisted
             if batch_id:
@@ -124,14 +126,15 @@ def on_outbound_tracking_update(
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("outbound hook ePOD persist failed: %s", exc)
 
-        # Resolve the draft for this (batch, client) — needed for the customer
-        # email + draft-scoped notification record.
+        # Resolve the draft for this (parent batch, client) — commercial context
+        # enrichment only. Customer communication identity is outbound AWB +
+        # client_ref; the parent import batch is provenance (origin_batch_id).
         draft_id = None
         client_name = client_ref
         try:
             from . import proforma_invoice_link_db as pildb
             pf_db = Path(settings.storage_root) / "proforma_links.db"
-            if client_ref and pf_db.exists():
+            if client_ref and batch_id and pf_db.exists():
                 draft = pildb.get_draft(pf_db, batch_id, client_ref)
                 if draft is not None:
                     draft_id = draft.id
@@ -143,7 +146,7 @@ def on_outbound_tracking_update(
         return dcs.maybe_notify_outbound_delivered(
             awb,
             draft_id=draft_id,
-            batch_id=batch_id,
+            origin_batch_id=batch_id,
             client_name=client_name,
             delivered=True,
             carrier_delivered_at=_delivered_at_from_events(events),
