@@ -1416,6 +1416,7 @@ def fetch_waybill_doc(
     batch_id: str,
     tracking_ref: str,
     _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
 ) -> JSONResponse:
     """Operator-triggered waybill recovery via MyDHL Get Image.
 
@@ -1473,6 +1474,7 @@ def fetch_epod(
     batch_id: str,
     tracking_ref: str,
     _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
 ) -> JSONResponse:
     """Operator-triggered ePOD pull. Idempotent; 404 when MyDHL has no ePOD."""
     from ..services.carrier.epod_service import ensure_epod_persisted, epod_file_path
