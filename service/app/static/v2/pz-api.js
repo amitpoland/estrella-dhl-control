@@ -1522,12 +1522,15 @@
     },
 
     // GET /api/v1/ledgers/suppliers/{contractor_id}/statement.json
+    // opts: { refresh?, currency? } — currency keeps the selected AP row
+    // (contractor_id, currency) from resolving a sibling currency statement.
     getSupplierStatement: (contractorId, from, to, asOf, opts) => {
       const qs = new URLSearchParams();
       if (from) qs.set('from', from);
       if (to) qs.set('to', to);
       if (asOf) qs.set('as_of', asOf);
       if (opts && opts.refresh) qs.set('refresh', '1');
+      if (opts && opts.currency) qs.set('currency', opts.currency);
       const q = qs.toString();
       return _get(
         `${BASE}/ledgers/suppliers/${encodeURIComponent(contractorId)}/statement.json${q ? `?${q}` : ''}`
@@ -1538,13 +1541,14 @@
     // Transport-layer URL builder only (Lesson F) — the caller navigates to it
     // in a new tab under cookie auth. The route renders the SAME statement dict
     // getSupplierStatement returns, so screen and PDF cannot disagree.
-    // params: { from, to, as_of? }
+    // params: { from, to, as_of?, currency? }
     supplierStatementPdfUrl: (contractorId, params) => {
       const p = params || {};
       const qs = new URLSearchParams();
       if (p.from) qs.set('from', p.from);
       if (p.to) qs.set('to', p.to);
       if (p.as_of) qs.set('as_of', p.as_of);
+      if (p.currency) qs.set('currency', p.currency);
       const q = qs.toString();
       return `${BASE}/ledgers/suppliers/${encodeURIComponent(contractorId)}/statement.pdf${q ? `?${q}` : ''}`;
     },
