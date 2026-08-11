@@ -1060,11 +1060,11 @@ function App() {
             </>
           )}
 
-          {/* Shipping Ops — carrier shipment queue · wireframe (all carrier APIs future) */}
+          {/* Shipping Ops — live projection of carrier + DHL logistics authorities */}
           {!viewerDoc && page === 'shipping_ops' && (
             <>
-              <PageHeader title="Shipping Operations" subtitle="Carrier shipment queue · labels · handoff · returns · audit log — wireframe only, carrier API integrations are future scope" />
-              <ShippingOpsPage />
+              <PageHeader title="Shipping Operations" subtitle="Live carrier queue · documents · returns — projection of /api/v1/carrier/* and /api/v1/dhl/logistics/*" />
+              <ShippingOpsPage onViewShipment={handleViewShipment} onNav={handleNav} />
             </>
           )}
 

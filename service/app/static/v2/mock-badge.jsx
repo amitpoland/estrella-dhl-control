@@ -72,7 +72,7 @@
 //   (navigate to master), Audit Trail (listMasterAudit). Wave-4 doc-register
 //   tabs (WZ/PZ/PW/RW/MM) kept visible but gated per R-Q3 (BACKEND-REQUIRED).
 //   All mock arrays removed. WIRED_PAGES = 20/20.
-const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage', 'detail', 'supplier_invoice_review', 'accounting'];
+const WIRED_PAGES = ['proforma', 'proforma_search', 'inbox', 'inventory', 'dhl', 'shipments', 'automation', 'intelligence', 'documents', 'proforma_detail', 'wfirma_setup', 'master', 'carriers', 'dashboard', 'api_status', 'diagnostics', 'coverage', 'detail', 'supplier_invoice_review', 'accounting', 'shipping_ops'];
 
 function MockBanner({ page }) {
   if (WIRED_PAGES.includes(page)) return null;
