@@ -85,7 +85,9 @@ _PRIVILEGED_AUTH_NAMES: frozenset[str] = frozenset({
     # it as unauthenticated ("none"), and left privileged routes sitting in the bare
     # allowlist. See test_require_api_key_privileged_is_privileged.
     "require_api_key_privileged",
-    # extend here when new privileged guards are introduced
+    # Catalogue permission gate (Phase 2 reports.financial+). Session must hold
+    # the named permission via has_permission; X-API-Key is machine/admin-equivalent.
+    "require_permission",
 })
 
 _MUTATION_METHODS: frozenset[str] = frozenset({"post", "put", "patch", "delete"})

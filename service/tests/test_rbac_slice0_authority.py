@@ -251,10 +251,17 @@ def test_slice0_does_not_tighten_tier0_pz_export_gate():
     assert "require_api_key" in head
 
 
-def test_slice0_does_not_add_require_permission_helper_yet():
-    """Permission enforcement helper is deferred to later slices."""
+def test_slice0_catalogue_anticipates_require_permission_helper():
+    """Slice 0 deferred the helper; Phase 2 owns ``require_permission``.
+
+    Keep the catalogue/docs pin: permissions.py still names the future helper
+    contract. The implementation lives in auth.dependencies (Phase 2).
+    """
+    perms = (_AUTH / "permissions.py").read_text(encoding="utf-8")
+    assert "future require_permission helpers" in perms
     deps = (_AUTH / "dependencies.py").read_text(encoding="utf-8")
-    assert "def require_permission" not in deps
+    assert "def require_permission" in deps
+    assert "has_permission" in deps
 
 
 # ── Migration / backfill safety ──────────────────────────────────────────────
