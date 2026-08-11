@@ -1180,12 +1180,16 @@ def _build_supplier_statement_dict(
     to: str,
     as_of: str,
     refresh: int = 0,
+    currency: str = "",
 ) -> Dict[str, Any]:
     """Validate → load shared AP facts → aggregate one supplier statement.
 
     The single Supplier Ledger authority: ``suppliers/{id}/statement.json``
     and ``suppliers/{id}/statement.pdf`` both call this, so the PDF cannot
     print a total the screen does not show.
+
+    Optional ``currency`` keeps the selected AP financial row
+    ``(contractor_id, currency)`` from returning sibling-currency sections.
     """
     cid = (contractor_id or "").strip()
     if not cid:
@@ -1203,6 +1207,13 @@ def _build_supplier_statement_dict(
         from datetime import datetime, timezone
         ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    ccy = (currency or "").strip().upper()
+    if ccy and ccy not in ("USD", "EUR", "PLN", "CHF"):
+        raise HTTPException(
+            status_code=400,
+            detail="currency must be USD, EUR, PLN, CHF, or empty",
+        )
+
     try:
         from ..services.ledger_fact_universe import (
             load_ap_fact_universe,
@@ -1218,6 +1229,8 @@ def _build_supplier_statement_dict(
         for fact in uni.get("expense_facts") or []:
             if fact.get("contractor_id") != cid:
                 continue
+            if ccy and (fact.get("currency") or "") != ccy:
+                continue
             if not supplier_name and fact.get("contractor_name"):
                 supplier_name = fact["contractor_name"]
             expense_facts.append(fact)
@@ -1227,6 +1240,14 @@ def _build_supplier_statement_dict(
         for fact in uni.get("payment_facts") or []:
             linked = fact.get("linked_expense") or ""
             if fact.get("contractor_id") == cid or (linked and linked in expense_ids):
+                if ccy:
+                    # Keep matched payments for the selected currency only —
+                    # unmatched / other-ccy noise must not leak into USD vs EUR.
+                    pay_ccy = (fact.get("currency") or "")
+                    if linked and linked in expense_ids:
+                        pass  # inherit via aggregator from the filtered expense
+                    elif pay_ccy and pay_ccy != ccy:
+                        continue
                 payment_facts.append(fact)
 
         body = aggregate_supplier_statement(
@@ -1236,6 +1257,8 @@ def _build_supplier_statement_dict(
             period=(df, dt),
             as_of=ao,
         )
+        if ccy:
+            body = _restrict_supplier_statement_currency(body, ccy)
         qs = {
             "expense_api_calls": int(exp_stats.get("api_calls") or 0),
             "payment_api_calls": int(pay_stats.get("api_calls") or 0),
@@ -1263,6 +1286,29 @@ def _build_supplier_statement_dict(
     return body
 
 
+def _restrict_supplier_statement_currency(
+    body: Dict[str, Any], currency: str,
+) -> Dict[str, Any]:
+    """Keep only one currency section — no FX merge, no sibling leakage."""
+    ccy = (currency or "").strip().upper()
+    if not ccy:
+        return body
+    out = dict(body)
+    out["currencies"] = [c for c in (body.get("currencies") or []) if c == ccy]
+    for key in (
+        "entries_per_currency",
+        "totals_per_currency",
+        "aging_per_currency",
+        "unmatched_payments_per_currency",
+    ):
+        mapping = body.get(key) or {}
+        if isinstance(mapping, dict) and ccy in mapping:
+            out[key] = {ccy: mapping[ccy]}
+        elif isinstance(mapping, dict):
+            out[key] = {}
+    return out
+
+
 @router.get(
     "/suppliers/{contractor_id}/statement.json",
     dependencies=[_auth],
@@ -1272,6 +1318,7 @@ def get_supplier_statement(
     from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
     to: str = Query("", description="Window end YYYY-MM-DD"),
     as_of: str = Query("", description="As-of date YYYY-MM-DD"),
+    currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN|CHF"),
     refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
 ) -> JSONResponse:
     """Read-only Supplier Ledger drill-down from shared AP facts.
@@ -1281,7 +1328,9 @@ def get_supplier_statement(
     equation as Payables portfolio — no second authority.
     """
     return JSONResponse(
-        _build_supplier_statement_dict(contractor_id, from_, to, as_of, refresh)
+        _build_supplier_statement_dict(
+            contractor_id, from_, to, as_of, refresh, currency,
+        )
     )
 
 
@@ -1294,6 +1343,7 @@ def get_supplier_statement_pdf(
     from_: str = Query("", alias="from", description="Window start YYYY-MM-DD"),
     to: str = Query("", description="Window end YYYY-MM-DD"),
     as_of: str = Query("", description="As-of date YYYY-MM-DD"),
+    currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN|CHF"),
     refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
 ) -> Response:
     """Read-only PDF rendering of the Supplier Ledger statement.
@@ -1306,7 +1356,7 @@ def get_supplier_statement_pdf(
     document logo; omits wFirma ids, raw metadata and DQ warnings.
     """
     statement = _build_supplier_statement_dict(
-        contractor_id, from_, to, as_of, refresh,
+        contractor_id, from_, to, as_of, refresh, currency,
     )
 
     try:
@@ -1329,7 +1379,9 @@ def get_supplier_statement_pdf(
         ) from exc
 
     filename = (
-        f"supplier-statement-{_safe_filename(contractor_id)}-{from_}-{to}.pdf"
+        f"supplier-statement-{_safe_filename(contractor_id)}"
+        f"{('-' + currency.strip().upper()) if (currency or '').strip() else ''}"
+        f"-{from_}-{to}.pdf"
     )
     return Response(
         content=pdf_bytes,

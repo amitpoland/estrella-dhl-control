@@ -28,6 +28,18 @@ const LDG_LIST_LIMIT = 10;
 const SUP_LIST_LIMIT = 10;
 const MA_TABLE_LIMIT = 10;
 
+// AP financial-row identity = (contractor_id, currency). Backend payables grain
+// is already one row per pair; the Supplier Ledger roster must select/page by
+// the same composite key so EUR+USD for one contractor never collapse.
+const supplierFinancialRowId = (contractorId, currency) =>
+  `${contractorId || ''}|${String(currency || '').trim().toUpperCase()}`;
+const parseSupplierFinancialRowId = (rowId) => {
+  const s = String(rowId || '');
+  const i = s.lastIndexOf('|');
+  if (i <= 0) return { contractor_id: s, currency: '' };
+  return { contractor_id: s.slice(0, i), currency: s.slice(i + 1).toUpperCase() };
+};
+
 // AP aging buckets in report order — same keys the backend emits, so this
 // strip and the Supplier Statement PDF read one authority.
 const SUP_AGING_BUCKETS = [
@@ -257,8 +269,8 @@ function LedgersPage(props) {
     setSelectedRow(null);
   };
 
-  const openSupplierLedger = (contractorId) => {
-    setFocusSupplierId(contractorId || '');
+  const openSupplierLedger = (contractorId, currency) => {
+    setFocusSupplierId(supplierFinancialRowId(contractorId, currency));
     setTab('suppliers');
     setSelectedRow(null);
   };
@@ -1116,8 +1128,8 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
                         <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.oldest_due_date || '—'}</td>
                         <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.last_payment_date || '—'}</td>
                         <td style={{ padding: '7px 8px' }}>
-                          <window.Btn small variant="outline" data-testid={`ldg-ma-ap-open-${r.contractor_id}`}
-                            onClick={() => onOpenSupplierLedger && onOpenSupplierLedger(r.contractor_id)}>
+                          <window.Btn small variant="outline" data-testid={`ldg-ma-ap-open-${r.contractor_id}-${r.currency}`}
+                            onClick={() => onOpenSupplierLedger && onOpenSupplierLedger(r.contractor_id, r.currency)}>
                             Open Supplier Ledger
                           </window.Btn>
                         </td>
@@ -1163,10 +1175,6 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
   const [stmtLoading, setStmtLoading] = React.useState(false);
   const [supListPage, setSupListPage] = React.useState(1);
 
-  React.useEffect(() => {
-    if (focusSupplierId) setActiveId(focusSupplierId);
-  }, [focusSupplierId]);
-
   // Changing the period changes the roster, so page 2 of the old roster is
   // meaningless. The client and MA tables already did this; the supplier
   // pager did not, and kept a stale page number across period changes.
@@ -1188,7 +1196,12 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
         const rows = body.suppliers || [];
         setSuppliers(rows);
         onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
-        if (!activeId && rows.length) setActiveId(rows[0].contractor_id);
+        const ids = rows.map((r) => supplierFinancialRowId(r.contractor_id, r.currency));
+        const prefer = focusSupplierId && ids.includes(focusSupplierId)
+          ? focusSupplierId
+          : (activeId && ids.includes(activeId) ? activeId : '');
+        if (prefer) setActiveId(prefer);
+        else if (rows.length) setActiveId(supplierFinancialRowId(rows[0].contractor_id, rows[0].currency));
       })
       .catch((e) => {
         if (gone) return;
@@ -1199,12 +1212,25 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
   }, [period.from, period.to, refreshKey]);
 
   React.useEffect(() => {
+    if (!focusSupplierId || !suppliers || !suppliers.length) return;
+    const idx = suppliers.findIndex(
+      (s) => supplierFinancialRowId(s.contractor_id, s.currency) === focusSupplierId,
+    );
+    if (idx < 0) return;
+    setActiveId(focusSupplierId);
+    setSupListPage(Math.floor(idx / SUP_LIST_LIMIT) + 1);
+  }, [focusSupplierId, suppliers]);
+
+  React.useEffect(() => {
     if (!activeId) { setStmt(null); return; }
+    const sel = parseSupplierFinancialRowId(activeId);
+    if (!sel.contractor_id || !sel.currency) { setStmt(null); return; }
     let gone = false;
     setStmtLoading(true); setStmtErr(null); setStmt(null);
+    const opts = { currency: sel.currency };
+    if (refreshKey > 0) opts.refresh = true;
     window.PzApi.getSupplierStatement(
-      activeId, period.from, period.to, period.to,
-      refreshKey > 0 ? { refresh: true } : undefined,
+      sel.contractor_id, period.from, period.to, period.to, opts,
     )
       .then((res) => {
         if (gone) return;
@@ -1235,16 +1261,25 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
     return <div data-testid="ldg-suppliers-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)' }}>No outstanding suppliers in this period.</div>;
   }
 
-  const active = suppliers.find((s) => s.contractor_id === activeId) || suppliers[0];
+  const active = suppliers.find(
+    (s) => supplierFinancialRowId(s.contractor_id, s.currency) === activeId,
+  ) || suppliers[0];
+  const activeRowId = supplierFinancialRowId(active.contractor_id, active.currency);
   const supTotalPages = Math.max(1, Math.ceil(suppliers.length / SUP_LIST_LIMIT) || 1);
   const supPageSafe = Math.min(supListPage, supTotalPages);
   const filterItems = suppliers
     .slice((supPageSafe - 1) * SUP_LIST_LIMIT, supPageSafe * SUP_LIST_LIMIT)
     .map((s) => ({
-      id: s.contractor_id,
+      id: supplierFinancialRowId(s.contractor_id, s.currency),
       label: s.supplier_name || s.contractor_id,
       sub: `${s.currency} · net ${s.net_payable}`,
+      testid: `ldg-sup-row-${s.contractor_id}-${s.currency}`,
     }));
+  // Statement/PDF are requested with the selected currency — never render a
+  // sibling currency block for the same contractor from a multi-ccy payload.
+  const stmtCurrencies = ((stmt && stmt.currencies) || []).filter(
+    (ccy) => ccy === active.currency,
+  );
 
   return (
     <div data-testid="ldg-suppliers-root" style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
@@ -1253,13 +1288,13 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
           title="Suppliers"
           searchPlaceholder="Search supplier…"
           items={filterItems}
-          activeId={active.contractor_id}
+          activeId={activeRowId}
           onSelect={setActiveId}
         />
         <div data-testid="ldg-suppliers-pager" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
           <button type="button" data-testid="ldg-suppliers-prev" disabled={supPageSafe <= 1} onClick={() => setSupListPage(p => Math.max(1, p - 1))}
             style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: supPageSafe <= 1 ? 'not-allowed' : 'pointer', opacity: supPageSafe <= 1 ? 0.45 : 1 }}>Previous</button>
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Page {supPageSafe}/{supTotalPages}</span>
+          <span data-testid="ldg-suppliers-page-label" style={{ fontSize: 11, color: 'var(--text-3)' }}>Page {supPageSafe}/{supTotalPages} · {filterItems.length}/{suppliers.length}</span>
           <button type="button" data-testid="ldg-suppliers-next" disabled={supPageSafe >= supTotalPages} onClick={() => setSupListPage(p => p + 1)}
             style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: supPageSafe >= supTotalPages ? 'not-allowed' : 'pointer', opacity: supPageSafe >= supTotalPages ? 0.45 : 1 }}>Next</button>
         </div>
@@ -1268,14 +1303,16 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
         <div style={{ marginBottom: 12, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700 }} data-testid="ldg-supplier-name">{active.supplier_name}</div>
-            <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
-              Period {period.from} → {period.to} · {active.currency} · open expenses {active.open_expense_count}
+            <div style={{ fontSize: 11.5, color: 'var(--text-3)' }} data-testid="ldg-supplier-meta">
+              Period {period.from} → {period.to} · <span data-testid="ldg-supplier-active-currency">{active.currency}</span> · open expenses {active.open_expense_count}
             </div>
           </div>
           {/* Same AP authority as the statement below — the PDF route calls the
-              same builder, so it cannot print a different total. */}
+              same builder, so it cannot print a different total. Currency is a
+              query param so USD selection cannot print the EUR section. */}
           <a href={window.PzApi.supplierStatementPdfUrl(active.contractor_id, {
                 from: period.from, to: period.to, as_of: period.to,
+                currency: active.currency,
               })}
              target="_blank" rel="noopener" data-testid="ldg-supplier-statement-pdf"
              style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none', flexShrink: 0 }}>
@@ -1290,7 +1327,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
         </div>
         {stmtLoading && <div data-testid="ldg-supplier-stmt-loading" style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading statement…</div>}
         {stmtErr && <div data-testid="ldg-supplier-stmt-error" style={{ padding: 16, border: '1px solid var(--badge-red-border)', borderRadius: 8, color: 'var(--badge-red-text)', fontSize: 12 }}>{stmtErr}</div>}
-        {stmt && (stmt.currencies || []).map((ccy) => {
+        {stmt && stmtCurrencies.map((ccy) => {
           const rows = (stmt.entries_per_currency && stmt.entries_per_currency[ccy]) || [];
           const tot = (stmt.totals_per_currency && stmt.totals_per_currency[ccy]) || {};
           const ag = (stmt.aging_per_currency && stmt.aging_per_currency[ccy]) || null;
@@ -1395,7 +1432,7 @@ function LdgFilterPanel({ title, searchPlaceholder, items, activeId, onSelect, e
         {shown.map(it => {
           const active = activeId === it.id;
           return (
-            <button key={it.id} onClick={() => onSelect(it.id)} style={{
+            <button key={it.id} data-testid={it.testid || `ldg-filter-item-${it.id}`} onClick={() => onSelect(it.id)} style={{
               display: 'block', width: '100%', textAlign: 'left',
               padding: '10px 14px', cursor: 'pointer',
               background: active ? 'var(--bg-subtle)' : 'transparent',
