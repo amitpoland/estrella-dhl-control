@@ -1,669 +1,921 @@
 // ──────────────────────────────────────────────────────────────────────────
 // shipping-ops.jsx
-// Future-planned module: Carrier Shipment & Label Operations
-// All carrier integrations are wireframe placeholders — no real fetches,
-// no rate quotes, no AWB generation. Status chips: Planned · Backend pending ·
-// API required · Carrier approval required.
+// Shipping Operations — READ-ONLY projection of existing carrier authority.
+//
+// Authority owners (do NOT invent parallel APIs):
+//   Queue / KPI / timeline  → GET /api/v1/dhl/logistics/projection|shipments/{awb}
+//   Capability badges       → GET /api/v1/carrier/status (+ services catalogue)
+//   Packages / box profiles → GET /api/v1/box-types + carrier shipment dims
+//   Labels / docs           → GET /api/v1/carrier/{batch}/label|waybill-doc|receipt|epod/{awb}
+//   Return drafts           → GET /api/v1/carrier/{batch}/return  (Live Create = HOLD)
+//   AWB booking             → Proforma Logistics (NAVIGATE_EXISTING — no copied payload)
+//
+// Forbidden: parallel shipping API family, mock shipments, static false DHL
+// connectivity, second tracking parser, Live Return Create, FedEx claims.
 // ──────────────────────────────────────────────────────────────────────────
 
-// ── Status chip aliases for shipping-specific levels ──────────────────────
-function ShipStatus({ kind = 'planned', label }) {
+function CapChip({ state, label }) {
   const map = {
-    planned:        { dot:'#7E63C9', bg:'var(--badge-purple-bg)', text:'var(--badge-purple-text)', border:'var(--badge-purple-border)', default:'Planned' },
-    backend:        { dot:'#9CA8B8', bg:'var(--badge-neutral-bg)',text:'var(--badge-neutral-text)',border:'var(--badge-neutral-border)',default:'Backend pending' },
-    api:            { dot:'#1A4A90', bg:'var(--badge-blue-bg)',   text:'var(--badge-blue-text)',   border:'var(--badge-blue-border)',   default:'API required' },
-    carrier:        { dot:'#902018', bg:'var(--badge-red-bg)',    text:'var(--badge-red-text)',    border:'var(--badge-red-border)',    default:'Carrier approval required' },
-    temporary:      { dot:'#D4A853', bg:'var(--badge-amber-bg)',  text:'var(--badge-amber-text)',  border:'var(--badge-amber-border)',  default:'Temporary' },
+    ok:   { bg: 'var(--badge-green-bg, #E3F5E3)', text: 'var(--badge-green-text, #1B5E20)', border: 'var(--badge-green-border, #A5D6A7)', dot: '#22A06B' },
+    warn: { bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)', border: 'var(--badge-amber-border)', dot: '#D4A853' },
+    off:  { bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)', dot: '#9CA8B8' },
+    gap:  { bg: 'var(--badge-purple-bg)', text: 'var(--badge-purple-text)', border: 'var(--badge-purple-border)', dot: '#7E63C9' },
   };
-  const s = map[kind] || map.planned;
+  const s = map[state] || map.off;
   return (
-    <span style={{
-      display:'inline-flex', alignItems:'center', gap:5,
-      background:s.bg, color:s.text, border:`1px solid ${s.border}`,
-      padding:'2px 8px', borderRadius:10, fontSize:10, fontWeight:600,
-      letterSpacing:'0.02em', whiteSpace:'nowrap',
-    }}>
-      <span style={{ width:6, height:6, borderRadius:'50%', background:s.dot }}/>
-      {label || s.default}
+    <span
+      data-testid={'ship-ops-cap-' + (state || 'off')}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        background: s.bg, color: s.text, border: '1px solid ' + s.border,
+        padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600,
+        letterSpacing: '0.02em', whiteSpace: 'nowrap',
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.dot }} />
+      {label}
     </span>
   );
 }
 
-function DisBtn({ children, kind='backend', primary=false }) {
+function GapBtn({ children, reason, primary }) {
   return (
-    <button disabled title="Backend / carrier integration not yet implemented" style={{
-      padding:'6px 12px', fontSize:11, fontWeight:600, borderRadius:6,
-      border: primary ? '1px solid var(--accent-border)' : '1px solid var(--border)',
-      background: primary ? 'var(--accent-subtle)' : 'var(--bg-subtle)',
-      color: 'var(--text-3)', cursor:'not-allowed',
-      display:'inline-flex', alignItems:'center', gap:6, opacity:0.85,
-    }}>
+    <button
+      type="button"
+      disabled
+      title={reason || 'Capability not available'}
+      data-testid="ship-ops-gap-btn"
+      style={{
+        padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+        border: primary ? '1px solid var(--accent-border)' : '1px solid var(--border)',
+        background: primary ? 'var(--accent-subtle)' : 'var(--bg-subtle)',
+        color: 'var(--text-3)', cursor: 'not-allowed',
+        display: 'inline-flex', alignItems: 'center', gap: 6, opacity: 0.85,
+      }}
+    >
       {children}
-      <ShipStatus kind={kind}/>
+      <CapChip state="gap" label="Unavailable" />
     </button>
   );
 }
 
-// ── Shipping ops main page ────────────────────────────────────────────────
-const SHIPMENTS = [
-  { id:'SHP-2412-441', awb:'— pending —',  carrier:'DHL Express', client:'Aurum Trading',   docs:['PI 2025/0418','PZ 2412-441'], pkgs:3, weight:'4.85 kg', state:'Temp · pre-execute',     stage:0 },
-  { id:'SHP-2412-440', awb:'1Z 994 …7714', carrier:'FedEx IP',    client:'Levi Joaillerie', docs:['INV 2025/0405'],              pkgs:1, weight:'0.32 kg', state:'In transit · exception',  stage:3 },
-  { id:'SHP-2412-439', awb:'7799 1184 22', carrier:'DHL Express', client:'Maison Élise',    docs:['INV 2025/0399','PZ 2412-301'],pkgs:2, weight:'1.24 kg', state:'Delivered',               stage:5 },
-  { id:'SHP-2412-438', awb:'— failed —',   carrier:'DHL Express', client:'Aurum Trading',   docs:['PI 2025/0410'],               pkgs:5, weight:'8.10 kg', state:'Carrier rejected',        stage:1 },
-];
-
-function ShipmentTimelineMini({ stage }) {
-  const stages = ['Created','Labels','In transit','Customs','Out for delivery','Delivered'];
+function EmptyState({ title, detail, testId }) {
   return (
-    <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-      {stages.map((s, i) => (
-        <React.Fragment key={s}>
-          <div title={s} style={{
-            width:8, height:8, borderRadius:'50%',
-            background: i < stage ? '#22A06B' : i === stage ? 'var(--accent)' : 'var(--border)',
-          }}/>
-          {i < stages.length-1 && <div style={{ width:14, height:1, background: i < stage ? '#22A06B' : 'var(--border)' }}/>}
-        </React.Fragment>
-      ))}
+    <div
+      data-testid={testId || 'ship-ops-empty'}
+      style={{
+        padding: '28px 18px', textAlign: 'center',
+        background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8,
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>{title}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6, maxWidth: 520, margin: '0 auto' }}>{detail}</div>
     </div>
   );
 }
 
-function ShippingOpsPage() {
+function dhlCapFromStatus(carrierStatus) {
+  const raw = ((carrierStatus && carrierStatus.carrier_api_status) || '').toString().trim().toLowerCase();
+  if (raw === 'live') return { state: 'ok', label: 'DHL Express · live' };
+  if (raw === 'shadow') return { state: 'warn', label: 'DHL Express · shadow' };
+  if (raw === 'pending' || raw === '') return { state: 'off', label: 'DHL Express · pending / not activated' };
+  return { state: 'warn', label: 'DHL Express · ' + raw };
+}
+
+function ShippingOpsPage({ onViewShipment, onNav }) {
   const [tab, setTab] = React.useState('queue');
+  const [projection, setProjection] = React.useState(null);
+  const [projErr, setProjErr] = React.useState(null);
+  const [projLoading, setProjLoading] = React.useState(true);
+  const [carrierStatus, setCarrierStatus] = React.useState(null);
+  const [services, setServices] = React.useState([]);
+  const [boxTypes, setBoxTypes] = React.useState([]);
+  const [selectedKey, setSelectedKey] = React.useState(null);
+  const [carrierShipment, setCarrierShipment] = React.useState(null);
+  const [carrierShipErr, setCarrierShipErr] = React.useState(null);
+  const [detail, setDetail] = React.useState(null);
+  const [detailErr, setDetailErr] = React.useState(null);
+  const [returnDraft, setReturnDraft] = React.useState(null);
+  const [returnErr, setReturnErr] = React.useState(null);
+
+  const rows = (projection && projection.rows) || [];
+  const kpis = (projection && projection.kpis) || {};
+  const selected = rows.find((r) => _rowKey(r) === selectedKey) || null;
+  const dhlCap = dhlCapFromStatus(carrierStatus);
+
+  const loadProjection = React.useCallback(() => {
+    if (!window.PzApi || typeof window.PzApi.getDhlLogisticsProjection !== 'function') {
+      setProjErr('PzApi.getDhlLogisticsProjection unavailable');
+      setProjLoading(false);
+      return;
+    }
+    setProjLoading(true);
+    setProjErr(null);
+    window.PzApi.getDhlLogisticsProjection({ direction: 'all', view: 'all' })
+      .then((data) => { setProjection(data || { rows: [], kpis: {} }); setProjLoading(false); })
+      .catch((e) => { setProjErr((e && e.message) || String(e)); setProjection(null); setProjLoading(false); });
+  }, []);
+
+  React.useEffect(() => { loadProjection(); }, [loadProjection]);
+
+  React.useEffect(() => {
+    if (!window.PzApi) return;
+    if (typeof window.PzApi.getCarrierStatus === 'function') {
+      window.PzApi.getCarrierStatus()
+        .then((s) => setCarrierStatus(s || null))
+        .catch(() => setCarrierStatus(null));
+    }
+    if (typeof window.PzApi.listCarrierServices === 'function') {
+      window.PzApi.listCarrierServices()
+        .then((list) => setServices(Array.isArray(list) ? list : (list && list.services) || []))
+        .catch(() => setServices([]));
+    }
+    if (typeof window.PzApi.listBoxTypes === 'function') {
+      window.PzApi.listBoxTypes(true)
+        .then((data) => setBoxTypes((data && data.box_types) || []))
+        .catch(() => setBoxTypes([]));
+    }
+  }, []);
+
+  React.useEffect(() => {
+    setCarrierShipment(null);
+    setCarrierShipErr(null);
+    setDetail(null);
+    setDetailErr(null);
+    setReturnDraft(null);
+    setReturnErr(null);
+    if (!selected || !window.PzApi) return;
+    const batchId = selected.batch_id;
+    const awb = selected.awb;
+    const party = selected.party;
+
+    if (batchId && typeof window.PzApi.getCarrierShipment === 'function') {
+      window.PzApi.getCarrierShipment(batchId, party || undefined)
+        .then((s) => setCarrierShipment(s || null))
+        .catch((e) => {
+          setCarrierShipment(null);
+          setCarrierShipErr((e && e.message) || 'No carrier shipment row for this selection');
+        });
+    }
+
+    if (awb && typeof window.PzApi.getDhlLogisticsShipment === 'function') {
+      window.PzApi.getDhlLogisticsShipment(awb)
+        .then((d) => setDetail(d || null))
+        .catch((e) => { setDetail(null); setDetailErr((e && e.message) || String(e)); });
+    }
+
+    if (batchId && awb && typeof window.PzApi.getReturnDraft === 'function') {
+      window.PzApi.getReturnDraft(batchId, { parent_tracking_ref: awb })
+        .then((r) => setReturnDraft((r && r.draft) || r || null))
+        .catch((e) => {
+          setReturnDraft(null);
+          const msg = (e && e.message) || String(e);
+          if (!/404|not found|no draft/i.test(msg)) setReturnErr(msg);
+        });
+    }
+  }, [selectedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openShipment = (row) => {
+    if (!row || !row.batch_id) return;
+    if (typeof onViewShipment === 'function') {
+      onViewShipment({
+        batch_id: row.batch_id,
+        awb: row.awb,
+        tracking_no: row.awb,
+        carrier: row.carrier || 'DHL Express',
+        status: row.current_status || row.classification,
+      });
+      return;
+    }
+    // Fallback without shell callback: full navigation (hydrates via URL).
+    window.location.assign('/v2/shipments?batch_id=' + encodeURIComponent(row.batch_id));
+  };
+
+  const goProformaBooking = () => {
+    if (typeof onNav === 'function') {
+      onNav('proforma');
+      return;
+    }
+    window.location.assign('/v2/proforma');
+  };
+
   const tabs = [
-    ['queue',    'Shipment Queue'],
-    ['create',   'Create Shipment'],
+    ['queue', 'Shipment Queue'],
+    ['create', 'Create Shipment'],
     ['packages', 'Package Builder'],
-    ['labels',   'Label Preview & Print'],
-    ['timeline', 'Shipment + Tracking Timeline'],
-    ['handoff',  'Warehouse → Carrier Handoff'],
-    ['returns',  'Return Shipments'],
-    ['audit',    'Audit Log'],
-    ['integrations','Integration Map'],
+    ['labels', 'Labels & Documents'],
+    ['timeline', 'Tracking Timeline'],
+    ['handoff', 'Warehouse Handoff'],
+    ['returns', 'Return Shipments'],
+    ['audit', 'Shipment Facts'],
+    ['capabilities', 'Authority & Capability'],
   ];
 
   return (
-    <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
-      {/* Sub-tab strip */}
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }} data-testid="ship-ops-page">
       <div style={{
-        display:'flex', gap:2, padding:'0 32px', borderBottom:'1px solid var(--border)',
-        background:'var(--bg-subtle)', flexShrink:0, overflowX:'auto',
+        display: 'flex', gap: 2, padding: '0 16px', borderBottom: '1px solid var(--border)',
+        background: 'var(--bg-subtle)', flexShrink: 0, overflowX: 'auto',
       }}>
         {tabs.map(([id, label]) => (
-          <button key={id} onClick={()=>setTab(id)} style={{
-            padding:'9px 14px', background:'transparent', border:'none',
-            borderBottom: tab===id ? '2px solid var(--accent)' : '2px solid transparent',
-            color: tab===id ? 'var(--text)' : 'var(--text-2)',
-            fontSize:12, fontWeight: tab===id ? 700 : 500, cursor:'pointer', whiteSpace:'nowrap',
-          }}>{label}</button>
+          <button
+            key={id}
+            type="button"
+            data-testid={'ship-ops-tab-' + id}
+            onClick={() => setTab(id)}
+            style={{
+              padding: '9px 14px', background: 'transparent', border: 'none',
+              borderBottom: tab === id ? '2px solid var(--accent)' : '2px solid transparent',
+              color: tab === id ? 'var(--text)' : 'var(--text-2)',
+              fontSize: 12, fontWeight: tab === id ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
+          >{label}</button>
         ))}
       </div>
 
-      <div style={{ flex:1, overflowY:'auto', padding:'18px 32px 32px' }}>
-        {tab==='queue'        && <SOQueue/>}
-        {tab==='create'       && <SOCreate/>}
-        {tab==='packages'     && <SOPackages/>}
-        {tab==='labels'       && <SOLabels/>}
-        {tab==='timeline'     && <SOTimeline/>}
-        {tab==='handoff'      && <SOHandoff/>}
-        {tab==='returns'      && <SOReturns/>}
-        {tab==='audit'        && <SOAudit/>}
-        {tab==='integrations' && <SOIntegrations/>}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 28px' }}>
+        {tab === 'queue' && (
+          <SOQueue
+            loading={projLoading}
+            err={projErr}
+            kpis={kpis}
+            rows={rows}
+            selectedKey={selectedKey}
+            onSelect={(row) => setSelectedKey(_rowKey(row))}
+            onOpen={openShipment}
+            onRefresh={loadProjection}
+            onBook={goProformaBooking}
+            dhlCap={dhlCap}
+          />
+        )}
+        {tab === 'create' && (
+          <SOCreate onBook={goProformaBooking} dhlCap={dhlCap} services={services} />
+        )}
+        {tab === 'packages' && (
+          <SOPackages
+            boxTypes={boxTypes}
+            selected={selected}
+            carrierShipment={carrierShipment}
+            carrierShipErr={carrierShipErr}
+          />
+        )}
+        {tab === 'labels' && (
+          <SOLabels
+            selected={selected}
+            carrierShipment={carrierShipment}
+            carrierShipErr={carrierShipErr}
+          />
+        )}
+        {tab === 'timeline' && (
+          <SOTimeline selected={selected} detail={detail} detailErr={detailErr} />
+        )}
+        {tab === 'handoff' && <SOHandoff />}
+        {tab === 'returns' && (
+          <SOReturns
+            selected={selected}
+            returnDraft={returnDraft}
+            returnErr={returnErr}
+          />
+        )}
+        {tab === 'audit' && (
+          <SOAudit selected={selected} carrierShipment={carrierShipment} carrierShipErr={carrierShipErr} />
+        )}
+        {tab === 'capabilities' && (
+          <SOCapabilities
+            dhlCap={dhlCap}
+            carrierStatus={carrierStatus}
+            services={services}
+            projectionMeta={projection}
+          />
+        )}
       </div>
     </div>
   );
 }
 
-// ── Tab 1: Queue ──────────────────────────────────────────────────────────
-function SOQueue() {
-  return (
-    <>
-      <div style={{ display:'flex', gap:12, marginBottom:14 }}>
-        {[
-          ['Open',          '4'],
-          ['Pending pickup','2'],
-          ['In transit',    '7'],
-          ['Exceptions',    '1'],
-          ['Delivered (7d)','18'],
-        ].map(([k,v])=> (
-          <div key={k} style={{ flex:1, padding:'10px 14px', background:'var(--card)', border:'1px solid var(--border)', borderRadius:8 }}>
-            <div style={{ fontFamily:'"DM Serif Display", serif', fontSize:24, color:'var(--text)' }}>{v}</div>
-            <div style={{ fontSize:10, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em' }}>{k}</div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display:'flex', gap:8, marginBottom:10 }}>
-        <DisBtn primary kind="api">+ New shipment</DisBtn>
-        <DisBtn kind="api">Bulk dispatch</DisBtn>
-        <DisBtn kind="carrier">Pickup request</DisBtn>
-        <DisBtn kind="api">Generate manifest</DisBtn>
-        <span style={{ flex:1 }}/>
-        <ShipStatus kind="api" label="DHL Express API · not connected"/>
-        <ShipStatus kind="api" label="FedEx API · not connected"/>
-      </div>
-
-      <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, overflow:'hidden' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-          <thead>
-            <tr style={{ background:'var(--bg-subtle)', borderBottom:'1px solid var(--border)' }}>
-              {['Shipment','AWB','Carrier','Client / Consignee','Linked docs','Pkgs','Weight','Lifecycle','State',''].map(h=>
-                <th key={h} style={{ textAlign:'left', padding:'8px 10px', fontWeight:700, color:'var(--text-2)', fontSize:11, textTransform:'uppercase', letterSpacing:'0.04em' }}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {SHIPMENTS.map(s => (
-              <tr key={s.id} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
-                <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text-2)' }}>{s.id}</td>
-                <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text)' }}>{s.awb}</td>
-                <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{s.carrier}</td>
-                <td style={{ padding:'8px 10px', color:'var(--text)' }}>{s.client}</td>
-                <td style={{ padding:'8px 10px' }}>
-                  {s.docs.map(d => (
-                    <span key={d} style={{ display:'inline-block', marginRight:4, padding:'1px 6px', background:'var(--accent-subtle)', border:'1px solid var(--accent-border)', borderRadius:4, fontSize:10, color:'var(--text)' }}>{d}</span>
-                  ))}
-                </td>
-                <td style={{ padding:'8px 10px', color:'var(--text)' }}>{s.pkgs}</td>
-                <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{s.weight}</td>
-                <td style={{ padding:'8px 10px' }}><ShipmentTimelineMini stage={s.stage}/></td>
-                <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{s.state}</td>
-                <td style={{ padding:'8px 10px', textAlign:'right' }}>
-                  <DisBtn kind="api">Open</DisBtn>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div style={{ padding:'10px 12px', background:'var(--bg-subtle)', fontSize:11, color:'var(--text-3)', borderTop:'1px solid var(--border-subtle)' }}>
-          Wireframe data — no carrier integration. AWBs, weights, and states are illustrative only.
-        </div>
-      </div>
-    </>
-  );
+function _rowKey(row) {
+  if (!row) return '';
+  return String(row.batch_id || '') + '|' + String(row.awb || '') + '|' + String(row.direction || '');
 }
 
-// ── Tab 2: Create Shipment ────────────────────────────────────────────────
-function SOCreate() {
-  const F = ({ label, value, hint, mono=false }) => (
-    <div style={{ marginBottom:10 }}>
-      <div style={{ fontSize:10, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:3 }}>{label}</div>
-      <div style={{ fontSize:12, color:'var(--text)', fontFamily: mono ? 'ui-monospace, monospace' : 'inherit' }}>{value}</div>
-      {hint && <div style={{ fontSize:10, color:'var(--text-3)', marginTop:2 }}>{hint}</div>}
-    </div>
-  );
+function SOQueue({ loading, err, kpis, rows, selectedKey, onSelect, onOpen, onRefresh, onBook, dhlCap }) {
+  const cards = [
+    ['Active', kpis.operational_active],
+    ['Exceptions', kpis.operational_exceptions],
+    ['Needs attention', kpis.needs_attention],
+    ['Delivered today', kpis.delivered_today],
+    ['Historical open', kpis.historical_unresolved],
+  ];
 
   return (
-    <div style={{ display:'flex', gap:18 }}>
-      {/* Form */}
-      <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-          <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>New shipment · operational form</h3>
-          <ShipStatus kind="backend"/>
-          <ShipStatus kind="api"/>
-        </div>
-
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          {/* Sender / receiver */}
-          <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-            <div style={{ fontWeight:700, fontSize:12, color:'var(--text)', marginBottom:8 }}>Shipper</div>
-            <F label="Account" value="Estrella Jewels Sp. z o.o."/>
-            <F label="Address" value="ul. Krucza 12, 00-001 Warszawa, PL"/>
-            <F label="Carrier account" value="DHL · 950-1234567" mono/>
-          </div>
-          <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-            <div style={{ fontWeight:700, fontSize:12, color:'var(--text)', marginBottom:8 }}>Consignee</div>
-            <F label="Client" value="Aurum Trading Ltd. · pulled from Master"/>
-            <F label="Address" value="34 Hatton Garden, London EC1N, UK"/>
-            <F label="Carrier accounts" value="DHL: 410-998877 · FedEx: 612-001-449" mono/>
-          </div>
-          {/* Service */}
-          <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-            <div style={{ fontWeight:700, fontSize:12, color:'var(--text)', marginBottom:8 }}>Service</div>
-            <F label="Carrier" value="DHL Express  ·  FedEx IP  ·  FedEx IE"/>
-            <F label="Service level" value="Worldwide Express · Economy Select" hint="Live rate query · API required"/>
-            <F label="Incoterm" value="EXW · FCA · DAP · DDP · CIP (catalogue)"/>
-            <F label="Insurance" value="Declared value · KUKE-linked" hint="Pulled from client KYC"/>
-          </div>
-          {/* Customs */}
-          <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-            <div style={{ fontWeight:700, fontSize:12, color:'var(--text)', marginBottom:8 }}>Customs</div>
-            <F label="Reason for export" value="Sale · Sample · Repair · Return"/>
-            <F label="Commercial invoice" value="INV 2025/0418  ·  attach" hint="Auto-link from sales module"/>
-            <F label="CN23 / EAD / EUR.1" value="Generate from PZ data" hint="Backend pending"/>
-            <F label="HS codes" value="711319 · 711719 · pulled from line items"/>
-          </div>
-        </div>
-
-        <div style={{ marginTop:14, display:'flex', gap:8 }}>
-          <DisBtn kind="temporary">Save as Temporary</DisBtn>
-          <DisBtn kind="api">Validate with carrier</DisBtn>
-          <DisBtn kind="api" primary>Generate AWB &amp; Labels</DisBtn>
-          <DisBtn kind="carrier">Cancel shipment</DisBtn>
-        </div>
-      </div>
-
-      {/* Right rail — linked docs + status */}
-      <aside style={{ width:280, flexShrink:0, display:'flex', flexDirection:'column', gap:10 }}>
-        <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-          <div style={{ fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>Linked documents</div>
-          {['PI 2025/0418','INV 2025/0418','PZ 2412-441','Order O-9933'].map(d => (
-            <div key={d} style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid var(--border-subtle)', fontSize:11 }}>
-              <span style={{ color:'var(--text)', fontFamily:'ui-monospace, monospace' }}>{d}</span>
-              <a href="#" style={{ color:'var(--accent-text)', fontSize:10, fontWeight:600 }}>view</a>
+    <div data-testid="ship-ops-queue">
+      <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+        {cards.map(([label, value]) => (
+          <div
+            key={label}
+            data-testid={'ship-ops-kpi-' + label.toLowerCase().replace(/\s+/g, '-')}
+            style={{
+              flex: '1 1 120px', minWidth: 110, padding: '10px 14px',
+              background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8,
+            }}
+          >
+            <div style={{ fontFamily: '"DM Serif Display", serif', fontSize: 24, color: 'var(--text)' }}>
+              {loading ? '…' : (value == null ? '—' : String(value))}
             </div>
-          ))}
-        </div>
-        <div style={{ background:'var(--accent-subtle)', border:'1px solid var(--accent-border)', borderRadius:8, padding:14 }}>
-          <div style={{ fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>Carrier integration</div>
-          <ul style={{ margin:0, paddingLeft:16, fontSize:11, color:'var(--text-2)', lineHeight:1.7 }}>
-            <li>DHL Express API · <strong>not connected</strong></li>
-            <li>FedEx Ship API · <strong>not connected</strong></li>
-            <li>Label render service · pending</li>
-            <li>Pickup scheduling · pending</li>
-          </ul>
-        </div>
-      </aside>
-    </div>
-  );
-}
-
-// ── Tab 3: Package Builder (Multi-package grid) ──────────────────────────
-function SOPackages() {
-  const pkgs = [
-    { idx:1, type:'Box S',  l:25, w:18, h:8,  weight:0.85, items:'4 × ring boxes',           barcode:'EJP-441-01' },
-    { idx:2, type:'Box M',  l:35, w:25, h:12, weight:1.60, items:'2 × pendant trays',        barcode:'EJP-441-02' },
-    { idx:3, type:'Soft',   l:20, w:14, h:5,  weight:0.40, items:'documents · invoice copy', barcode:'EJP-441-03' },
-  ];
-  const total = pkgs.reduce((a,p)=>a+p.weight, 0).toFixed(2);
-
-  return (
-    <>
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-        <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>Multi-package grid</h3>
-        <ShipStatus kind="backend"/>
-        <span style={{ flex:1 }}/>
-        <DisBtn kind="api">+ Add package</DisBtn>
-        <DisBtn kind="api">Group selected</DisBtn>
-        <DisBtn kind="api">Scan barcode</DisBtn>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+          </div>
+        ))}
       </div>
 
-      <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, overflow:'hidden', marginBottom:14 }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-          <thead>
-            <tr style={{ background:'var(--bg-subtle)', borderBottom:'1px solid var(--border)' }}>
-              {['#','Type','L (cm)','W (cm)','H (cm)','Weight (kg)','Items','Barcode','Label',''].map(h=>
-                <th key={h} style={{ textAlign:'left', padding:'8px 10px', fontWeight:700, color:'var(--text-2)', fontSize:11, textTransform:'uppercase', letterSpacing:'0.04em' }}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {pkgs.map(p=> (
-              <tr key={p.idx} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
-                <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{p.idx}</td>
-                <td style={{ padding:'8px 10px', color:'var(--text)' }}>{p.type}</td>
-                <td style={{ padding:'8px 10px' }}>{p.l}</td>
-                <td style={{ padding:'8px 10px' }}>{p.w}</td>
-                <td style={{ padding:'8px 10px' }}>{p.h}</td>
-                <td style={{ padding:'8px 10px', fontWeight:600, color:'var(--text)' }}>{p.weight}</td>
-                <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{p.items}</td>
-                <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text)' }}>{p.barcode}</td>
-                <td style={{ padding:'8px 10px' }}><ShipStatus kind="api" label="Pending"/></td>
-                <td style={{ padding:'8px 10px', textAlign:'right' }}>
-                  <DisBtn kind="api">Edit</DisBtn>
-                </td>
-              </tr>
-            ))}
-            <tr style={{ background:'var(--bg-subtle)' }}>
-              <td colSpan={5} style={{ padding:'8px 10px', textAlign:'right', color:'var(--text-2)', fontWeight:600 }}>Total weight</td>
-              <td style={{ padding:'8px 10px', fontWeight:700, color:'var(--text)' }}>{total} kg</td>
-              <td colSpan={4}/>
-            </tr>
-          </tbody>
-        </table>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button
+          type="button"
+          data-testid="ship-ops-new-shipment"
+          onClick={onBook}
+          style={{
+            padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+            border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)',
+            color: 'var(--text)', cursor: 'pointer',
+          }}
+        >+ New shipment (via Proforma)</button>
+        <GapBtn reason="No bulk-dispatch API on canonical carrier authority">Bulk dispatch</GapBtn>
+        <GapBtn reason="Pickup scheduling not enabled (MyDHL pickup.isRequested is false)">Pickup request</GapBtn>
+        <GapBtn reason="No EOD / close-manifest endpoint on canonical carrier authority">Generate manifest</GapBtn>
+        <button
+          type="button"
+          data-testid="ship-ops-refresh"
+          onClick={onRefresh}
+          style={{
+            padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+            border: '1px solid var(--border)', background: 'var(--bg-subtle)',
+            color: 'var(--text-2)', cursor: 'pointer',
+          }}
+        >Refresh</button>
+        <span style={{ flex: 1 }} />
+        <CapChip state={dhlCap.state} label={dhlCap.label} />
+        <CapChip state="off" label="FedEx · unavailable" />
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-        <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-          <div style={{ fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>Package grouping</div>
-          <p style={{ fontSize:11, color:'var(--text-2)', lineHeight:1.7, margin:0 }}>
-            Group multi-piece consignments under one master AWB. Children pieces share customs and tracking events; each piece prints its own label with sequence (1/3, 2/3…).
-          </p>
-        </div>
-        <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-          <div style={{ fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>Scanner integration</div>
-          <p style={{ fontSize:11, color:'var(--text-2)', lineHeight:1.7, margin:0 }}>
-            Hand scanner / phone camera reads EJP barcodes to auto-fill weight + dimensions from a connected scale. <ShipStatus kind="planned"/>
-          </p>
-        </div>
-      </div>
-    </>
-  );
-}
+      {err && (
+        <div data-testid="ship-ops-queue-error" style={{
+          marginBottom: 10, padding: 10, borderRadius: 8,
+          background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+          color: 'var(--badge-red-text)', fontSize: 12,
+        }}>{err}</div>
+      )}
 
-// ── Tab 4: Label Preview & Print Queue ────────────────────────────────────
-function SOLabels() {
-  const queue = [
-    { id:'PRN-0042', shipment:'SHP-2412-441', pieces:'1/3',  doc:'AWB label',     paper:'A6 thermal · 4×6"', state:'queued',     level:'api' },
-    { id:'PRN-0041', shipment:'SHP-2412-441', pieces:'2/3',  doc:'AWB label',     paper:'A6 thermal · 4×6"', state:'queued',     level:'api' },
-    { id:'PRN-0040', shipment:'SHP-2412-441', pieces:'3/3',  doc:'AWB label',     paper:'A6 thermal · 4×6"', state:'queued',     level:'api' },
-    { id:'PRN-0039', shipment:'SHP-2412-441', pieces:'—',    doc:'Commercial inv.',paper:'A4',                state:'queued',     level:'api' },
-    { id:'PRN-0038', shipment:'SHP-2412-441', pieces:'—',    doc:'CN23',           paper:'A4',                state:'queued',     level:'backend' },
-    { id:'PRN-0037', shipment:'SHP-2412-440', pieces:'1/1',  doc:'AWB label',     paper:'A6 thermal · 4×6"', state:'printed',    level:'api' },
-    { id:'PRN-0036', shipment:'SHP-2412-440', pieces:'—',    doc:'Manifest',       paper:'A4',                state:'printed',    level:'api' },
-  ];
-  return (
-    <div style={{ display:'flex', gap:18 }}>
-      <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
-          <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>Print queue</h3>
-          <ShipStatus kind="api" label="Label PDF render · pending"/>
-          <span style={{ flex:1 }}/>
-          <DisBtn kind="api" primary>Print all</DisBtn>
-          <DisBtn kind="api">Reprint selected</DisBtn>
-          <DisBtn kind="api">Export PDF</DisBtn>
-        </div>
-        <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, overflow:'hidden' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+      {!loading && !err && rows.length === 0 && (
+        <EmptyState
+          testId="ship-ops-queue-empty"
+          title="No shipments in logistics projection"
+          detail="The DHL Logistics projector returned zero rows for the current filters. This is an empty live result — not sample data."
+        />
+      )}
+
+      {(loading || rows.length > 0) && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
             <thead>
-              <tr style={{ background:'var(--bg-subtle)', borderBottom:'1px solid var(--border)' }}>
-                {['Job','Shipment','Piece','Document','Paper','State',''].map(h=>
-                  <th key={h} style={{ textAlign:'left', padding:'8px 10px', fontWeight:700, color:'var(--text-2)', fontSize:11, textTransform:'uppercase', letterSpacing:'0.04em' }}>{h}</th>)}
+              <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
+                {['AWB', 'Direction', 'Party', 'Carrier', 'Classification', 'Status', 'Stage', 'Batch', ''].map((h) => (
+                  <th key={h} style={{
+                    textAlign: 'left', padding: '8px 10px', fontWeight: 700, color: 'var(--text-2)',
+                    fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em',
+                  }}>{h}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {queue.map(j => (
-                <tr key={j.id} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
-                  <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text-2)' }}>{j.id}</td>
-                  <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text)' }}>{j.shipment}</td>
-                  <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{j.pieces}</td>
-                  <td style={{ padding:'8px 10px', color:'var(--text)' }}>{j.doc}</td>
-                  <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{j.paper}</td>
-                  <td style={{ padding:'8px 10px' }}><ShipStatus kind={j.level} label={j.state==='printed'?'Printed':'Queued'}/></td>
-                  <td style={{ padding:'8px 10px', textAlign:'right' }}>
-                    <DisBtn kind="api">Preview</DisBtn>
-                  </td>
-                </tr>
-              ))}
+              {loading && (
+                <tr><td colSpan={9} style={{ padding: 16, color: 'var(--text-3)' }}>Loading logistics projection…</td></tr>
+              )}
+              {!loading && rows.map((r) => {
+                const key = _rowKey(r);
+                const sel = key === selectedKey;
+                return (
+                  <tr
+                    key={key}
+                    data-testid="ship-ops-queue-row"
+                    onClick={() => onSelect(r)}
+                    style={{
+                      borderBottom: '1px solid var(--border-subtle)',
+                      background: sel ? 'var(--accent-subtle)' : 'transparent',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <td style={{ padding: '8px 10px', fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{r.awb || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.direction || '—'}</td>
+                    <td style={{ padding: '8px 10px' }}>{r.party || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.carrier || '—'}</td>
+                    <td style={{ padding: '8px 10px' }}>{r.classification || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.current_status || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.stage_label || r.current_stage || '—'}</td>
+                    <td style={{ padding: '8px 10px', fontFamily: 'ui-monospace, monospace', fontSize: 10, color: 'var(--text-3)' }}>
+                      {r.batch_id ? String(r.batch_id).slice(0, 28) : '—'}
+                    </td>
+                    <td style={{ padding: '8px 10px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        data-testid="ship-ops-open-shipment"
+                        disabled={!r.batch_id}
+                        title={r.batch_id ? 'Open shipment detail' : 'No batch_id on this row'}
+                        onClick={() => onOpen(r)}
+                        style={{
+                          padding: '4px 10px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+                          border: '1px solid var(--border)', background: 'var(--bg-subtle)',
+                          color: r.batch_id ? 'var(--text)' : 'var(--text-3)',
+                          cursor: r.batch_id ? 'pointer' : 'not-allowed',
+                        }}
+                      >Open</button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-        </div>
-      </div>
-
-      {/* Label preview window */}
-      <aside style={{ width:340, flexShrink:0 }}>
-        <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
-            <div style={{ fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Label preview</div>
-            <ShipStatus kind="api"/>
-          </div>
-          {/* Wireframe label */}
           <div style={{
-            aspectRatio:'4/6', background:'#fff', border:'1.5px dashed var(--accent-border)',
-            borderRadius:6, padding:10, fontSize:9, fontFamily:'ui-monospace, monospace',
-            color:'var(--text)', display:'flex', flexDirection:'column', gap:6,
+            padding: '10px 12px', background: 'var(--bg-subtle)', fontSize: 11, color: 'var(--text-3)',
+            borderTop: '1px solid var(--border-subtle)',
           }}>
-            <div style={{ display:'flex', justifyContent:'space-between' }}><b>DHL EXPRESS</b><span>1/3</span></div>
-            <div style={{ height:1, background:'var(--text)' }}/>
-            <div>FROM: Estrella Jewels Sp. z o.o.</div>
-            <div>ul. Krucza 12, 00-001 Warszawa, PL</div>
-            <div style={{ height:1, background:'var(--border)' }}/>
-            <div>TO: Aurum Trading Ltd.</div>
-            <div>34 Hatton Garden, London EC1N, UK</div>
-            <div style={{ height:1, background:'var(--border)' }}/>
-            <div style={{ background:'#000', height:38, borderRadius:2, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontSize:10 }}>‖█▌▌█‖▌█‖▌█  AWB pending</div>
-            <div style={{ display:'flex', justifyContent:'space-between' }}>
-              <div>WP-EXPRESS</div>
-              <div>0.85 kg</div>
-            </div>
-            <div style={{ display:'flex', justifyContent:'center', alignItems:'center', flex:1, color:'var(--text-3)', fontStyle:'italic' }}>— wireframe —</div>
+            Source: GET /api/v1/dhl/logistics/projection · {rows.length} row(s)
+            {projectionAuthorityNote(kpis)}
           </div>
         </div>
-      </aside>
+      )}
     </div>
   );
 }
 
-// ── Tab 5: Shipment + Tracking unified timeline ───────────────────────────
-function SOTimeline() {
-  const events = [
-    { ts:'12 May · 14:42', stage:'Shipment created',                   kind:'op',     by:'operator · MK',  status:'done' },
-    { ts:'12 May · 14:44', stage:'Packages built · 3 pieces',           kind:'op',     by:'operator · MK',  status:'done' },
-    { ts:'12 May · 14:46', stage:'Labels generated · DHL Express',      kind:'carrier',by:'API',            status:'pending', level:'api' },
-    { ts:'12 May · 15:10', stage:'Pickup requested',                    kind:'carrier',by:'API',            status:'pending', level:'carrier' },
-    { ts:'12 May · 17:30', stage:'Picked up by courier',                kind:'carrier',by:'DHL',            status:'pending', level:'api' },
-    { ts:'13 May · 02:14', stage:'Departed origin facility · WAW',      kind:'tracking',by:'DHL feed',      status:'pending', level:'api' },
-    { ts:'13 May · 06:48', stage:'Customs export · cleared',            kind:'tracking',by:'DHL feed',      status:'pending', level:'api' },
-    { ts:'13 May · 09:30', stage:'Arrived destination facility · LHR',  kind:'tracking',by:'DHL feed',      status:'pending', level:'api' },
-    { ts:'13 May · 11:00', stage:'Customs import · clearance',          kind:'tracking',by:'DHL feed',      status:'pending', level:'api' },
-    { ts:'13 May · 14:20', stage:'Out for delivery',                    kind:'tracking',by:'DHL feed',      status:'pending', level:'api' },
-    { ts:'13 May · 16:45', stage:'Delivered · signed B. Patel',         kind:'tracking',by:'DHL feed',      status:'pending', level:'api' },
-  ];
-  const dot = e => e.status==='done' ? '#22A06B' : 'var(--border)';
+function projectionAuthorityNote() {
+  return '';
+}
+
+function SOCreate({ onBook, dhlCap, services }) {
   return (
-    <>
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-        <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>Shipment + tracking · unified timeline</h3>
-        <ShipStatus kind="api" label="Tracking event ingestion · pending"/>
+    <div data-testid="ship-ops-create">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text)' }}>Create shipment</h3>
+        <CapChip state={dhlCap.state} label={dhlCap.label} />
+        <CapChip state="off" label="FedEx · unavailable" />
       </div>
-      <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:'14px 18px' }}>
-        {events.map((e, i) => (
-          <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:14, padding:'8px 0', borderBottom: i<events.length-1 ? '1px solid var(--border-subtle)' : 'none' }}>
-            <div style={{ width:80, fontSize:11, color:'var(--text-3)', fontFamily:'ui-monospace, monospace', flexShrink:0 }}>{e.ts}</div>
-            <div style={{ width:8, height:8, borderRadius:'50%', background:dot(e), marginTop:4, flexShrink:0 }}/>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:12, color:'var(--text)', fontWeight:600 }}>{e.stage}</div>
-              <div style={{ fontSize:10, color:'var(--text-3)', marginTop:1 }}>{e.kind} · {e.by}</div>
-            </div>
-            {e.level && <ShipStatus kind={e.level}/>}
+      <div style={{
+        background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8,
+        padding: 16, maxWidth: 720, lineHeight: 1.7, fontSize: 12, color: 'var(--text-2)',
+      }}>
+        <p style={{ marginTop: 0, color: 'var(--text)' }}>
+          AWB booking authority stays on <strong>Proforma Logistics</strong>
+          (<code>POST /api/v1/carrier/&#123;batch&#125;/shipment</code>). Shipping Ops does not copy that booking form or payload logic.
+        </p>
+        <p>
+          Open an existing proforma draft and use <strong>Generate AWB</strong> on the logistics toolbar.
+          That path already owns account resolution, box profiles, dimensions, and label URLs.
+        </p>
+        <button
+          type="button"
+          data-testid="ship-ops-goto-proforma"
+          onClick={onBook}
+          style={{
+            marginTop: 8, padding: '8px 14px', fontSize: 12, fontWeight: 600, borderRadius: 6,
+            border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)',
+            color: 'var(--text)', cursor: 'pointer',
+          }}
+        >Open Proforma hub</button>
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+            DHL service catalogue (read-only)
           </div>
-        ))}
+          {services.length === 0 ? (
+            <div style={{ color: 'var(--text-3)' }}>No services returned from GET /api/v1/carrier/services</div>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {services.slice(0, 12).map((s) => (
+                <li key={s.code || s.name}>{s.code} — {s.name}{s.delivery ? ' · ' + s.delivery : ''}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <GapBtn reason="Temporary shipment lifecycle API does not exist on carrier authority">Save as Temporary</GapBtn>
+          <GapBtn reason="No public rate-quote endpoint; rates exist only inside live create">Validate / quote</GapBtn>
+          <GapBtn reason="DHL cancel/void is not exposed; local do-not-use is Proforma/ops only">Cancel at carrier</GapBtn>
+        </div>
       </div>
-    </>
+    </div>
   );
 }
 
-// ── Tab 6: Warehouse → Carrier handoff ────────────────────────────────────
+function SOPackages({ boxTypes, selected, carrierShipment, carrierShipErr }) {
+  let dims = null;
+  try {
+    if (carrierShipment && carrierShipment.dimensions_json) {
+      dims = typeof carrierShipment.dimensions_json === 'string'
+        ? JSON.parse(carrierShipment.dimensions_json)
+        : carrierShipment.dimensions_json;
+    } else if (carrierShipment && carrierShipment.dimensions) {
+      dims = carrierShipment.dimensions;
+    }
+  } catch (e) { dims = null; }
+
+  return (
+    <div data-testid="ship-ops-packages">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text)' }}>Package builder</h3>
+        <CapChip state="ok" label="Box Profiles · master" />
+        <span style={{ flex: 1 }} />
+        <GapBtn reason="No package-grid editor API; packages are set at AWB booking">+ Add package</GapBtn>
+        <GapBtn reason="No barcode scanner package API">Scan barcode</GapBtn>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 12 }}>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: 12 }}>
+            Box Profiles ({boxTypes.length})
+          </div>
+          {boxTypes.length === 0 ? (
+            <div style={{ padding: 14, fontSize: 12, color: 'var(--text-3)' }}>No active box profiles from GET /api/v1/box-types</div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)' }}>
+                  {['Code', 'Name', 'L×W×H', 'Tare', 'Max'].map((h) => (
+                    <th key={h} style={{ textAlign: 'left', padding: '6px 10px', fontSize: 10, color: 'var(--text-3)' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {boxTypes.map((b) => (
+                  <tr key={b.code} data-testid="ship-ops-box-row" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '6px 10px', fontFamily: 'ui-monospace, monospace' }}>{b.code}</td>
+                    <td style={{ padding: '6px 10px' }}>{b.name}</td>
+                    <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>{b.length_cm}×{b.width_cm}×{b.height_cm}</td>
+                    <td style={{ padding: '6px 10px' }}>{b.tare_weight_kg}</td>
+                    <td style={{ padding: '6px 10px' }}>{b.max_weight_kg}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>Selected shipment packages</div>
+          {!selected && (
+            <EmptyState
+              testId="ship-ops-packages-noselect"
+              title="Select a queue row"
+              detail="Package dimensions come from the booked carrier shipment (dimensions_json / box_type_code). There is no separate package-grid store."
+            />
+          )}
+          {selected && carrierShipErr && !carrierShipment && (
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{carrierShipErr}</div>
+          )}
+          {selected && carrierShipment && (
+            <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }} data-testid="ship-ops-package-dims">
+              <div>AWB: <code>{carrierShipment.tracking_ref || selected.awb || '—'}</code></div>
+              <div>Box profile: <code>{carrierShipment.box_type_code || '—'}</code></div>
+              <div>Weight kg: {carrierShipment.weight_kg != null ? carrierShipment.weight_kg : '—'}</div>
+              <div>Dimensions: {dims ? JSON.stringify(dims) : '—'}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SOLabels({ selected, carrierShipment, carrierShipErr }) {
+  const fromShipment = carrierShipment ? {
+    label: carrierShipment.label_download_url,
+    waybill: carrierShipment.waybill_doc_download_url,
+    receipt: carrierShipment.shipment_receipt_download_url,
+    epod: carrierShipment.epod_download_url,
+  } : null;
+  const hasAnyFromShipment = !!(fromShipment && (fromShipment.label || fromShipment.waybill || fromShipment.receipt || fromShipment.epod));
+  const built = (selected && selected.batch_id && selected.awb)
+    ? ((window.PzApi && typeof window.PzApi.carrierDocumentUrls === 'function')
+      ? window.PzApi.carrierDocumentUrls(selected.batch_id, selected.awb)
+      : {
+        label: '/api/v1/carrier/' + encodeURIComponent(selected.batch_id) + '/label/' + encodeURIComponent(selected.awb),
+        waybill: '/api/v1/carrier/' + encodeURIComponent(selected.batch_id) + '/waybill-doc/' + encodeURIComponent(selected.awb),
+        receipt: '/api/v1/carrier/' + encodeURIComponent(selected.batch_id) + '/receipt/' + encodeURIComponent(selected.awb),
+        epod: '/api/v1/carrier/' + encodeURIComponent(selected.batch_id) + '/epod/' + encodeURIComponent(selected.awb),
+      })
+    : null;
+  const links = hasAnyFromShipment ? fromShipment : built;
+
+  return (
+    <div data-testid="ship-ops-labels">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text)' }}>Labels &amp; documents</h3>
+        <CapChip state="ok" label="Carrier document downloads" />
+        <span style={{ flex: 1 }} />
+        <GapBtn reason="No print-queue database or print-job state machine">Print queue</GapBtn>
+      </div>
+      {!selected && (
+        <EmptyState
+          testId="ship-ops-labels-noselect"
+          title="Select a queue row"
+          detail="Label, waybill, receipt, and ePOD downloads use the existing carrier document endpoints for that batch AWB."
+        />
+      )}
+      {selected && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 14 }}>
+          <div style={{ fontSize: 12, marginBottom: 10, color: 'var(--text-2)' }}>
+            {selected.awb || '—'} · {selected.batch_id || '—'}
+            {carrierShipErr ? ' · ' + carrierShipErr : ''}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {[
+              ['Transport label', links && links.label],
+              ['Waybill', links && links.waybill],
+              ['Receipt', links && links.receipt],
+              ['ePOD', links && links.epod],
+            ].map(([name, href]) => (
+              href ? (
+                <a
+                  key={name}
+                  data-testid={'ship-ops-doc-' + name.toLowerCase().replace(/\s+/g, '-')}
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+                    border: '1px solid var(--accent-border)', background: 'var(--accent-subtle)',
+                    color: 'var(--text)', textDecoration: 'none',
+                  }}
+                >⬇ {name}</a>
+              ) : (
+                <GapBtn key={name} reason="Document URL not available for this selection">{name}</GapBtn>
+              )
+            ))}
+          </div>
+          <p style={{ marginTop: 12, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.6 }}>
+            Downloads are read-only GETs on /api/v1/carrier/&#123;batch&#125;/… — no MyDHL create and no print-job store.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SOTimeline({ selected, detail, detailErr }) {
+  const milestones = (detail && (detail.milestones || (detail.shipment && detail.shipment.milestones))) || [];
+  const rowMilestones = (selected && selected.milestones) || [];
+  const events = milestones.length ? milestones : rowMilestones;
+
+  return (
+    <div data-testid="ship-ops-timeline">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text)' }}>Tracking timeline</h3>
+        <CapChip state="ok" label="Logistics projector authority" />
+      </div>
+      {!selected && (
+        <EmptyState
+          testId="ship-ops-timeline-noselect"
+          title="Select a queue row"
+          detail="Timeline events come from GET /api/v1/dhl/logistics/shipments/{awb} (and projection milestones). This page does not parse Delivered separately."
+        />
+      )}
+      {selected && detailErr && events.length === 0 && (
+        <div data-testid="ship-ops-timeline-error" style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>{detailErr}</div>
+      )}
+      {selected && events.length === 0 && !detailErr && (
+        <EmptyState
+          testId="ship-ops-timeline-empty"
+          title="No milestones for this AWB"
+          detail="Live projector returned no milestone events for the selected shipment."
+        />
+      )}
+      {selected && events.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px' }}>
+          {events.map((e, i) => (
+            <div
+              key={i}
+              data-testid="ship-ops-timeline-event"
+              style={{
+                display: 'flex', gap: 12, padding: '8px 0',
+                borderBottom: i < events.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+              }}
+            >
+              <div style={{ width: 140, flexShrink: 0, fontSize: 11, color: 'var(--text-3)', fontFamily: 'ui-monospace, monospace' }}>
+                {e.at || e.ts || e.timestamp || e.time || '—'}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+                  {e.label || e.stage || e.status || e.description || e.name || 'Event'}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                  {[e.location, e.source].filter(Boolean).join(' · ') || 'logistics projector'}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SOHandoff() {
   return (
-    <>
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-        <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>Warehouse → Carrier handoff</h3>
-        <ShipStatus kind="backend"/>
+    <div data-testid="ship-ops-handoff">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text)' }}>Warehouse → carrier handoff</h3>
+        <CapChip state="gap" label="No handoff API" />
       </div>
-      <p style={{ fontSize:12, color:'var(--text-2)', marginBottom:14, maxWidth:780, lineHeight:1.7 }}>
-        Operational flow for the moment goods leave Final Stock and are tendered to the courier. Each step records
-        the operator, scan timestamp, and signature. Direct dispatch from a DHL warehouse skips steps 1–2.
-      </p>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(5, 1fr)', gap:10, marginBottom:14 }}>
-        {[
-          ['1 · Pick',         'Pick list scanned · qty confirmed',      'op'],
-          ['2 · Pack',         'Items packed · weight + dim recorded',   'op'],
-          ['3 · Label',        'Labels printed · pieces matched',         'api'],
-          ['4 · Tender',       'Courier scan · Out For Carriage',         'carrier'],
-          ['5 · Manifest',     'EOD manifest closed · day signed off',    'api'],
-        ].map(([t, d, k]) => (
-          <div key={t} style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:12 }}>
-            <div style={{ fontWeight:700, fontSize:12, color:'var(--text)', marginBottom:6 }}>{t}</div>
-            <div style={{ fontSize:11, color:'var(--text-2)', marginBottom:10, lineHeight:1.5 }}>{d}</div>
-            <ShipStatus kind={k==='op'?'backend':k==='api'?'api':'carrier'}/>
-          </div>
-        ))}
+      <EmptyState
+        testId="ship-ops-handoff-gap"
+        title="Capability not implemented"
+        detail="Pick / pack / tender / EOD manifest handoff is not a canonical carrier endpoint. Label download remains available from Labels & Documents; booking remains on Proforma Logistics."
+      />
+      <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <GapBtn reason="No warehouse tender API">Tender to courier</GapBtn>
+        <GapBtn reason="No EOD manifest close API">Close manifest</GapBtn>
       </div>
-      <div style={{ background:'var(--accent-subtle)', border:'1px solid var(--accent-border)', borderRadius:8, padding:14 }}>
-        <div style={{ fontSize:11, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>Direct dispatch from DHL warehouse</div>
-        <p style={{ fontSize:11, color:'var(--text-2)', margin:0, lineHeight:1.7 }}>
-          When goods are already on DHL premises (e.g. cross-dock from import clearance), the handoff form switches
-          to a one-step "tender at facility" with a facility code selector. Manifest still closes EOD.
-        </p>
-      </div>
-    </>
+    </div>
   );
 }
 
-// ── Tab 7: Return Shipments ───────────────────────────────────────────────
-function SOReturns() {
-  const rows = [
-    ['RTN-0019','RMA-0044','Aurum Trading',     'INV 2025/0412','DHL Express','— pending —','Awaiting label',  'carrier'],
-    ['RTN-0018','RMA-0043','Levi Joaillerie',   'INV 2025/0405','FedEx IE',   '7799 1184 30','In transit',     'api'],
-    ['RTN-0017','RMA-0042','Maison Élise',      'INV 2025/0399','DHL Express','7799 1184 18','Delivered',       'api'],
-  ];
+function SOReturns({ selected, returnDraft, returnErr }) {
   return (
-    <>
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-        <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>Return shipments</h3>
-        <ShipStatus kind="backend"/>
-        <span style={{ flex:1 }}/>
-        <DisBtn kind="api">+ Generate return label</DisBtn>
+    <div data-testid="ship-ops-returns">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text)' }}>Return shipments</h3>
+        <CapChip state="warn" label="Prepare Return only" />
+        <span style={{ flex: 1 }} />
+        <GapBtn reason="Live Create Return unavailable: DHL capability pending (endpoint returns 422)">+ Live Create Return</GapBtn>
       </div>
-      <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, overflow:'hidden' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-          <thead>
-            <tr style={{ background:'var(--bg-subtle)', borderBottom:'1px solid var(--border)' }}>
-              {['Return','RMA','From','Original Inv.','Carrier','AWB','State','Status'].map(h=>
-                <th key={h} style={{ textAlign:'left', padding:'8px 10px', fontWeight:700, color:'var(--text-2)', fontSize:11, textTransform:'uppercase', letterSpacing:'0.04em' }}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r,i) => (
-              <tr key={i} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
-                {r.slice(0,7).map((c,j)=> <td key={j} style={{ padding:'8px 10px', color: j===0||j===1 ? 'var(--text)' : 'var(--text-2)', fontFamily: j===0||j===1||j===5 ? 'ui-monospace, monospace' : 'inherit', fontSize: j===0||j===1||j===5 ? 11 : 12 }}>{c}</td>)}
-                <td style={{ padding:'8px 10px' }}><ShipStatus kind={r[7]}/></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{
+        marginBottom: 12, padding: 12, borderRadius: 8, fontSize: 12, lineHeight: 1.6,
+        background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', color: 'var(--text-2)',
+      }} data-testid="ship-ops-return-hold-banner">
+        <strong style={{ color: 'var(--text)' }}>Live Create Return unavailable: DHL capability pending.</strong>
+        {' '}Prepare/get/patch draft endpoints remain; <code>POST …/return/create</code> stays blocked (422).
       </div>
-    </>
+      {!selected && (
+        <EmptyState
+          testId="ship-ops-returns-noselect"
+          title="Select a queue row"
+          detail="Return drafts are loaded with GET /api/v1/carrier/{batch}/return?parent_tracking_ref={awb}."
+        />
+      )}
+      {selected && returnErr && (
+        <div data-testid="ship-ops-returns-error" style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 8 }}>{returnErr}</div>
+      )}
+      {selected && !returnDraft && !returnErr && (
+        <EmptyState
+          testId="ship-ops-returns-empty"
+          title="No return draft for this AWB"
+          detail="Prepare Return from Proforma/carrier flows when needed. Shipping Ops does not invent return rows."
+        />
+      )}
+      {selected && returnDraft && (
+        <div data-testid="ship-ops-return-draft" style={{
+          background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 14, fontSize: 12,
+        }}>
+          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--text-2)' }}>
+            {JSON.stringify(returnDraft, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
   );
 }
 
-// ── Tab 8: Audit log ──────────────────────────────────────────────────────
-function SOAudit() {
-  const rows = [
-    ['12 May · 17:30','SHP-2412-441','operator · MK','shipment.create',          'temp draft',        'api'],
-    ['12 May · 17:32','SHP-2412-441','operator · MK','packages.add',             '3 pieces · 4.85 kg','backend'],
-    ['12 May · 17:33','SHP-2412-441','API',           'awb.generate',             'failed · no creds', 'api'],
-    ['12 May · 14:20','SHP-2412-440','operator · AS', 'shipment.cancel',          'cancelled by operator','carrier'],
-    ['11 May · 09:15','SHP-2412-439','API',           'tracking.event',           'delivered · signed B.Patel','api'],
-  ];
+function SOAudit({ selected, carrierShipment, carrierShipErr }) {
   return (
-    <>
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-        <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>Shipment audit log</h3>
-        <ShipStatus kind="backend"/>
+    <div data-testid="ship-ops-audit">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text)' }}>Shipment facts</h3>
+        <CapChip state="ok" label="carrier_shipments fields" />
       </div>
-      <div style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, overflow:'hidden' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-          <thead>
-            <tr style={{ background:'var(--bg-subtle)', borderBottom:'1px solid var(--border)' }}>
-              {['Timestamp','Shipment','Actor','Event','Detail','Source'].map(h=>
-                <th key={h} style={{ textAlign:'left', padding:'8px 10px', fontWeight:700, color:'var(--text-2)', fontSize:11, textTransform:'uppercase', letterSpacing:'0.04em' }}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r,i)=> (
-              <tr key={i} style={{ borderBottom:'1px solid var(--border-subtle)' }}>
-                <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text-3)' }}>{r[0]}</td>
-                <td style={{ padding:'8px 10px', fontFamily:'ui-monospace, monospace', fontSize:11, color:'var(--text)' }}>{r[1]}</td>
-                <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{r[2]}</td>
-                <td style={{ padding:'8px 10px', color:'var(--text)', fontFamily:'ui-monospace, monospace', fontSize:11 }}>{r[3]}</td>
-                <td style={{ padding:'8px 10px', color:'var(--text-2)' }}>{r[4]}</td>
-                <td style={{ padding:'8px 10px' }}><ShipStatus kind={r[5]}/></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+      {!selected && (
+        <EmptyState
+          testId="ship-ops-audit-noselect"
+          title="Select a queue row"
+          detail="There is no separate Shipping Ops audit database. Facts come from the booked carrier shipment row when present."
+        />
+      )}
+      {selected && !carrierShipment && (
+        <EmptyState
+          testId="ship-ops-audit-empty"
+          title="No carrier shipment row"
+          detail={carrierShipErr || 'GET /api/v1/carrier/{batch}/shipment returned no row for this selection.'}
+        />
+      )}
+      {selected && carrierShipment && (
+        <div data-testid="ship-ops-audit-facts" style={{
+          background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 14, fontSize: 12,
+        }}>
+          {[
+            ['tracking_ref', carrierShipment.tracking_ref],
+            ['state', carrierShipment.state],
+            ['booked_by', carrierShipment.booked_by],
+            ['client_ref', carrierShipment.client_ref],
+            ['box_type_code', carrierShipment.box_type_code],
+            ['service_code', carrierShipment.service_code || carrierShipment.service_product],
+            ['created_at', carrierShipment.created_at],
+            ['do_not_use', carrierShipment.do_not_use],
+          ].map(([k, v]) => (
+            <div key={k} style={{ display: 'flex', gap: 12, padding: '4px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+              <div style={{ width: 140, color: 'var(--text-3)', fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{k}</div>
+              <div style={{ color: 'var(--text)' }}>{v == null || v === '' ? '—' : String(v)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
-// ── Tab 9: Carrier integration map (API dependency map) ──────────────────
-function SOIntegrations() {
+function SOCapabilities({ dhlCap, carrierStatus, services, projectionMeta }) {
   const groups = [
     {
-      group:'DHL Express',
-      level:'api',
-      apis:[
-        ['POST /api/v1/shipping/dhl/quote',           'Live rate quote'],
-        ['POST /api/v1/shipping/dhl/shipment',        'Create shipment + AWB'],
-        ['POST /api/v1/shipping/dhl/label',           'Render label PDF'],
-        ['POST /api/v1/shipping/dhl/pickup',          'Schedule pickup'],
-        ['POST /api/v1/shipping/dhl/manifest',        'Close manifest'],
-        ['POST /api/v1/shipping/dhl/cancel',          'Cancel shipment'],
-        ['GET  /api/v1/shipping/dhl/tracking/{awb}',  'Tracking events'],
-        ['POST /api/v1/shipping/dhl/return',          'Return label'],
-      ]
+      title: 'DHL Express (canonical)',
+      items: [
+        ['GET /api/v1/carrier/status', dhlCap.label],
+        ['GET /api/v1/carrier/services', services.length ? (services.length + ' products') : 'catalogue'],
+        ['POST /api/v1/carrier/{batch}/shipment', 'AWB create — Proforma Logistics'],
+        ['GET /api/v1/carrier/{batch}/label|waybill-doc|receipt|epod/{awb}', 'Document downloads'],
+        ['POST /api/v1/carrier/webhook/dhl', 'Tracking ingest'],
+        ['GET /api/v1/dhl/logistics/projection', 'Queue / KPI / timeline'],
+        ['GET/PATCH …/return', 'Return draft only'],
+        ['POST …/return/create', 'HOLD — DHL capability pending'],
+      ],
     },
     {
-      group:'FedEx (IP / IE)',
-      level:'api',
-      apis:[
-        ['POST /api/v1/shipping/fedex/rate',          'Live rate quote'],
-        ['POST /api/v1/shipping/fedex/ship',          'Create shipment + AWB'],
-        ['POST /api/v1/shipping/fedex/label',         'Render label PDF'],
-        ['POST /api/v1/shipping/fedex/pickup',        'Schedule pickup'],
-        ['POST /api/v1/shipping/fedex/cancel',        'Cancel shipment'],
-        ['GET  /api/v1/shipping/fedex/tracking/{awb}','Tracking events'],
-      ]
+      title: 'FedEx',
+      items: [
+        ['FedEx adapter / routes', 'Unavailable — not implemented'],
+      ],
     },
     {
-      group:'Internal · execution engine',
-      level:'backend',
-      apis:[
-        ['POST /api/v1/shipping/shipments',           'Create operational shipment record'],
-        ['POST /api/v1/shipping/shipments/{id}/packages',  'Add package(s)'],
-        ['POST /api/v1/shipping/shipments/{id}/execute',   'Execute · approval req.'],
-        ['POST /api/v1/shipping/shipments/{id}/cancel',    'Cancel · approval req.'],
-        ['POST /api/v1/shipping/shipments/{id}/temp',      'Save as Temporary'],
-        ['POST /api/v1/shipping/shipments/{id}/handoff',   'Warehouse → carrier handoff'],
-        ['POST /api/v1/shipping/print/queue',              'Add print job'],
-        ['POST /api/v1/shipping/print/{id}/done',          'Mark printed'],
-        ['POST /api/v1/shipping/customs/cn23',             'Generate CN23 from PZ'],
-        ['POST /api/v1/shipping/customs/commercial-invoice','Generate from sales'],
-      ]
+      title: 'Masters consumed (read-only)',
+      items: [
+        ['GET /api/v1/box-types', 'Box Profiles'],
+        ['GET /api/v1/customer-master/{id}/shipping-addresses/', 'Addresses'],
+        ['GET /api/v1/customer-master/{id}/carrier-accounts/', 'Carrier accounts'],
+      ],
     },
     {
-      group:'Tracking event ingestion',
-      level:'api',
-      apis:[
-        ['POST /api/v1/shipping/webhooks/dhl',        'DHL pushes events'],
-        ['POST /api/v1/shipping/webhooks/fedex',      'FedEx pushes events'],
-        ['POST /api/v1/shipping/sync/email-trigger',  'Email-trigger fallback for missing pushes'],
-      ]
+      title: 'Explicit gaps (not simulated)',
+      items: [
+        ['Pickup scheduling', 'Unavailable'],
+        ['EOD / close manifest', 'Unavailable'],
+        ['Bulk dispatch', 'Unavailable'],
+        ['Print-queue DB', 'Unavailable'],
+        ['Warehouse tender handoff API', 'Unavailable'],
+        ['Parallel shipping API family', 'Forbidden — do not implement'],
+      ],
     },
   ];
+
   return (
-    <>
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-        <h3 style={{ margin:0, fontSize:14, color:'var(--text)' }}>Integration map · API placeholders</h3>
-        <ShipStatus kind="planned"/>
+    <div data-testid="ship-ops-capabilities">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text)' }}>Authority &amp; capability map</h3>
+        <CapChip state={dhlCap.state} label={dhlCap.label} />
+        <CapChip state="off" label="FedEx · unavailable" />
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-        {groups.map(g => (
-          <div key={g.group} style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:14 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
-              <div style={{ fontSize:12, fontWeight:700, color:'var(--text)' }}>{g.group}</div>
-              <ShipStatus kind={g.level}/>
-            </div>
-            <ul style={{ margin:0, paddingLeft:0, listStyle:'none', fontSize:11, color:'var(--text-2)' }}>
-              {g.apis.map(([p, d]) => (
-                <li key={p} style={{ display:'flex', justifyContent:'space-between', gap:10, padding:'4px 0', borderBottom:'1px solid var(--border-subtle)' }}>
-                  <code style={{ fontFamily:'ui-monospace, monospace', fontSize:10.5, color:'var(--text)' }}>{p}</code>
-                  <span style={{ color:'var(--text-3)', fontSize:10.5, textAlign:'right' }}>{d}</span>
+      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+        carrier_api_status={((carrierStatus && carrierStatus.carrier_api_status) || '—')}
+        {' · '}plt={((carrierStatus && carrierStatus.carrier_plt_status) || '—')}
+        {projectionMeta && projectionMeta.generated_at_utc ? (' · projection ' + projectionMeta.generated_at_utc) : ''}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+        {groups.map((g) => (
+          <div key={g.title} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>{g.title}</div>
+            <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', fontSize: 11, color: 'var(--text-2)' }}>
+              {g.items.map(([path, note]) => (
+                <li key={path} style={{
+                  display: 'flex', justifyContent: 'space-between', gap: 10,
+                  padding: '4px 0', borderBottom: '1px solid var(--border-subtle)',
+                }}>
+                  <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10.5, color: 'var(--text)' }}>{path}</code>
+                  <span style={{ color: 'var(--text-3)', fontSize: 10.5, textAlign: 'right' }}>{note}</span>
                 </li>
               ))}
             </ul>
           </div>
         ))}
       </div>
-      <div style={{ marginTop:14, padding:14, background:'var(--accent-subtle)', border:'1px solid var(--accent-border)', borderRadius:8, fontSize:11, color:'var(--text-2)', lineHeight:1.7 }}>
-        <strong style={{ color:'var(--text)' }}>Wireframe rules:</strong> No carrier integrations are live. AWBs, rates, and labels in this module are illustrative only.
-        Status chips: <ShipStatus kind="planned"/> <ShipStatus kind="backend"/> <ShipStatus kind="api"/> <ShipStatus kind="carrier"/> <ShipStatus kind="temporary"/> ·
-        Read-only feeds will show <em>Source · DHL feed</em> / <em>Source · FedEx feed</em> when wired.
+      <div style={{
+        marginTop: 14, padding: 12, borderRadius: 8, fontSize: 11, lineHeight: 1.7,
+        background: 'var(--bg-subtle)', border: '1px solid var(--border)', color: 'var(--text-2)',
+      }}>
+        Shipping Ops owns <strong>no</strong> operational shipment truth and must never introduce a parallel shipping API family.
       </div>
-    </>
+    </div>
   );
 }
 
-Object.assign(window, { ShippingOpsPage, ShipStatus });
+// Back-compat export name used by older comments/tests; prefer CapChip.
+function ShipStatus({ kind, label }) {
+  const state = kind === 'api' || kind === 'carrier' ? 'gap'
+    : kind === 'backend' || kind === 'planned' || kind === 'temporary' ? 'off'
+      : 'off';
+  return <CapChip state={state} label={label || kind || 'status'} />;
+}
+
+Object.assign(window, { ShippingOpsPage, ShipStatus, CapChip });

@@ -808,6 +808,21 @@
     listCarrierServices: () =>
       _get(`${BASE}/carrier/services`),
 
+    // URL builders for existing carrier document GETs only (no MyDHL fetch,
+    // no tracking interpretation, no persistence, no second document registry).
+    // Prefer label_download_url / waybill_doc_download_url / etc. from
+    // getCarrierShipment when the shipment payload already includes them.
+    carrierDocumentUrls: (batchId, trackingRef) => {
+      const b = encodeURIComponent(batchId);
+      const t = encodeURIComponent(trackingRef);
+      return {
+        label: `${BASE}/carrier/${b}/label/${t}`,
+        waybill: `${BASE}/carrier/${b}/waybill-doc/${t}`,
+        receipt: `${BASE}/carrier/${b}/receipt/${t}`,
+        epod: `${BASE}/carrier/${b}/epod/${t}`,
+      };
+    },
+
     // GET /api/v1/box-types/?active=true|all
     // Box Profile master (Box Master authority). Used by the AWB modal dropdown
     // (active only) and the Master Data management view ('all').
