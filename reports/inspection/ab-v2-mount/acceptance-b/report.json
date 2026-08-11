@@ -1,0 +1,35 @@
+{
+  "base": "http://127.0.0.1:53771",
+  "checks": [
+    {
+      "name": "1_logistics_landing",
+      "url": "http://127.0.0.1:53771/v2/shipments",
+      "pass": true
+    },
+    {
+      "name": "2_crm_nav_hides_denied",
+      "url": "http://127.0.0.1:53771/v2/inbox",
+      "pass": true,
+      "nav_sample": "\u25a6\nDashboard\n\u2709\nInbox\n\u2b21\nShipments\n\u25a4\nPro Forma\n\u25ad\nDocuments\n\u2261\nReports\n\u2699\nSetup\n\u203a"
+    },
+    {
+      "name": "3_crm_direct_url_denied",
+      "url": "http://127.0.0.1:53771/v2/inbox",
+      "pass": true
+    },
+    {
+      "name": "4_crm_refresh_persistence",
+      "url": "http://127.0.0.1:53771/v2/inbox",
+      "pass": true
+    },
+    {
+      "name": "5_malformed_auth_me_fail_closed",
+      "pass": true,
+      "snap": {
+        "url": "http://127.0.0.1:53771/login",
+        "landed_login": true
+      }
+    }
+  ],
+  "ok": true
+}

@@ -573,9 +573,18 @@ app.include_router(shipment_documents_router)      # Shipment Document Hub: aggr
 _static_dir = _pathlib.Path(__file__).parent / "static"
 
 
+def _landing_redirect(user: dict) -> RedirectResponse:
+    """Post-auth HTML bounce — consumes Slice 0/1 authority fields only."""
+    from .auth.permissions import landing_url_for_user  # noqa: PLC0415
+    return RedirectResponse(url=landing_url_for_user(user), status_code=302)
+
+
 @app.get("/", include_in_schema=False)
-def root_redirect() -> RedirectResponse:
-    return RedirectResponse(url="/dashboard")
+def root_redirect(request: Request) -> RedirectResponse:
+    user = check_session_or_redirect(request)
+    if user:
+        return _landing_redirect(user)
+    return RedirectResponse(url="/login", status_code=302)
 
 
 @app.get("/dashboard", include_in_schema=False)
@@ -583,17 +592,17 @@ def dashboard_root(request: Request) -> Response:
     user = check_session_or_redirect(request)
     if not user:
         return RedirectResponse(url="/login", status_code=302)
-    return RedirectResponse(url="/dashboard/dashboard.html")
+    return _landing_redirect(user)
 
 
 # ── Auth HTML page routes ─────────────────────────────────────────────────────
 
 @app.get("/login", include_in_schema=False)
 def login_page(request: Request) -> Response:
-    # Already logged in → go to dashboard
+    # Already logged in → role landing (surface + page from authority)
     user = check_session_or_redirect(request)
     if user:
-        return RedirectResponse(url="/dashboard")
+        return _landing_redirect(user)
     file_path = _static_dir / "login.html"
     content   = file_path.read_bytes()
     return Response(
@@ -606,7 +615,7 @@ def login_page(request: Request) -> Response:
 def signup_page(request: Request) -> Response:
     user = check_session_or_redirect(request)
     if user:
-        return RedirectResponse(url="/dashboard")
+        return _landing_redirect(user)
     file_path = _static_dir / "signup.html"
     content   = file_path.read_bytes()
     return Response(
@@ -627,7 +636,7 @@ def admin_users_page(request: Request) -> Response:
     if not user:
         return RedirectResponse(url="/login", status_code=302)
     if user.get("role") != "admin":
-        return RedirectResponse(url="/dashboard", status_code=302)
+        return _landing_redirect(user)
     file_path = _static_dir / "admin-users.html"
     content   = file_path.read_bytes()
     return Response(

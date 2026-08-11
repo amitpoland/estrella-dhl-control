@@ -133,10 +133,40 @@ function EstrellaWordmark({ collapsed }) {
   );
 }
 
-function Sidebar({ active, onNav, collapsed, onToggle }) {
+function filterNavTreeByAllowedPages(tree, allowedPages) {
+  // Consume backend allowed_pages only — do not invent permissions here.
+  const allow = new Set(Array.isArray(allowedPages) ? allowedPages : []);
+  const out = [];
+  for (const node of (tree || [])) {
+    if (node.children) {
+      const kids = node.children.filter(c => allow.has(c.id));
+      if (!kids.length) continue;
+      const next = Object.assign({}, node, { children: kids });
+      if (next.defaultId && !allow.has(next.defaultId)) {
+        next.defaultId = kids[0].id;
+      }
+      out.push(next);
+    } else if (allow.has(node.id)) {
+      out.push(node);
+    }
+  }
+  return out;
+}
+
+function Sidebar({ active, onNav, collapsed, onToggle, allowedPages }) {
   // A group is "open" when one of its children is the active page.
   // User can also manually expand by clicking the group header.
-  const activeGroup = NAV_INDEX[active]?.group?.id;
+  // When allowedPages is provided, nav is filtered from /auth/me authority.
+  const tree = (allowedPages == null)
+    ? NAV_TREE
+    : filterNavTreeByAllowedPages(NAV_TREE, allowedPages);
+  const activeGroup = (() => {
+    for (const node of tree) {
+      if (node.children && node.children.some(c => c.id === active)) return node.id;
+      if (!node.children && node.id === active) return null;
+    }
+    return NAV_INDEX[active]?.group?.id;
+  })();
   const [openGroups, setOpenGroups] = React.useState(() => {
     const init = {};
     if (activeGroup) init[activeGroup] = true;
@@ -174,8 +204,8 @@ function Sidebar({ active, onNav, collapsed, onToggle }) {
       </div>
 
       {/* Nav — grouped */}
-      <nav style={{ flex: 1, padding: '8px 0', overflowY: 'auto' }}>
-        {NAV_TREE.map(node => {
+      <nav style={{ flex: 1, padding: '8px 0', overflowY: 'auto' }} data-testid="v2-sidebar-nav">
+        {tree.map(node => {
           // Leaf row
           if (!node.children) {
             const isActive = active === node.id;
@@ -264,16 +294,20 @@ function Sidebar({ active, onNav, collapsed, onToggle }) {
 
 // SubTabStrip — horizontal sibling-nav shown below the page header
 // when the active page is a child of a NAV_TREE group.
-function SubTabStrip({ active, onNav }) {
+function SubTabStrip({ active, onNav, allowedPages }) {
   const entry = NAV_INDEX[active];
   if (!entry || !entry.group) return null;
-  const siblings = entry.group.children;
+  const allow = allowedPages == null ? null : new Set(allowedPages);
+  const siblings = allow
+    ? entry.group.children.filter(c => allow.has(c.id))
+    : entry.group.children;
+  if (!siblings.length) return null;
   return (
     <div style={{
       padding: '0 32px', borderBottom: '1px solid var(--border)',
       background: 'var(--card)', display: 'flex', gap: 4,
       flexShrink: 0, overflowX: 'auto',
-    }}>
+    }} data-testid="v2-subtab-strip">
       {siblings.map(s => {
         const isActive = s.id === active;
         return (
@@ -619,5 +653,5 @@ Object.assign(window, {
   Badge, Sidebar, TopBar, PageHeader, Card, Btn, Modal,
   FormField, Input, Select, SectionHeader, InfoRow, fmtMoney2,
   STATUS_MAP, GOLD, DARK_BG, NAV_TREE, NAV_INDEX, SubTabStrip,
-  resolvePeriod,
+  resolvePeriod, filterNavTreeByAllowedPages,
 });
