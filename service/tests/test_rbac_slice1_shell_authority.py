@@ -258,6 +258,87 @@ def test_authority_consumer_malformed_fail_closed_source():
     assert "/login" in idx
 
 
+# ── Fail-closed shell (regression pins) ──────────────────────────────────────
+# These pin a proven bypass: with authority-consumer.js blocked, a logged-in CRM
+# user rendered the Accounting page. The shell degraded *open* in two ways — an
+# inline `return true` gate, and a `page` seeded from the URL before any gate ran.
+
+
+def _v2_index() -> str:
+    return (_STATIC / "v2" / "index.html").read_text(encoding="utf-8")
+
+
+def test_v2_shell_never_default_allows_when_consumer_missing():
+    """Losing the consumer must make the shell less capable, never more."""
+    idx = _v2_index()
+    # The exact pre-repair defect.
+    assert not re.search(r"pageIsAllowed\s*\|\|\s*function", idx)
+    # Any inline predicate that answers "allowed" without consulting authority.
+    assert not re.search(r"function\s*\(\s*\)\s*\{\s*return\s+true\s*;?\s*\}", idx)
+    assert "AC_READY" in idx
+    assert re.search(
+        r"AC_READY\s*\?\s*AC\.pageIsAllowed\s*:\s*function\s*\(\s*\)\s*\{\s*return\s+false",
+        idx,
+    ), "missing consumer must deny every page"
+
+
+def test_v2_shell_missing_consumer_denies_then_bounces():
+    """Deny the render first; the logout redirect is cleanup, not the gate."""
+    idx = _v2_index()
+    assert "if (!AC_READY) {" in idx
+    block = idx.split("if (!AC_READY) {", 1)[1][:800]
+    assert "setPage('')" in block, "must deny the page before redirecting"
+    assert "/auth/logout" in block
+    assert "/login" in block
+
+
+def test_v2_shell_does_not_boot_a_page_from_the_url():
+    """No page may be derived from the URL before authority resolves.
+
+    Seeding `page` from location rendered the requested protected page for one
+    frame ahead of every gate. applyAuthorityGate re-reads the location itself.
+    """
+    idx = _v2_index()
+    assert "_bootPage" not in idx
+    assert "const [page, setPage] = React.useState('');" in idx
+    assert "const [activeNav, setActiveNav] = React.useState('dashboard');" in idx
+    assert "parseV2Location()" in idx.split("function applyAuthorityGate", 1)[1][:1200]
+
+
+def test_v2_shell_non_ready_authority_denies_navigation():
+    """`fallback` and `loading` are deny states, not allow states."""
+    idx = _v2_index()
+    assert not re.search(r"authorityStatus\s*===\s*'fallback'", idx), (
+        "a branch named fail-closed must not be the one that allows"
+    )
+    # popstate + handleNav both gate on ready authority.
+    assert len(re.findall(r"!authority \|\| authorityStatus !== 'ready'", idx)) >= 2
+
+
+def test_v2_shell_fallback_landing_must_itself_be_allowed():
+    """An unauthorized Dashboard is not a safe place to land."""
+    idx = _v2_index()
+    assert "return gate(d) ? d : '';" in idx
+    assert "pageIsAllowed(d, authority.allowed_pages) ? d : ''" in idx
+
+
+def test_v2_shell_page_deny_state_renders_no_content_block():
+    """`page: ''` is only a deny state if every content region is page-gated.
+
+    A region rendered on anything looser than `page === '<name>'` would survive
+    the empty deny page. MockBanner is the one allowed exception: it carries no
+    authority-bearing data, only a 'not wired yet' notice.
+    """
+    idx = _v2_index()
+    ungated = [
+        ln.strip()
+        for ln in idx.splitlines()
+        if "{!viewerDoc &&" in ln and "page === '" not in ln
+    ]
+    assert ungated == ["{!viewerDoc && <MockBanner page={page} />}"], ungated
+    assert re.findall(r"page === '([a-z0-9_]+)'", idx)
+
+
 def test_every_role_landing_in_allowed_pages_when_possible():
     for role in ROLES:
         auth = build_authority_fields({"role": role})

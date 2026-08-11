@@ -1,0 +1,277 @@
+{
+  "label": "B",
+  "service_root": "C:\\PZ-wt\\rbac-s1\\service",
+  "tree": "C:\\PZ-wt\\rbac-s1",
+  "sha": "9f8c75381d39c0545d5f67a83bb441a47a0367a2",
+  "dirty_porcelain_lines": 14,
+  "base_url": "http://127.0.0.1:64158",
+  "has_authority_consumer_file": true,
+  "mount_timeout_ms": 90000,
+  "ok_mount": true,
+  "classification_hint": "MOUNT_OK",
+  "post_login_url": "http://127.0.0.1:64158/v2/shipments",
+  "v2_url": "http://127.0.0.1:64158/v2/shipments",
+  "mount_snapshot": {
+    "readyState": "complete",
+    "hasReact": true,
+    "hasReactDOM": true,
+    "hasBabel": true,
+    "hasSidebar": true,
+    "hasAuthorityConsumer": true,
+    "rootChildren": 1,
+    "rootText": "ESTRELLA\nATLAS\n\u25a6\nDashboard\n\u2709\nInbox\n\u2b21\nShipments\n\u2708\nDHL\n\u25a4\nPro Forma\n\u25ad\nDocuments\n\u229e\nAccounting\n\ud83e\uddfe\nSupplier Invoices\n\u25eb\nInventory\n\u2261\nReports\n\u2699\nSetup\n\u203a\n\u2039\n\u2315\nSearch AWB, PI, INV, client\u2026\n\u2318K\n\u263e\n+\nNew Shipment\nA\nAd",
+    "hasShellTestId": true,
+    "hasLoadingTestId": false
+  },
+  "auth_me": {
+    "status": 200,
+    "body": {
+      "id": true,
+      "email": "***",
+      "role": "logistics",
+      "default_surface": "v2",
+      "default_page": "shipments",
+      "permissions_count": 43,
+      "allowed_pages": [
+        "accounting",
+        "api_status",
+        "automation",
+        "carriers",
+        "coverage",
+        "dashboard",
+        "dhl",
+        "documents",
+        "inbox",
+        "intelligence",
+        "inventory",
+        "master",
+        "proforma",
+        "reports",
+        "shipments",
+        "shipping_ops",
+        "supplier_invoice_review",
+        "wfirma_setup"
+      ],
+      "keys": [
+        "allowed_pages",
+        "approval_status",
+        "company_name",
+        "created_at",
+        "default_page",
+        "default_surface",
+        "email",
+        "email_verified",
+        "full_name",
+        "id",
+        "is_active",
+        "is_approved",
+        "last_login",
+        "permissions",
+        "role"
+      ]
+    }
+  },
+  "console": [
+    {
+      "type": "warning",
+      "text": "You are using the in-browser Babel transformer. Be sure to precompile your scripts for production - https://babeljs.io/docs/setup/"
+    },
+    {
+      "type": "error",
+      "text": "[BABEL] Note: The code generator has deoptimised the styling of /http:/127.0.0.1:64158/v2/proforma-detail.jsx as it exceeds the max of 500KB."
+    }
+  ],
+  "pageerrors": [],
+  "failed_requests": [],
+  "v2_asset_statuses": [
+    {
+      "url": "/v2/vendor/react.production.min.js",
+      "status": 200
+    },
+    {
+      "url": "/v2/estrella-doc-tokens.css",
+      "status": 200
+    },
+    {
+      "url": "/v2/vendor/react-dom.production.min.js",
+      "status": 200
+    },
+    {
+      "url": "/v2/vendor/babel.min.js",
+      "status": 200
+    },
+    {
+      "url": "/v2/authority-consumer.js",
+      "status": 200
+    },
+    {
+      "url": "/v2/pz-api.js",
+      "status": 200
+    },
+    {
+      "url": "/v2/estrella-doc-proforma.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/pz-state.js",
+      "status": 200
+    },
+    {
+      "url": "/v2/estrella-doc-cmr.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/dashboard-page.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/estrella-doc-packing.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/components.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/estrella-outbound-tracking.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/shipment-detail-page.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/modals.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/pages-v2.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/client-detail.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/pages.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/customer-incoterm-panel.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/supplier-detail.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/design-detail.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/ledgers-page.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/inventory-page.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/master-page.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/master-record-edit.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/client-kyc-and-consignment.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/api-status-page.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/documents-hub.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/shipping-ops.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/ops-cell.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/carriers-page.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/wireframe-update.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/accounting-hub.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/inbox-page.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/link-as-sales-backfill.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/proforma-search.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/dashboard-kanban.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/use-shipment-documents.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/use-dhl-account-resolution.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/proforma-list.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/supplier-invoice-review.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/document-group-card.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/proforma-detail.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/global-search.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/dhl-scan-status.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/dhl-daily-summary.jsx",
+      "status": 200
+    },
+    {
+      "url": "/v2/mock-badge.jsx",
+      "status": 200
+    }
+  ],
+  "failed_v2_assets": []
+}
