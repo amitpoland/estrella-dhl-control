@@ -282,6 +282,9 @@ def maybe_notify_outbound_delivered(
             body_text=text_body,
             batch_id=batch_id or "",
             email_type="customer_delivery_confirmation",
+            # Explicit zero: do NOT omit attachments (None → audit fallback can
+            # union agency_reply_package / dhl_reply_package onto the customer).
+            attachments=[],
         )
         dcdb.mark_notification_queued(
             db,
