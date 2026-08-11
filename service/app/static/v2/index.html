@@ -449,7 +449,17 @@ function App() {
   }
 
   const AC = window.AuthorityConsumer || {};
-  const pageIsAllowed = AC.pageIsAllowed || function () { return true; };
+  // The shell is only a consumer. Losing authority-consumer.js must make it LESS
+  // capable, never more — so there is no degraded inline gate to fall back to.
+  // Every authorization decision requires the canonical consumer to be present.
+  const AC_READY = (
+    typeof AC.pageIsAllowed === 'function'
+    && typeof AC.normalizeAuthority === 'function'
+    && typeof AC.resolveGateTarget === 'function'
+    && typeof AC.failClosedToLogin === 'function'
+    && typeof AC.fetchAuthMe === 'function'
+  );
+  const pageIsAllowed = AC_READY ? AC.pageIsAllowed : function () { return false; };
 
   // ── Initial state from URL ─────────────────────────────────────────────────
   const _initialLocation = parseV2Location();
@@ -458,15 +468,13 @@ function App() {
       ? (new URLSearchParams(_initialLocation.search).get('batch_id') || '')
       : ''
   );
-  // Deep-link /v2/shipments?batch_id=… opens the existing V2 detail authority.
-  // Until /auth/me resolves, hold bare /v2/ on a loading sentinel (not dashboard).
-  const _bootPage = _initShipmentBatchId
-    ? 'detail'
-    : (_initialLocation.bare ? '' : _initialLocation.page);
-  const [page, setPage] = React.useState(_bootPage);
-  const [activeNav, setActiveNav] = React.useState(
-    _bootPage === 'detail' ? 'shipments' : (_bootPage || 'dashboard')
-  );
+  // Fail closed on first paint: NO page is derived from the URL before authority
+  // exists. The requested location is not lost — applyAuthorityGate re-reads it
+  // with parseV2Location() once /auth/me resolves, and resolveGateTarget decides.
+  // Seeding `page` from the URL here would render the requested protected page
+  // for one frame before any gate ran; `page: ''` matches no content block.
+  const [page, setPage] = React.useState('');
+  const [activeNav, setActiveNav] = React.useState('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [selectedShipment, setSelectedShipment] = React.useState(
     _initShipmentBatchId ? { batch_id: _initShipmentBatchId } : null
@@ -487,27 +495,28 @@ function App() {
   const openViewer = (doc) => setViewerDoc(doc);
   const closeViewer = () => setViewerDoc(null);
 
+  // Only ever called with AC_READY true — the canonical consumer is the authority.
   function applyAuthorityGate(me) {
-    const auth = AC.normalizeAuthority ? AC.normalizeAuthority(me) : me;
+    const auth = AC.normalizeAuthority(me);
     if (auth.default_surface === 'v1') {
       window.location.href = '/dashboard/dashboard.html';
       return;
     }
-    // Fail closed on malformed /auth/me — logout then /login.
-    // (Bare /login while session cookie remains would bounce back to landing.)
+    // Fail closed on malformed /auth/me — deny the render first, then logout.
+    // The redirect is cleanup, never the gate: `page: ''` matches no content
+    // block, so nothing protected is on screen while it is in flight.
     if (auth.malformed) {
+      setPage('');
+      setActiveNav('dashboard');
       setAuthority(auth);
       setAuthorityStatus('fallback');
-      if (AC.failClosedToLogin) AC.failClosedToLogin();
-      else window.location.href = '/login';
+      AC.failClosedToLogin();
       return;
     }
     setAuthority(auth);
     setAuthorityStatus('ready');
     const loc = parseV2Location();
-    const want = AC.resolveGateTarget
-      ? AC.resolveGateTarget(auth, loc, { detailBatchId: _initShipmentBatchId })
-      : (loc.page || auth.default_page || 'dashboard');
+    const want = AC.resolveGateTarget(auth, loc, { detailBatchId: _initShipmentBatchId });
     if (!want) {
       setPage('');
       setActiveNav('dashboard');
@@ -529,26 +538,28 @@ function App() {
 
   React.useEffect(() => {
     let cancelled = false;
-    const fetchMe = AC.fetchAuthMe || function () {
-      return fetch('/auth/me', { credentials: 'include' }).then(function (r) {
-        if (r.status === 401 || r.status === 403) { window.location.href = '/login'; return null; }
-        if (!r.ok) throw new Error('auth_me_failed');
-        return r.json();
-      });
-    };
-    fetchMe()
+    // authority-consumer.js absent or incomplete → there is no authority to
+    // consume. Deny every page and bounce; do NOT authorize the requested URL.
+    if (!AC_READY) {
+      setPage('');
+      setActiveNav('dashboard');
+      setAuthorityStatus('fallback');
+      fetch('/auth/logout', { method: 'POST', credentials: 'include' })
+        .catch(function () { /* still bounce */ })
+        .then(function () { window.location.href = '/login'; });
+      return function () { cancelled = true; };
+    }
+    AC.fetchAuthMe()
       .then(function (me) {
         if (cancelled || !me) return;
         applyAuthorityGate(me);
       })
       .catch(function (err) {
         if (cancelled) return;
+        setPage('');
+        setActiveNav('dashboard');
         setAuthorityStatus('fallback');
-        if (AC.failClosedToLogin) {
-          AC.failClosedToLogin();
-          return;
-        }
-        window.location.href = '/login';
+        AC.failClosedToLogin();
       });
     return function () { cancelled = true; };
   }, []);
@@ -590,16 +601,36 @@ function App() {
       if (loc.page !== 'proforma_detail') setProformaDraft(null);
       const batchId = new URLSearchParams(loc.search || '').get('batch_id') || '';
       const allowed = authority && authority.allowed_pages;
-      const gate = (p) => {
-        if (!authority || authorityStatus === 'fallback') return true;
-        return pageIsAllowed(p, allowed);
+      // Fail closed: history navigation is authorized only by ready authority.
+      const denyAll = () => {
+        setSelectedShipment(null);
+        setPage('');
+        setActiveNav('dashboard');
+      };
+      if (!authority || authorityStatus !== 'ready') {
+        denyAll();
+        return;
+      }
+      const gate = (p) => pageIsAllowed(p, allowed);
+      // A denied page falls back to default_page only when that is itself
+      // allowed — an unauthorized Dashboard is not a safe landing.
+      const safeFallback = () => {
+        const d = authority.default_page || '';
+        return gate(d) ? d : '';
+      };
+      const landOnFallback = (search) => {
+        const fb = safeFallback();
+        if (!fb) {
+          denyAll();
+          return;
+        }
+        history.replaceState({ page: fb }, '', pageToUrl(fb, search));
+        setPage(fb);
+        setActiveNav(fb);
       };
       if (loc.page === 'shipments' && batchId) {
         if (!gate('shipments')) {
-          const fallback = authority.default_page || 'dashboard';
-          history.replaceState({ page: fallback }, '', pageToUrl(fallback, ''));
-          setPage(fallback);
-          setActiveNav(fallback);
+          landOnFallback('');
           return;
         }
         setSelectedShipment({ batch_id: batchId });
@@ -608,12 +639,9 @@ function App() {
         return;
       }
       if (loc.page === 'shipments') setSelectedShipment(null);
-      const want = loc.bare ? (authority && authority.default_page) || 'dashboard' : loc.page;
-      if (!gate(want)) {
-        const fallback = (authority && authority.default_page) || 'dashboard';
-        history.replaceState({ page: fallback }, '', pageToUrl(fallback, loc.search));
-        setPage(fallback);
-        setActiveNav(fallback);
+      const want = loc.bare ? (authority.default_page || '') : loc.page;
+      if (!want || !gate(want)) {
+        landOnFallback(loc.search);
         return;
       }
       setPage(want);
@@ -708,11 +736,19 @@ function App() {
   // ── handleNav: sidebar / programmatic navigation + pushState ───────────────
   const handleNav = (id) => {
     const target = ROUTE_REDIRECTS[id] || id;
-    if (authority && authorityStatus === 'ready' && !pageIsAllowed(target, authority.allowed_pages)) {
-      const fallback = authority.default_page || 'dashboard';
-      const url = pageToUrl(fallback, currentSearch);
-      history.pushState({ page: fallback }, '', url);
-      setActiveNav(fallback);
+    // Fail closed: navigation is authorized only by ready authority, and the
+    // fallback landing must itself be allowed.
+    if (!authority || authorityStatus !== 'ready') {
+      setPage('');
+      setActiveNav('dashboard');
+      setMobileSidebarOpen(false);
+      return;
+    }
+    if (!pageIsAllowed(target, authority.allowed_pages)) {
+      const d = authority.default_page || '';
+      const fallback = pageIsAllowed(d, authority.allowed_pages) ? d : '';
+      if (fallback) history.pushState({ page: fallback }, '', pageToUrl(fallback, currentSearch));
+      setActiveNav(fallback || 'dashboard');
       setPage(fallback);
       setMobileSidebarOpen(false);
       return;

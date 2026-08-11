@@ -96,13 +96,15 @@ uvicorn.run("app.main:app", host="127.0.0.1", port={port}, log_level="warning")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(service)
     env["ENVIRONMENT"] = "dev"
+    # PIPE deadlocks when uvicorn fills the buffer; a log file keeps the probe
+    # alive AND keeps the traceback when the server dies during boot.
+    boot_log = storage / "boot.log"
     proc = subprocess.Popen(
         [sys.executable, str(boot)],
         cwd=str(service),
         env=env,
-        # PIPE deadlocks when uvicorn fills the buffer; DEVNULL keeps probe alive.
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=open(boot_log, "wb"),
     )
     base = f"http://127.0.0.1:{port}"
     report = {
@@ -121,7 +123,7 @@ uvicorn.run("app.main:app", host="127.0.0.1", port={port}, log_level="warning")
     try:
         for _ in range(90):
             if proc.poll() is not None:
-                report["server_exit"] = proc.stdout.read().decode("utf-8", errors="replace")[-3000:]
+                report["server_exit"] = boot_log.read_text(encoding="utf-8", errors="replace")[-3000:]
                 (out_dir / f"{label}-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
                 print(json.dumps(report, indent=2))
                 return 2
