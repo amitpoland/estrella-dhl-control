@@ -349,11 +349,31 @@ def test_every_role_landing_in_allowed_pages_when_possible():
             assert False, f"{role} has empty allowed_pages"
 
 
-def test_source_grep_no_require_permission_fiscal_tighten():
-    """Slice 1 must not introduce require_permission fiscal enforcement."""
+def test_require_permission_not_on_fiscal_write_routes():
+    """Phase 2 may add require_permission for reports.financial reads only.
+
+    Fiscal write / finalize routes must not be silently tightened via
+    require_permission in this slice — that remains a later phase.
+    """
+    fiscal_markers = (
+        "def pz_create",
+        "export_wfirma",
+        "finalize",
+        "accounting.post",
+    )
     hits = []
-    for path in _APP.rglob("*.py"):
+    for path in (_APP / "api").rglob("routes_*.py"):
         text = path.read_text(encoding="utf-8")
-        if "def require_permission" in text or "require_permission(" in text:
-            hits.append(path.as_posix())
-    assert not hits, f"require_permission must not land in Slice 1: {hits}"
+        if "require_permission(" not in text and "def require_permission" not in text:
+            continue
+        # Ledgers financial reads are in scope for Phase 2.
+        if path.name == "routes_ledgers.py":
+            continue
+        for marker in fiscal_markers:
+            if marker in text and "require_permission" in text:
+                # Only flag if require_permission appears near a write marker window
+                idx = text.find(marker)
+                window = text[max(0, idx - 500): idx + 200]
+                if "require_permission" in window:
+                    hits.append(f"{path.name}:{marker}")
+    assert not hits, f"require_permission must not tighten fiscal writes: {hits}"

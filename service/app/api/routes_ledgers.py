@@ -44,8 +44,8 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from ..auth.dependencies import require_permission
 from ..core.logging import get_logger
-from ..core.security import require_api_key
 from ..services import wfirma_client
 from ..services.customer_master_db import (    # C-2b V5 reroute
     lookup_wfirma_contractor as _cmd_lookup_contractor,
@@ -61,7 +61,10 @@ from ..services.ledger_aggregator import (
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/ledgers", tags=["ledgers"])
-_auth  = Depends(require_api_key)
+# All financial-sensitive ledger reads (JSON + PDF). Machine X-API-Key
+# remains admin-equivalent via require_permission; human sessions need
+# reports.financial from ROLE_PERMISSIONS (no hardcoded role lists here).
+_auth  = Depends(require_permission("reports.financial"))
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
