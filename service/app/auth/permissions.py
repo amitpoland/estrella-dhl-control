@@ -10,12 +10,13 @@ Authority rules (frozen charter RBAC Authority Consolidation):
 - Logistics must NOT receive fiscal finalize / export / approve / convert.
 - CRM is narrow (customer/docs/inbox oriented).
 
-Consumers: /auth/me (routes_auth._safe_user), future require_permission helpers,
-Admin Users UI (role dropdown only — no second permission admin page in Slice 0).
+Consumers: /auth/me (routes_auth._safe_user), Slice 1 shell landing/nav/URL gates,
+future require_permission helpers. Frontend must NOT invent a second catalogue —
+it consumes permissions / allowed_pages / default_surface / default_page only.
 """
 from __future__ import annotations
 
-from typing import FrozenSet, Iterable, Mapping, Optional, Tuple
+from typing import FrozenSet, Iterable, List, Mapping, Optional, Tuple
 
 # ── Surfaces / pages (landing authority) ─────────────────────────────────────
 
@@ -57,6 +58,39 @@ ROLE_LANDING: Mapping[str, Tuple[str, str]] = {
     "master_admin": ("v2", "master"),
     "master_editor": ("v2", "master"),
     "master_viewer": ("v2", "master"),
+}
+
+# Shell page id → catalogue *view* permission that unlocks nav + direct URL.
+# Binder only — every value MUST be in PERMISSION_CATALOGUE (asserted below).
+# Not a second catalogue; not a role matrix. Frontend must not re-encode this.
+PAGE_VIEW_PERMISSION: Mapping[str, str] = {
+    "dashboard": "dashboard.view",
+    "inbox": "inbox.view",
+    "shipments": "shipments.view",
+    "dhl": "dhl.view",
+    "proforma": "proforma.view",
+    "documents": "documents.view",
+    "accounting": "accounting.view",
+    "supplier_invoice_review": "supplier_invoices.view",
+    "inventory": "inventory.view",
+    "reports": "reports.view",
+    "admin": "system.settings.view",
+    "admin_users": "users.view",
+    "master": "master.view",
+    "carriers": "carriers.view",
+    "wfirma_setup": "wfirma.view",
+    "api_status": "system.api_status.view",
+    "diagnostics": "system.diagnostics.view",
+    "automation": "system.automation.view",
+    "intelligence": "intelligence.view",
+    "coverage": "coverage.view",
+    "shipping_ops": "shipping_ops.view",
+}
+
+# In-shell aliases that share a parent page's view permission.
+PAGE_ALIASES: Mapping[str, str] = {
+    "detail": "shipments",
+    "proforma_detail": "proforma",
 }
 
 # ── Explicit permission catalogue (module.action) ────────────────────────────
@@ -367,6 +401,64 @@ def assert_permissions_subset_of_catalogue(
         raise ValueError(f"Permissions not in catalogue: {sorted(unknown)}")
 
 
+def allowed_pages_for_permissions(perms: Iterable[str]) -> List[str]:
+    """Pages whose view permission is present — deny-by-default for unknown pages."""
+    have = set(perms)
+    return sorted(
+        page for page, need in PAGE_VIEW_PERMISSION.items() if need in have
+    )
+
+
+def canonicalize_page_id(page: Optional[str]) -> str:
+    """Map in-shell aliases to the page id used for access checks."""
+    raw = (page or "").strip()
+    if not raw:
+        return ""
+    return PAGE_ALIASES.get(raw, raw)
+
+
+def page_is_allowed(page: Optional[str], allowed_pages: Iterable[str]) -> bool:
+    canon = canonicalize_page_id(page)
+    if not canon:
+        return False
+    return canon in set(allowed_pages)
+
+
+def resolve_default_page(user: Mapping, allowed: Iterable[str]) -> str:
+    """
+    Prefer stored/role default_page when allowed; otherwise first allowed page.
+    Safe fallback when landing is malformed or permissions exclude the default.
+    """
+    allowed_set = set(allowed)
+    role = str(user.get("role") or "")
+    _, page_default = landing_defaults_for_role(role)
+    page = (user.get("default_page") or "").strip() or page_default
+    if page not in VALID_PAGES:
+        page = page_default
+    if page in allowed_set:
+        return page
+    if page_default in allowed_set:
+        return page_default
+    if allowed_set:
+        # Stable order: prefer ROLE_LANDING order via sorted allowed list
+        return sorted(allowed_set)[0]
+    return "dashboard"
+
+
+def landing_url_for_user(user: Mapping) -> str:
+    """
+    Absolute path for post-login / already-logged-in redirects.
+    default_surface and default_page stay separate; both drive the URL.
+    """
+    auth = build_authority_fields(user)
+    surface = auth["default_surface"]
+    page = auth["default_page"]
+    if surface == "v1":
+        # V1 shell entry remains the classic dashboard HTML (V1 frozen).
+        return "/dashboard/dashboard.html"
+    return f"/v2/{page}"
+
+
 def build_authority_fields(user: Mapping) -> dict:
     """
     Canonical authority projection for /auth/me (and login user payload).
@@ -374,21 +466,25 @@ def build_authority_fields(user: Mapping) -> dict:
     Uses stored default_surface / default_page when present and valid;
     otherwise role landing defaults. Permissions always derived from role
     (Slice 0: no per-user permission overrides table).
+    allowed_pages is derived from permissions via PAGE_VIEW_PERMISSION binder.
     """
     role = str(user.get("role") or "")
     perms = sorted(permissions_for_role(role))
+    allowed = allowed_pages_for_permissions(perms)
     surf_default, page_default = landing_defaults_for_role(role)
 
     surface = (user.get("default_surface") or "").strip() or surf_default
     if surface not in VALID_SURFACES:
         surface = surf_default
 
-    page = (user.get("default_page") or "").strip() or page_default
-    if page not in VALID_PAGES:
-        page = page_default
+    page = resolve_default_page(user, allowed)
+    # Keep page_default as secondary signal when allowed empty (deny shell).
+    if not allowed:
+        page = page_default if page_default in VALID_PAGES else "dashboard"
 
     return {
         "permissions": perms,
+        "allowed_pages": allowed,
         "default_surface": surface,
         "default_page": page,
     }
@@ -409,3 +505,11 @@ assert not (_CRM & frozenset({
     "dhl.execute", "inventory.execute", "users.admin",
     "system.settings.admin", "accounting.execute", "accounting.post",
 })), "CRM bundle must stay narrow"
+assert set(PAGE_VIEW_PERMISSION) == set(VALID_PAGES), (
+    "PAGE_VIEW_PERMISSION keys must equal VALID_PAGES"
+)
+assert_permissions_subset_of_catalogue(PAGE_VIEW_PERMISSION.values())
+for _alias_target in PAGE_ALIASES.values():
+    assert _alias_target in PAGE_VIEW_PERMISSION, (
+        f"PAGE_ALIASES target missing from PAGE_VIEW_PERMISSION: {_alias_target}"
+    )

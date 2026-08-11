@@ -542,7 +542,16 @@ form.addEventListener('submit', async (e) => {
     const data = await res.json();
     if (res.ok) {
       showAlert('Login successful. Redirecting…', 'success');
-      setTimeout(() => { window.location.href = '/dashboard'; }, 600);
+      const user = data.user || {};
+      const surface = (user.default_surface || 'v2').toLowerCase();
+      const page = (user.default_page || 'dashboard').replace(/[^a-z0-9_]/gi, '') || 'dashboard';
+      let dest;
+      if (surface === 'v1') {
+        dest = '/dashboard/dashboard.html';
+      } else {
+        dest = '/v2/' + page;
+      }
+      setTimeout(() => { window.location.href = dest; }, 600);
     } else {
       showAlert(data.detail || 'Login failed. Please check your credentials.');
       setLoading(false);

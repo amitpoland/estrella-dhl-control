@@ -517,7 +517,9 @@ async function init() {
     if (!r.ok) { window.location = '/login'; return; }
     currentUser = await r.json();
     if (currentUser.role !== 'admin') {
-      window.location = '/dashboard';
+      const surface = (currentUser.default_surface || 'v2').toLowerCase();
+      const page = (currentUser.default_page || 'dashboard').replace(/[^a-z0-9_]/gi, '') || 'dashboard';
+      window.location = surface === 'v1' ? '/dashboard/dashboard.html' : ('/v2/' + page);
       return;
     }
     document.getElementById('user-pill').style.display = 'flex';

@@ -319,6 +319,7 @@ window.EstrellaShared = {
   </svg>
 </template>
 <div id="root"></div>
+<script src="authority-consumer.js"></script>
 <script type="text/babel" src="components.jsx"></script>
 <script type="text/babel" src="dashboard-page.jsx"></script>
 <script type="text/babel" data-presets="env,react" src="estrella-outbound-tracking.jsx"></script>
@@ -415,12 +416,15 @@ function App() {
     move_location: 'inventory',
   };
 
-  // Parse /v2/<page>[?query] → { page, search }
+  // Parse /v2/<page>[?query] → { page, search, bare }
+  // bare=true when URL is /v2/ or /v2/index.html — resolve to default_page after /auth/me.
   function parseV2Location() {
-    const raw = window.location.pathname.replace(/^\/v2\/?/, '') || 'dashboard';
-    const slug = raw.split('/')[0] || 'dashboard';
-    const target = ROUTE_REDIRECTS[slug] || slug;
-    return { page: target, search: window.location.search };
+    const raw = window.location.pathname.replace(/^\/v2\/?/, '') || '';
+    let slug = raw.split('/')[0] || '';
+    if (slug === 'index.html') slug = '';
+    const bare = !slug;
+    const target = slug ? (ROUTE_REDIRECTS[slug] || slug) : '';
+    return { page: target, search: window.location.search, bare: bare };
   }
 
   // Build the URL for a given page, preserving batch_id for scoped pages
@@ -444,6 +448,9 @@ function App() {
     return '/v2/shipments' + qs;
   }
 
+  const AC = window.AuthorityConsumer || {};
+  const pageIsAllowed = AC.pageIsAllowed || function () { return true; };
+
   // ── Initial state from URL ─────────────────────────────────────────────────
   const _initialLocation = parseV2Location();
   const _initShipmentBatchId = (
@@ -452,8 +459,14 @@ function App() {
       : ''
   );
   // Deep-link /v2/shipments?batch_id=… opens the existing V2 detail authority.
-  const [page, setPage] = React.useState(_initShipmentBatchId ? 'detail' : _initialLocation.page);
-  const [activeNav, setActiveNav] = React.useState(_initialLocation.page === 'detail' ? 'shipments' : _initialLocation.page);
+  // Until /auth/me resolves, hold bare /v2/ on a loading sentinel (not dashboard).
+  const _bootPage = _initShipmentBatchId
+    ? 'detail'
+    : (_initialLocation.bare ? '' : _initialLocation.page);
+  const [page, setPage] = React.useState(_bootPage);
+  const [activeNav, setActiveNav] = React.useState(
+    _bootPage === 'detail' ? 'shipments' : (_bootPage || 'dashboard')
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [selectedShipment, setSelectedShipment] = React.useState(
     _initShipmentBatchId ? { batch_id: _initShipmentBatchId } : null
@@ -466,11 +479,79 @@ function App() {
   const [proformaDraft, setProformaDraft] = React.useState(null);
   const [proformaHydrating, setProformaHydrating] = React.useState(_initialLocation.page === 'proforma_detail');
   const [proformaHydrateError, setProformaHydrateError] = React.useState(null);
-  // Track current search string for URL construction
   const [currentSearch, setCurrentSearch] = React.useState(_initialLocation.search);
+  // Slice 1 — consume /auth/me via AuthorityConsumer (no frontend catalogue).
+  const [authority, setAuthority] = React.useState(null);
+  const [authorityStatus, setAuthorityStatus] = React.useState('loading');
 
   const openViewer = (doc) => setViewerDoc(doc);
   const closeViewer = () => setViewerDoc(null);
+
+  function applyAuthorityGate(me) {
+    const auth = AC.normalizeAuthority ? AC.normalizeAuthority(me) : me;
+    if (auth.default_surface === 'v1') {
+      window.location.href = '/dashboard/dashboard.html';
+      return;
+    }
+    // Fail closed on malformed /auth/me — logout then /login.
+    // (Bare /login while session cookie remains would bounce back to landing.)
+    if (auth.malformed) {
+      setAuthority(auth);
+      setAuthorityStatus('fallback');
+      if (AC.failClosedToLogin) AC.failClosedToLogin();
+      else window.location.href = '/login';
+      return;
+    }
+    setAuthority(auth);
+    setAuthorityStatus('ready');
+    const loc = parseV2Location();
+    const want = AC.resolveGateTarget
+      ? AC.resolveGateTarget(auth, loc, { detailBatchId: _initShipmentBatchId })
+      : (loc.page || auth.default_page || 'dashboard');
+    if (!want) {
+      setPage('');
+      setActiveNav('dashboard');
+      return;
+    }
+    if (want === 'detail' && _initShipmentBatchId && pageIsAllowed('shipments', auth.allowed_pages)) {
+      setPage('detail');
+      setActiveNav('shipments');
+      return;
+    }
+    if (want !== loc.page || loc.bare) {
+      const url = pageToUrl(want === 'detail' ? 'shipments' : want, want === 'detail' ? loc.search : (loc.bare ? '' : loc.search));
+      history.replaceState({ page: want }, '', url);
+      if (want !== 'detail') setSelectedShipment(null);
+    }
+    setPage(want);
+    setActiveNav(want === 'detail' ? 'shipments' : (want === 'proforma_detail' ? 'proforma' : want));
+  }
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const fetchMe = AC.fetchAuthMe || function () {
+      return fetch('/auth/me', { credentials: 'include' }).then(function (r) {
+        if (r.status === 401 || r.status === 403) { window.location.href = '/login'; return null; }
+        if (!r.ok) throw new Error('auth_me_failed');
+        return r.json();
+      });
+    };
+    fetchMe()
+      .then(function (me) {
+        if (cancelled || !me) return;
+        applyAuthorityGate(me);
+      })
+      .catch(function (err) {
+        if (cancelled) return;
+        setAuthorityStatus('fallback');
+        if (AC.failClosedToLogin) {
+          AC.failClosedToLogin();
+          return;
+        }
+        window.location.href = '/login';
+      });
+    return function () { cancelled = true; };
+  }, []);
 
   const handleProformaDrill = (draft) => {
     setProformaDraft(draft);
@@ -508,19 +589,39 @@ function App() {
       setCurrentSearch(loc.search);
       if (loc.page !== 'proforma_detail') setProformaDraft(null);
       const batchId = new URLSearchParams(loc.search || '').get('batch_id') || '';
+      const allowed = authority && authority.allowed_pages;
+      const gate = (p) => {
+        if (!authority || authorityStatus === 'fallback') return true;
+        return pageIsAllowed(p, allowed);
+      };
       if (loc.page === 'shipments' && batchId) {
+        if (!gate('shipments')) {
+          const fallback = authority.default_page || 'dashboard';
+          history.replaceState({ page: fallback }, '', pageToUrl(fallback, ''));
+          setPage(fallback);
+          setActiveNav(fallback);
+          return;
+        }
         setSelectedShipment({ batch_id: batchId });
         setPage('detail');
         setActiveNav('shipments');
         return;
       }
       if (loc.page === 'shipments') setSelectedShipment(null);
-      setPage(loc.page);
-      setActiveNav(loc.page);
+      const want = loc.bare ? (authority && authority.default_page) || 'dashboard' : loc.page;
+      if (!gate(want)) {
+        const fallback = (authority && authority.default_page) || 'dashboard';
+        history.replaceState({ page: fallback }, '', pageToUrl(fallback, loc.search));
+        setPage(fallback);
+        setActiveNav(fallback);
+        return;
+      }
+      setPage(want);
+      setActiveNav(want === 'detail' ? 'shipments' : (want === 'proforma_detail' ? 'proforma' : want));
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
-  }, []);
+  }, [authority, authorityStatus]);
 
   // ── proforma_detail URL-param hydration (bookmark / refresh / direct link) ─
   // Fires when the page is proforma_detail but no draft is in state.
@@ -607,6 +708,15 @@ function App() {
   // ── handleNav: sidebar / programmatic navigation + pushState ───────────────
   const handleNav = (id) => {
     const target = ROUTE_REDIRECTS[id] || id;
+    if (authority && authorityStatus === 'ready' && !pageIsAllowed(target, authority.allowed_pages)) {
+      const fallback = authority.default_page || 'dashboard';
+      const url = pageToUrl(fallback, currentSearch);
+      history.pushState({ page: fallback }, '', url);
+      setActiveNav(fallback);
+      setPage(fallback);
+      setMobileSidebarOpen(false);
+      return;
+    }
     const url = pageToUrl(target, currentSearch);
     history.pushState({ page: target }, '', url);
     setActiveNav(target);
@@ -615,8 +725,20 @@ function App() {
     if (!BATCH_SCOPED_PAGES.includes(target)) setProformaDraft(null);
   };
 
+  const allowedPagesProp = (authorityStatus === 'loading' || !authority)
+    ? []
+    : (authority.allowed_pages || []);
+
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }} data-testid="v2-shell-root">
+      {authorityStatus === 'loading' && (
+        <div data-testid="v2-authority-loading" style={{
+          position: 'fixed', inset: 0, zIndex: 500, display: 'flex',
+          alignItems: 'center', justifyContent: 'center',
+          background: 'var(--bg)', color: 'var(--text-3)',
+          fontFamily: 'Plus Jakarta Sans, sans-serif', fontSize: 13,
+        }}>Loading authority…</div>
+      )}
 
       {/* Desktop Sidebar */}
       <div className="sidebar-desktop" style={{ display: 'flex', flexShrink: 0 }}>
@@ -625,6 +747,7 @@ function App() {
           onNav={handleNav}
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed(v => !v)}
+          allowedPages={allowedPagesProp}
         />
       </div>
 
@@ -633,7 +756,7 @@ function App() {
         <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex' }} role="dialog" aria-modal="true" aria-label="Navigation menu">
           <div style={{ flex: 1, background: 'var(--overlay)' }} onClick={() => setMobileSidebarOpen(false)} />
           <div style={{ width: 220, background: 'var(--sidebar-bg)', height: '100%', overflowY: 'auto', flexShrink: 0 }}>
-            <Sidebar active={activeNav} onNav={handleNav} collapsed={false} onToggle={() => setMobileSidebarOpen(false)} />
+            <Sidebar active={activeNav} onNav={handleNav} collapsed={false} onToggle={() => setMobileSidebarOpen(false)} allowedPages={allowedPagesProp} />
           </div>
         </div>
       )}
@@ -688,7 +811,7 @@ function App() {
           {!viewerDoc && page === 'shipments' && (
             <>
               <PageHeader title="Shipments" subtitle="Operational shipment hub — newest upload first. View opens V2 detail. Recheck / Archive use the same dashboard batch authority as B1." />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <DashboardPage onViewShipment={handleViewShipment} />
             </>
           )}
@@ -709,7 +832,7 @@ function App() {
           {!viewerDoc && page === 'dhl' && (
             <>
               <PageHeader title="DHL / Customs" subtitle="Logistics Control Tower — inbound + outbound tracking, stage durations, delay analysis. Read-only. Automation Health is secondary." />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <DhlCustomsPage onViewShipment={handleViewShipment} />
             </>
           )}
@@ -731,7 +854,7 @@ function App() {
           {!viewerDoc && page === 'inventory' && (
             <>
               <PageHeader title="Inventory" subtitle="Inventory hub — Stage 1 & 2 registers, sample-out / returns / move-stock actions, warehouse audit, and live reconciliation." />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <InventoryPage openViewer={openViewer} />
             </>
           )}
@@ -745,7 +868,7 @@ function App() {
           {!viewerDoc && page === 'intelligence' && (
             <>
               <PageHeader title="Intelligence Hub" subtitle="Engine status, live trigger suggestions, risk warnings, config, and invoice-learning patterns" />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <IntelligencePage />
             </>
           )}
@@ -754,7 +877,7 @@ function App() {
           {!viewerDoc && page === 'automation' && (
             <>
               <PageHeader title="Action Center" subtitle="Pending operator approvals — PZ adoptions · proforma approvals · credit limits · returns · AI Bridge proposals" />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <ActionCenterPage />
             </>
           )}
@@ -765,7 +888,7 @@ function App() {
               <PageHeader title="Carriers" subtitle="Multi-carrier login · API integration · webhooks · sessions · audit log. Backend wireframe — no live credentials."
                 actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="gold" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>+ Connect Carrier</Btn></div>}
               />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <CarriersPage />
             </>
           )}
@@ -776,7 +899,7 @@ function App() {
               <PageHeader title="API Status" subtitle="Consolidated health for every backend integration · carriers · accounting · customs · internal services · webhooks. Replaces scattered API-status surfaces."
                 actions={<div style={{ display: 'flex', gap: 8 }}><Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn><Btn variant="outline" small disabled style={{ opacity: 0.7, cursor: 'not-allowed' }}>↻ Re-probe All</Btn></div>}
               />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <ApiStatusPage />
             </>
           )}
@@ -849,7 +972,7 @@ function App() {
           {!viewerDoc && page === 'coverage' && (
             <>
               <PageHeader title="Coverage Map" subtitle="Live route registry from OpenAPI spec — every route registered in the running backend" />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <CoverageMapPage />
             </>
           )}
@@ -876,7 +999,7 @@ function App() {
           {!viewerDoc && page === 'wfirma_setup' && (
             <>
               <PageHeader title="wFirma Mapping" subtitle="Customer + product mapping · capabilities · reservation gate readiness" />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <WfirmaMappingPage />
             </>
           )}
@@ -885,7 +1008,7 @@ function App() {
           {!viewerDoc && page === 'diagnostics' && (
             <>
               <PageHeader title="System Diagnostics" subtitle="Health checks · storage · locks · CLI diagnostic tools" />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <DiagnosticsPage />
             </>
           )}
@@ -896,7 +1019,7 @@ function App() {
               <PageHeader title="Admin / Settings" subtitle="API configuration, users, and system status"
                 actions={<Btn variant="outline" small onClick={() => setShowApiChecklist(true)}>API Checklist</Btn>}
               />
-              <SubTabStrip active={page} onNav={handleNav} />
+              <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
               <AdminSettingsPage />
             </>
           )}
