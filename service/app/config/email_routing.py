@@ -116,6 +116,20 @@ def resolve_dhl_cc() -> str:
     return (settings.dhl_customs_cc or "").strip()
 
 
+# Customer-facing outbound email types. These must NEVER inherit customs /
+# agency / DHL attachment packages from batch audit.json (confidential-document
+# boundary). Attachment authority is explicit only: attachments=[] means zero;
+# attachments=None must fail closed to zero — never last-resort audit union.
+CUSTOMER_FACING_EMAIL_TYPES: frozenset = frozenset({
+    "customer_delivery_confirmation",
+})
+
+
+def is_customer_facing_email_type(email_type: str) -> bool:
+    """True when ``email_type`` is a customer shipment/status notification."""
+    return (email_type or "").strip().lower() in CUSTOMER_FACING_EMAIL_TYPES
+
+
 def resolve_customer_delivery_confirmation_cc(to: str = "") -> str:
     """Single Estrella CC for automatic customer delivery-confirmation mail.
 

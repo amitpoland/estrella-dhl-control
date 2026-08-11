@@ -142,6 +142,10 @@ def _attachments_for_queue(queue_entry: Dict[str, Any]) -> Tuple[List[Path], Lis
       3. dhl_reply_package.attachments
       4. Last-resort union of all above (legacy fallback)
 
+    Customer-facing email types (see ``CUSTOMER_FACING_EMAIL_TYPES``) never enter
+    steps 1–4. ``attachments=None`` fails closed to zero files — customs/agency/
+    DHL audit packages must not leak onto customer shipment emails.
+
     Returns (existing_paths, missing_labels).
     """
     # ── Priority 0: attachments stored directly in queue entry ───────────────
@@ -173,6 +177,23 @@ def _attachments_for_queue(queue_entry: Dict[str, Any]) -> Tuple[List[Path], Lis
                 else:
                     missing.append(a.get("label") or path_str)
         return found, missing
+
+    # Customer-facing: attachments=None must NOT fall through to customs audit.
+    email_type = (queue_entry.get("email_type") or "").strip().lower()
+    try:
+        from ..config.email_routing import is_customer_facing_email_type
+        if is_customer_facing_email_type(email_type):
+            log.warning(
+                "[email_sender] customer-facing email_type=%s attachments=None — "
+                "fail-closed to zero (skipping agency/dhl audit fallback)",
+                email_type,
+            )
+            return [], []
+    except Exception:
+        # If routing import fails, still refuse customs fallback for the known
+        # customer delivery type rather than risk a confidential leak.
+        if email_type == "customer_delivery_confirmation":
+            return [], []
 
     # ── Fallback: look up from batch audit.json (legacy / backwards compat) ──
     batch_id = queue_entry.get("batch_id", "")
@@ -252,6 +273,16 @@ def _expected_attachment_count(queue_entry: Dict[str, Any]) -> int:
     direct = queue_entry.get("attachments")
     if direct is not None:
         return len(direct)
+
+    # Customer-facing: never expect customs audit package attachment counts.
+    email_type = (queue_entry.get("email_type") or "").strip().lower()
+    try:
+        from ..config.email_routing import is_customer_facing_email_type
+        if is_customer_facing_email_type(email_type):
+            return 0
+    except Exception:
+        if email_type == "customer_delivery_confirmation":
+            return 0
 
     batch_id = queue_entry.get("batch_id", "")
     if not batch_id:
