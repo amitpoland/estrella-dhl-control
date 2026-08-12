@@ -472,3 +472,55 @@ class TestStatusChipExported:
     def test_search_page_uses_chip(self):
         src = _read(SEARCH_JSX)
         assert "ProformaStatusChip" in src
+
+
+# =============================================================================
+# 16. Landing table — AWB / Items / Total from search projection
+# =============================================================================
+
+
+class TestLandingShipmentItemsTotal:
+    """ProformaCrossBatchLanding must render AWB (not batch_id), Items, Total."""
+
+    def test_landing_uses_awb_field(self):
+        src = _read(PROFORMA_LIST_JSX)
+        assert "pf-landing-awb-" in src
+        assert "r.awb" in src
+
+    def test_landing_does_not_parse_batch_id(self):
+        """AWB authority lives in the API — UI must not slice SHIPMENT_."""
+        src = _read(PROFORMA_LIST_JSX)
+        # The landing row mapper must not invent AWB from batch_id.split
+        landing = src.split("function ProformaCrossBatchLanding")[1].split(
+            "function _pfOverlay"
+        )[0]
+        assert "batch_id.split" not in landing
+        assert "SHIPMENT_" not in landing or "r.batch_id" in landing
+
+    def test_landing_items_testid(self):
+        src = _read(PROFORMA_LIST_JSX)
+        assert "pf-landing-items-" in src
+
+    def test_landing_total_testid(self):
+        src = _read(PROFORMA_LIST_JSX)
+        assert "pf-landing-total-" in src
+
+    def test_landing_requests_wide_page(self):
+        src = _read(PROFORMA_LIST_JSX)
+        assert "page_size" in src
+        assert "100" in src
+
+
+# =============================================================================
+# 17. RBAC alias — proforma_search shares proforma permission
+# =============================================================================
+
+
+class TestProformaSearchRbacAlias:
+    """Search All Drafts must not fail the RBAC gate (alias → proforma)."""
+
+    def test_authority_consumer_aliases_search(self):
+        ac = STATIC_V2 / "authority-consumer.js"
+        src = _read(ac)
+        assert "proforma_search" in src
+        assert 'proforma_search: "proforma"' in src or "proforma_search\":\"proforma\"" in src

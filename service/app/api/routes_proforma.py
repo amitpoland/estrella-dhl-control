@@ -5177,9 +5177,22 @@ def search_proforma_drafts(
         page_size=page_size,
     )
 
+    drafts = result["results"]
+    outbound_awbs = _bulk_outbound_awbs_for_drafts(drafts)
+    inbound_awbs = _bulk_inbound_awbs_for_batches([d.batch_id for d in drafts])
+
     return JSONResponse({
         "ok": True,
-        "results": [_draft_to_search_result(d) for d in result["results"]],
+        "results": [
+            _draft_to_search_result(
+                d,
+                outbound_awb=outbound_awbs.get(
+                    ((d.batch_id or ""), (d.client_name or "").strip())
+                ),
+                inbound_awb=inbound_awbs.get((d.batch_id or "").strip()),
+            )
+            for d in drafts
+        ],
         "total": result["total"],
         "page": result["page"],
         "page_size": result["page_size"],
@@ -5187,21 +5200,162 @@ def search_proforma_drafts(
     })
 
 
-def _draft_to_search_result(d: "pildb.ProformaDraft") -> Dict[str, Any]:
+def _bulk_outbound_awbs_for_drafts(
+    drafts: List["pildb.ProformaDraft"],
+) -> Dict[tuple, Optional[str]]:
+    """Map (batch_id, client_name) → outbound tracking_ref.
+
+    One carrier-DB read for the page. Attribution mirrors
+    ``get_shipment_for_draft``: exact client_ref match first; legacy
+    single-NULL-client_ref row only when the batch has exactly one outbound
+    row. Never attributes another client's AWB.
+    """
+    out: Dict[tuple, Optional[str]] = {}
+    if not drafts:
+        return out
+    try:
+        from ..services.carrier.persistence import shipment_db as _csdb
+        cdb = _carrier_shipment_db_path()
+        rows = _csdb.list_outbound_rows_for_batches(
+            cdb, [d.batch_id for d in drafts]
+        )
+    except Exception as exc:  # pragma: no cover — projection must stay read-safe
+        log.warning("search outbound AWB bulk lookup failed (non-fatal): %s", exc)
+        return out
+
+    by_batch: Dict[str, List[dict]] = {}
+    for row in rows:
+        bid = (row.get("batch_id") or "").strip()
+        if not bid:
+            continue
+        by_batch.setdefault(bid, []).append(row)
+
+    for d in drafts:
+        bid = (d.batch_id or "").strip()
+        client = (d.client_name or "").strip()
+        key = (bid, client)
+        if key in out:
+            continue
+        batch_rows = by_batch.get(bid) or []
+        # Exact client match (newest first — list_outbound_rows orders DESC)
+        matched = None
+        if client:
+            for row in batch_rows:
+                if (row.get("client_ref") or "").strip() == client:
+                    matched = row
+                    break
+        if matched is None and len(batch_rows) == 1:
+            only = batch_rows[0]
+            only_ref = (only.get("client_ref") or "").strip()
+            # Same defence-in-depth as get_shipment_for_draft: never attribute
+            # a different client's scoped row via the single-row fallback.
+            if not only_ref or not client or only_ref == client:
+                matched = only
+        ref = (matched.get("tracking_ref") or "").strip() if matched else ""
+        out[key] = ref or None
+    return out
+
+
+def _bulk_inbound_awbs_for_batches(
+    batch_ids: List[str],
+) -> Dict[str, Optional[str]]:
+    """Map batch_id → inbound tracking via the canonical resolver.
+
+    Loads ``audit.json`` once per unique batch (same source as
+    ``_build_shipment_panel``), then calls ``resolve_batch_tracking_no``.
+    That resolver's own fallback (embedded SHIPMENT_<awb>_…) is pre-existing
+    platform behaviour — not a search-route invention. Prefer audit.awb /
+    audit.tracking_no whenever present.
+    """
+    from ..services.tracking_service import resolve_batch_tracking_no
+
+    out: Dict[str, Optional[str]] = {}
+    unique = sorted({(b or "").strip() for b in batch_ids if (b or "").strip()})
+    for bid in unique:
+        audit: Dict[str, Any] = {}
+        try:
+            audit_path = settings.storage_root / "outputs" / bid / "audit.json"
+            if audit_path.is_file():
+                with open(str(audit_path), "r", encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                if isinstance(loaded, dict):
+                    audit = loaded
+        except Exception as exc:  # pragma: no cover — read-safe projection
+            log.warning(
+                "search inbound AWB audit read failed batch=%s (non-fatal): %s",
+                bid, exc,
+            )
+        awb = resolve_batch_tracking_no(audit, bid) or None
+        out[bid] = awb
+    return out
+
+
+def _draft_lines_total(editable_lines_json: str) -> float:
+    """Goods-net total — identical to Pro Forma detail Overview.
+
+    Authority: ``proforma-detail.jsx`` Overview ``sum(qty × unit_price)`` /
+    ``netEur``. Does NOT prefer stale ``line_value``, does NOT include freight
+    / service charges / VAT, does NOT fall back to
+    ``sales_price_authority_total_eur`` (import snapshot ≠ live editable total).
+    """
+    try:
+        lines = json.loads(editable_lines_json or "[]")
+    except Exception:
+        return 0.0
+    if not isinstance(lines, list):
+        return 0.0
+    total = 0.0
+    for ln in lines:
+        if not isinstance(ln, dict):
+            continue
+        try:
+            qty = float(ln.get("qty") or 0)
+            up = float(ln.get("unit_price") or 0)
+            total += qty * up
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
+
+def _draft_to_search_result(
+    d: "pildb.ProformaDraft",
+    *,
+    outbound_awb: Optional[str] = None,
+    inbound_awb: Optional[str] = None,
+) -> Dict[str, Any]:
     """Compact projection for the cross-batch search endpoint.
 
-    Returns only the fields needed for search result display —
-    no JSON blobs, no posting metadata, no governance fields.
+    Field authorities (projection only — never invents parallel truth):
+      * line_count — ``_line_count(editable_lines_json)`` (same as batch summary)
+      * total — ``_draft_lines_total`` (= detail Overview goods net)
+      * awb — outbound ``carrier_shipments.tracking_ref`` when booked; else
+        inbound from ``_bulk_inbound_awbs_for_batches`` /
+        ``resolve_batch_tracking_no`` (audit first). Empty → UI em-dash.
     """
+    lines_blob = d.editable_lines_json or ""
+    line_count = _line_count(lines_blob)
+    total = _draft_lines_total(lines_blob)
+    inbound = (inbound_awb or "").strip() or None
+    # Shipment column: prefer outbound booking AWB; fall back to inbound/batch
+    # tracking identity so unbooked drafts still identify their shipment.
+    awb = (outbound_awb or "").strip() or inbound
+    contractor_id = (getattr(d, "client_contractor_id", None) or "").strip()
     return {
         "id":                         d.id,
         "batch_id":                   d.batch_id,
+        "awb":                        awb,
+        "outbound_awb":               (outbound_awb or None),
+        "inbound_awb":                inbound,
         "client_name":                d.client_name,
+        "client_contractor_id":       contractor_id,
+        "customer_resolved":          bool(contractor_id),
         "draft_state":                d.draft_state,
         "status":                     d.status,
         "currency":                   d.currency,
         "wfirma_proforma_id":         d.wfirma_proforma_id,
         "wfirma_proforma_fullnumber": d.wfirma_proforma_fullnumber,
+        "line_count":                 line_count,
+        "total":                      total,
         "created_at":                 d.created_at,
         "updated_at":                 d.updated_at,
     }

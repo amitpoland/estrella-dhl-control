@@ -91,6 +91,8 @@ PAGE_VIEW_PERMISSION: Mapping[str, str] = {
 PAGE_ALIASES: Mapping[str, str] = {
     "detail": "shipments",
     "proforma_detail": "proforma",
+    # Cross-batch Prior Proforma Search (Screen C) — same module as Pro Forma list.
+    "proforma_search": "proforma",
 }
 
 # ── Explicit permission catalogue (module.action) ────────────────────────────

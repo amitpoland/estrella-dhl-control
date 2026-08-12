@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from ..models.shipment import ShipmentMode, ShipmentResult, ShipmentState
 
@@ -338,6 +338,30 @@ def get_shipment_for_draft(
                 return row
 
     return None
+
+
+def list_outbound_rows_for_batches(
+    db_path: Path, batch_ids: List[str]
+) -> List[dict]:
+    """Read-only: outbound carrier rows for many batches in one query.
+
+    Used by Pro Forma search projection to resolve outbound ``tracking_ref``
+    without N+1 ``get_shipment_for_draft`` calls. Attribution (exact client
+    match + single-client fallback) stays with the caller — same rules as
+    ``get_shipment_for_draft``. Return drafts excluded via ``_OUTBOUND_ONLY``.
+    """
+    ids = sorted({(b or "").strip() for b in batch_ids if (b or "").strip()})
+    if not ids or not Path(db_path).exists():
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM carrier_shipments "
+            f"WHERE batch_id IN ({placeholders}) AND {_OUTBOUND_ONLY} "
+            "ORDER BY created_at DESC",
+            ids,
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def update_state(
