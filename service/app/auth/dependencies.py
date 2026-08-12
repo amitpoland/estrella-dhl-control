@@ -135,6 +135,29 @@ def require_permission(permission: str) -> Callable:
     return _dep
 
 
+def require_users_admin(
+    user: dict = Depends(require_admin),
+    _permission: Optional[dict] = Depends(require_permission("users.admin")),
+) -> dict:
+    """Slice 2b — session admin + catalogue ``users.admin``.
+
+    Keeps ``require_admin`` so a bare X-API-Key cannot widen into user-admin
+    writes (``require_permission`` alone treats a valid key as machine-admin).
+    """
+    return user
+
+
+def require_system_settings_admin(
+    user: dict = Depends(require_admin),
+    _permission: Optional[dict] = Depends(require_permission("system.settings.admin")),
+) -> dict:
+    """Slice 2b — session admin + catalogue ``system.settings.admin``.
+
+    Same no-widen composition as ``require_users_admin``.
+    """
+    return user
+
+
 def check_session_or_redirect(request: Request) -> Optional[dict]:
     """
     For HTML page routes: return user if authenticated,

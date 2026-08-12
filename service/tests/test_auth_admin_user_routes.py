@@ -37,21 +37,23 @@ WRITE_ROUTES = ("approve", "reject", "role", "deactivate", "activate")
 
 
 def test_all_admin_writes_have_require_admin():
-    """Each of the 5 admin write routes declares Depends(require_admin)."""
+    """Each of the 5 admin write routes declares require_users_admin (Slice 2b).
+
+    ``require_users_admin`` composes ``require_admin`` + ``users.admin`` —
+    source must not regress to bare require_admin-only or drop the stack.
+    """
     src = _route_src()
     for action in WRITE_ROUTES:
-        # Locate decorator line position; require_admin must appear in the
-        # def signature that immediately follows (within ~200 chars).
+        # Locate decorator line position; require_users_admin must appear in the
+        # def signature that immediately follows (within ~350 chars).
         dec_pat = rf'@router\.post\("/users/\{{user_id\}}/{action}"\)'
         m = re.search(dec_pat, src)
         assert m is not None, (
             f"Could not locate POST /users/{{user_id}}/{action} route decorator"
         )
-        # Take the next 300 chars after the decorator (covers the def signature
-        # even when default args span the line).
-        after = src[m.end(): m.end() + 300]
-        assert "require_admin" in after, (
-            f"/users/{{user_id}}/{action} signature must use Depends(require_admin); "
+        after = src[m.end(): m.end() + 350]
+        assert "require_users_admin" in after, (
+            f"/users/{{user_id}}/{action} signature must use Depends(require_users_admin); "
             f"signature start: {after[:200]!r}"
         )
 
