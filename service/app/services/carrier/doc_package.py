@@ -311,11 +311,40 @@ def _load_customer(contractor_id: str, storage_root: Path) -> Optional[_Customer
 def _resolve_customer_from_batch(batch_id: str, client_name: Optional[str],
                                    storage_root: Path) -> Optional[Any]:
     """
-    Attempt to resolve a CustomerMaster row from batch context.
-    Priority: client_name → contractor_id from shipment_documents → None.
+    Resolve CustomerMaster from batch context (B-020).
+
+    Priority:
+      1. Document-party client ID on sales_* slots (SINGLE only)
+      2. Name match via wfirma_customers — only when party status is NONE
+      3. None on AMBIGUOUS (fail closed; never LIMIT 1 / first row)
     """
+    docs_db = storage_root / "documents.db"
+    try:
+        from ..document_party_authority import (
+            ROLE_CLIENT,
+            STATUS_AMBIGUOUS,
+            STATUS_NONE,
+            STATUS_SINGLE,
+            resolve_party_id,
+        )
+
+        party = resolve_party_id(docs_db, batch_id, ROLE_CLIENT)
+        if party.status == STATUS_AMBIGUOUS:
+            log.warning(
+                "[%s] _resolve_customer_from_batch: AMBIGUOUS client "
+                "candidates=%s — fail closed",
+                batch_id, party.candidates,
+            )
+            return None
+        if party.status == STATUS_SINGLE and party.contractor_id:
+            return _load_customer(party.contractor_id, storage_root)
+        # STATUS_NONE — fall through to optional name match
+        if party.status != STATUS_NONE:
+            return None
+    except Exception as exc:
+        log.debug("_resolve_customer_from_batch party resolve failed: %s", exc)
+
     if client_name:
-        # Try via name match in wfirma_customers → customer_master
         try:
             wfirma_db = storage_root / "wfirma.db"
             if wfirma_db.exists():
@@ -329,22 +358,6 @@ def _resolve_customer_from_batch(batch_id: str, client_name: Optional[str],
                 wconn.close()
                 if row and row["wfirma_customer_id"]:
                     return _load_customer(row["wfirma_customer_id"], storage_root)
-        except Exception:
-            pass
-    # Fallback: supplier_contractor_id from shipment_documents (client side)
-    docs_db = storage_root / "documents.db"
-    if docs_db.exists():
-        try:
-            dconn = sqlite3.connect(str(docs_db))
-            dconn.row_factory = sqlite3.Row
-            row = dconn.execute(
-                "SELECT client_contractor_id FROM shipment_documents "
-                "WHERE batch_id=? AND client_contractor_id != '' LIMIT 1",
-                (batch_id,),
-            ).fetchone()
-            dconn.close()
-            if row and row["client_contractor_id"]:
-                return _load_customer(row["client_contractor_id"], storage_root)
         except Exception:
             pass
     return None

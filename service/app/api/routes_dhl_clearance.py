@@ -187,34 +187,33 @@ def _resolve_customs_identities(batch_id: str) -> "tuple[Optional[str], Optional
                     "failed (non-fatal): %s", batch_id, _exc)
         consignee_name = ""
 
-    # ── Consignor from supplier master ────────────────────────────────────────
+    # ── Consignor from supplier master (B-020 document-party authority) ───────
     try:
         import sqlite3 as _sqlite3
+        from ..services.document_party_authority import (
+            ROLE_SUPPLIER,
+            STATUS_AMBIGUOUS,
+            STATUS_SINGLE,
+            resolve_party_id,
+        )
+
         docs_db_path = settings.storage_root / "documents.db"
         sup_db_path  = settings.storage_root / "suppliers.sqlite"
-
-        supplier_cid: Optional[str] = None
-        if docs_db_path.exists():
-            with _sqlite3.connect(str(docs_db_path)) as _dcon:
-                _dcon.row_factory = _sqlite3.Row
-                _row = _dcon.execute(
-                    "SELECT supplier_contractor_id "
-                    "FROM shipment_documents "
-                    "WHERE batch_id=? AND supplier_contractor_id != '' "
-                    "LIMIT 1",
-                    (batch_id,),
-                ).fetchone()
-                if _row:
-                    supplier_cid = str(_row["supplier_contractor_id"]).strip()
-
         _sentinel = _get_unresolved_sentinel()
-        if not supplier_cid:
-            # No supplier link on intake — surface as explicit flag, not silent
-            # constant (which would be wrong for third-party supplier batches).
+
+        party = resolve_party_id(docs_db_path, batch_id, ROLE_SUPPLIER)
+        if party.status == STATUS_AMBIGUOUS:
+            log.warning(
+                "[%s] _resolve_customs_identities: AMBIGUOUS supplier "
+                "candidates=%s — fail closed to unresolved sentinel",
+                batch_id, party.candidates,
+            )
+            consignor_name = _sentinel
+        elif party.status != STATUS_SINGLE or not party.contractor_id:
+            # No purchase-slot supplier link — explicit flag, not silent constant.
             consignor_name = _sentinel
         else:
-            # Look up supplier by primary key (supplier_contractor_id is the
-            # suppliers.id integer).
+            supplier_cid = party.contractor_id
             if sup_db_path.exists():
                 with _sqlite3.connect(str(sup_db_path)) as _scon:
                     _scon.row_factory = _sqlite3.Row

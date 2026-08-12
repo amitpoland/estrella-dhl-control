@@ -321,25 +321,19 @@ def _resolve_supplier_contractor_id(
     db_path:  Path,
 ) -> Optional[str]:
     """
-    Read the first non-empty supplier_contractor_id from shipment_documents.
-    Returns None if not found.
+    B-020: single purchase-slot supplier, else None (AMBIGUOUS / NONE).
+    Never LIMIT-1 across inherited AWB rows.
     """
-    if not db_path.exists():
-        return None
     try:
-        con = _ro_conn(db_path)
-        row = con.execute(
-            """
-            SELECT supplier_contractor_id
-            FROM shipment_documents
-            WHERE batch_id = ? AND supplier_contractor_id != ''
-            LIMIT 1
-            """,
-            (batch_id,),
-        ).fetchone()
-        con.close()
-        if row:
-            return row["supplier_contractor_id"]
+        from .document_party_authority import (
+            ROLE_SUPPLIER,
+            STATUS_SINGLE,
+            resolve_party_id,
+        )
+
+        party = resolve_party_id(db_path, batch_id, ROLE_SUPPLIER)
+        if party.status == STATUS_SINGLE:
+            return party.contractor_id
     except Exception as exc:  # noqa: BLE001
         log.debug("_resolve_supplier_contractor_id: %s", exc)
     return None
