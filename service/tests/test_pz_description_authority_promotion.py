@@ -317,19 +317,20 @@ def test_intake_does_not_wire_name_pl_generator():
 
 
 def test_export_service_promotes_pz_rows_after_write():
-    """PZ process must promote nazwa_pl/nazwa_en into product_descriptions."""
+    """PZ process delegates commercial-description convergence to commercial_authority."""
     src = (
         Path(__file__).resolve().parent.parent
         / "app" / "services" / "export_service.py"
     ).read_text(encoding="utf-8")
-    assert "promote_pz_rows_to_product_descriptions" in src
+    assert "promote_and_enrich_batch_drafts" in src
     assert "patch_audit_pz_description_promote" in src
     assert "_write_pz_rows_json(output_dir, result)" in src
-    # promote must follow the pz_rows write in source order
     write_i = src.index("_write_pz_rows_json(output_dir, result)")
-    promo_i = src.index("promote_pz_rows_to_product_descriptions")
+    promo_i = src.index("promote_and_enrich_batch_drafts")
     assert promo_i > write_i
-    # Outer failure must still stamp result + audit (no silent split).
+    assert "promote_pz_rows_to_product_descriptions" not in src
+    assert 'int(_promo_summary.get("written") or 0) > 0' not in src
+    assert "enrich_draft_lines" not in src
     assert 'result["pz_description_promote"]' in src
     assert '"status": "failed"' in src or "'status': 'failed'" in src
 
@@ -474,10 +475,16 @@ def test_editable_only_states_listed_for_auto_enrich():
     assert set(pildb.EDITABLE_STATES) == {"draft", "editing", "post_failed"}
     src = (
         Path(__file__).resolve().parent.parent
-        / "app" / "services" / "export_service.py"
+        / "app" / "services" / "commercial_authority.py"
     ).read_text(encoding="utf-8")
     assert "EDITABLE_STATES" in src
     assert "enrich_draft_lines" in src
+    export_src = (
+        Path(__file__).resolve().parent.parent
+        / "app" / "services" / "export_service.py"
+    ).read_text(encoding="utf-8")
+    assert "promote_and_enrich_batch_drafts" in export_src
+    assert "enrich_draft_lines" not in export_src
 
 
 def test_post_promote_enrich_skips_posted_draft(docs_db, proc_db, tmp_path):

@@ -285,3 +285,266 @@ class TestReadinessMessageAuthority:
         assert "name_pl" in err
         assert "Import sales prices first" not in err
         assert "product_descriptions" in err or "Promote" in err
+
+
+# Canonical bilingual text used by the written==0 / stale-draft pins.
+# Must be long enough to pass the generic/forbidden-token policy.
+_CANON_PL = (
+    "Pierścionek z 14-karatowego złota (próba 585) "
+    "wysadzany diamentami laboratoryjnymi. Biżuteria do noszenia."
+)
+_CANON_EN = "Lab Grown Diamond Studded 14KT Gold Jewellery RING"
+_CANON_PL_EAR = (
+    "Kolczyki z 9-karatowego złota (próba 375) "
+    "wysadzane diamentami laboratoryjnymi. Biżuteria do noszenia."
+)
+_CANON_EN_EAR = "Lab Grown Diamond Studded 9KT Gold Jewellery EARRINGS"
+
+
+def _seed_pd(product_code: str, *, pl: str = _CANON_PL, en: str = _CANON_EN,
+             source: str = "pz_rows", item_type: str = "RING"):
+    ddb.upsert_product_description(
+        product_code=product_code,
+        item_type=item_type,
+        name_pl=pl,
+        description_pl=pl,
+        description_en=en,
+        material_pl="",
+        purpose_pl="Ozdoba — biżuteria do noszenia.",
+        description_block=f"{pl} / {en}",
+        description_line=pl,
+        source=source,
+    )
+
+
+def _birth_blank(storage: Path, *, batch_id: str, client: str, lines: List[Dict[str, Any]]):
+    draft, _ = pildb.auto_create_draft_from_sales_packing(
+        storage / "proforma_links.db",
+        batch_id=batch_id,
+        client_name=client,
+        currency="USD",
+        lines=lines,
+        operator="test",
+        name_pl_lookup=None,
+        desc_generate=None,
+    )
+    return draft
+
+
+def _lines(draft) -> List[Dict[str, Any]]:
+    return json.loads(draft.editable_lines_json or "[]") or []
+
+
+class TestWrittenZeroStillEnrichesStaleDraft:
+    """PD already present + blank editable draft + promote written==0 must still fill."""
+
+    def test_written_zero_fills_blank_name_pl_and_is_idempotent(self, storage):
+        bid = "B-W0-01"
+        pc = "EJL/26-27/522-1"
+        _seed_pd(pc)
+        batch = storage / "outputs" / bid
+        batch.mkdir(parents=True)
+        # No pz_rows / audit stamps: promote writes 0, PD already holds authority.
+
+        draft = _birth_blank(storage, batch_id=bid, client="Kenny", lines=[{
+            "product_code": pc,
+            "design_no": "JR08388-0.55",
+            "qty": 1,
+            "unit_price": 345.76,
+            "currency": "USD",
+            "name_pl": "",
+        }])
+        assert not str(_lines(draft)[0].get("name_pl") or "").strip()
+
+        first = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+        assert int(first.get("written") or 0) == 0
+
+        out = promote_and_enrich_batch_drafts(
+            bid, proforma_db=storage / "proforma_links.db",
+            batch_dir=batch, operator="test",
+        )
+        assert int(out["promote"].get("written") or 0) == 0
+        assert out["drafts_enriched"] == 1
+
+        d1 = pildb.get_draft_by_id(storage / "proforma_links.db", draft.id)
+        ln = _lines(d1)[0]
+        assert ln["name_pl"] == _CANON_PL
+        assert ln["qty"] == 1
+        assert float(ln["unit_price"]) == 345.76
+        assert ln["currency"] == "USD"
+        assert ln["product_code"] == pc
+        assert "Wyrób jubilerski" not in (ln["name_pl"] or "")
+
+        snap = d1.editable_lines_json
+        out2 = promote_and_enrich_batch_drafts(
+            bid, proforma_db=storage / "proforma_links.db",
+            batch_dir=batch, operator="test",
+        )
+        assert int(out2["promote"].get("written") or 0) == 0
+        d2 = pildb.get_draft_by_id(storage / "proforma_links.db", draft.id)
+        ln2 = _lines(d2)[0]
+        assert ln2["name_pl"] == _CANON_PL
+        assert float(ln2["unit_price"]) == 345.76
+        assert ln2["qty"] == 1
+        assert json.loads(d2.editable_lines_json)[0]["product_code"] == pc
+        # Second pass must not rewrite commercial values.
+        assert _lines(d2)[0]["name_pl"] == json.loads(snap)[0]["name_pl"]
+
+    def test_multi_draft_same_pc_locked_and_manual_protected(self, storage):
+        bid = "B-W0-MULTI"
+        pc_ring = "EJL/26-27/522-1"
+        pc_ear = "EJL/26-27/522-3"
+        pc_manual = "EJL/26-27/522-2"
+        _seed_pd(pc_ring)
+        _seed_pd(pc_ear, pl=_CANON_PL_EAR, en=_CANON_EN_EAR, item_type="EARRINGS")
+        _seed_pd(
+            pc_manual,
+            pl="Operator-locked pierścionek z 18-karatowego złota (próba 750).",
+            en="Operator EN RING",
+            source="manual",
+        )
+        batch = storage / "outputs" / bid
+        batch.mkdir(parents=True)
+        # Conflicting pz_rows must not clobber the manual PD row.
+        (batch / "pz_rows.json").write_text(json.dumps([
+            {"product_code": pc_manual,
+             "nazwa_pl": "MUST-NOT-REPLACE pierścionek ze złota próby 14 karatów",
+             "nazwa_en": "MUST-NOT-REPLACE EN", "item_type": "RING"},
+        ]), encoding="utf-8")
+
+        editable_a = _birth_blank(storage, batch_id=bid, client="Omara", lines=[{
+            "product_code": pc_ring, "design_no": "JR08388-0.55",
+            "qty": 1, "unit_price": 100.0, "currency": "USD", "name_pl": "",
+        }])
+        # Draft-87 shape: one draft, same purchase code on distinct sales designs.
+        editable_b = _birth_blank(storage, batch_id=bid, client="Kenny", lines=[
+            {"product_code": pc_ear, "design_no": "JE02058-0.50",
+             "qty": 1, "unit_price": 99.52, "currency": "USD", "name_pl": ""},
+            {"product_code": pc_ear, "design_no": "JE02058-1.00",
+             "qty": 3, "unit_price": 140.56, "currency": "USD", "name_pl": ""},
+            {"product_code": pc_ear, "design_no": "J4506E00545-1.0",
+             "qty": 2, "unit_price": 176.47, "currency": "USD", "name_pl": ""},
+        ])
+        manual_draft = _birth_blank(storage, batch_id=bid, client="Verhoeven", lines=[{
+            "product_code": pc_manual, "design_no": "J3403R02044",
+            "qty": 1, "unit_price": 1285.58, "currency": "USD", "name_pl": "",
+        }])
+        posted, _ = pildb.auto_create_draft_from_sales_packing(
+            storage / "proforma_links.db",
+            batch_id=bid, client_name="Posted Client", currency="USD",
+            lines=[{"product_code": pc_ring, "design_no": "LOCKED",
+                    "qty": 1, "unit_price": 10.0, "currency": "USD",
+                    "name_pl": "STALE_POSTED"}],
+            operator="test", name_pl_lookup=None, desc_generate=None,
+        )
+        with sqlite3.connect(str(storage / "proforma_links.db")) as con:
+            con.execute(
+                "UPDATE proforma_drafts SET draft_state='posted', status='issued' "
+                "WHERE id=?",
+                (posted.id,),
+            )
+
+        promo = promote_pz_rows_to_product_descriptions(batch, dry_run=False)
+        assert int(promo.get("written") or 0) == 0
+        assert int(promo.get("skipped_manual") or 0) >= 1
+        assert ddb.get_product_description(pc_manual)["source"] == "manual"
+        assert ddb.get_product_description(pc_manual)["description_pl"].startswith(
+            "Operator-locked"
+        )
+
+        out = promote_and_enrich_batch_drafts(
+            bid, proforma_db=storage / "proforma_links.db",
+            batch_dir=batch, operator="test",
+        )
+        assert out["drafts_locked_skipped"] >= 1
+
+        a = _lines(pildb.get_draft_by_id(storage / "proforma_links.db", editable_a.id))
+        assert a[0]["name_pl"] == _CANON_PL
+        assert float(a[0]["unit_price"]) == 100.0
+
+        b = _lines(pildb.get_draft_by_id(storage / "proforma_links.db", editable_b.id))
+        assert len(b) == 3
+        assert [ln["design_no"] for ln in b] == [
+            "JE02058-0.50", "JE02058-1.00", "J4506E00545-1.0",
+        ]
+        assert [ln["qty"] for ln in b] == [1, 3, 2]
+        assert [float(ln["unit_price"]) for ln in b] == [99.52, 140.56, 176.47]
+        assert all(ln["name_pl"] == _CANON_PL_EAR for ln in b)
+        assert all(ln["product_code"] == pc_ear for ln in b)
+
+        m = _lines(pildb.get_draft_by_id(storage / "proforma_links.db", manual_draft.id))
+        assert m[0]["name_pl"].startswith("Operator-locked")
+        assert "MUST-NOT-REPLACE" not in (m[0]["name_pl"] or "")
+
+        p = _lines(pildb.get_draft_by_id(storage / "proforma_links.db", posted.id))
+        assert p[0]["name_pl"] == "STALE_POSTED"
+
+    def test_audit_stamps_after_blank_birth_converge(self, storage):
+        """84–88 lifecycle: drafts born before PD; later audit stamps must fill."""
+        bid = "B-LIFECYCLE-01"
+        pc = "EJL/26-27/519-1"
+        draft = _birth_blank(storage, batch_id=bid, client="Omara", lines=[{
+            "product_code": pc, "design_no": "CSTR08282",
+            "qty": 1, "unit_price": 374.0, "currency": "EUR", "name_pl": "",
+        }])
+        assert not str(_lines(draft)[0].get("name_pl") or "").strip()
+        assert ddb.get_product_description(pc) is None
+
+        batch = storage / "outputs" / bid
+        batch.mkdir(parents=True)
+        (batch / "audit.json").write_text(json.dumps({
+            "batch_id": bid,
+            "rows": [{
+                "product_code": pc,
+                "description": "PCS, 14KT Gold,LGD Gold Stud Jewell RING",
+                "item_type": "RING",
+                "_resolved_description_pl": _CANON_PL,
+                "_resolved_name_pl": "Pierścionek",
+                "_resolved_description_en": _CANON_EN,
+                "_desc_authoritative": True,
+            }],
+        }), encoding="utf-8")
+
+        out = promote_and_enrich_batch_drafts(
+            bid, proforma_db=storage / "proforma_links.db",
+            batch_dir=batch, operator="description-ready",
+        )
+        assert int(out["promote"].get("written") or 0) == 1
+        d = pildb.get_draft_by_id(storage / "proforma_links.db", draft.id)
+        ln = _lines(d)[0]
+        assert ln["name_pl"] == _CANON_PL
+        assert float(ln["unit_price"]) == 374.0
+        assert ln["design_no"] == "CSTR08282"
+
+
+class TestSinglePromoteEnrichAuthority:
+    """Architecture pins: one production promote/enrich algorithm."""
+
+    def _src(self, rel: str) -> str:
+        return (
+            Path(__file__).resolve().parent.parent / "app" / rel
+        ).read_text(encoding="utf-8")
+
+    def test_export_service_delegates_and_has_no_written_gt_zero_gate(self):
+        src = self._src("services/export_service.py")
+        assert "promote_and_enrich_batch_drafts" in src
+        assert 'int(_promo_summary.get("written") or 0) > 0' not in src
+        assert "enrich_draft_lines" not in src
+        write_i = src.index("_write_pz_rows_json(output_dir, result)")
+        promo_i = src.index("promote_and_enrich_batch_drafts")
+        assert promo_i > write_i
+
+    def test_intake_and_polish_desc_call_promote_and_enrich(self):
+        intake = self._src("api/routes_intake.py")
+        clearance = self._src("api/routes_dhl_clearance.py")
+        packing_sync = self._src("services/proforma_draft_sync.py")
+        assert "promote_and_enrich_batch_drafts" in intake
+        assert "promote_and_enrich_batch_drafts" in clearance
+        assert "promote_and_enrich_batch_drafts" in packing_sync
+
+    def test_export_service_does_not_import_promote_primitive(self):
+        src = self._src("services/export_service.py")
+        assert "promote_pz_rows_to_product_descriptions" not in src
+        assert "patch_audit_pz_description_promote" in src
+        assert 'result["pz_description_promote"]' in src
+

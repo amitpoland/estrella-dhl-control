@@ -4,10 +4,14 @@ test_routes_description_admin.py — description authority admin endpoints.
 Tests:
   GET  /api/v1/description-admin/product/{code}           404 / 200 + gate
   POST /api/v1/description-admin/product/{code}/validate  gate PASS / BLOCKED
-  PUT  /api/v1/description-admin/product/{code}           saves manual; audit
+  POST /api/v1/description-admin/product/{code}/preview   candidate, no write
+  POST /api/v1/description-admin/product/{code}/converge-drafts  editable only
+  PUT  /api/v1/description-admin/product/{code}           saves manual; first-save OK
 """
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -121,13 +125,31 @@ def test_validate_blocked_shorthand(client):
 
 # ── PUT ───────────────────────────────────────────────────────────────────────
 
-def test_put_unknown_returns_404(client):
+def test_put_unknown_pass_creates_canonical_row(client, tmp_path):
+    """First-save of a PASS candidate is allowed when no row exists yet."""
+    from app.services.document_db import init_document_db
+    init_document_db(tmp_path / "documents.db")
+    r = client.put(
+        f"/api/v1/description-admin/product/{_PC}",
+        headers=_AUTH,
+        json={"description_pl": _VALID_PL, "description_en": _VALID_EN, "item_type": "RING"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["source"] == "manual"
+    assert data["description_pl"] == _VALID_PL
+    assert data["gate"] == "PASS"
+
+
+def test_put_unknown_blocked_still_422(client, tmp_path):
+    from app.services.document_db import init_document_db
+    init_document_db(tmp_path / "documents.db")
     r = client.put(
         "/api/v1/description-admin/product/DOES-NOT-EXIST",
         headers=_AUTH,
-        json={"description_pl": _VALID_PL},
+        json={"description_pl": ""},
     )
-    assert r.status_code == 404
+    assert r.status_code == 422
 
 
 def test_put_saves_manual_and_returns_gate_pass(client, tmp_path):
@@ -213,3 +235,109 @@ def test_slash_product_code_routes(client, tmp_path):
     assert r.status_code == 200, r.text
     assert r.json()["source"] == "manual"
     assert r.json()["product_code"] == _PC_SLASH
+
+
+# ── POST /preview (never writes) ──────────────────────────────────────────────
+
+def test_preview_does_not_write_product_descriptions(client, tmp_path):
+    from app.services.document_db import init_document_db, get_product_description
+    init_document_db(tmp_path / "documents.db")
+    r = client.post(
+        f"/api/v1/description-admin/product/{_PC}/preview",
+        headers=_AUTH,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["wrote"] is False
+    assert data["product_code"] == _PC
+    assert "candidate" in data
+    assert "gate" in data
+    assert get_product_description(_PC) is None
+
+
+def test_preview_does_not_clobber_manual_row(client, tmp_path):
+    _seed(tmp_path)
+    from app.services.document_db import get_product_description, upsert_product_description
+    upsert_product_description(
+        product_code=_PC, item_type="RING", name_pl="Pierścionek",
+        description_pl=_VALID_PL, description_en=_VALID_EN,
+        material_pl="złoto", purpose_pl="Ozdoba.",
+        description_block=_VALID_PL, description_line=_VALID_PL,
+        source="manual",
+    )
+    before = get_product_description(_PC)
+    r = client.post(
+        f"/api/v1/description-admin/product/{_PC}/preview",
+        headers=_AUTH,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["wrote"] is False
+    assert data["protected_existing"] is True
+    after = get_product_description(_PC)
+    assert after["description_pl"] == before["description_pl"]
+    assert after["source"] == "manual"
+
+
+def test_converge_drafts_skips_posted_and_fills_editable(client, tmp_path):
+    from app.services import document_db as ddb
+    from app.services import proforma_invoice_link_db as pildb
+    ddb.init_document_db(tmp_path / "documents.db")
+    links = tmp_path / "proforma_links.db"
+    pildb.init_db(links)
+    ddb.upsert_product_description(
+        product_code=_PC, item_type="RING", name_pl="Pierścionek",
+        description_pl=_VALID_PL, description_en=_VALID_EN,
+        material_pl="złoto 14kt", purpose_pl="Ozdoba.",
+        description_block=_VALID_PL, description_line=_VALID_PL,
+        source="manual",
+    )
+    editable, _ = pildb.auto_create_draft_from_sales_packing(
+        links, batch_id="B1", client_name="Client A", currency="EUR",
+        lines=[{"product_code": _PC, "design_no": "D1", "qty": 2,
+                "unit_price": 10.0, "currency": "EUR", "name_pl": ""}],
+        operator="test",
+    )
+    posted, _ = pildb.auto_create_draft_from_sales_packing(
+        links, batch_id="B1", client_name="Client B", currency="EUR",
+        lines=[{"product_code": _PC, "design_no": "D2", "qty": 9,
+                "unit_price": 99.0, "currency": "EUR", "name_pl": "KEEP"}],
+        operator="test",
+    )
+    with sqlite3.connect(str(links)) as con:
+        con.execute(
+            "UPDATE proforma_drafts SET draft_state='posted', status='issued' WHERE id=?",
+            (posted.id,),
+        )
+        con.commit()
+
+    r = client.post(
+        f"/api/v1/description-admin/product/{_PC}/converge-drafts",
+        headers=_AUTH,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["drafts_enriched"] == 1
+    assert body["drafts_skipped_locked"] >= 1
+
+    ed = pildb.get_draft_by_id(links, editable.id)
+    elines = json.loads(ed.editable_lines_json)
+    assert elines[0]["qty"] == 2
+    assert elines[0]["unit_price"] == 10.0
+    assert elines[0]["product_code"] == _PC
+    assert _VALID_PL[:20] in (elines[0].get("name_pl") or "")
+
+    pd = pildb.get_draft_by_id(links, posted.id)
+    plines = json.loads(pd.editable_lines_json)
+    assert pd.draft_state == "posted"
+    assert plines[0]["qty"] == 9
+    assert plines[0]["unit_price"] == 99.0
+    assert plines[0]["name_pl"] == "KEEP"
+
+    r2 = client.post(
+        f"/api/v1/description-admin/product/{_PC}/converge-drafts",
+        headers=_AUTH,
+    )
+    assert r2.status_code == 200
+    assert r2.json()["drafts_enriched"] == 1
+

@@ -176,6 +176,7 @@ const MAPPING_INFO = {
       'Design number (design_no) links to Designs tab',
       'Per-row "Edit overlays" writes to local overlay (HS code / unit / design link) — does NOT modify the read-only Product Master',
       'Per-row "Create & adopt" — fiscal-gated (requires WFIRMA_CREATE_PRODUCT_ALLOWED)',
+      'Per-row Description — canonical PL/EN from product_descriptions (Edit / Generate / Validate / Confirm & Sync to wFirma)',
     ],
     pending: [
       'wFirma goods ID not stored in product_master — mapping lives in wFirma goods adoption record',
@@ -1129,6 +1130,295 @@ function ProductOverlayEditModal({ productCode, existing, onClose, onSaved }) {
   );
 }
 
+function _DescGateBadge({ gate }) {
+  if (!gate) return null;
+  var styles = {
+    PASS:    { bg: 'var(--badge-green-bg)', fg: 'var(--badge-green-text)' },
+    WARN:    { bg: 'var(--badge-amber-bg, rgba(212,168,83,0.12))', fg: 'var(--badge-amber-text, #92400e)' },
+    BLOCKED: { bg: 'var(--badge-red-bg)', fg: 'var(--badge-red-text)' },
+  }[gate] || { bg: 'var(--card)', fg: 'var(--text-3)' };
+  return (
+    <span data-testid={'desc-gate-' + String(gate).toLowerCase()}
+      style={{ display: 'inline-block', padding: '2px 10px', borderRadius: 10, background: styles.bg, color: styles.fg, fontWeight: 600, fontSize: 11 }}>
+      {gate}
+    </span>
+  );
+}
+
+// Canonical product_descriptions control — Generate never writes; Save is PASS-only;
+// Confirm & Sync to wFirma is a separate operator step (search-first).
+function ProductDescriptionModal({ productCode, itemType, showToast, onClose }) {
+  var [row, setRow]               = React.useState(null);
+  var [missing, setMissing]       = React.useState(false);
+  var [loading, setLoading]       = React.useState(true);
+  var [error, setError]           = React.useState(null);
+  var [descEditing, setDescEditing] = React.useState(false);
+  var [editPl, setEditPl]         = React.useState('');
+  var [editEn, setEditEn]         = React.useState('');
+  var [live, setLive]             = React.useState(null);
+  var [candidate, setCandidate]   = React.useState(null);
+  var [busy, setBusy]             = React.useState('');
+  var [wfirma, setWfirma]         = React.useState(null);
+  var [confirmCreate, setConfirmCreate] = React.useState(false);
+  var valTimer = React.useRef(null);
+
+  function loadRow() {
+    setLoading(true); setError(null); setMissing(false);
+    PzApi.getProductDescriptionAdmin(productCode).then(function (res) {
+      setLoading(false);
+      if (res.ok) { setRow(res.data); setMissing(false); }
+      else if (res.status === 404) { setRow(null); setMissing(true); }
+      else setError(res.error || 'Load failed');
+    });
+  }
+  React.useEffect(function () { loadRow(); }, [productCode]);
+
+  function startEdit() {
+    setEditPl((row && row.description_pl) || '');
+    setEditEn((row && row.description_en) || '');
+    setLive(row ? { gate: row.gate, validation: row.validation, rendered_line: row.rendered_line } : null);
+    setDescEditing(true); setError(null);
+  }
+
+  function scheduleValidate(pl, en) {
+    clearTimeout(valTimer.current);
+    valTimer.current = setTimeout(function () {
+      setBusy('validate');
+      PzApi.validateProductDescriptionAdmin(productCode, { description_pl: pl, description_en: en }).then(function (res) {
+        setBusy('');
+        if (res.ok) setLive(res.data);
+      });
+    }, 350);
+  }
+
+  function doGenerate() {
+    setBusy('generate'); setError(null); setCandidate(null);
+    PzApi.previewProductDescriptionAdmin(productCode).then(function (res) {
+      setBusy('');
+      if (!res.ok) { setError(res.error || 'Generate failed'); return; }
+      setCandidate(res.data);
+      if (res.data.protected_existing) {
+        if (showToast) showToast('Candidate ready — existing canonical/manual description was not overwritten', 'ok');
+      }
+    });
+  }
+
+  function acceptCandidate() {
+    if (!candidate || !candidate.candidate) return;
+    var c = candidate.candidate;
+    setEditPl(c.description_pl || '');
+    setEditEn(c.description_en || '');
+    setLive({ gate: candidate.gate, validation: candidate.validation, rendered_line: candidate.rendered_line });
+    setDescEditing(true);
+  }
+
+  function doSave() {
+    if (!live || live.gate !== 'PASS') { setError('Save requires gate PASS'); return; }
+    setBusy('save'); setError(null);
+    var body = {
+      description_pl: editPl,
+      description_en: editEn,
+      item_type: (candidate && candidate.candidate && candidate.candidate.item_type) || itemType || undefined,
+      name_pl: (candidate && candidate.candidate && candidate.candidate.name_pl) || undefined,
+      material_pl: (candidate && candidate.candidate && candidate.candidate.material_pl) || undefined,
+      purpose_pl: (candidate && candidate.candidate && candidate.candidate.purpose_pl) || undefined,
+    };
+    PzApi.saveProductDescriptionAdmin(productCode, body).then(function (res) {
+      setBusy('');
+      if (!res.ok) { setError(res.error || ((res.data && res.data.detail && res.data.detail.error) || 'Save failed')); return; }
+      setRow(res.data); setMissing(false); setDescEditing(false); setCandidate(null);
+      if (showToast) showToast('Canonical description saved. Proforma reads this authority on enrich.', 'ok');
+    });
+  }
+
+  function doConverge() {
+    setBusy('converge'); setError(null);
+    PzApi.convergeProductDescriptionDrafts(productCode).then(function (res) {
+      setBusy('');
+      if (!res.ok) { setError(res.error || 'Converge failed'); return; }
+      var n = (res.data && res.data.drafts_enriched) || 0;
+      if (showToast) showToast('Editable drafts enriched: ' + n + ' (posted/converted untouched)', 'ok');
+    });
+  }
+
+  function doWfirmaSearch() {
+    setBusy('wfirma'); setError(null); setConfirmCreate(false);
+    PzApi.wfirmaGoodsSearch(productCode).then(function (res) {
+      setBusy('');
+      if (!res.ok) { setError(res.error || 'wFirma search failed'); return; }
+      setWfirma(res.data || { found: false });
+    });
+  }
+
+  function doAdopt() {
+    setBusy('wfirma'); setError(null);
+    PzApi.wfirmaGoodsAdopt(productCode).then(function (res) {
+      setBusy('');
+      if (res.ok) {
+        if (showToast) showToast('Existing wFirma product adopted', 'ok');
+        setWfirma(null);
+      } else setError(res.error || 'Adopt failed');
+    });
+  }
+
+  function doCreate() {
+    var it = (row && row.item_type) || itemType || '';
+    if (!it) { setError('Item type is required to create in wFirma'); return; }
+    setBusy('wfirma'); setError(null);
+    PzApi.wfirmaGoodsCreateAndAdopt(productCode, {
+      item_type: it,
+      description_en: (row && row.description_en) || '',
+    }).then(function (res) {
+      setBusy('');
+      if (res.ok) {
+        if (showToast) showToast('Created and adopted in wFirma', 'ok');
+        setWfirma(null); setConfirmCreate(false);
+      } else if (res.status === 409) {
+        setError('Already in wFirma — use Adopt existing');
+        setWfirma({ found: true });
+      } else if (res.status === 403) {
+        setError('wFirma product creation is disabled (WFIRMA_CREATE_PRODUCT_ALLOWED)');
+      } else setError(res.error || 'Create failed');
+    });
+  }
+
+  var liveGate = (live && live.gate) || (row && row.gate) || (missing ? 'BLOCKED' : null);
+  var canSave = descEditing && live && live.gate === 'PASS' && busy !== 'save';
+  var hasCanonical = !!(row && ((row.description_pl || '').trim() || (row.description_en || '').trim()));
+
+  return (
+    <div data-testid="product-description-modal" onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'var(--overlay, rgba(0,0,0,0.45))', zIndex: 1050,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }}>
+      <div onClick={function (e) { e.stopPropagation(); }} style={{
+        background: 'var(--bg)', borderRadius: 10, maxWidth: 640, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        border: '1px solid var(--border)', boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
+        padding: 24, color: 'var(--text)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Product description — {productCode}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+              Authority: <code>product_descriptions</code>. Generate never writes. Save is PASS-only. wFirma is a separate confirm step.
+            </div>
+          </div>
+          <_DescGateBadge gate={liveGate} />
+        </div>
+
+        {loading && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>}
+        {error && <div data-testid="desc-modal-error" style={{ marginBottom: 10, fontSize: 12, color: 'var(--badge-red-text)', padding: '8px 10px', background: 'var(--badge-red-bg)', borderRadius: 6 }}>{typeof error === 'string' ? error : JSON.stringify(error)}</div>}
+
+        {missing && !descEditing && (
+          <div data-testid="desc-missing-banner" style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--badge-amber-bg, rgba(212,168,83,0.1))', border: '1px solid var(--badge-amber-border, rgba(212,168,83,0.3))', borderRadius: 6, fontSize: 12 }}>
+            No canonical description yet. Click Generate, then Accept a PASS candidate to save.
+          </div>
+        )}
+
+        {row && !descEditing && (
+          <div data-testid="desc-canonical-view" style={{ marginBottom: 12, fontSize: 13 }}>
+            <div style={{ color: 'var(--text-3)', fontSize: 11, marginBottom: 4 }}>source: {row.source || '—'} · item_type: {row.item_type || '—'}</div>
+            <div data-testid="desc-pl-view" style={{ marginBottom: 6 }}><b>PL</b> {row.description_pl || <em style={{ color: 'var(--text-3)' }}>empty</em>}</div>
+            <div data-testid="desc-en-view"><b>EN</b> {row.description_en || <em style={{ color: 'var(--text-3)' }}>empty</em>}</div>
+          </div>
+        )}
+
+        {descEditing && (
+          <div data-testid="desc-edit-form" style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>description_pl</label>
+            <textarea data-testid="desc-edit-pl" value={editPl} rows={3}
+              style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)' }}
+              onChange={function (e) { setEditPl(e.target.value); scheduleValidate(e.target.value, editEn); }} />
+            <label style={{ fontSize: 11, fontWeight: 600, display: 'block', margin: '8px 0 4px' }}>description_en</label>
+            <textarea data-testid="desc-edit-en" value={editEn} rows={2}
+              style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card)', color: 'var(--text)' }}
+              onChange={function (e) { setEditEn(e.target.value); scheduleValidate(editPl, e.target.value); }} />
+            {live && live.validation && live.validation.advisory && (
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--badge-amber-text, #92400e)' }}>{live.validation.advisory}</div>
+            )}
+          </div>
+        )}
+
+        {candidate && (
+          <div data-testid="desc-candidate-preview" style={{ marginBottom: 12, padding: 10, border: '1px dashed var(--border)', borderRadius: 6, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Candidate (not saved)
+              {candidate.protected_existing ? ' — existing manual/canonical was not overwritten' : ''}
+            </div>
+            <div><b>PL</b> {(candidate.candidate && candidate.candidate.description_pl) || '—'}</div>
+            <div><b>EN</b> {(candidate.candidate && candidate.candidate.description_en) || '—'}</div>
+            <div style={{ marginTop: 4 }}><_DescGateBadge gate={candidate.gate} /></div>
+            {candidate.reason === 'skipped_blank' && <div style={{ color: 'var(--badge-amber-text)' }}>No invoice/product-master source to generate from — edit manually.</div>}
+            {candidate.reason === 'rejected_generic' && <div style={{ color: 'var(--badge-red-text)' }}>Generator produced generic text — rejected. Edit manually.</div>}
+            <Btn small variant="gold" data-testid="desc-accept-candidate-btn"
+              disabled={candidate.gate !== 'PASS'}
+              title={candidate.gate !== 'PASS' ? 'Only a PASS candidate can be accepted' : 'Copy candidate into the editor — still not saved'}
+              onClick={acceptCandidate} style={{ marginTop: 8 }}>
+              Accept candidate into editor
+            </Btn>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {!descEditing && <Btn small variant="outline" data-testid="desc-edit-btn" onClick={startEdit} disabled={loading}>Edit</Btn>}
+          <Btn small variant="outline" data-testid={hasCanonical ? 'desc-regenerate-btn' : 'desc-generate-btn'}
+            onClick={doGenerate} disabled={!!busy}>
+            {busy === 'generate' ? 'Generating…' : (hasCanonical ? 'Regenerate (preview)' : 'Generate')}
+          </Btn>
+          {descEditing && (
+            <Btn small variant="outline" data-testid="desc-validate-btn"
+              onClick={function () { scheduleValidate(editPl, editEn); }} disabled={!!busy}>Validate</Btn>
+          )}
+          {descEditing && (
+            <Btn small variant="gold" data-testid="desc-save-btn" onClick={doSave} disabled={!canSave}
+              title={canSave ? 'Save canonical description (source=manual)' : 'Save requires gate PASS'}>
+              {busy === 'save' ? 'Saving…' : 'Save canonical'}
+            </Btn>
+          )}
+          <Btn small variant="outline" data-testid="desc-converge-btn" onClick={doConverge} disabled={!!busy || missing}
+            title="Retry enrich on editable drafts only — posted/converted stay immutable">
+            {busy === 'converge' ? 'Converging…' : 'Retry converge'}
+          </Btn>
+        </div>
+
+        <div data-testid="desc-wfirma-sync" style={{ paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Confirm &amp; Sync to wFirma</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+            Search existing first. Reuse exact match. Create only after explicit confirmation. Description save never creates a wFirma product.
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <Btn small variant="outline" data-testid="desc-wfirma-sync-btn" onClick={doWfirmaSearch} disabled={!!busy || missing}>
+              {busy === 'wfirma' ? 'Searching…' : 'Search wFirma'}
+            </Btn>
+            {wfirma && wfirma.found && (
+              <Btn small variant="gold" data-testid="desc-wfirma-adopt-btn" onClick={doAdopt} disabled={!!busy}>Adopt existing</Btn>
+            )}
+            {wfirma && wfirma.found === false && !confirmCreate && (
+              <Btn small variant="gold" data-testid="desc-wfirma-create-btn" onClick={function () { setConfirmCreate(true); }} disabled={!!busy}>
+                Create in wFirma…
+              </Btn>
+            )}
+            {confirmCreate && (
+              <Btn small variant="gold" data-testid="desc-wfirma-create-confirm-btn" onClick={doCreate} disabled={!!busy}>
+                Confirm — create in wFirma
+              </Btn>
+            )}
+          </div>
+          {wfirma && wfirma.found && (
+            <div data-testid="desc-wfirma-found" style={{ marginTop: 8, fontSize: 12 }}>Exact match found — adopt, do not create a duplicate.</div>
+          )}
+          {wfirma && wfirma.found === false && (
+            <div data-testid="desc-wfirma-missing" style={{ marginTop: 8, fontSize: 12 }}>No exact match. Create requires WFIRMA_CREATE_PRODUCT_ALLOWED and a second confirm click.</div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+          <Btn variant="outline" small onClick={onClose} data-testid="desc-modal-close">Close</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Wave 6: Create product in wFirma + adopt into Product Master ──────────────
 // Fiscal-gated: 403 = WFIRMA_CREATE_PRODUCT_ALLOWED is false.
 // 409 = product already exists in wFirma → offer Adopt only path.
@@ -1138,6 +1428,22 @@ function ProductAdoptModal({ productCode, showToast, onClose, onSaved }) {
   var [error, setError]     = React.useState(null);
   var [adoptOnly, setAdoptOnly] = React.useState(false);
   var [confirming, setConfirming] = React.useState(false);
+  var [searching, setSearching] = React.useState(true);
+
+  React.useEffect(function () {
+    var cancelled = false;
+    setSearching(true);
+    PzApi.wfirmaGoodsSearch(productCode).then(function (res) {
+      if (cancelled) return;
+      setSearching(false);
+      if (res.ok && res.data && res.data.found) {
+        setAdoptOnly(true);
+      }
+    }).catch(function () {
+      if (!cancelled) setSearching(false);
+    });
+    return function () { cancelled = true; };
+  }, [productCode]);
 
   async function doCreate() {
     if (!form.item_type.trim()) { setError('Item type is required'); return; }
@@ -1192,9 +1498,15 @@ function ProductAdoptModal({ productCode, showToast, onClose, onSaved }) {
       }}>
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Create & adopt in wFirma — {productCode}</div>
         <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 16 }}>
-          Creates the product in wFirma and adopts it into the Product Master. Fiscal-gated — requires WFIRMA_CREATE_PRODUCT_ALLOWED.
+          Search existing wFirma product first. Reuse exact match. Create only after explicit confirmation — fiscal-gated (WFIRMA_CREATE_PRODUCT_ALLOWED).
         </div>
-        {!adoptOnly && (
+        {searching && <div data-testid="adopt-searching" style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }}>Searching wFirma…</div>}
+        {adoptOnly && !searching && (
+          <div data-testid="adopt-found-banner" style={{ marginBottom: 12, fontSize: 12, padding: '8px 10px', background: 'var(--badge-green-bg)', color: 'var(--badge-green-text)', borderRadius: 6 }}>
+            Exact match found in wFirma — adopt, do not create a duplicate.
+          </div>
+        )}
+        {!adoptOnly && !searching && (
           <>
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>Item type *</label>
@@ -1236,7 +1548,7 @@ function ProductAdoptModal({ productCode, showToast, onClose, onSaved }) {
               if (!form.item_type.trim()) { setError('Item type is required'); return; }
               setError(null);
               setConfirming(true);
-            }} disabled={saving} data-testid="adopt-create-btn">
+            }} disabled={saving || searching} data-testid="adopt-create-btn">
               Create &amp; adopt in wFirma
             </Btn>
           )}
@@ -1290,6 +1602,7 @@ function MasterPage() {
   const [productOverlayEdit, setProductOverlayEdit]   = React.useState(null);
   // productAdoptModal: null (closed) | { product_code }
   const [productAdoptModal, setProductAdoptModal]     = React.useState(null);
+  const [productDescModal, setProductDescModal]       = React.useState(null);
   // designModal: null (closed) | { designCode: null (create) | string (edit) }
   const [designModal, setDesignModal]                 = React.useState(null);
   // designDeleteConfirm: null (closed) | design record
@@ -1833,6 +2146,14 @@ function MasterPage() {
                               )}
                               {entity === 'products' && (
                                 <Btn small variant="outline"
+                                  onClick={() => setProductDescModal({ product_code: r.product_code, item_type: r.item_type || r.category || '' })}
+                                  title="Canonical PL/EN description — Generate never overwrites; Save is PASS-only; wFirma is a separate confirm"
+                                  data-testid={'btn-product-description-' + r.product_code}>
+                                  Description
+                                </Btn>
+                              )}
+                              {entity === 'products' && (
+                                <Btn small variant="outline"
                                   onClick={() => setProductOverlayEdit({ product_code: r.product_code, overlay: productOverlayData[r.product_code] || null })}
                                   disabled={!perms.edit}
                                   title={perms.edit ? 'Edit local overlay (HS code / unit / design link) — does NOT modify the read-only Product Master' : 'Role has no edit permission'}
@@ -2236,6 +2557,15 @@ function MasterPage() {
         />
       )}
 
+      {productDescModal !== null && (
+        <ProductDescriptionModal
+          productCode={productDescModal.product_code}
+          itemType={productDescModal.item_type}
+          showToast={(msg, type) => setMpToast({ msg, type })}
+          onClose={() => setProductDescModal(null)}
+        />
+      )}
+
       {/* Wave 6: Product create-and-adopt modal */}
       {productAdoptModal !== null && (
         <ProductAdoptModal
@@ -2410,4 +2740,4 @@ function MasterPage() {
   );
 }
 
-Object.assign(window, { MasterPage, RecordDetailModal, ClientUsagePanel, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel, ProductOverlayEditModal, ProductAdoptModal });
+Object.assign(window, { MasterPage, RecordDetailModal, ClientUsagePanel, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel, ProductOverlayEditModal, ProductDescriptionModal, ProductAdoptModal });
