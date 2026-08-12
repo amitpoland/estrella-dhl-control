@@ -1591,20 +1591,30 @@ async def shipment_intake(
                             batch_id, role, contractor_id, exc)
                 return {}
 
-        # Supplier: prefer the shipment-level id, else first non-empty
-        # per-block id (already resolved at the top of the route).
-        sup_cid = _shipment_supplier_cid or next(
-            (str(b.get("supplier_contractor_id") or "").strip()
-             for b in purchase_blocks
-             if str(b.get("supplier_contractor_id") or "").strip()),
-            "",
-        )
-        cli_cid = _shipment_client_cid or next(
-            (str(b.get("client_contractor_id") or "").strip()
-             for b in sales_blocks
-             if str(b.get("client_contractor_id") or "").strip()),
-            "",
-        )
+        # This store is UNIQUE(batch_id, role) — exactly ONE contractor per
+        # role. Seed it only when the batch resolves to a SINGLE
+        # operator-selected id. A multi-party batch cannot be represented
+        # here without misrouting: the row is written status='confirmed'
+        # /confidence=1.0, and _resolve_customer step 0b hands it to EVERY
+        # proforma draft that does not resolve per-document — so the first
+        # block's contractor would silently become the whole batch's
+        # identity. Same rule link_as_sales applies (routes_packing.py);
+        # the per-document client_contractor_id on the sales chain remains
+        # the correct authority for multi-party batches. Never infer.
+        def _sole_cid(blocks: List[Dict[str, Any]], field: str) -> str:
+            ids = {str(b.get(field) or "").strip() for b in blocks}
+            ids.discard("")
+            if len(ids) == 1:
+                return next(iter(ids))
+            if len(ids) > 1:
+                log.info("[%s] intake: %d distinct %s values — per-batch "
+                         "resolution not seeded; per-document contractor id "
+                         "authority used per draft instead.",
+                         batch_id, len(ids), field)
+            return ""
+
+        sup_cid = _sole_cid(purchase_blocks, "supplier_contractor_id")
+        cli_cid = _sole_cid(sales_blocks,    "client_contractor_id")
 
         def _seed(role: str, contractor_id: str) -> None:
             if not contractor_id:

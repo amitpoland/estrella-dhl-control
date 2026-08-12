@@ -48,6 +48,27 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 ## Current task
 
+- **Task:** PR #1201 — prevent multi-party intake from seeding batch-level
+  `packing_contractor_resolution`; then B-021 read-only historical measurement.
+- **Started:** 2026-08-12 · **Status:** `VALIDATING` — rebased on production tip; adding 0b
+  fallthrough assertion; seven-agent gate / merge / App-only deploy next; B-021 RO after smoke.
+- **Baseline / production:** `0b2020a8a0eb76f437aff90f40e1c7acb081eb7a` (`C:\PZ\version.txt`).
+- **Branch:** `fix/intake-multiparty-contractor-seed` rebased onto `0b2020a8` (was based on
+  `0dc647af`). Tip includes `_sole_cid()` + multiparty seed tests; main still has first-non-empty
+  seed — fix still required (not superseded by B-020).
+- **Invariant (permanent):** `{A}`→seed · `{A,A}`→seed · `{A,B}`→**no seed** · `{}`→no seed.
+  Per-document contractor is authoritative for multi-party batches; batch-level row is only a
+  convenience for genuinely single-party batches. Empty-contractor tolerance stays intentional.
+- **B-020:** CLOSED on production (PR #1202 / `document_party_authority`). Do not reopen or
+  expand #1201 into consumer customs/carrier paths.
+- **B-021:** after #1201 deploy — **read-only only**. No DELETE/UPDATE/backfill of historical
+  `packing_contractor_resolution` rows without a separate mutation campaign.
+- **Production writes for #1201:** NONE (authority logic only). Rollback = revert merge.
+- **Commercial-description WIP:** stashed separately
+  (`wip-commercial-description-convergence-20260812`); do not mix into this campaign.
+
+## Prior task — Product-description authority (PR #1178) (COMPLETE; CLOSED)
+
 - **Task:** Repair product-description authority (material-component semantics + `name_pl`
   provenance) — PR #1178 — and converge the affected draft through the normal authority path.
 - **Started:** 2026-08-09 · **Closed:** 2026-08-11
