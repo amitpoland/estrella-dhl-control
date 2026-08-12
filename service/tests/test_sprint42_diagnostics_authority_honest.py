@@ -180,8 +180,10 @@ class TestCliToolsDisabled:
 
     def test_no_http_route_tools_labeled(self):
         src = _read(OPS_CELL)
-        assert "CLI only" in src, "Tools without HTTP routes labeled 'CLI only'"
-        assert "POST available" in src, "Tools with HTTP routes labeled 'POST available'"
+        # R-Q3: honest labels — Disabled / Backend Required (not legacy "POST available")
+        assert "No HTTP route — CLI only" in src or "CLI only" in src
+        assert "Backend Required" in src
+        assert "Disabled" in src
 
 
 # =============================================================================

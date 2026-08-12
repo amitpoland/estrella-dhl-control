@@ -58,12 +58,21 @@ function _deriveStatus(id, data) {
         };
       }
       case 'health-full': {
-        const steps = Object.entries(data).filter(([k]) => /^\d+_/.test(k));
-        const ok = steps.filter(([,v]) => v && v.status === 'ok').length;
-        const warn = steps.filter(([,v]) => v && v.status === 'warn').length;
-        const fail = steps.filter(([,v]) => v && v.status === 'fail').length;
-        const state = fail > 0 ? 'error' : warn > 0 ? 'degraded' : 'healthy';
-        return { state, detail: `${ok} ok · ${warn} warn · ${fail} fail of ${steps.length} checks` };
+        // Backend owns aggregation — project overall / required_* only (no recount).
+        const reqOk = data.required_ok != null ? data.required_ok : '–';
+        const reqTotal = data.required_total != null ? data.required_total : '–';
+        const reqFail = data.required_failed != null ? data.required_failed : (data.fail_count != null ? data.fail_count : '–');
+        const optFail = data.optional_failed != null ? data.optional_failed : 0;
+        const warns = data.warnings != null ? data.warnings : 0;
+        const overall = (data.overall || '').toLowerCase();
+        // Chip mirrors backend overall only — optional FAIL must not paint platform error.
+        const state = (overall === 'degraded' || overall === 'fail' || overall === 'error')
+          ? 'error'
+          : (overall === 'ok' ? 'healthy' : 'unknown');
+        return {
+          state,
+          detail: `overall ${data.overall || '?'} · required ${reqOk}/${reqTotal} · required fail ${reqFail} · optional fail ${optFail} · warn ${warns}`,
+        };
       }
       case 'storage': {
         const ok = data.ok !== false;
@@ -201,8 +210,9 @@ function SubsystemCard({ sub, result }) {
 // ── Health-full detail expansion ────────────────────────────────────────────
 function HealthFullDetail({ data }) {
   if (!data) return null;
-  const steps = Object.entries(data)
-    .filter(([k]) => /^\d+_/.test(k))
+  const source = (data.checks && typeof data.checks === 'object') ? data.checks : data;
+  const steps = Object.entries(source)
+    .filter(([k, v]) => /^\d+_/.test(k) && v && typeof v === 'object')
     .sort(([a], [b]) => a.localeCompare(b));
   if (!steps.length) return null;
 
@@ -215,21 +225,30 @@ function HealthFullDetail({ data }) {
         padding: '10px 16px', fontSize: 11, fontWeight: 700,
         color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em',
         borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle)',
-      }}>Guardian Diagnostic — 12 Dimensions</div>
+      }}>Guardian Diagnostic — capability checks</div>
       <div style={{ padding: 4 }}>
         {steps.map(([key, val]) => {
           const label = key.replace(/^\d+_/, '').replace(/_/g, ' ');
           const st = (val && val.status) || 'unknown';
+          const req = (val && val.requirement) || '';
           const det = (val && val.detail) || '';
-          const color = st === 'ok' ? 'var(--badge-green-text)' : st === 'warn' ? 'var(--badge-yellow-text)' : 'var(--badge-red-text)';
+          const color = st === 'ok' ? 'var(--badge-green-text)'
+            : (st === 'warn' || st === 'not_configured') ? 'var(--badge-yellow-text)'
+            : (st === 'deprecated' || st === 'not_applicable') ? 'var(--text-3)'
+            : 'var(--badge-red-text)';
+          const mark = st === 'ok' ? '✓'
+            : (st === 'warn' || st === 'not_configured') ? '⚠'
+            : (st === 'deprecated' || st === 'not_applicable') ? '–'
+            : '✗';
           return (
             <div key={key} style={{
-              display: 'grid', gridTemplateColumns: '28px 160px 1fr',
+              display: 'grid', gridTemplateColumns: '28px 160px 72px 1fr',
               alignItems: 'center', padding: '5px 12px', fontSize: 11,
               borderBottom: '1px solid var(--border-subtle)',
             }}>
-              <span style={{ color, fontWeight: 700, fontSize: 10 }}>{st === 'ok' ? '✓' : st === 'warn' ? '⚠' : '✗'}</span>
+              <span style={{ color, fontWeight: 700, fontSize: 10 }}>{mark}</span>
               <span style={{ color: 'var(--text)', fontWeight: 600, textTransform: 'capitalize' }}>{label}</span>
+              <span style={{ color: 'var(--text-3)', fontSize: 9, textTransform: 'uppercase' }}>{req || '–'}</span>
               <span style={{ color: 'var(--text-2)', fontFamily: 'monospace', fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{det}</span>
             </div>
           );
