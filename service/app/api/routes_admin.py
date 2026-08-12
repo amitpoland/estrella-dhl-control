@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from ..auth.dependencies import require_admin
+from ..auth.dependencies import require_system_settings_admin
 from ..core.config import settings
 from ..services.email_service import (
     get_all_emails,
@@ -22,11 +22,11 @@ from ..services.email_service import (
 from ..api.routes_dhl_clearance import _update_batch_reply_delivery
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
-_auth = Depends(require_admin)
+_auth = Depends(require_system_settings_admin)
 
 
 @router.get("/email-queue")
-def list_email_queue(user: dict = Depends(require_admin)):
+def list_email_queue(user: dict = Depends(require_system_settings_admin)):
     """Return all emails (newest first). Pending emails are listed separately."""
     all_emails = get_all_emails(limit=100)
     pending    = [e for e in all_emails if e.get("status") == "pending"]
@@ -41,7 +41,11 @@ class MarkSentRequest(BaseModel):
 
 
 @router.post("/email-queue/{email_id}/sent")
-def mark_email_sent(email_id: str, body: MarkSentRequest = MarkSentRequest(), user: dict = Depends(require_admin)):
+def mark_email_sent(
+    email_id: str,
+    body: MarkSentRequest = MarkSentRequest(),
+    user: dict = Depends(require_system_settings_admin),
+):
     """Mark a queued email as sent or failed (called by MCP relay after sending)."""
     mark_sent(email_id, error=body.error or None)
     delivery_status = "failed" if body.error else "sent"
@@ -74,7 +78,7 @@ class SendQueuedRequest(BaseModel):
 def send_queued_email_endpoint(
     queue_id: str,
     body:     SendQueuedRequest = SendQueuedRequest(),
-    user:     dict = Depends(require_admin),
+    user:     dict = Depends(require_system_settings_admin),
 ):
     """
     Send a queued email through the chosen method. Idempotent. Honest.
@@ -117,7 +121,7 @@ class _ProductMasterBackfillRequest(BaseModel):
 @router.post("/product-master/backfill")
 def trigger_product_master_backfill(
     body: _ProductMasterBackfillRequest = _ProductMasterBackfillRequest(),
-    user: dict                          = Depends(require_admin),
+    user: dict                          = Depends(require_system_settings_admin),
 ):
     """Admin-only.  Idempotent projection of historical invoice_lines.
     product_code values into product_master.
@@ -162,7 +166,7 @@ def trigger_product_master_backfill(
 
 
 @router.get("/authority-drift")
-def get_authority_drift(user: dict = Depends(require_admin)) -> JSONResponse:
+def get_authority_drift(user: dict = Depends(require_system_settings_admin)) -> JSONResponse:
     """R2: Authority drift detection endpoint.
 
     Compare live authority module hashes vs pinned manifest.

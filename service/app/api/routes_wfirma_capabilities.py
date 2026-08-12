@@ -30,6 +30,7 @@ from typing import Any, List, Optional
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_permission
 from ..auth.dependencies import require_admin
 from ..services import description_engine as deng
 from ..services import wfirma_capabilities as wfc
@@ -43,6 +44,8 @@ log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/wfirma", tags=["wfirma"])
 _auth       = Depends(require_api_key)
+_perm_goods = Depends(require_permission("wfirma.goods.write"))
+_perm_customers = Depends(require_permission("wfirma.customers.write"))
 _admin_auth = Depends(require_admin)
 
 
@@ -586,7 +589,7 @@ class CreateFromCodeRequest(BaseModel):
 
 
 @router.post("/goods/create-from-product-code/{product_code:path}",
-             dependencies=[_auth])
+             dependencies=[_auth, _perm_goods])
 def create_good_from_product_code(
     product_code: str,
     req:          CreateFromCodeRequest,
@@ -799,7 +802,7 @@ class CreateAndAdoptProductRequest(BaseModel):
     description_en: str = ""
 
 
-@router.post("/goods/adopt/{product_code:path}", dependencies=[_auth])
+@router.post("/goods/adopt/{product_code:path}", dependencies=[_auth, _perm_goods])
 def adopt_existing_product(
     product_code: str,
     req: Optional[AdoptProductRequest] = None,
@@ -908,7 +911,7 @@ def adopt_existing_product(
 
 
 @router.post("/goods/update-and-adopt/{product_code:path}",
-             dependencies=[_auth])
+             dependencies=[_auth, _perm_goods])
 def update_and_adopt_product(
     product_code: str,
     req: UpdateAndAdoptProductRequest,
@@ -1076,7 +1079,7 @@ def update_and_adopt_product(
 
 
 @router.post("/goods/create-and-adopt/{product_code:path}",
-             dependencies=[_auth])
+             dependencies=[_auth, _perm_goods])
 def create_and_adopt_product(
     product_code: str,
     req: CreateAndAdoptProductRequest,
@@ -1226,7 +1229,7 @@ def create_and_adopt_product(
 
 
 @router.post("/shipment/{batch_id:path}/adopt-pending-found",
-             dependencies=[_auth])
+             dependencies=[_auth, _perm_goods])
 def adopt_pending_found_for_batch(
     batch_id: str,
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
@@ -1367,7 +1370,7 @@ def auto_register_preview(
     ))
 
 
-@router.post("/goods/auto-register/{batch_id:path}", dependencies=[_auth])
+@router.post("/goods/auto-register/{batch_id:path}", dependencies=[_auth, _perm_goods])
 def auto_register_write(
     batch_id: str,
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
@@ -1408,7 +1411,7 @@ class CustomerAutoCreateRequest(BaseModel):
     country_code: str = ""
 
 
-@router.post("/customers/auto-create-from-name", dependencies=[_auth])
+@router.post("/customers/auto-create-from-name", dependencies=[_auth, _perm_customers])
 def customer_auto_create_from_name(
     req: CustomerAutoCreateRequest,
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
@@ -1467,7 +1470,7 @@ def customer_auto_resolve_preview(
 # ── Operator-approved goods/edit refresh from locked block ─────────────────
 
 @router.post("/goods/refresh-name-from-block/{product_code:path}",
-             dependencies=[_auth])
+             dependencies=[_auth, _perm_goods])
 def refresh_good_name_from_block(product_code: str) -> JSONResponse:
     """
     Refresh an EXISTING wFirma product's name + description in place,
@@ -1862,7 +1865,7 @@ def customer_master_sync_preview() -> JSONResponse:
     })
 
 
-@router.post("/customers/sync-from-wfirma/apply", dependencies=[_admin_auth],
+@router.post("/customers/sync-from-wfirma/apply", dependencies=[_admin_auth, _perm_customers],
              summary="Apply only the wFirma customer rows the operator selected")
 async def customer_master_sync_apply(request: Request) -> JSONResponse:
     """Per-row apply for Customer Master. Body: ``{"wfirma_ids": [...]}``.

@@ -26,12 +26,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..core.security import require_api_key
+from ..auth.dependencies import require_permission
 from ..services import wfirma_reservation as wr
 from ..services import wfirma_reservation_create as wrc
 from ..services import reservation_customer_parity as rcp
 
 router = APIRouter(prefix="/api/v1/wfirma", tags=["wfirma"])
 _auth  = Depends(require_api_key)
+_perm_res = Depends(require_permission("wfirma.reservation.create"))
 
 
 @router.get("/reservation-parity", dependencies=[_auth])
@@ -80,7 +82,7 @@ _GATE_CODES_409 = frozenset({
 })
 
 
-@router.post("/reservations/create", dependencies=[_auth])
+@router.post("/reservations/create", dependencies=[_auth, _perm_res])
 def create_reservation(req: CreateReservationRequest) -> JSONResponse:
     """
     Create ONE wFirma reservation for the (batch_id, client_name) pair.
@@ -101,7 +103,7 @@ def create_reservation(req: CreateReservationRequest) -> JSONResponse:
     return JSONResponse(result, status_code=500)
 
 
-@router.post("/reservations/{draft_id}/reset-stuck", dependencies=[_auth])
+@router.post("/reservations/{draft_id}/reset-stuck", dependencies=[_auth, _perm_res])
 def reset_stuck_reservation(
     draft_id: str,
     force:    bool = Query(False, description="Override the 30-min timeout"),

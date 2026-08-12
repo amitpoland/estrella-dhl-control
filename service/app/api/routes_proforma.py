@@ -1,4 +1,4 @@
-﻿"""
+"""
 routes_proforma.py — wFirma proforma preview + create-shell endpoints.
 
   POST /api/v1/proforma/preview/{batch_id}/{client_name}
@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse, Response, HTMLResponse
 
 from ..core.config import settings
 from ..core.security import require_api_key, require_api_key_privileged
+from ..auth.dependencies import require_permission
 from ..core.logging import get_logger
 from ..services import cpa_product_service as _cpa
 from ..services import document_db as ddb
@@ -71,6 +72,11 @@ _auth  = Depends(require_api_key)
 # callers must hold a write-capable role; read-only roles (viewer / auditor /
 # master_viewer) get 403. X-API-Key automation is admin-equivalent, unchanged.
 _auth_write = Depends(require_api_key_privileged)
+# Slice 2d — catalogue Gate 3 stacked on privileged (C2 fiscal deny for logistics).
+_perm_proforma_approve = Depends(require_permission("proforma.approve"))
+_perm_proforma_convert = Depends(require_permission("proforma.convert"))
+_perm_proforma_edit = Depends(require_permission("proforma.edit"))
+_perm_proforma_delete = Depends(require_permission("proforma.delete"))
 
 
 def _norm(s: str) -> str:
@@ -3848,7 +3854,8 @@ class _FinalInvoiceConfirmReq(_BaseModel):
     # Privileged: creates a real wFirma invoice (irreversible fiscal write) —
     # read-only session roles must be rejected, same guard as the reconcile
     # repair route (2026-07-17 backend-safety HIGH finding).
-    dependencies=[_auth_write],
+    # Slice 2d: catalogue proforma.convert (logistics denied — C2).
+    dependencies=[_auth_write, _perm_proforma_convert],
 )
 def proforma_to_invoice(
     batch_id:    str,
@@ -5971,7 +5978,7 @@ def get_proforma_draft_extraction(draft_id: int) -> JSONResponse:
 
 # ── Sprint-24: clone endpoint ─────────────────────────────────────────────────
 
-@router.post("/draft/{draft_id}/clone", dependencies=[_auth_write])
+@router.post("/draft/{draft_id}/clone", dependencies=[_auth_write, _perm_proforma_edit])
 def clone_proforma_draft(draft_id: int) -> JSONResponse:
     """Create a deep copy of a draft as a new unposted 'draft' row.
 
@@ -6870,7 +6877,7 @@ def _draft_edit_dispatch(
     return JSONResponse(payload)
 
 
-@router.patch("/draft/{draft_id}", dependencies=[_auth_write])
+@router.patch("/draft/{draft_id}", dependencies=[_auth_write, _perm_proforma_edit])
 def patch_proforma_draft(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -6971,7 +6978,7 @@ def patch_proforma_draft(
     ))
 
 
-@router.patch("/draft/{draft_id}/lines/{line_id}", dependencies=[_auth_write])
+@router.patch("/draft/{draft_id}/lines/{line_id}", dependencies=[_auth_write, _perm_proforma_edit])
 def patch_proforma_draft_line(
     draft_id:  int,
     line_id:   int,
@@ -8402,7 +8409,7 @@ def confirm_draft_product_review(
 
 # ── Phase 4 — lifecycle controls + line add/remove ─────────────────────────
 
-@router.post("/draft/{draft_id}/approve", dependencies=[_auth_write])
+@router.post("/draft/{draft_id}/approve", dependencies=[_auth_write, _perm_proforma_approve])
 def approve_proforma_draft(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -10928,7 +10935,7 @@ def _build_proforma_request_from_draft(
     ), _sc_wfirma_note, _vat_warnings_draft, _vat_freeze
 
 
-@router.post("/draft/{draft_id}/post", dependencies=[_auth_write])
+@router.post("/draft/{draft_id}/post", dependencies=[_auth_write, _perm_proforma_approve])
 def post_proforma_draft_to_wfirma(
     draft_id:  int,
     body:      Dict[str, Any],
@@ -12074,7 +12081,8 @@ def get_draft_invoice_link(draft_id: int) -> JSONResponse:
     "/draft/{draft_id}/to-invoice",
     # Privileged: delegates to proforma_to_invoice (wFirma invoices/add) —
     # same guard as the batch/client route (2026-07-17 HIGH finding).
-    dependencies=[_auth_write],
+    # Slice 2d: catalogue proforma.convert (logistics denied — C2).
+    dependencies=[_auth_write, _perm_proforma_convert],
     summary="Sprint-24: convert proforma → invoice via draft_id (session-operator alias)",
 )
 def draft_to_invoice_by_id(

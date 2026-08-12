@@ -16,7 +16,7 @@ from typing import Dict, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..auth.dependencies import require_admin
+from ..auth.dependencies import require_system_settings_admin
 from ..core.config import settings
 from ..services.backup_service import run_backup, prune_backups
 from ..services.backup_validator import validate_backup
@@ -29,7 +29,7 @@ class BackupValidateRequest(BaseModel):
 
 
 @router.post("/run")
-def backup_run(user: dict = Depends(require_admin)):
+def backup_run(user: dict = Depends(require_system_settings_admin)):
     """Run backup synchronously and return manifest summary."""
     try:
         manifest = run_backup()
@@ -46,7 +46,7 @@ def backup_run(user: dict = Depends(require_admin)):
 
 
 @router.get("/list")
-def backup_list(user: dict = Depends(require_admin)):
+def backup_list(user: dict = Depends(require_system_settings_admin)):
     """List backup directories with manifest summaries."""
     backup_root = Path(settings.backup_root)
 
@@ -91,7 +91,10 @@ def backup_list(user: dict = Depends(require_admin)):
 
 
 @router.post("/validate")
-def backup_validate(request: BackupValidateRequest, user: dict = Depends(require_admin)):
+def backup_validate(
+    request: BackupValidateRequest,
+    user: dict = Depends(require_system_settings_admin),
+):
     """Validate specific backup by backup_id."""
     backup_root = Path(settings.backup_root)
     backup_dir = backup_root / request.backup_id
@@ -107,7 +110,10 @@ def backup_validate(request: BackupValidateRequest, user: dict = Depends(require
 
 
 @router.post("/prune")
-def backup_prune(dry_run: bool = False, user: dict = Depends(require_admin)):
+def backup_prune(
+    dry_run: bool = False,
+    user: dict = Depends(require_system_settings_admin),
+):
     """Apply retention policy. Use dry_run=true to preview without deleting."""
     try:
         result = prune_backups(settings.backup_root, dry_run=dry_run)

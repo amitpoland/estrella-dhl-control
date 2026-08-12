@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from ..core.config import settings
 from ..core.security import require_api_key, require_api_key_privileged
+from ..auth.dependencies import require_permission
 from ..services.inventory_correction_writer import (
     CorrectionError,
     apply_identity_correction,
@@ -45,6 +46,9 @@ from ..services.inventory_reversal_writer import (
     ReversalError,
     reverse_to_stock,
 )
+
+_perm_inv_exec = Depends(require_permission("inventory.execute"))
+_perm_inv_correct = Depends(require_permission("inventory.correct"))
 
 _qc_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -241,7 +245,7 @@ def _map_reversal_error(e: ReversalError) -> HTTPException:
 
 @router.post(
     "/pieces/{piece_id}/qc-disposition",
-    dependencies=[Depends(require_api_key_privileged)],
+    dependencies=[Depends(require_api_key_privileged), Depends(require_permission("inventory.execute"))],
 )
 def post_qc_disposition(
     piece_id: str,
@@ -294,7 +298,7 @@ def get_qc_dispositions(piece_id: str) -> dict:
 
 @router.post(
     "/pieces/{piece_id}/correction/identity",
-    dependencies=[Depends(require_api_key_privileged)],
+    dependencies=[Depends(require_api_key_privileged), Depends(require_permission("inventory.correct"))],
 )
 def post_identity_correction(
     piece_id: str,
@@ -329,7 +333,7 @@ def post_identity_correction(
 
 @router.post(
     "/pieces/{piece_id}/correction/archive-proposal",
-    dependencies=[Depends(require_api_key_privileged)],
+    dependencies=[Depends(require_api_key_privileged), Depends(require_permission("inventory.correct"))],
 )
 def post_archive_proposal(
     piece_id: str,
@@ -531,7 +535,7 @@ _REVERSAL_TARGET_MAP = {
 
 @router.post(
     "/pieces/{piece_id}/reversal/{reversal_target}",
-    dependencies=[Depends(require_api_key_privileged)],
+    dependencies=[Depends(require_api_key_privileged), Depends(require_permission("inventory.correct"))],
 )
 def post_reversal(
     piece_id: str,

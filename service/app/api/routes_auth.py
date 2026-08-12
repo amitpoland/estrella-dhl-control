@@ -25,7 +25,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, field_validator
 
-from ..auth.dependencies import get_current_user, require_admin
+from ..auth.dependencies import get_current_user, require_users_admin
 from ..auth.service import (
     check_rate_limit,
     clear_attempts,
@@ -315,14 +315,14 @@ async def reset_password(body: ResetPasswordRequest):
 # ── Admin endpoints ───────────────────────────────────────────────────────────
 
 @router.get("/users")
-async def admin_list_users(user: dict = Depends(require_admin)):
+async def admin_list_users(user: dict = Depends(require_users_admin)):
     return [_safe_user(u) for u in list_users()]
 
 
 @router.get("/users/{user_id}/active-reset-code")
 async def admin_get_active_reset_code(
     user_id: str,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_users_admin),
 ):
     """Recover the most recent UNUSED, UNEXPIRED reset code for a user.
 
@@ -382,7 +382,7 @@ def _audit_user_action(op, user_id, request, before, reason):
 
 
 @router.post("/users/{user_id}/approve")
-async def admin_approve_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
+async def admin_approve_user(user_id: str, request: Request, user: dict = Depends(require_users_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -404,7 +404,7 @@ async def admin_approve_user(user_id: str, request: Request, user: dict = Depend
 
 
 @router.post("/users/{user_id}/reject")
-async def admin_reject_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
+async def admin_reject_user(user_id: str, request: Request, user: dict = Depends(require_users_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -426,7 +426,7 @@ async def admin_reject_user(user_id: str, request: Request, user: dict = Depends
 
 
 @router.post("/users/{user_id}/role")
-async def admin_set_role(user_id: str, body: SetRoleRequest, request: Request, user: dict = Depends(require_admin)):
+async def admin_set_role(user_id: str, body: SetRoleRequest, request: Request, user: dict = Depends(require_users_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -453,7 +453,7 @@ async def admin_set_role(user_id: str, body: SetRoleRequest, request: Request, u
 
 
 @router.post("/users/{user_id}/deactivate")
-async def admin_deactivate_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
+async def admin_deactivate_user(user_id: str, request: Request, user: dict = Depends(require_users_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -466,7 +466,7 @@ async def admin_deactivate_user(user_id: str, request: Request, user: dict = Dep
 
 
 @router.post("/users/{user_id}/activate")
-async def admin_activate_user(user_id: str, request: Request, user: dict = Depends(require_admin)):
+async def admin_activate_user(user_id: str, request: Request, user: dict = Depends(require_users_admin)):
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")

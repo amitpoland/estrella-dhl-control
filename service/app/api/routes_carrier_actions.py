@@ -57,7 +57,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from ..core.security import require_api_key
-from ..auth.dependencies import require_role
+from ..auth.dependencies import require_role, require_permission
 from ..services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
 from ..services.carrier.factory import CarrierConfig
 from ..services.carrier.cmr_number import cmr_document_number
@@ -67,6 +67,12 @@ from ..services.carrier.persistence import shipment_db
 router = APIRouter(prefix="/api/v1/carrier", tags=["carrier"])
 
 logger = logging.getLogger(__name__)
+
+# Slice 2c — catalogue Gate 3 (stack on require_role; never drop role gate).
+_perm_awb_create = Depends(require_permission("awb.create"))
+_perm_awb_label = Depends(require_permission("awb.label"))
+_perm_awb_docs = Depends(require_permission("awb.docs_fetch"))
+_perm_shipments_edit = Depends(require_permission("shipments.edit"))
 
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
@@ -637,6 +643,7 @@ def prepare_return(
     body: PrepareReturnBody,
     _auth: None = Depends(require_api_key),
     _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_shipments_edit,
     db_path: Path = Depends(_get_shipment_db_path),
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
@@ -711,6 +718,7 @@ def patch_return(
     body: PatchReturnBody,
     _auth: None = Depends(require_api_key),
     _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_shipments_edit,
     db_path: Path = Depends(_get_shipment_db_path),
 ) -> JSONResponse:
     from ..services.carrier.return_draft_service import (
@@ -763,6 +771,7 @@ def create_shipment(
     body: ShipmentRequestBody,
     _auth: None = Depends(require_api_key),
     _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_awb_create,
     coordinator: CarrierCoordinator = Depends(_get_coordinator),
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
@@ -1092,6 +1101,7 @@ def mark_shipment_do_not_use(
     body: DoNotUseBody,
     _auth: None = Depends(require_api_key),
     _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_awb_label,
     db_path: Path = Depends(_get_shipment_db_path),
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
@@ -1179,6 +1189,7 @@ async def create_label_package(
     body: LabelPackageBody,
     _auth: None = Depends(require_api_key),
     _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_awb_label,
 ) -> Response:
     """Generate the Path-DOC outbound document package for a batch."""
     try:
@@ -1417,6 +1428,7 @@ def fetch_waybill_doc(
     tracking_ref: str,
     _auth: None = Depends(require_api_key),
     _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_awb_docs,
 ) -> JSONResponse:
     """Operator-triggered waybill recovery via MyDHL Get Image.
 
@@ -1475,6 +1487,7 @@ def fetch_epod(
     tracking_ref: str,
     _auth: None = Depends(require_api_key),
     _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_awb_docs,
 ) -> JSONResponse:
     """Operator-triggered ePOD pull. Idempotent; 404 when MyDHL has no ePOD."""
     from ..services.carrier.epod_service import ensure_epod_persisted, epod_file_path
