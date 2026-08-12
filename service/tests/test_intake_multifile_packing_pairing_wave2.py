@@ -213,3 +213,43 @@ def test_consecutive_multifile_purchase_slots_no_range_crosstalk(client):
     cids = _pack_cids(batch_id, "purchase_packing_list", "supplier_contractor_id")
     # Files upload-ordered: 2×slot-A (801) then 3×slot-B (802). No gap/overlap.
     assert cids == ["801", "801", "802", "802", "802"], cids
+
+
+# ── Unpaired packing slot (invoice_index = -1) ──────────────────────────────
+
+def test_unpaired_packing_slot_borrows_no_invoice_identity(client):
+    """``invoice_index: -1`` means "this packing list belongs to no invoice".
+
+    A negative index must not wrap to ``inv_nos[-1]`` / ``inv_names[-1]`` and
+    stamp the packing list with the LAST invoice's number — that is another
+    document's identity, from a different supplier. The modal emits -1 whenever
+    a packing slot names a supplier the same-ordinal invoice slot does not.
+    """
+    awb, pack = _mock_parsers()
+    with awb, pack:
+        r = client.post(
+            "/api/v1/shipment/intake",
+            data={"tracking_no": "MULTIPACK-UNPAIRED1", "carrier": "DHL",
+                  "metadata": json.dumps({
+                      "purchase_blocks": [
+                          {"invoice_index": 0, "packing_index": -1, "supplier_contractor_id": "801"},
+                          {"invoice_index": 1, "packing_index": -1, "supplier_contractor_id": "802"},
+                          # Packing slot that paired with no invoice slot.
+                          {"invoice_index": -1, "packing_index": 0,
+                           "packing_file_count": 1, "supplier_contractor_id": "803"},
+                      ],
+                      "sales_blocks": [],
+                  })},
+            files=[
+                ("invoices", _pdf("INV-A.pdf")),
+                ("invoices", _pdf("INV-B.pdf")),
+                ("packing_lists", _pdf("orphan-pack.pdf", b"%PDF orphan")),
+            ],
+            headers=_auth())
+    assert r.status_code == 200, r.text
+    batch_id = r.json()["batch_id"]
+    # Keeps its OWN supplier — the identity the operator picked on the slot.
+    assert _pack_cids(batch_id, "purchase_packing_list", "supplier_contractor_id") == ["803"]
+    # ...and inherits NO invoice number from the unrelated last invoice.
+    rel = _pack_cids(batch_id, "purchase_packing_list", "related_invoice_no")
+    assert rel == [""], rel

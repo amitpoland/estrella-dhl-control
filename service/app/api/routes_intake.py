@@ -909,8 +909,11 @@ async def shipment_intake(
 
         # related_invoice_no must be the parsed EJL invoice number, not the
         # PDF filename. Falls back to filename only if parser failed.
-        related_inv_no = (inv_nos[inv_idx] if inv_idx < len(inv_nos) else "") or \
-                         (inv_names[inv_idx] if inv_idx < len(inv_names) else "")
+        # Same negative-index rule as inv_doc_id above: inv_idx < 0 means "no
+        # invoice association", so it must NOT wrap to inv_nos[-1] and label the
+        # packing list with an unrelated supplier's invoice number.
+        related_inv_no = (inv_nos[inv_idx] if 0 <= inv_idx < len(inv_nos) else "") or \
+                         (inv_names[inv_idx] if 0 <= inv_idx < len(inv_names) else "")
         pack_doc_id = ddb.register_document(
             batch_id=batch_id, document_type="purchase_packing_list",
             file_name=name, file_path=str(path),
