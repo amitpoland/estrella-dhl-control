@@ -108,6 +108,63 @@ const _cdInactivePillStyle = {
   fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
 };
 
+function ClientUsageInline({ contractorId }) {
+  const [state, setState] = React.useState({ loading: true, error: null, data: null });
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!contractorId || !window.PzApi || !PzApi.getCustomerUsage) {
+      setState({ loading: false, error: 'usage API unavailable', data: null });
+      return () => { cancelled = true; };
+    }
+    setState({ loading: true, error: null, data: null });
+    PzApi.getCustomerUsage(contractorId).then((res) => {
+      if (cancelled) return;
+      if (!res || res.ok === false) {
+        setState({ loading: false, error: String((res && res.error) || 'fetch failed'), data: null });
+        return;
+      }
+      setState({ loading: false, error: null, data: res.data || null });
+    }).catch((e) => {
+      if (!cancelled) setState({ loading: false, error: String(e), data: null });
+    });
+    return () => { cancelled = true; };
+  }, [contractorId]);
+
+  const rows = [
+    { key: 'sales_packing', label: 'Sales packing lists' },
+    { key: 'purchase_packing', label: 'Purchase packing lists' },
+    { key: 'proformas', label: 'Proformas' },
+    { key: 'invoices', label: 'Invoices' },
+    { key: 'shipments', label: 'DHL shipments' },
+  ];
+
+  return (
+    <div data-testid="cd-client-usage" style={{
+      marginBottom: 14, padding: 10, background: 'var(--bg-subtle)',
+      border: '1px solid var(--border)', borderRadius: 6,
+    }}>
+      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 6 }}>
+        Usage (read-only)
+      </div>
+      {state.loading && <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Loading…</div>}
+      {state.error && <div data-testid="cd-client-usage-error" style={{ fontSize: 11, color: 'var(--badge-red-text)' }}>{state.error}</div>}
+      {state.data && rows.map((row) => {
+        const bucket = state.data[row.key] || {};
+        const count = bucket.count != null ? bucket.count : 0;
+        return (
+          <div key={row.key} data-testid={`cd-usage-row-${row.key}`} style={{
+            display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0',
+            borderBottom: '1px solid var(--border-subtle)',
+          }}>
+            <span>{row.label}</span>
+            <code data-testid={`cd-usage-count-${row.key}`} style={{ fontFamily: 'ui-monospace, monospace' }}>{String(count)}</code>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main modal ──────────────────────────────────────────────────────────
 function ClientDetailModal({ clientKey, onClose, onSaved }) {
   const [tab, setTab] = React.useState('basic');
@@ -486,6 +543,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
           {/* ── Company / Basic tab ───────────────────────────────── */}
           {!loading && !error && tab === 'basic' && (
             <div data-testid="cd-panel-basic">
+              <ClientUsageInline contractorId={clientKey} />
               <div style={{ ..._cdSectionHeadStyle, marginTop: 0 }}>Company / Identity</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 {fld(<>Company name {req}</>, inp('bill_to_name', { testid: 'cd-bill_to_name' }))}

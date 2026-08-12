@@ -600,6 +600,10 @@
     getCustomerMaster: (clientKey) =>
       _get(`${BASE}/customer-master/${encodeURIComponent(clientKey)}`),
 
+    // GET /api/v1/customer-master/{client_key}/usage — read-only packing/proforma/shipment projection
+    getCustomerUsage: (clientKey) =>
+      _get(`${BASE}/customer-master/${encodeURIComponent(clientKey)}/usage`),
+
     // PUT /api/v1/customer-master/{client_key}
     saveCustomerMaster: (clientKey, body) =>
       _put(`${BASE}/customer-master/${encodeURIComponent(clientKey)}`, body),

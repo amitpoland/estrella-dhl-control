@@ -155,13 +155,9 @@ const MAPPING_INFO = {
       'wFirma contractor ID (bill_to_contractor_id column)',
       'wFirma sync preview + apply (GET/POST /customer-master/sync-from-wfirma)',
       'Last wFirma sync timestamp visible per record',
+      'Per-client usage projection (GET /customer-master/{id}/usage) — sales/purchase packing, proformas, invoices, shipments via batch lineage',
     ],
-    pending: [
-      'Purchase packing list usage — no endpoint exposes which packing lists reference this client',
-      'Sales packing list usage — no endpoint exposes sales packing list references',
-      'Proforma/invoice history — no per-client proforma count endpoint',
-      'DHL/customs shipment history — no per-client shipment count endpoint',
-    ],
+    pending: [],
   },
   suppliers: {
     available: [
@@ -422,8 +418,82 @@ function RecordDetailModal({ record, entityLabel, onClose }) {
           'data-testid': 'redacted-note',
           style: { marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)', fontSize: 10.5, color: 'var(--text-3)', fontStyle: 'italic' },
         }, redactedCount + ' sensitive field' + (redactedCount === 1 ? '' : 's') + ' hidden')
-      )
+      ),
+      record.bill_to_contractor_id && React.createElement(ClientUsagePanel, {
+        contractorId: String(record.bill_to_contractor_id),
+      })
     )
+  );
+}
+
+// ── C1: per-client usage projection (Customer Master authority, read-only) ──
+function ClientUsagePanel({ contractorId }) {
+  const [state, setState] = React.useState({ loading: true, error: null, data: null });
+  React.useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, error: null, data: null });
+    const run = (PzApi && PzApi.getCustomerUsage)
+      ? PzApi.getCustomerUsage(contractorId)
+      : Promise.reject(new Error('getCustomerUsage missing'));
+    run.then((res) => {
+      if (cancelled) return;
+      if (res && res.ok === false) {
+        setState({ loading: false, error: String(res.error || res.status || 'fetch failed'), data: null });
+        return;
+      }
+      const data = (res && res.data !== undefined) ? res.data : res;
+      setState({ loading: false, error: null, data: data || null });
+    }).catch((err) => {
+      if (!cancelled) setState({ loading: false, error: String((err && err.message) || err), data: null });
+    });
+    return () => { cancelled = true; };
+  }, [contractorId]);
+
+  const rows = [
+    { key: 'sales_packing', label: 'Sales packing lists', href: '#/shipments' },
+    { key: 'purchase_packing', label: 'Purchase packing lists', href: '#/shipments' },
+    { key: 'proformas', label: 'Proformas', href: '#/proforma' },
+    { key: 'invoices', label: 'Invoices', href: '#/proforma' },
+    { key: 'shipments', label: 'DHL shipments', href: '#/shipments' },
+  ];
+
+  return React.createElement('div', {
+    'data-testid': 'client-usage-panel',
+    style: {
+      margin: '0 18px 16px', padding: 12,
+      background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6,
+    },
+  },
+    React.createElement('div', {
+      style: { fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-3)', marginBottom: 8 },
+    }, 'Usage (read-only projection)'),
+    state.loading && React.createElement('div', { style: { fontSize: 11, color: 'var(--text-3)' } }, 'Loading usage…'),
+    state.error && React.createElement('div', {
+      'data-testid': 'client-usage-error',
+      style: { fontSize: 11, color: 'var(--badge-red-text)' },
+    }, 'Usage unavailable: ', state.error),
+    state.data && rows.map((row) => {
+      const bucket = state.data[row.key] || {};
+      const count = bucket.count != null ? bucket.count : 0;
+      return React.createElement('div', {
+        key: row.key,
+        'data-testid': 'client-usage-row-' + row.key,
+        style: {
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border-subtle)',
+        },
+      },
+        React.createElement('a', {
+          href: row.href,
+          style: { color: 'var(--text)', textDecoration: 'none' },
+          'data-testid': 'client-usage-link-' + row.key,
+        }, row.label),
+        React.createElement('code', {
+          'data-testid': 'client-usage-count-' + row.key,
+          style: { fontFamily: 'ui-monospace, monospace', color: 'var(--text-2)' },
+        }, String(count))
+      );
+    })
   );
 }
 
@@ -2340,4 +2410,4 @@ function MasterPage() {
   );
 }
 
-Object.assign(window, { MasterPage, RecordDetailModal, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel, ProductOverlayEditModal, ProductAdoptModal });
+Object.assign(window, { MasterPage, RecordDetailModal, ClientUsagePanel, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel, ProductOverlayEditModal, ProductAdoptModal });
