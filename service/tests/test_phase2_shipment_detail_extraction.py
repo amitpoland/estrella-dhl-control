@@ -140,17 +140,12 @@ def test_no_stale_set_page_detail_callsites():
             )
 
 
-def test_new_shipment_modal_uses_helper_on_create():
-    """NewShipmentModal.onCreated must navigate through the helper
-    on success, not via the dead setPage('detail') + pushState path."""
+def test_v1_new_shipment_modal_is_retired():
+    """V1 created shipments through its own intake payload builder; that
+    duplicate authority was removed and the entry routes to V2 instead."""
     src = _read(DASH)
-    idx = src.index("<NewShipmentModal")
-    block = src[idx:idx + 1200]
-    assert "buildShipmentDetailUrl(data.batchId)" in block or \
-           "buildShipmentDetailUrl(data.batch_id)" in block, (
-        "NewShipmentModal.onCreated must call "
-        "window.location.href = buildShipmentDetailUrl(data.batchId)"
-    )
+    assert "<NewShipmentModal" not in src
+    assert "buildShipmentDetailUrl" in src  # helper still used by the rest of V1
 
 
 def test_dashboard_redirects_id_query_param():

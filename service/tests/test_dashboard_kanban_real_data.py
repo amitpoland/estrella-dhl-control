@@ -97,11 +97,12 @@ def test_quick_flows_present():
 
 def test_quick_flow_outbound_opens_new_shipment_modal():
     src = _src()
-    # The 'outbound' button must call onNewShipment which opens NewShipmentModal
+    # The 'outbound' button must call onNewShipment...
     assert "onNewShipment && onNewShipment()" in src
-    # NewShipmentModal is reachable from the App (state hook)
-    assert "setShowNewShipment(true)" in src
-    assert "NewShipmentModal" in src
+    # ...which now routes to the canonical V2 intake surface. V1's own
+    # New Shipment modal was retired (single intake party authority).
+    assert "onNewShipment={() => { window.location.href = '/v2/dashboard'; }}" in src
+    assert "NewShipmentModal" not in src
 
 
 # ── KPI strip values come from real batch state ─────────────────────────────
