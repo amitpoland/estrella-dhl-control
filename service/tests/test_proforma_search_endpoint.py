@@ -394,73 +394,78 @@ class TestNoAmountRangeSearch:
 class TestSearchResultShape:
     """Each search result must include the required display fields."""
 
-    def test_result_has_id(self):
+    _WINDOW = 2500
+
+    def _body(self) -> str:
         src = _read_routes()
         idx = src.find("def _draft_to_search_result(")
         assert idx > 0, "_draft_to_search_result helper must exist"
-        body = src[idx:idx + 900]
-        assert '"id"' in body
+        return src[idx:idx + self._WINDOW]
+
+    def test_result_has_id(self):
+        assert '"id"' in self._body()
 
     def test_result_has_batch_id(self):
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"batch_id"' in body
+        assert '"batch_id"' in self._body()
 
     def test_result_has_client_name(self):
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"client_name"' in body
+        assert '"client_name"' in self._body()
 
     def test_result_has_draft_state(self):
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"draft_state"' in body
+        assert '"draft_state"' in self._body()
 
     def test_result_has_status(self):
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"status"' in body
+        assert '"status"' in self._body()
 
     def test_result_has_currency(self):
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"currency"' in body
+        assert '"currency"' in self._body()
 
     def test_result_has_wfirma_proforma_id(self):
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"wfirma_proforma_id"' in body
+        assert '"wfirma_proforma_id"' in self._body()
 
     def test_result_has_wfirma_proforma_fullnumber(self):
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"wfirma_proforma_fullnumber"' in body
+        assert '"wfirma_proforma_fullnumber"' in self._body()
 
     def test_result_has_created_at(self):
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"created_at"' in body
+        assert '"created_at"' in self._body()
 
     def test_result_has_updated_at(self):
+        assert '"updated_at"' in self._body()
+
+    def test_result_has_line_count(self):
+        assert '"line_count"' in self._body()
+
+    def test_result_has_total(self):
+        assert '"total"' in self._body()
+
+    def test_result_has_awb(self):
+        assert '"awb"' in self._body()
+
+    def test_result_has_outbound_and_inbound_awb(self):
+        body = self._body()
+        assert '"outbound_awb"' in body
+        assert '"inbound_awb"' in body
+
+    def test_total_uses_qty_times_unit_price(self):
+        """Total authority = Overview goods net, not stale line_value."""
         src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert '"updated_at"' in body
+        start = src.find("def _draft_lines_total(")
+        end = src.find("def _draft_to_search_result(")
+        helper = src[start:end]
+        # Strip docstring — pin the executable body only
+        body = helper.split('"""', 2)[-1] if '"""' in helper else helper
+        assert "unit_price" in body
+        assert "line_value" not in body  # must not read stale line_value
+        assert "sales_price_authority_total_eur" not in body
 
     def test_result_does_not_include_json_blobs(self):
-        """Search results must be compact — no JSON blob fields."""
-        src = _read_routes()
-        idx = src.find("def _draft_to_search_result(")
-        body = src[idx:idx + 900]
-        assert "editable_lines_json" not in body
-        assert "source_lines_json" not in body
-        assert "buyer_override_json" not in body
-        assert "service_charges_json" not in body
+        """Search results must be compact — no JSON blob fields in the return dict.
+
+        Reading ``d.editable_lines_json`` to derive ``line_count`` / ``total``
+        is allowed; emitting the blob itself is not.
+        """
+        body = self._body()
+        assert '"editable_lines_json"' not in body
+        assert '"source_lines_json"' not in body
+        assert '"buyer_override_json"' not in body
+        assert '"service_charges_json"' not in body

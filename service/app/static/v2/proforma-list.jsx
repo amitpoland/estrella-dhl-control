@@ -424,7 +424,9 @@ function ProformaCrossBatchLanding({ onDrill }) {
   React.useEffect(() => {
     let cancelled = false;
     setLoading(true); setError(null);
-    window.PzApi.searchProformaDrafts({}).then(res => {
+    // Landing needs a wide page so Items / Total / AWB render for the operator
+    // queue — default search page_size=25 truncates the same drafts they see in KPIs.
+    window.PzApi.searchProformaDrafts({ page: '1', page_size: '100' }).then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setError((res && res.error) || 'Failed to load drafts'); setLoading(false); return; }
       const d = res.data || {};
@@ -504,8 +506,17 @@ function ProformaCrossBatchLanding({ onDrill }) {
               {rows.map((r, i) => {
                 const id = r.id || r.draft_id;
                 const matched = r.customer_resolved ? 'Matched' : r.customer_ambiguous ? 'Ambiguous' : 'Unmatched';
-                const items = r.line_count ?? r.items ?? '—';
-                const total = (r.total != null ? r.total : (r.amount != null ? r.amount : null));
+                const items = (r.line_count != null ? r.line_count : null);
+                const total = (r.total != null ? r.total : null);
+                // Shipment = search projection awb (outbound tracking_ref when
+                // booked, else inbound batch tracking via resolve_batch_tracking_no).
+                // Never parse batch_id in the UI — authority lives in the API.
+                const awb = r.awb || r.outbound_awb || r.inbound_awb || '';
+                const awbTitle = r.outbound_awb
+                  ? (`Outbound AWB ${r.outbound_awb}` + (r.batch_id ? ` · batch ${r.batch_id}` : ''))
+                  : (r.inbound_awb
+                    ? (`Inbound/batch tracking ${r.inbound_awb}` + (r.batch_id ? ` · ${r.batch_id}` : ''))
+                    : (r.batch_id || ''));
                 return (
                   <tr key={id || i} data-testid={`pf-landing-row-${id}`} onClick={() => onDrill && onDrill(r)}
                     style={{ borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: onDrill ? 'pointer' : 'default' }}>
@@ -514,9 +525,10 @@ function ProformaCrossBatchLanding({ onDrill }) {
                     </td>
                     <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'monospace', color: 'var(--text)' }}>{r.wfirma_proforma_fullnumber || id || '—'}</td>
                     <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text)' }}>{r.client_name || '—'}</td>
-                    <td style={{ padding: '10px 14px', fontSize: 11, fontFamily: 'monospace', color: 'var(--text-2)' }}>{r.batch_id || '—'}</td>
-                    <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-2)' }}>{items}</td>
-                    <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'monospace', color: 'var(--text-2)' }}>{total != null ? `${Number(total).toLocaleString()} ${r.currency || ''}`.trim() : '—'}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}
+                      title={awbTitle} data-testid={`pf-landing-awb-${id}`}>{awb || '—'}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-2)' }} data-testid={`pf-landing-items-${id}`}>{items != null ? items : '—'}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'monospace', color: 'var(--text-2)' }} data-testid={`pf-landing-total-${id}`}>{total != null ? `${Number(total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${r.currency || ''}`.trim() : '—'}</td>
                     <td style={{ padding: '10px 14px', fontSize: 11 }}>{matched}</td>
                     <td style={{ padding: '10px 14px' }}>{window.ProformaStatusChip ? <window.ProformaStatusChip status={r.draft_state} /> : <span style={{ fontSize: 11 }}>{r.draft_state || '—'}</span>}</td>
                   </tr>

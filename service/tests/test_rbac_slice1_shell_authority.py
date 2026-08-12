@@ -100,9 +100,11 @@ def test_build_authority_includes_allowed_pages():
 def test_page_aliases_share_parent_permission():
     assert PAGE_ALIASES["detail"] == "shipments"
     assert PAGE_ALIASES["proforma_detail"] == "proforma"
+    assert PAGE_ALIASES["proforma_search"] == "proforma"
     allowed = allowed_pages_for_permissions(permissions_for_role("logistics"))
     assert page_is_allowed("detail", allowed)
     assert page_is_allowed("proforma_detail", allowed)
+    assert page_is_allowed("proforma_search", allowed)
     crm_allowed = allowed_pages_for_permissions(permissions_for_role("crm"))
     assert not page_is_allowed("detail", crm_allowed) or "shipments" in crm_allowed
     # CRM has shipments.view → detail allowed

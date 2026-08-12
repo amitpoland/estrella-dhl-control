@@ -533,7 +533,7 @@ function App() {
       if (want !== 'detail') setSelectedShipment(null);
     }
     setPage(want);
-    setActiveNav(want === 'detail' ? 'shipments' : (want === 'proforma_detail' ? 'proforma' : want));
+    setActiveNav(want === 'detail' ? 'shipments' : (want === 'proforma_detail' || want === 'proforma_search' ? 'proforma' : want));
   }
 
   React.useEffect(() => {
@@ -645,7 +645,7 @@ function App() {
         return;
       }
       setPage(want);
-      setActiveNav(want === 'detail' ? 'shipments' : (want === 'proforma_detail' ? 'proforma' : want));
+      setActiveNav(want === 'detail' ? 'shipments' : (want === 'proforma_detail' || want === 'proforma_search' ? 'proforma' : want));
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -755,10 +755,12 @@ function App() {
     }
     const url = pageToUrl(target, currentSearch);
     history.pushState({ page: target }, '', url);
-    setActiveNav(target);
+    // Keep Pro Forma sidebar highlight on search/detail sub-views
+    // (same pattern as shipments detail → activeNav stays 'shipments').
+    setActiveNav(target === 'proforma_search' || target === 'proforma_detail' ? 'proforma' : target);
     setPage(target);
     setMobileSidebarOpen(false);
-    if (!BATCH_SCOPED_PAGES.includes(target)) setProformaDraft(null);
+    if (!BATCH_SCOPED_PAGES.includes(target) && target !== 'proforma_search') setProformaDraft(null);
   };
 
   const allowedPagesProp = (authorityStatus === 'loading' || !authority)

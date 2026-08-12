@@ -6,7 +6,7 @@
 (function (global) {
   "use strict";
 
-  var PAGE_ALIASES = { detail: "shipments", proforma_detail: "proforma" };
+  var PAGE_ALIASES = { detail: "shipments", proforma_detail: "proforma", proforma_search: "proforma" };
 
   function canonPageId(pageId) {
     return PAGE_ALIASES[pageId] || pageId;
