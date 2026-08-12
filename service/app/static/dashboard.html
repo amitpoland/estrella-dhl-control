@@ -8221,51 +8221,6 @@ function PageHeader({ title, subtitle, actions }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════
-// NEW SHIPMENT MODAL — full document chain intake
-// ══════════════════════════════════════════════════════════
-
-// ── Shared mini-components (intake-modal scoped) ──────────
-const IntakeSectionHeader = ({ icon, label, sub }) => (
-  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14, paddingBottom:10, borderBottom:'1px solid var(--border)' }}>
-    <span style={{ fontSize:16 }}>{icon}</span>
-    <div>
-      <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', letterSpacing:'-0.01em' }}>{label}</div>
-      {sub && <div style={{ fontSize:11, color:'var(--text-3)', marginTop:1 }}>{sub}</div>}
-    </div>
-  </div>
-);
-
-const IntakeFileDropZone = ({ accept, multiple, hint, files, onChange, compact }) => {
-  const ref = React.useRef();
-  const label = files && files.length > 0
-    ? (multiple ? files.map(f=>f.name).join(', ') : files[0].name)
-    : hint;
-  return (
-    <label style={{ display:'flex', alignItems:'center', gap:8,
-      padding: compact ? '12px 14px' : '18px 14px',
-      borderRadius:6, border:'2px dashed var(--badge-neutral-border)',
-      cursor:'pointer', background:'var(--bg-subtle)',
-      justifyContent:'center', flexDirection:'column', textAlign:'center',
-      transition:'border-color .15s' }}>
-      <input ref={ref} type="file" accept={accept} multiple={!!multiple}
-        onChange={e => onChange(Array.from(e.target.files))} style={{ display:'none' }} />
-      <span style={{ fontSize: compact ? 16 : 22, color:'var(--text-3)' }}>
-        {files && files.length > 0 ? '✓' : (accept.includes('.pdf') ? '📄' : '📊')}
-      </span>
-      <span style={{ fontSize:11, color: files && files.length > 0 ? 'var(--badge-green-text)' : 'var(--text-2)',
-        fontWeight: files && files.length > 0 ? 600 : 400 }}>{label}</span>
-    </label>
-  );
-};
-
-const IntakeRemoveBtn = ({ onClick }) => (
-  <button onClick={onClick} title="Remove"
-    style={{ background:'var(--badge-red-bg)', border:'1px solid var(--badge-red-border)',
-      borderRadius:5, padding:'3px 8px', fontSize:11, color:'var(--badge-red-text)',
-      cursor:'pointer', fontFamily:'inherit', fontWeight:600 }}>✕ Remove</button>
-);
-
 // New Shipment intake lives on the canonical V2 surface (/v2/dashboard,
 // service/app/static/v2/modals.jsx). The V1 modal used to build its own
 // /api/v1/shipment/intake multipart payload with shipment-level

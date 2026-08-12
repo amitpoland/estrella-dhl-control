@@ -215,6 +215,70 @@ def test_consecutive_multifile_purchase_slots_no_range_crosstalk(client):
     assert cids == ["801", "801", "802", "802", "802"], cids
 
 
+# ── Multi-file SALES DOCUMENT slot ──────────────────────────────────────────
+
+def test_multifile_sales_document_slot_all_files_inherit_client_cid(client):
+    """Two files in ONE sales document slot → BOTH inherit the block's client.
+
+    Same defect the packing side already fixed, on the sales-document loop: the
+    frontend emits ONE block per slot (``document_index`` = the slot's first
+    file position, then ``sDocIdx += slot.files.length``), so an exact-equality
+    match finds no block for the 2nd+ file and registers it with a blank
+    client_contractor_id — a sales document with no party, feeding warehouse
+    valuation and the proforma draft.
+    """
+    awb, pack = _mock_parsers()
+    with awb, pack:
+        r = client.post(
+            "/api/v1/shipment/intake",
+            data={"tracking_no": "MULTIDOC-S1", "carrier": "DHL",
+                  "metadata": json.dumps({
+                      "purchase_blocks": [],
+                      "sales_blocks": [{
+                          "document_index": 0,
+                          "packing_index": -1,
+                          "client_contractor_id": "901",
+                      }],
+                  })},
+            files=[
+                ("invoices", _pdf("INV-1.pdf")),
+                ("sales_documents", _pdf("sdoc-A.pdf", b"%PDF sales A")),
+                ("sales_documents", _pdf("sdoc-B.pdf", b"%PDF sales B")),
+            ],
+            headers=_auth())
+    assert r.status_code == 200, r.text
+    batch_id = r.json()["batch_id"]
+    cids = _pack_cids(batch_id, "sales_invoice", "client_contractor_id")
+    assert cids == ["901", "901"], cids
+
+
+def test_two_sales_document_slots_keep_separate_clients(client):
+    """The walk must not leak slot A's client onto slot B's documents."""
+    awb, pack = _mock_parsers()
+    with awb, pack:
+        r = client.post(
+            "/api/v1/shipment/intake",
+            data={"tracking_no": "MULTIDOC-S2", "carrier": "DHL",
+                  "metadata": json.dumps({
+                      "purchase_blocks": [],
+                      "sales_blocks": [
+                          {"document_index": 0, "packing_index": -1, "client_contractor_id": "901"},
+                          {"document_index": 2, "packing_index": -1, "client_contractor_id": "902"},
+                      ],
+                  })},
+            files=[
+                ("invoices", _pdf("INV-1.pdf")),
+                ("sales_documents", _pdf("A-1.pdf", b"%PDF A1")),
+                ("sales_documents", _pdf("A-2.pdf", b"%PDF A2")),
+                ("sales_documents", _pdf("B-1.pdf", b"%PDF B1")),
+            ],
+            headers=_auth())
+    assert r.status_code == 200, r.text
+    batch_id = r.json()["batch_id"]
+    cids = _pack_cids(batch_id, "sales_invoice", "client_contractor_id")
+    assert cids == ["901", "901", "902"], cids
+
+
 # ── Unpaired packing slot (invoice_index = -1) ──────────────────────────────
 
 def test_unpaired_packing_slot_borrows_no_invoice_identity(client):
@@ -248,6 +312,10 @@ def test_unpaired_packing_slot_borrows_no_invoice_identity(client):
             headers=_auth())
     assert r.status_code == 200, r.text
     batch_id = r.json()["batch_id"]
+    # The unpaired block must not leak its supplier onto the INVOICES. The
+    # block-walk has no break, so the last block matching `idx >= invoice_index`
+    # wins — and `idx >= -1` is true for every invoice.
+    assert _pack_cids(batch_id, "purchase_invoice", "supplier_contractor_id") == ["801", "802"]
     # Keeps its OWN supplier — the identity the operator picked on the slot.
     assert _pack_cids(batch_id, "purchase_packing_list", "supplier_contractor_id") == ["803"]
     # ...and inherits NO invoice number from the unrelated last invoice.

@@ -794,7 +794,15 @@ async def shipment_intake(
             # purchase_blocks metadata is built per-block; we walk it in
             # order. invoice_index in metadata = the first invoice index
             # of that block. Match the running counter.
-            _b_inv_start = int(_b.get("invoice_index", running) or running)
+            _raw_inv_start = _b.get("invoice_index", running)
+            # A negative invoice_index means "this block describes no invoice"
+            # (an unpaired packing slot). It must be skipped: `idx >= -1` is
+            # true for every invoice and this walk has no break, so the last
+            # matching block wins — one unpaired packing block would otherwise
+            # overwrite the supplier identity of EVERY invoice in the batch.
+            if isinstance(_raw_inv_start, int) and _raw_inv_start < 0:
+                continue
+            _b_inv_start = int(_raw_inv_start or running)
             if idx >= _b_inv_start:
                 _supplier_cid = _supplier_cid_for_purchase(_b_idx)
         doc_id = ddb.register_document(
@@ -1032,7 +1040,22 @@ async def shipment_intake(
     sales_doc_ids: List[str] = []
 
     for idx, f in enumerate(sales_documents):
-        block      = next((b for b in sales_blocks if b.get("document_index") == idx), {})
+        # Walk the blocks the same way the purchase-invoice loop above does.
+        # The frontend emits ONE block per SLOT (document_index = that slot's
+        # FIRST file index, then advances by the slot's file count), so exact
+        # equality found no block for the 2nd+ file of a multi-file slot and
+        # registered it with a blank client — a sales document with no party,
+        # feeding warehouse valuation and the proforma draft. Every file at or
+        # past a block's start belongs to it until the next block starts.
+        # A negative document_index describes no sales document at all (an
+        # unpaired sales packing slot) and must never match.
+        block: Dict[str, Any] = {}
+        for _sb in sales_blocks:
+            _raw_doc_start = _sb.get("document_index")
+            if not isinstance(_raw_doc_start, int) or _raw_doc_start < 0:
+                continue
+            if idx >= _raw_doc_start:
+                block = _sb
         client     = block.get("client_name", "")
         client_ref = block.get("client_ref", "")
         client_cid = str(block.get("client_contractor_id") or "").strip()
