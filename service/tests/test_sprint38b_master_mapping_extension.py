@@ -314,7 +314,7 @@ class TestSprint38BasePreserved:
     def test_entity_types_count(self):
         src = _read(MASTER_PAGE)
         entity_ids = re.findall(r"id:\s*'(\w+)'", src.split("ENTITY_TYPES")[1].split("];")[0])
-        assert len(entity_ids) == 12, f"Expected 12 entity types, got {len(entity_ids)}"
+        assert len(entity_ids) == 13, f"Expected 13 entity types, got {len(entity_ids)}"
 
     def test_write_disabled_reason_constant(self):
         src = _read(MASTER_PAGE)

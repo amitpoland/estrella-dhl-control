@@ -1006,6 +1006,48 @@ async def customer_incoterm_bulk_endpoint(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@router.get(
+    "/{contractor_id}/usage",
+    dependencies=[_auth],
+    summary="Read-only per-client usage projection",
+)
+def get_customer_usage_endpoint(contractor_id: str) -> JSONResponse:
+    """Project packing / proforma / invoice / shipment usage for one Customer Master id.
+
+    Read-only over existing stores. No usage DB. No wFirma calls.
+    """
+    init_db(_DB_PATH)
+    try:
+        record = get_customer(_DB_PATH, contractor_id)
+    except Exception as exc:
+        log.error("get_customer (usage) failed contractor_id=%s: %s", contractor_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Customer not found: contractor_id={contractor_id!r}",
+        )
+
+    from ..services.customer_usage import project_customer_usage
+
+    identity = {
+        "bill_to_contractor_id": record.bill_to_contractor_id,
+        "bill_to_name": getattr(record, "bill_to_name", None),
+        "vat_number": getattr(record, "nip", None),
+    }
+    try:
+        payload = project_customer_usage(
+            settings.storage_root,
+            contractor_id,
+            customer_identity=identity,
+        )
+    except Exception as exc:
+        log.error("customer_usage failed contractor_id=%s: %s", contractor_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"usage projection error: {exc}")
+    return JSONResponse(payload)
+
+
 @router.get("/{contractor_id}", dependencies=[_auth], summary="Get one customer")
 def get_customer_endpoint(contractor_id: str) -> JSONResponse:
     """Read a customer by wFirma contractor id.  404 if not found."""
