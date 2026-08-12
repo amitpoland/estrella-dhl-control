@@ -1082,6 +1082,27 @@
     saveProductLocal: (code, body) =>
       _put(`${BASE}/product-local/${encodeURIComponent(code)}`, body),
 
+    // ── Description authority (product_descriptions) — Product Master control ──
+    // GET /api/v1/description-admin/product/{code} — current row + PASS/WARN/BLOCKED
+    getProductDescriptionAdmin: (code) =>
+      _get(`${BASE}/description-admin/product/${encodeURIComponent(code)}`),
+
+    // POST /api/v1/description-admin/product/{code}/validate — no write
+    validateProductDescriptionAdmin: (code, body) =>
+      _postM(`${BASE}/description-admin/product/${encodeURIComponent(code)}/validate`, body || {}),
+
+    // POST /api/v1/description-admin/product/{code}/preview — candidate only, never writes
+    previewProductDescriptionAdmin: (code) =>
+      _postM(`${BASE}/description-admin/product/${encodeURIComponent(code)}/preview`, {}),
+
+    // PUT /api/v1/description-admin/product/{code} — save source=manual when gate=PASS
+    saveProductDescriptionAdmin: (code, body) =>
+      _put(`${BASE}/description-admin/product/${encodeURIComponent(code)}`, body || {}),
+
+    // POST /api/v1/description-admin/product/{code}/converge-drafts — editable drafts only
+    convergeProductDescriptionDrafts: (code) =>
+      _postM(`${BASE}/description-admin/product/${encodeURIComponent(code)}/converge-drafts`, {}),
+
     // ── Product Master sync (Slice 1) — read authority + observable Run Now ──
     // GET /api/v1/product-master[?batch_id=]
     // Returns { count, rows: [{product_code, design_no, normalized_design_attributes, status, ...}] }

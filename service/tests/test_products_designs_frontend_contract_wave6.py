@@ -102,5 +102,35 @@ def test_master_page_wires_design_crud():
 def test_design_wrappers_exist_in_pzapi():
     src = _read(PZAPI)
     for m in ("saveDesign", "getDesign", "deleteDesign",
-              "wfirmaGoodsCreateAndAdopt", "saveProductLocal"):
+              "wfirmaGoodsCreateAndAdopt", "saveProductLocal",
+              "getProductDescriptionAdmin", "previewProductDescriptionAdmin",
+              "saveProductDescriptionAdmin", "convergeProductDescriptionDrafts",
+              "wfirmaGoodsSearch"):
         assert m in src, f"pz-api must expose {m}"
+
+
+def test_product_description_control_on_master_page():
+    src = _read(MASTER)
+    assert "ProductDescriptionModal" in src
+    assert "btn-product-description-" in src
+    assert "previewProductDescriptionAdmin" in src
+    assert "saveProductDescriptionAdmin" in src
+    assert "convergeProductDescriptionDrafts" in src
+    assert "desc-generate-btn" in src or "desc-regenerate-btn" in src
+    assert "desc-save-btn" in src
+    assert "desc-wfirma-sync-btn" in src
+    assert "desc-accept-candidate-btn" in src
+    # Generate/preview must not create wFirma goods.
+    gen = src.split("function doGenerate()")[1].split("function acceptCandidate")[0]
+    assert "wfirmaGoodsCreateAndAdopt" not in gen
+    assert "previewProductDescriptionAdmin" in gen
+    save = src.split("function doSave()")[1].split("function doConverge")[0]
+    assert "wfirmaGoodsCreateAndAdopt" not in save
+    assert "saveProductDescriptionAdmin" in save
+
+
+def test_product_adopt_searches_before_create():
+    src = _read(MASTER)
+    adopt = src.split("function ProductAdoptModal")[1].split("function MasterPage")[0]
+    assert "wfirmaGoodsSearch" in adopt
+    assert "adopt-found-banner" in adopt

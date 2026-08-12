@@ -503,6 +503,113 @@ def set_manual_block(*,
     return row
 
 
+def preview_generated_description(product_code: str) -> Dict[str, Any]:
+    """Build a candidate PL/EN block without writing ``product_descriptions``.
+
+    Used by the Product Master Generate/Regenerate control. Never upserts.
+    Never calls wFirma. Existing ``source='manual'`` rows are reported as
+    ``protected_existing=True`` so the UI cannot overwrite them until the
+    operator explicitly Accepts a PASS candidate via ``set_manual_block``.
+    """
+    pc = (product_code or "").strip()
+    if not pc:
+        raise ValueError("product_code is required")
+
+    existing = ddb.get_product_description(pc)
+    src_existing = str((existing or {}).get("source") or "").strip()
+    protected = src_existing == "manual"
+
+    eff_desc_en = ""
+    source_used = "none"
+    item_type = ""
+
+    if ddb._db_path is not None:
+        try:
+            import sqlite3 as _sql
+            with _sql.connect(str(ddb._db_path)) as con:
+                row = con.execute(
+                    "SELECT description FROM invoice_lines "
+                    "WHERE product_code=? AND active=1 "
+                    "ORDER BY batch_id, invoice_no, line_position LIMIT 1",
+                    (pc,),
+                ).fetchone()
+            if row and str(row[0] or "").strip():
+                eff_desc_en = str(row[0]).strip()
+                source_used = "invoice_lines"
+        except Exception as exc:
+            log.warning("preview_generated_description: invoice_lines read "
+                        "failed for %s: %s", pc, exc)
+
+    if not eff_desc_en:
+        try:
+            from . import reservation_db as _rdb
+            _rdb_path = settings.storage_root / "reservation_queue.db"
+            if _rdb_path.exists():
+                for r in (_rdb.list_product_masters(_rdb_path) or []):
+                    if str(r.get("product_code") or "").strip() == pc:
+                        eff_desc_en = str(r.get("description") or "").strip()
+                        item_type = str(r.get("item_type") or r.get("category") or "").strip()
+                        if eff_desc_en:
+                            source_used = "product_master"
+                        break
+        except Exception as exc:
+            log.warning("preview_generated_description: product_master read "
+                        "failed for %s: %s", pc, exc)
+
+    if not item_type:
+        item_type = _derive_item_type_from_description(eff_desc_en)
+
+    reason = ""
+    candidate: Dict[str, Any] = {
+        "product_code": pc,
+        "item_type": _normalise_item_type(item_type),
+        "name_pl": "",
+        "description_pl": "",
+        "description_en": "",
+        "material_pl": "",
+        "purpose_pl": "",
+        "description_line": "",
+        "source": "preview",
+    }
+
+    if not item_type and not eff_desc_en:
+        reason = "skipped_blank"
+    else:
+        customs_trans = None
+        if eff_desc_en:
+            customs_trans = _customs_grade_translation(item_type, eff_desc_en)
+        base = customs_trans or _resolve_translation(item_type)
+        eff_name_pl = (base.get("name_pl") or "").strip()
+        eff_desc_pl = (base.get("description_pl") or "").strip()
+        eff_material = (base.get("material_pl") or "").strip()
+        eff_purpose = (base.get("purpose_pl") or "").strip()
+        if _contains_forbidden_desc_token(eff_desc_pl, eff_name_pl):
+            reason = "rejected_generic"
+        else:
+            candidate = {
+                "product_code": pc,
+                "item_type": _normalise_item_type(item_type),
+                "name_pl": eff_name_pl,
+                "description_pl": eff_desc_pl,
+                "description_en": (eff_desc_en or "").strip(),
+                "material_pl": eff_material,
+                "purpose_pl": eff_purpose,
+                "description_line": build_description_line(eff_desc_pl, eff_desc_en),
+                "source": "preview",
+            }
+
+    return {
+        "product_code": pc,
+        "wrote": False,
+        "protected_existing": protected,
+        "existing_source": src_existing or None,
+        "existing": existing,
+        "candidate": candidate,
+        "source_used": source_used,
+        "reason": reason,
+    }
+
+
 # ── Per-line backfill from invoice_lines (PR for line-vs-header bug) ────────
 #
 # Source-priority rule:

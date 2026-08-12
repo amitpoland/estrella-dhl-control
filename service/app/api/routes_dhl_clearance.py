@@ -259,6 +259,29 @@ def _write_audit(batch_id: str, audit: dict) -> None:
             return
 
 
+def _promote_and_enrich_after_description_ready(batch_id: str) -> None:
+    """After audit stamps persist, promote into PD and enrich editable drafts.
+
+    Non-fatal. This is the event that makes `_desc_authoritative` durable
+    before PZ exists — drafts born blank at intake must converge here.
+    """
+    try:
+        from ..services.commercial_authority import promote_and_enrich_batch_drafts
+        _pf = settings.storage_root / "proforma_links.db"
+        _batch_dir = settings.storage_root / "outputs" / batch_id
+        promote_and_enrich_batch_drafts(
+            batch_id,
+            proforma_db=_pf,
+            batch_dir=_batch_dir,
+            operator="description-ready",
+        )
+    except Exception as exc:
+        log.warning(
+            "[%s] description-ready promote/enrich failed (non-fatal): %s",
+            batch_id, exc,
+        )
+
+
 def _find_generated_file(filename: str) -> Optional[Path]:
     """Search DSK output dir, Polish descriptions dir, and SAD-ready dir for a named file."""
     for search_dir in (_DSK_OUTPUT_DIR, _POLISH_DESC_DIR, _SAD_READY_DIR):
@@ -3473,6 +3496,7 @@ async def generate_description(
         audit["sad_ready_filename"] = json_result.get("filename")
         audit["sad_ready_path"]     = json_result.get("output_path")
     _write_audit(batch_id, audit)
+    _promote_and_enrich_after_description_ready(batch_id)
 
     # Log timeline event
     for sub in ("outputs", "working"):
@@ -3781,6 +3805,7 @@ async def generate_customs_package(
     audit["customs_pdf_hash"]            = pdf_result.get("pdf_hash")
     audit["customs_json_hash"]           = json_result.get("json_hash")
     _write_audit(batch_id, audit)
+    _promote_and_enrich_after_description_ready(batch_id)
 
     # Log timeline event — parity with generate_description (line ~3370).
     # The combined package endpoint genuinely produced the Polish description PDF

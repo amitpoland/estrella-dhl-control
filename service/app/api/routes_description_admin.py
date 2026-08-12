@@ -8,14 +8,24 @@ Endpoints (require X-API-Key or session cookie):
   POST /api/v1/description-admin/product/{product_code}/validate
        Validate (description_pl, description_en) — no write.
 
+  POST /api/v1/description-admin/product/{product_code}/preview
+       Generate a candidate from invoice_lines / product_master — no write.
+       Never overwrites an existing manual/canonical row.
+
+  POST /api/v1/description-admin/product/{product_code}/converge-drafts
+       Retry PD → editable-draft enrich for this product_code. Posted/converted
+       drafts are immutable. Never fabricates wfirma_product_id.
+
   PUT  /api/v1/description-admin/product/{product_code}
-       Save as source='manual'; writes master_audit event.
+       Save as source='manual' only when gate=PASS; writes master_audit event.
+       First-save of a missing row is allowed (operator accepted a PASS candidate).
 
 Authority: product_descriptions table in documents.db (PR #741 / f117086).
 
 Guard: only the product_descriptions MASTER row is edited. Posted / issued /
        locked draft snapshots are immutable — their editable_lines_json is NOT
-       touched. Future drafts pick up new values via get_description_block().
+       touched by PUT/preview. Converge-drafts annotates editable drafts only.
+       Generation/save never creates a wFirma product.
 """
 from __future__ import annotations
 
@@ -28,8 +38,13 @@ from pydantic import BaseModel
 from ..core.audit import audit_safe
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..core.config import settings
 from ..services import document_db as ddb
-from ..services.description_engine import build_description_line, set_manual_block
+from ..services.description_engine import (
+    build_description_line,
+    preview_generated_description,
+    set_manual_block,
+)
 from ..services.description_length_policy import validate_description_line
 
 log = get_logger(__name__)
@@ -123,6 +138,42 @@ class SaveRequest(BaseModel):
     description_pl: str
     description_en: str = ""
     name_pl: Optional[str] = None  # if omitted, existing name_pl is preserved
+    item_type: Optional[str] = None
+    material_pl: Optional[str] = None
+    purpose_pl: Optional[str] = None
+
+
+@router.post("/product/{product_code:path}/preview", dependencies=[_auth])
+def preview_description_admin(product_code: str) -> JSONResponse:
+    """Generate a candidate description. Never writes product_descriptions or wFirma."""
+    pc = product_code.strip()
+    preview = preview_generated_description(pc)
+    cand = preview.get("candidate") or {}
+    vr = validate_description_line(
+        str(cand.get("description_pl") or ""),
+        str(cand.get("description_en") or ""),
+    )
+    return JSONResponse({
+        **preview,
+        "gate": _gate(vr),
+        "validation": _vr_dict(vr),
+        "rendered_line": build_description_line(
+            str(cand.get("description_pl") or ""),
+            str(cand.get("description_en") or ""),
+        ),
+    })
+
+
+@router.post("/product/{product_code:path}/converge-drafts", dependencies=[_auth])
+def converge_drafts_description_admin(product_code: str) -> JSONResponse:
+    """Retry PD → editable-draft enrich. Posted/converted drafts are not touched."""
+    from ..services.commercial_authority import enrich_editable_drafts_for_product_code
+    pc = product_code.strip()
+    links = settings.storage_root / "proforma_links.db"
+    result = enrich_editable_drafts_for_product_code(
+        pc, proforma_db=links, operator="description-admin-converge",
+    )
+    return JSONResponse(result)
 
 
 @router.put("/product/{product_code:path}", dependencies=[_auth])
@@ -137,14 +188,6 @@ def save_description_admin(
     en = (body.description_en or "").strip()
 
     before = ddb.get_product_description(pc)
-    if before is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No description row found for product_code={pc!r}. "
-                "Process a shipment or run the description generator first."
-            ),
-        )
 
     vr = validate_description_line(pl, en)
     if vr.blocked or not vr.ok or vr.warnings:
@@ -160,10 +203,13 @@ def save_description_admin(
         )
 
     name_pl     = ((body.name_pl or "").strip() or
-                   (before.get("name_pl") or "").strip())
-    material_pl = (before.get("material_pl") or "").strip()
-    purpose_pl  = (before.get("purpose_pl")  or "").strip()
-    item_type   = (before.get("item_type")   or "").strip()
+                   ((before or {}).get("name_pl") or "").strip() or pl)
+    material_pl = ((body.material_pl or "").strip() or
+                   ((before or {}).get("material_pl") or "").strip())
+    purpose_pl  = ((body.purpose_pl or "").strip() or
+                   ((before or {}).get("purpose_pl")  or "").strip())
+    item_type   = ((body.item_type or "").strip() or
+                   ((before or {}).get("item_type")   or "").strip())
 
     try:
         after = set_manual_block(

@@ -161,6 +161,8 @@ def process_shipment(
     # PDF/XLSX delivery stays non-blocking, but convergence status is ALWAYS
     # persisted (audit.json + result) so a silent split-authority state cannot
     # pretend to be ready.
+    # ONE algorithm: commercial_authority.promote_and_enrich_batch_drafts
+    # (enriches editable drafts even when promote written==0).
     _promo_summary: Dict[str, Any] = {
         "status": "failed",
         "scanned": 0,
@@ -170,13 +172,16 @@ def process_shipment(
         "drafts_failed": [],
     }
     try:
-        from .description_engine import (
-            promote_pz_rows_to_product_descriptions,
-            patch_audit_pz_description_promote,
+        from .commercial_authority import promote_and_enrich_batch_drafts
+        from .description_engine import patch_audit_pz_description_promote
+        _pf = Path(settings.storage_root) / "proforma_links.db"
+        _out = promote_and_enrich_batch_drafts(
+            batch_id,
+            proforma_db=_pf,
+            batch_dir=output_dir,
+            operator="pz-process-promote",
         )
-        from . import document_db as _ddb
-        from . import proforma_invoice_link_db as _pildb
-        _promo = promote_pz_rows_to_product_descriptions(output_dir, dry_run=False)
+        _promo = _out.get("promote") or {}
         _promo_summary.update({
             k: _promo[k] for k in (
                 "status", "written", "skipped_generic", "skipped_manual",
@@ -184,41 +189,18 @@ def process_shipment(
                 "errors",
             ) if k in _promo
         })
+        _promo_summary["drafts_enriched"] = int(_out.get("drafts_enriched") or 0)
+        _promo_summary["drafts_failed"] = list(_out.get("drafts_failed") or [])
         log.info(
             "pz_rows → product_descriptions promote: status=%s written=%s "
-            "skipped_generic=%s skipped_manual=%s errors=%s",
+            "skipped_generic=%s skipped_manual=%s drafts_enriched=%s errors=%s",
             _promo_summary.get("status"), _promo_summary.get("written"),
             _promo_summary.get("skipped_generic"),
             _promo_summary.get("skipped_manual"),
+            _promo_summary.get("drafts_enriched"),
             len(_promo_summary.get("errors") or []),
         )
-        # Propagate into editable drafts for this batch so name_pl blockers
-        # clear without a separate operator enrich step.
-        _pf = Path(settings.storage_root) / "proforma_links.db"
-        _enriched_drafts = 0
-        _failed_drafts: list = []
-        if _pf.exists() and int(_promo_summary.get("written") or 0) > 0:
-            for _d in _pildb.list_drafts_for_batch(_pf, batch_id):
-                if _d.draft_state not in _pildb.EDITABLE_STATES:
-                    continue
-                try:
-                    _pildb.enrich_draft_lines(
-                        _pf, _d.id, "pz-process-promote",
-                        _d.updated_at, _ddb.get_product_description,
-                    )
-                    _enriched_drafts += 1
-                except Exception as _ee:
-                    log.warning(
-                        "post-promote draft enrich failed draft_id=%s: %s",
-                        _d.id, _ee,
-                    )
-                    _failed_drafts.append({
-                        "draft_id": _d.id,
-                        "error": str(_ee)[:200],
-                    })
-        _promo_summary["drafts_enriched"] = _enriched_drafts
-        _promo_summary["drafts_failed"] = _failed_drafts
-        if _failed_drafts and _promo_summary.get("status") == "ok":
+        if _promo_summary["drafts_failed"] and _promo_summary.get("status") == "ok":
             _promo_summary["status"] = "incomplete"
     except Exception as exc:
         log.warning("pz_rows → product_descriptions promote failed (non-fatal): %s", exc)

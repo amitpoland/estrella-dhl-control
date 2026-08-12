@@ -18,6 +18,7 @@ wFirma goods writes only through wfirma_product_auto_register (flag-gated).
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -403,6 +404,68 @@ def promote_and_enrich_batch_drafts(
         "drafts_failed": failed,
         "drafts_locked_skipped": skipped_locked,
     }
+
+
+def enrich_editable_drafts_for_product_code(
+    product_code: str,
+    *,
+    proforma_db: Path,
+    operator: str = "description-admin-converge",
+) -> Dict[str, Any]:
+    """Retry PD → editable-draft enrich for one product_code.
+
+    Posted / converted / approved drafts are skipped. Never changes qty,
+    price, currency, or product_code. Never fabricates wfirma_product_id.
+    Idempotent: a second run on already-enriched lines is a no-op fill.
+    """
+    from . import document_db as ddb
+    from . import proforma_invoice_link_db as pildb
+
+    pc = (product_code or "").strip()
+    out: Dict[str, Any] = {
+        "ok": True,
+        "product_code": pc,
+        "drafts_enriched": 0,
+        "drafts_skipped_locked": 0,
+        "drafts_skipped_no_line": 0,
+        "drafts_failed": [],
+    }
+    if not pc or not Path(proforma_db).exists():
+        return out
+
+    editable = getattr(
+        pildb, "EDITABLE_STATES", ("draft", "editing", "post_failed")
+    )
+    targets: List[Any] = []
+    with sqlite3.connect(str(proforma_db)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT id, draft_state, editable_lines_json, updated_at "
+            "FROM proforma_drafts"
+        ).fetchall()
+    for r in rows:
+        state = str(r["draft_state"] or "")
+        if state not in editable:
+            out["drafts_skipped_locked"] += 1
+            continue
+        lines = json.loads(r["editable_lines_json"] or "[]") or []
+        if not any(str(ln.get("product_code") or "").strip() == pc for ln in lines):
+            out["drafts_skipped_no_line"] += 1
+            continue
+        targets.append(r)
+
+    for r in targets:
+        try:
+            pildb.enrich_draft_lines(
+                Path(proforma_db), int(r["id"]), operator,
+                r["updated_at"], ddb.get_product_description,
+            )
+            out["drafts_enriched"] += 1
+        except Exception as exc:
+            out["drafts_failed"].append({
+                "draft_id": int(r["id"]), "error": str(exc)[:200],
+            })
+    return out
 
 
 def physical_weight_index(batch_id: str) -> Dict[str, Dict[str, float]]:

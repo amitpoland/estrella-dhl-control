@@ -295,6 +295,27 @@ def _auto_create_draft_for_client(
                     batch_id, client, exc)
 
 
+def _promote_and_enrich_after_intake(batch_id: str, operator: str = "intake") -> None:
+    """Promote audit/pz_rows descriptions and enrich editable drafts.
+
+    Non-fatal. Closes the intake birth gap: drafts created before
+    product_descriptions existed stay blank until this pass. Delegates to
+    commercial_authority — never a second enrich algorithm.
+    """
+    try:
+        from ..services.commercial_authority import promote_and_enrich_batch_drafts
+        promote_and_enrich_batch_drafts(
+            batch_id,
+            proforma_db=_proforma_db_path(),
+            operator=operator or "intake",
+        )
+    except Exception as exc:
+        log.warning(
+            "[%s] intake description promote/enrich failed (non-fatal): %s",
+            batch_id, exc,
+        )
+
+
 def _validate_file(file: UploadFile, allowed_exts: set) -> None:
     if not file.filename:
         raise HTTPException(status_code=400, detail="File has no name.")
@@ -1695,6 +1716,8 @@ async def shipment_intake(
         log.warning("[%s] rule_based_reverification failed (non-fatal): %s",
                     batch_id, _rev_exc)
 
+    _promote_and_enrich_after_intake(batch_id, operator="intake")
+
     return JSONResponse({
         "ok":            True,
         "batch_id":      batch_id,
@@ -2568,6 +2591,8 @@ async def sales_packing_reingest(
                 "currency missing — Proforma will block until set")
         per_file["warnings"].extend(pnd_summary.get("warnings") or [])
         results.append(per_file)
+
+    _promote_and_enrich_after_intake(batch_id, operator=operator or "reingest")
 
     return JSONResponse({
         "ok":        True,
