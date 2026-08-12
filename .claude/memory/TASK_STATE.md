@@ -48,42 +48,24 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 ## Current task
 
-- **Task:** INTAKE RESIDUAL AUTHORITY AUDIT — close the intake multi-party contractor
-  seeding defect. Audit-then-fix campaign; diagnosis is complete and is **not** to be reopened.
-- **Started:** 2026-08-12 · **Status:** `READY_FOR_PR` — PR opened, **not merged, not deployed**.
-- **Branch:** `fix/intake-multiparty-contractor-seed` from `origin/main` `0dc647af`
-  (= production marker in `C:\PZ\version.txt`; no delta at branch time).
-- **Audit verdict — two residues, one defect:**
-  - *Empty-contractor-ID tolerance* → **INTENTIONAL, no change.** Intake is document capture;
-    identity resolves later via the R2 resolver. 46 intake POST sites across 11 test files, 27
-    in files with zero contractor-id references. V2 already requires a party for every doc type
-    that carries authority; only `awb`/`carnet`/`other` (no party UI) transmit blank. A blanket
-    "contractor required" guard was **deliberately not added**.
-  - *First-non-empty block scan* → **REAL DEFECT, fixed.** The inherited claim that it feeds the
-    AWB document only (line 711) is **false**: it also feeds `_persist_local_async`
-    (`service_invoice`/`carnet`/`other_document`) and the `packing_contractor_resolution` seed.
-- **Defect:** `packing_contractor_resolution` is `UNIQUE(batch_id, role)` — one contractor per
-  batch. Intake seeded it with the **first** non-empty CID at `status='confirmed',
-  confidence=1.0`, so on a multi-party batch document #1's contractor silently became batch-wide
-  authority, which `routes_proforma._resolve_customer` **step 0b** then hands to every draft that
-  does not resolve per-document. Duplicate authority, proven by reproduction, not inferred.
-- **Precedent:** `routes_packing.py` (`link_as_sales`) already enforces the correct invariant —
-  *"a multi-client backfill cannot be represented there without misrouting"*. Intake was the one
-  writer missing it. Fix adopts the same rule via `_sole_cid()`.
-- **Invariant (permanent):** seed the batch-level row **only** when the whole batch resolves to
-  exactly one distinct contractor. `{A}`→seed · `{A,A}`→seed · `{A,B}`→**no seed** · `{}`→no seed.
-  Never infer a representative contractor from a multi-party batch.
-- **Metered floors** (`.claude/contracts/test-baseline.md`): PZ `296 passed` (floor 260) ·
-  Carrier `646 passed, 4 failed` (floor 604) — the 4 are the registered ENVIRONMENTAL class
-  (real DHL credentials in host env). Root `python test_pz_regression.py` **160/160**.
-  **New failures: 0.**
-- **Explicitly out of scope, filed instead:** BACKLOG **B-020** (unordered `LIMIT 1` batch
-  identity consumers in `routes_dhl_clearance.py` / `ai_reverification.py` /
-  `carrier/doc_package.py` — customs/carrier authority, needs its own security review) and
-  **B-021** (historical contaminated rows — production-data integrity, no mutation authorized).
-  Neither may expand this PR.
-- **Production writes: NONE.** No wFirma/DHL/email/inventory/accounting/fiscal mutation. No
-  schema change, no migration, no data backfill. Rollback = revert the single commit.
+- **Task:** PR #1201 — prevent multi-party intake from seeding batch-level
+  `packing_contractor_resolution`; then B-021 read-only historical measurement.
+- **Started:** 2026-08-12 · **Status:** `VALIDATING` — rebased on production tip; adding 0b
+  fallthrough assertion; seven-agent gate / merge / App-only deploy next; B-021 RO after smoke.
+- **Baseline / production:** `0b2020a8a0eb76f437aff90f40e1c7acb081eb7a` (`C:\PZ\version.txt`).
+- **Branch:** `fix/intake-multiparty-contractor-seed` rebased onto `0b2020a8` (was based on
+  `0dc647af`). Tip includes `_sole_cid()` + multiparty seed tests; main still has first-non-empty
+  seed — fix still required (not superseded by B-020).
+- **Invariant (permanent):** `{A}`→seed · `{A,A}`→seed · `{A,B}`→**no seed** · `{}`→no seed.
+  Per-document contractor is authoritative for multi-party batches; batch-level row is only a
+  convenience for genuinely single-party batches. Empty-contractor tolerance stays intentional.
+- **B-020:** CLOSED on production (PR #1202 / `document_party_authority`). Do not reopen or
+  expand #1201 into consumer customs/carrier paths.
+- **B-021:** after #1201 deploy — **read-only only**. No DELETE/UPDATE/backfill of historical
+  `packing_contractor_resolution` rows without a separate mutation campaign.
+- **Production writes for #1201:** NONE (authority logic only). Rollback = revert merge.
+- **Commercial-description WIP:** stashed separately
+  (`wip-commercial-description-convergence-20260812`); do not mix into this campaign.
 
 ## Prior task — Product-description authority (PR #1178) (COMPLETE; CLOSED)
 

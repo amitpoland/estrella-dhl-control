@@ -125,7 +125,11 @@ def test_two_suppliers_do_not_seed_a_batch_level_supplier(client):
 
 
 def test_single_party_intake_still_seeds(client):
-    """Guard against over-correction: the single-party case must keep working."""
+    """Guard against over-correction: the single-party case must keep working.
+
+    ``{A,A}`` across two purchase blocks is still one distinct contractor —
+    a legitimate batch-level seed (same as ``{A}``).
+    """
     cli, sup_a, _ = client
     r = cli.post(
         "/api/v1/shipment/intake",
@@ -155,3 +159,81 @@ def test_single_party_intake_still_seeds(client):
     gc = cli.get(f"/api/v1/packing/{batch_id}/contractor-resolution/client")
     assert gc.status_code == 200, gc.text
     assert str(gc.json()["matched_master_id"]) == "CL-A"
+
+
+def test_multiparty_falls_through_to_per_document_not_step_0b(client, tmp_path):
+    """Multi-client intake must not feed Pro Forma resolver step 0b.
+
+    After intake: no batch-level packing_contractor_resolution row.
+    Per-document authority (draft contractor id → Customer Master) still
+    resolves each party independently. Step 0b
+    (``derive_customer_resolution_via_packing``) must return None so it
+    cannot wrong-route every draft on the batch.
+    """
+    cli, _, _ = client
+    r = cli.post(
+        "/api/v1/shipment/intake",
+        data={"tracking_no": "RS-MULTI-0B", "carrier": "DHL",
+              "metadata": json.dumps({
+                  "purchase_blocks": [],
+                  "sales_blocks": [
+                      {"document_index": 0, "packing_index": -1,
+                       "client_name": "Alpha Buyer GmbH",
+                       "client_contractor_id": "CL-A"},
+                      {"document_index": 1, "packing_index": -1,
+                       "client_name": "Beta Buyer SARL",
+                       "client_contractor_id": "CL-B"},
+                  ],
+              })},
+        files=[("invoices", ("i1.pdf", _pdf(), "application/pdf")),
+               ("sales_documents", ("s1.pdf", _pdf(), "application/pdf")),
+               ("sales_documents", ("s2.pdf", _pdf(), "application/pdf"))],
+    )
+    assert r.status_code == 200, r.text
+    batch_id = r.json()["batch_id"]
+
+    g = cli.get(f"/api/v1/packing/{batch_id}/contractor-resolution/client")
+    assert g.status_code == 404, g.text
+
+    from app.core.config import settings
+    from app.services.customer_resolution_authority import (
+        derive_customer_authority_for_draft,
+        derive_customer_resolution_via_packing,
+    )
+
+    packing_db = settings.storage_root / "packing_resolutions.sqlite"
+    cm_db = settings.storage_root / "customer_master.sqlite"
+    docs_db = settings.storage_root / "documents.db"
+
+    step_0b = derive_customer_resolution_via_packing(
+        batch_id=batch_id,
+        client_name="Alpha Buyer GmbH",
+        customer_master_db_path=cm_db,
+        packing_resolution_db_path=packing_db,
+    )
+    assert step_0b is None, (
+        "step 0b must not resolve on a multi-party batch with no seeded "
+        f"batch-level row; got {step_0b!r}"
+    )
+
+    per_a = derive_customer_authority_for_draft(
+        batch_id=batch_id,
+        client_name="Alpha Buyer GmbH",
+        documents_db_path=docs_db,
+        customer_master_db_path=cm_db,
+        client_contractor_id="CL-A",
+    )
+    assert per_a is not None
+    assert per_a["wfirma_customer_id"] == "CL-A"
+    assert per_a["match_strategy"] in ("draft_contractor_id", "per_document_upload")
+
+    per_b = derive_customer_authority_for_draft(
+        batch_id=batch_id,
+        client_name="Beta Buyer SARL",
+        documents_db_path=docs_db,
+        customer_master_db_path=cm_db,
+        client_contractor_id="CL-B",
+    )
+    assert per_b is not None
+    assert per_b["wfirma_customer_id"] == "CL-B"
+    assert per_a["wfirma_customer_id"] != per_b["wfirma_customer_id"]
