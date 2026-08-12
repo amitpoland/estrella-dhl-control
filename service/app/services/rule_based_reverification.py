@@ -146,56 +146,44 @@ def build_masters_snapshot(
     except Exception as e:
         log.debug("build_masters_snapshot: company_profile read failed: %s", e)
 
-    # ── Supplier ─────────────────────────────────────────────────────────────
+    # ── Supplier / client (B-020 document-party; AMBIGUOUS → None) ───────────
     try:
         import sqlite3
-        sup_db = storage_root / "suppliers.sqlite"
-        if sup_db.exists():
-            batch_id = audit.get("batch_id", "")
-            docs_db  = storage_root / "documents.db"
-            if docs_db.exists():
-                conn = sqlite3.connect(str(docs_db))
-                conn.row_factory = sqlite3.Row
-                row = conn.execute(
-                    "SELECT supplier_contractor_id FROM shipment_documents "
-                    "WHERE batch_id=? AND supplier_contractor_id!='' LIMIT 1",
-                    (batch_id,)
-                ).fetchone()
-                conn.close()
-                if row:
-                    sup_cid = row["supplier_contractor_id"]
-                    sconn = sqlite3.connect(str(sup_db))
-                    sconn.row_factory = sqlite3.Row
-                    srow = sconn.execute(
-                        "SELECT * FROM suppliers WHERE id=?", (sup_cid,)
-                    ).fetchone()
-                    sconn.close()
-                    snap.supplier_row = dict(srow) if srow else None
-    except Exception as e:
-        log.debug("build_masters_snapshot: supplier read failed: %s", e)
+        from .document_party_authority import (
+            ROLE_CLIENT,
+            ROLE_SUPPLIER,
+            STATUS_SINGLE,
+            resolve_party_id,
+        )
 
-    # ── Client ───────────────────────────────────────────────────────────────
-    try:
-        import sqlite3
-        doc_db = storage_root / "documents.db"
         batch_id = audit.get("batch_id", "")
-        if doc_db.exists():
-            conn = sqlite3.connect(str(doc_db))
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT client_contractor_id FROM shipment_documents "
-                "WHERE batch_id=? AND client_contractor_id!='' LIMIT 1",
-                (batch_id,)
+        docs_db = storage_root / "documents.db"
+        sup_db = storage_root / "suppliers.sqlite"
+
+        sup_party = resolve_party_id(docs_db, batch_id, ROLE_SUPPLIER)
+        if (
+            sup_party.status == STATUS_SINGLE
+            and sup_party.contractor_id
+            and sup_db.exists()
+        ):
+            sconn = sqlite3.connect(str(sup_db))
+            sconn.row_factory = sqlite3.Row
+            srow = sconn.execute(
+                "SELECT * FROM suppliers WHERE id=?", (sup_party.contractor_id,)
             ).fetchone()
-            conn.close()
-            if row:
-                cid = row["client_contractor_id"]
-                cm_db = storage_root / "customer_master.sqlite"
-                if cm_db.exists():
-                    from .customer_master_db import get_customer
-                    snap.client_row = _to_dict(get_customer(cm_db, cid))
+            sconn.close()
+            snap.supplier_row = dict(srow) if srow else None
+
+        cli_party = resolve_party_id(docs_db, batch_id, ROLE_CLIENT)
+        if cli_party.status == STATUS_SINGLE and cli_party.contractor_id:
+            cm_db = storage_root / "customer_master.sqlite"
+            if cm_db.exists():
+                from .customer_master_db import get_customer
+                snap.client_row = _to_dict(
+                    get_customer(cm_db, cli_party.contractor_id)
+                )
     except Exception as e:
-        log.debug("build_masters_snapshot: client read failed: %s", e)
+        log.debug("build_masters_snapshot: party master read failed: %s", e)
 
     # ── Product masters ───────────────────────────────────────────────────────
     try:
