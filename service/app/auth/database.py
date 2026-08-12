@@ -103,6 +103,11 @@ def _backfill_landing_defaults(con: sqlite3.Connection) -> None:
 
 
 def _connect() -> sqlite3.Connection:
+    # Without this guard str(None) -> "None", and sqlite3 SILENTLY creates an
+    # empty database file named "None" in the process CWD instead of raising.
+    # Every auth query then reads zero rows: a wrong answer, not an error.
+    if _db_path is None:
+        raise RuntimeError("auth database not initialised: call init_db() first")
     con = sqlite3.connect(str(_db_path), check_same_thread=False)
     con.row_factory = sqlite3.Row
     return con
