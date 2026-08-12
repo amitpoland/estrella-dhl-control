@@ -140,17 +140,30 @@ def test_no_stale_set_page_detail_callsites():
             )
 
 
-def test_new_shipment_modal_uses_helper_on_create():
-    """NewShipmentModal.onCreated must navigate through the helper
-    on success, not via the dead setPage('detail') + pushState path."""
+def test_v1_new_shipment_modal_is_retired():
+    """V1 created shipments through its own intake payload builder; that
+    duplicate authority was removed and the entry routes to V2 instead."""
     src = _read(DASH)
-    idx = src.index("<NewShipmentModal")
-    block = src[idx:idx + 1200]
-    assert "buildShipmentDetailUrl(data.batchId)" in block or \
-           "buildShipmentDetailUrl(data.batch_id)" in block, (
-        "NewShipmentModal.onCreated must call "
-        "window.location.href = buildShipmentDetailUrl(data.batchId)"
-    )
+    assert "<NewShipmentModal" not in src
+    assert "buildShipmentDetailUrl" in src  # helper still used by the rest of V1
+
+
+def test_v2_navigates_to_the_created_batch_after_intake():
+    """The post-create navigation guarantee moved from V1 to V2 — so must its pin.
+
+    V1's version of this was test_new_shipment_modal_uses_helper_on_create,
+    which pinned buildShipmentDetailUrl(data.batchId) on the now-retired modal.
+    V2 navigates through handleViewShipment instead. Without this pin a broken
+    onCreated (dropped data.batchId, or handleViewShipment never called) would
+    strand the operator on the dashboard after a successful intake and still
+    pass every other test in the suite.
+    """
+    src = _read(STATIC / "v2" / "index.html")
+    assert "onCreated={(data) =>" in src
+    nav = src[src.index("onCreated={(data) =>"):]
+    nav = nav[:nav.index("}}") + 2]
+    assert "handleViewShipment(" in nav, nav
+    assert "batch_id: data.batchId" in nav, nav
 
 
 def test_dashboard_redirects_id_query_param():

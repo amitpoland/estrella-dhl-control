@@ -155,10 +155,11 @@ def test_view_mode_toggle_preserved():
 
 # ── NewShipmentModal still reachable ────────────────────────────────────────
 
-def test_new_shipment_modal_reachable():
+def test_new_shipment_entry_reachable():
+    """V1's New Shipment entry now hands off to the canonical V2 surface."""
     src = _src()
-    assert "NewShipmentModal" in src
-    assert "setShowNewShipment(true)" in src
+    assert "onNewShipment={() => { window.location.href = '/v2/dashboard'; }}" in src
+    assert "NewShipmentModal" not in src
 
 
 # ── No fake carrier expansion ───────────────────────────────────────────────

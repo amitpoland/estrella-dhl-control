@@ -101,7 +101,8 @@ def test_dashboard_no_legacy_packing_ids_remain():
 def test_wired_types_set_uses_canonical_keys():
     """_NS_WIRED_TYPES gate must include the renamed IDs so the form
     isn't blocked by its own preflight check."""
-    for path in (_SHIPMENT_DETAIL, _DASHBOARD):
+    # dashboard.html's copy went with the retired V1 New Shipment modal.
+    for path in (_SHIPMENT_DETAIL,):
         src = path.read_text(encoding="utf-8")
         idx = src.find("_NS_WIRED_TYPES")
         assert idx != -1, f"_NS_WIRED_TYPES not found in {path.name}"

@@ -198,5 +198,5 @@ def test_dashboard_modal_has_per_slot_accept():
     pi_section = dash[dash.index("id: 'purchase_invoice'"):dash.index("id: 'sales_proforma'")]
     assert "allowedExts: ['.pdf']" in pi_section
     # Packing types must include xlsx + xls:
-    pp_section = dash[dash.index("id: 'purchase_packing'"):dash.index("id: 'sales_packing'")]
+    pp_section = dash[dash.index("id: 'purchase_packing_list'"):dash.index("id: 'sales_packing_list'")]
     assert "'.xlsx'" in pp_section and "'.xls'" in pp_section

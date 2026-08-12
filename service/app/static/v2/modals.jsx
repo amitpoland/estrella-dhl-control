@@ -10,6 +10,12 @@
 // (Customer Master + Supplier Master). File payload + metadata blocks mirror
 // the proven dashboard.html (V1) client so the backend contract is identical.
 //
+// Party authority: each document slot carries its OWN client / supplier
+// selection and that selection is the only source of the block's
+// client_contractor_id / supplier_contractor_id. The former shipment-level
+// Client/Supplier defaults (and the `slot || shipment` fallback) are gone —
+// two editable truths for one document identity was the defect.
+//
 // Idempotency: a per-modal idempotency_key is sent on every attempt; a retry
 // after failure reuses it, so the backend returns the ORIGINAL batch instead
 // of creating a duplicate. No PZ number is assigned at intake (status=draft).
@@ -53,10 +59,6 @@ function NewShipmentModal({ onClose, onCreated }) {
   const [awbNo, setAwbNo]     = React.useState('');
   const [carrier, setCarrier] = React.useState('DHL');
   const [note, setNote]       = React.useState('');
-
-  // Shipment-level party IDs (master-data backed; '' until selected)
-  const [shipmentClientCid, setShipmentClientCid]     = React.useState('');
-  const [shipmentSupplierCid, setShipmentSupplierCid] = React.useState('');
 
   // Duplicate-AWB advisory (Lesson N: advisory, never a hard block)
   const [dupAdvisory, setDupAdvisory] = React.useState(null); // null | array of matches
@@ -131,13 +133,12 @@ function NewShipmentModal({ onClose, onCreated }) {
           country:       s.country || '',
           vat_id:        s.vat_id || '',
         })).filter(x => x.contractor_id && x.name));
+      } else if (sRes && sRes.error) {
+        setMasterLoadError(sRes.error);
       }
     })();
     return () => { cancelled = true; };
   }, []);
-
-  const hasMasterClients   = clientList.length > 0;
-  const hasMasterSuppliers = supplierList.length > 0;
 
   const totalFiles    = documents.reduce((sum, d) => sum + d.files.length, 0);
   const hasAnyInvoice = documents.some(d => d.typeId === 'purchase_invoice' && d.files.length > 0);
@@ -166,6 +167,23 @@ function NewShipmentModal({ onClose, onCreated }) {
     if (!awbNo.trim())  { setError('AWB / Tracking number is required.'); return; }
     if (!hasAnyInvoice) { setError('At least one Purchase Invoice file is required.'); return; }
 
+    // Per-document party authority: the slot's own selection is the ONLY
+    // source of client / supplier identity — there is no shipment-level
+    // fallback. A slot that carries files must name the party its document
+    // type requires. Empty optional slots are not forced to pick one.
+    const partyErrors = [];
+    const typeSeen = {};
+    documents.forEach(d => {
+      const t = DOC_TYPES.find(x => x.id === d.typeId);
+      if (!t) return;
+      typeSeen[t.id] = (typeSeen[t.id] || 0) + 1;
+      if (d.files.length === 0) return;
+      const n = typeSeen[t.id];
+      if (t.needsSupplier && !(d.supplierOverride || '').trim()) partyErrors.push(`${t.label} #${n} requires Supplier.`);
+      if (t.needsClient   && !(d.clientOverride   || '').trim()) partyErrors.push(`${t.label} #${n} requires Client.`);
+    });
+    if (partyErrors.length) { setError(partyErrors.join(' ')); return; }
+
     // Advisory duplicate-AWB check (not a hard block). Second click confirms.
     if (!dupConfirmedRef.current) {
       const dupes = await _findDuplicates(awbNo.trim());
@@ -187,97 +205,109 @@ function NewShipmentModal({ onClose, onCreated }) {
 
       if (awbSlot && awbSlot.files.length > 0) fd.append('awb', awbSlot.files[0]);
 
-      // purchase_blocks: pair purchase packing slot i with purchase invoice slot i.
+      // purchase_blocks: pair purchase packing slot i with purchase invoice
+      // slot i — but ONLY when both name the same supplier. The paired packing
+      // files take the block's supplier identity, so pairing across two
+      // different suppliers would file the packing under the invoice's party.
       const purchaseMeta = [];
+      const pairedPackUids = new Set();
       let invIdx = 0, packIdx = 0;
       purchaseSlots.forEach((slot, sIdx) => {
         slot.files.forEach(f => fd.append('invoices', f));
-        const pairedPack = purchasePackSlots[sIdx];
+        const slotSupplier = (slot.supplierOverride || '').trim();
+        const candidate    = purchasePackSlots[sIdx];
+        const pairedPack   = (candidate && candidate.files.length > 0 &&
+                              (candidate.supplierOverride || '').trim() === slotSupplier)
+                             ? candidate : null;
         purchaseMeta.push({
           invoice_index:          invIdx,
-          packing_index:          (pairedPack && pairedPack.files.length > 0) ? packIdx : -1,
+          packing_index:          pairedPack ? packIdx : -1,
           // Count of files in this packing slot so the backend range-matches
           // EVERY file (not just the first) to this block's supplier identity.
-          packing_file_count:     (pairedPack && pairedPack.files.length > 0) ? pairedPack.files.length : 0,
+          packing_file_count:     pairedPack ? pairedPack.files.length : 0,
           supplier_name:          '',
-          supplier_contractor_id: (slot.supplierOverride || shipmentSupplierCid || '').trim(),
+          supplier_contractor_id: slotSupplier,
         });
-        if (pairedPack && pairedPack.files.length > 0) {
+        if (pairedPack) {
+          pairedPackUids.add(pairedPack.uid);
           pairedPack.files.forEach(f => fd.append('packing_lists', f));
           packIdx += pairedPack.files.length;
         }
         invIdx += slot.files.length;
       });
-      // Extra purchase packing slots beyond the invoice slots — emit a
-      // synthetic block (mirrors the sales side) so these files ALSO inherit
-      // the slot's supplier identity via the backend range-match, instead of
-      // silently registering with no supplier_contractor_id.
-      for (let i = purchaseSlots.length; i < purchasePackSlots.length; i++) {
-        const extraPack = purchasePackSlots[i];
-        if (extraPack.files.length > 0) {
-          purchaseMeta.push({
-            invoice_index:          -1,
-            packing_index:          packIdx,
-            packing_file_count:     extraPack.files.length,
-            supplier_name:          '',
-            supplier_contractor_id: (extraPack.supplierOverride || shipmentSupplierCid || '').trim(),
-          });
-          extraPack.files.forEach(f => fd.append('packing_lists', f));
-          packIdx += extraPack.files.length;
-        }
-      }
+      // Every packing slot left unpaired — an extra slot beyond the invoice
+      // slots, or one naming a different supplier — keeps its OWN identity in
+      // a block of its own (invoice_index -1 = no invoice association), so its
+      // files range-match to the supplier the operator actually picked.
+      purchasePackSlots.forEach(pack => {
+        if (pairedPackUids.has(pack.uid) || pack.files.length === 0) return;
+        purchaseMeta.push({
+          invoice_index:          -1,
+          packing_index:          packIdx,
+          packing_file_count:     pack.files.length,
+          supplier_name:          '',
+          supplier_contractor_id: (pack.supplierOverride || '').trim(),
+        });
+        pack.files.forEach(f => fd.append('packing_lists', f));
+        packIdx += pack.files.length;
+      });
 
-      // sales_blocks: pair sales packing slot i with sales doc slot i.
+      // sales_blocks: same rule on the sales side — pair sales packing slot i
+      // with sales doc slot i only when both name the same client.
       const salesMeta = [];
+      const pairedSalesPackUids = new Set();
       let sDocIdx = 0, sPackIdx = 0;
       salesDocSlots.forEach((slot, sIdx) => {
         slot.files.forEach(f => fd.append('sales_documents', f));
-        const pairedPack = salesPackSlots[sIdx];
+        const slotClient = (slot.clientOverride || '').trim();
+        const candidate  = salesPackSlots[sIdx];
+        const pairedPack = (candidate && candidate.files.length > 0 &&
+                            (candidate.clientOverride || '').trim() === slotClient)
+                           ? candidate : null;
         salesMeta.push({
           document_index:       sDocIdx,
-          packing_index:        (pairedPack && pairedPack.files.length > 0) ? sPackIdx : -1,
+          packing_index:        pairedPack ? sPackIdx : -1,
           // Count of files in this packing slot so the backend range-matches
           // EVERY file (not just the first) to this block's client identity.
-          packing_file_count:   (pairedPack && pairedPack.files.length > 0) ? pairedPack.files.length : 0,
+          packing_file_count:   pairedPack ? pairedPack.files.length : 0,
           client_name:          '',
           client_ref:           '',
-          client_contractor_id: (slot.clientOverride || shipmentClientCid || '').trim(),
+          client_contractor_id: slotClient,
         });
-        if (pairedPack && pairedPack.files.length > 0) {
+        if (pairedPack) {
+          pairedSalesPackUids.add(pairedPack.uid);
           pairedPack.files.forEach(f => fd.append('sales_packing_lists', f));
           sPackIdx += pairedPack.files.length;
         }
         sDocIdx += slot.files.length;
       });
-      // Sales packing slots without a paired sales doc — keep client_contractor_id.
-      for (let i = salesDocSlots.length; i < salesPackSlots.length; i++) {
-        const extraPack = salesPackSlots[i];
-        if (extraPack.files.length > 0) {
-          extraPack.files.forEach(f => fd.append('sales_packing_lists', f));
-          salesMeta.push({
-            document_index:       -1,
-            packing_index:        sPackIdx,
-            // Count of files so the backend range-matches EVERY file in this
-            // unpaired packing slot to this block's client identity.
-            packing_file_count:   extraPack.files.length,
-            client_name:          '',
-            client_ref:           '',
-            client_contractor_id: (extraPack.clientOverride || shipmentClientCid || '').trim(),
-          });
-          sPackIdx += extraPack.files.length;
-        }
-      }
+      // Unpaired sales packing slots keep their own client identity.
+      salesPackSlots.forEach(pack => {
+        if (pairedSalesPackUids.has(pack.uid) || pack.files.length === 0) return;
+        pack.files.forEach(f => fd.append('sales_packing_lists', f));
+        salesMeta.push({
+          document_index:       -1,
+          packing_index:        sPackIdx,
+          // Count of files so the backend range-matches EVERY file in this
+          // unpaired packing slot to this block's client identity.
+          packing_file_count:   pack.files.length,
+          client_name:          '',
+          client_ref:           '',
+          client_contractor_id: (pack.clientOverride || '').trim(),
+        });
+        sPackIdx += pack.files.length;
+      });
 
       // Local-only Atlas types (service_invoice / carnet / other).
       const serviceMeta = [], carnetMeta = [], otherMeta = [];
       documents.filter(d => d.typeId === 'service_invoice').forEach(slot => {
-        slot.files.forEach(f => { fd.append('service_invoices', f); serviceMeta.push({ supplier_contractor_id: (slot.supplierOverride || shipmentSupplierCid || '').trim(), client_contractor_id: '' }); });
+        slot.files.forEach(f => { fd.append('service_invoices', f); serviceMeta.push({ supplier_contractor_id: (slot.supplierOverride || '').trim(), client_contractor_id: '' }); });
       });
       documents.filter(d => d.typeId === 'carnet').forEach(slot => {
-        slot.files.forEach(f => { fd.append('carnet_docs', f); carnetMeta.push({ supplier_contractor_id: (slot.supplierOverride || shipmentSupplierCid || '').trim(), client_contractor_id: (slot.clientOverride || shipmentClientCid || '').trim() }); });
+        slot.files.forEach(f => { fd.append('carnet_docs', f); carnetMeta.push({ supplier_contractor_id: (slot.supplierOverride || '').trim(), client_contractor_id: (slot.clientOverride || '').trim() }); });
       });
       documents.filter(d => d.typeId === 'other').forEach(slot => {
-        slot.files.forEach(f => { fd.append('other_docs', f); otherMeta.push({ supplier_contractor_id: (slot.supplierOverride || shipmentSupplierCid || '').trim(), client_contractor_id: (slot.clientOverride || shipmentClientCid || '').trim() }); });
+        slot.files.forEach(f => { fd.append('other_docs', f); otherMeta.push({ supplier_contractor_id: (slot.supplierOverride || '').trim(), client_contractor_id: (slot.clientOverride || '').trim() }); });
       });
 
       fd.append('metadata', JSON.stringify({
@@ -331,7 +361,7 @@ function NewShipmentModal({ onClose, onCreated }) {
           )}
           {masterLoadError && (
             <div data-testid="new-shipment-master-error" style={{ marginBottom: 14, padding: '10px 14px', borderRadius: 6, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)', fontSize: 12, color: 'var(--badge-amber-text)' }}>
-              Master data could not load ({masterLoadError}). You can still create the shipment; contractor identity will be blank until the masters are reachable.
+              Master data could not load ({masterLoadError}). Every purchase / sales document must name its own contractor, so the shipment cannot be created until the masters are reachable.
             </div>
           )}
           {dupAdvisory && (
@@ -359,22 +389,6 @@ function NewShipmentModal({ onClose, onCreated }) {
             </FormField>
           </div>
 
-          {/* Row 2: Shipment-level Client + Supplier */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 8 }}>
-            <FormField label="Client (Sales)" hint={hasMasterClients ? 'Buyer / importer — default for sales documents' : 'Master data empty'}>
-              <Select value={shipmentClientCid} onChange={e => setShipmentClientCid(e.target.value)} data-testid="new-shipment-client-select">
-                <option value="">— select client —</option>
-                {clientList.map(c => <option key={c.contractor_id} value={c.contractor_id}>{c.name}{c.country ? ` (${c.country})` : ''}</option>)}
-              </Select>
-            </FormField>
-            <FormField label="Supplier (Purchase)" hint={hasMasterSuppliers ? 'Exporter — default for purchase documents' : 'Master data empty'}>
-              <Select value={shipmentSupplierCid} onChange={e => setShipmentSupplierCid(e.target.value)} data-testid="new-shipment-supplier-select">
-                <option value="">— select supplier —</option>
-                {supplierList.map(s => <option key={s.contractor_id} value={s.contractor_id}>{s.name}{s.country ? ` (${s.country})` : ''}</option>)}
-              </Select>
-            </FormField>
-          </div>
-
           {/* Documents section */}
           <div style={{ marginTop: 8, marginBottom: 8, paddingTop: 16, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div>
@@ -385,7 +399,7 @@ function NewShipmentModal({ onClose, onCreated }) {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {documents.map(doc => (
-              <DocumentSlot key={doc.uid} doc={doc} onUpdate={(patch) => updateDoc(doc.uid, patch)} onRemove={() => removeDocument(doc.uid)} clientList={clientList} supplierList={supplierList} defaultClientCid={shipmentClientCid} defaultSupplierCid={shipmentSupplierCid} />
+              <DocumentSlot key={doc.uid} doc={doc} onUpdate={(patch) => updateDoc(doc.uid, patch)} onRemove={() => removeDocument(doc.uid)} clientList={clientList} supplierList={supplierList} />
             ))}
           </div>
 
@@ -400,7 +414,7 @@ function NewShipmentModal({ onClose, onCreated }) {
           </div>
 
           <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 6, background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)', fontSize: 11, color: 'var(--badge-blue-text)', lineHeight: 1.5 }}>
-            ℹ <strong>Purchase ↔ Sales packing lists</strong> may share identical items and quantities — only prices differ. They are kept as <strong>separate document identities</strong>: purchase values flow to customs (CIF / SAD); sales values flow to warehouse stock valuation. Each slot can override its own client / supplier.
+            ℹ <strong>Purchase ↔ Sales packing lists</strong> may share identical items and quantities — only prices differ. They are kept as <strong>separate document identities</strong>: purchase values flow to customs (CIF / SAD); sales values flow to warehouse stock valuation. Each document names its own client / supplier — there is no shipment-level default.
           </div>
 
           <FormField label="Optional Note">
@@ -414,7 +428,9 @@ function NewShipmentModal({ onClose, onCreated }) {
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
             <Btn variant="outline" onClick={onClose} data-testid="new-shipment-cancel">Cancel</Btn>
             <Btn variant="outline" onClick={() => handleSubmit(false)} disabled={saveDisabled} title={saveDisabled ? 'AWB + at least one Purchase Invoice required' : 'Create the real shipment draft'} data-testid="new-shipment-save">Save Draft</Btn>
-            <Btn variant="gold" onClick={() => handleSubmit(true)} disabled={saveDisabled} title={saveDisabled ? 'AWB + at least one Purchase Invoice required' : 'Create the draft, then run a read-only DHL readiness pre-check'} data-testid="new-shipment-save-precheck">Save &amp; Run DHL Pre-check</Btn>
+            {carrier === 'DHL' && (
+              <Btn variant="gold" onClick={() => handleSubmit(true)} disabled={saveDisabled} title={saveDisabled ? 'AWB + at least one Purchase Invoice required' : 'Create the draft, then run a read-only DHL readiness pre-check'} data-testid="new-shipment-save-precheck">Save &amp; Run DHL Pre-check</Btn>
+            )}
           </div>
         </>
       )}
@@ -463,9 +479,8 @@ function NewShipmentModal({ onClose, onCreated }) {
 }
 
 // ── Single document slot row ──────────────────────────────────────────────
-function DocumentSlot({ doc, onUpdate, onRemove, clientList, supplierList, defaultClientCid, defaultSupplierCid }) {
+function DocumentSlot({ doc, onUpdate, onRemove, clientList, supplierList }) {
   const type = DOC_TYPES.find(t => t.id === doc.typeId) || DOC_TYPES[DOC_TYPES.length - 1];
-  const [showOverride, setShowOverride] = React.useState(false);
   const [slotError, setSlotError] = React.useState('');
   const fileInputRef = React.useRef(null);
 
@@ -494,31 +509,26 @@ function DocumentSlot({ doc, onUpdate, onRemove, clientList, supplierList, defau
           {DOC_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
         </Select>
         <span style={{ fontSize: 11, color: 'var(--text-3)', flex: 1 }}>{type.hint}</span>
-        {(type.needsClient || type.needsSupplier) && (
-          <button data-testid={`new-shipment-slot-override-toggle-${doc.uid}`} onClick={() => setShowOverride(s => !s)} style={{ padding: '3px 8px', background: showOverride ? 'var(--accent)' : 'transparent', border: '1px solid ' + (showOverride ? 'var(--accent)' : 'var(--border)'), borderRadius: 4, fontSize: 10, fontWeight: 600, color: showOverride ? '#fff' : 'var(--text-3)', cursor: 'pointer' }}>
-            {type.needsClient ? 'Client' : 'Supplier'} {showOverride ? '✓' : '↓'}
-          </button>
-        )}
         <button data-testid={`new-shipment-slot-remove-${doc.uid}`} onClick={onRemove} style={{ width: 24, height: 24, borderRadius: 4, background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-3)', fontSize: 14, lineHeight: 1 }} title="Remove this document slot">×</button>
       </div>
 
-      {/* Per-document override */}
-      {showOverride && (type.needsClient || type.needsSupplier) && (
+      {/* Per-document party — the SOLE identity authority for this document */}
+      {(type.needsClient || type.needsSupplier) && (
         <div style={{ padding: '10px 12px', display: 'grid', gridTemplateColumns: type.needsClient && type.needsSupplier ? '1fr 1fr' : '1fr', gap: 10, background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border-subtle)' }}>
           {type.needsClient && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Client for this document</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Client for this document · required</div>
               <Select data-testid={`new-shipment-slot-client-override-${doc.uid}`} value={doc.clientOverride || ''} onChange={e => onUpdate({ clientOverride: e.target.value })}>
-                <option value="">— inherit shipment-level —</option>
+                <option value="">— select client —</option>
                 {clientList.map(c => <option key={c.contractor_id} value={c.contractor_id}>{c.name}{c.country ? ` (${c.country})` : ''}</option>)}
               </Select>
             </div>
           )}
           {type.needsSupplier && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Supplier for this document</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Supplier for this document · required</div>
               <Select data-testid={`new-shipment-slot-supplier-override-${doc.uid}`} value={doc.supplierOverride || ''} onChange={e => onUpdate({ supplierOverride: e.target.value })}>
-                <option value="">— inherit shipment-level —</option>
+                <option value="">— select supplier —</option>
                 {supplierList.map(s => <option key={s.contractor_id} value={s.contractor_id}>{s.name}{s.country ? ` (${s.country})` : ''}</option>)}
               </Select>
             </div>
