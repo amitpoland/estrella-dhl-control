@@ -350,30 +350,15 @@ def test_every_role_landing_in_allowed_pages_when_possible():
 
 
 def test_require_permission_not_on_fiscal_write_routes():
-    """Phase 2 may add require_permission for reports.financial reads only.
+    """Slice 1 pin: fiscal writes were deferred then.
 
-    Fiscal write / finalize routes must not be silently tightened via
-    require_permission in this slice — that remains a later phase.
+    Slice 2d intentionally stacks ``require_permission`` on fiscal finalize
+    routes (C2). This pin now asserts the Gate-3 verbs are present on the
+    critical writers rather than forbidding them.
     """
-    fiscal_markers = (
-        "def pz_create",
-        "export_wfirma",
-        "finalize",
-        "accounting.post",
-    )
-    hits = []
-    for path in (_APP / "api").rglob("routes_*.py"):
-        text = path.read_text(encoding="utf-8")
-        if "require_permission(" not in text and "def require_permission" not in text:
-            continue
-        # Ledgers financial reads are in scope for Phase 2.
-        if path.name == "routes_ledgers.py":
-            continue
-        for marker in fiscal_markers:
-            if marker in text and "require_permission" in text:
-                # Only flag if require_permission appears near a write marker window
-                idx = text.find(marker)
-                window = text[max(0, idx - 500): idx + 200]
-                if "require_permission" in window:
-                    hits.append(f"{path.name}:{marker}")
-    assert not hits, f"require_permission must not tighten fiscal writes: {hits}"
+    wfirma = (_APP / "api" / "routes_wfirma.py").read_text(encoding="utf-8")
+    proforma = (_APP / "api" / "routes_proforma.py").read_text(encoding="utf-8")
+    assert 'require_permission("pz.export_wfirma")' in wfirma
+    assert 'require_permission("pz.finalize")' in wfirma
+    assert 'require_permission("proforma.approve")' in proforma
+    assert 'require_permission("proforma.convert")' in proforma

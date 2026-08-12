@@ -158,6 +158,14 @@ def require_system_settings_admin(
     return user
 
 
+def require_dhl_resolve(
+    user: dict = Depends(require_admin),
+    _permission: Optional[dict] = Depends(require_permission("dhl.resolve")),
+) -> dict:
+    """Slice 2c — session admin + catalogue ``dhl.resolve`` (no API-key widen)."""
+    return user
+
+
 def check_session_or_redirect(request: Request) -> Optional[dict]:
     """
     For HTML page routes: return user if authenticated,

@@ -60,6 +60,7 @@ from description_grammar import METAL_PREPOSITIONAL  # noqa: E402
 
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_permission
 from ..core import timeline as tl
 from ..services.batch_service import get_output_dir
 from ..services.import_pz_builder import BatchRow, build_pz_request_from_batch
@@ -130,6 +131,9 @@ del _metal_key, _metal_form, _test_desc, _WFIRMA_METAL_COMPAT_FAILURES
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/upload", tags=["wfirma"])
 _auth  = Depends(require_api_key)
+# Slice 2d — fiscal Gate 3 (logistics denied by catalogue).
+_perm_pz_export = Depends(require_permission("pz.export_wfirma"))
+_perm_pz_finalize = Depends(require_permission("pz.finalize"))
 
 
 def _build_product_code(invoice_no: str, position: int) -> str:
@@ -2526,7 +2530,7 @@ async def wfirma_products_sync_names(
     })
 
 
-@router.post("/shipment/{batch_id}/wfirma/pz/clear-mapping", dependencies=[_auth])
+@router.post("/shipment/{batch_id}/wfirma/pz/clear-mapping", dependencies=[_auth, _perm_pz_export])
 async def wfirma_pz_clear_mapping(
     batch_id:   str,
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
@@ -2636,7 +2640,7 @@ async def wfirma_pz_clear_mapping(
     })
 
 
-@router.post("/shipment/{batch_id}/wfirma/pz_create", dependencies=[_auth])
+@router.post("/shipment/{batch_id}/wfirma/pz_create", dependencies=[_auth, _perm_pz_export])
 async def wfirma_pz_create(
     batch_id: str,
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
@@ -3000,8 +3004,8 @@ class _PZAdoptBody(BaseModel):
         return self
 
 
-@router.post("/shipment/{batch_id}/wfirma/pz_adopt",   dependencies=[_auth])
-@router.post("/shipment/{batch_id}/wfirma/pz_confirm", dependencies=[_auth])
+@router.post("/shipment/{batch_id}/wfirma/pz_adopt",   dependencies=[_auth, _perm_pz_finalize])
+@router.post("/shipment/{batch_id}/wfirma/pz_confirm", dependencies=[_auth, _perm_pz_finalize])
 async def wfirma_pz_adopt(
     batch_id: str,
     body: _PZAdoptBody,

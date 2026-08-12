@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_permission
 from ..schemas.response import (
     BatchSummary, CorrectionSummary, HealthResponse, OutputFiles,
     ProcessResponse, VerificationSummary,
@@ -23,6 +24,10 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["pz"])
 
 _auth = Depends(require_api_key)
+# Slice 2d — catalogue Gate 3
+_perm_pz_process = Depends(require_permission("pz.process"))
+_perm_pz_prepare = Depends(require_permission("pz.prepare"))
+_perm_pz_export = Depends(require_permission("pz.export_wfirma"))
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +76,7 @@ async def health() -> HealthResponse:
 
 # ── Process ───────────────────────────────────────────────────────────────────
 
-@router.post("/pz/process", dependencies=[_auth])
+@router.post("/pz/process", dependencies=[_auth, _perm_pz_process])
 async def process_pz_deprecated() -> None:
     """
     DEPRECATED — standalone PZ processing endpoint.
@@ -100,7 +105,7 @@ async def process_pz_deprecated() -> None:
     )
 
 
-@router.post("/pz/process/_legacy", response_model=ProcessResponse, dependencies=[_auth])
+@router.post("/pz/process/_legacy", response_model=ProcessResponse, dependencies=[_auth, _perm_pz_process])
 async def process_pz(
     invoices:        Annotated[List[UploadFile], File(description="Invoice PDFs (one or more)")],
     zc429:           Annotated[UploadFile,       File(description="ZC429 / SAD PDF")],
@@ -815,7 +820,7 @@ class CorrectionExecuteRequest(BaseModel):
     operator_reason: str
 
 
-@router.post("/pz/lineage/{batch_id}/correction-execute", dependencies=[_auth])
+@router.post("/pz/lineage/{batch_id}/correction-execute", dependencies=[_auth, _perm_pz_prepare])
 def global_pz_correction_execute(
     batch_id: str,
     body: CorrectionExecuteRequest,
@@ -931,7 +936,7 @@ class CorrectionPushRequest(BaseModel):
     confirm_understanding: str
 
 
-@router.post("/pz/lineage/{batch_id}/correction-push-wfirma", dependencies=[_auth])
+@router.post("/pz/lineage/{batch_id}/correction-push-wfirma", dependencies=[_auth, _perm_pz_export])
 def global_pz_correction_push_wfirma(
     batch_id: str,
     body: CorrectionPushRequest,
@@ -1093,7 +1098,7 @@ def pz_correction_lifecycle_state(batch_id: str) -> Dict[str, Any]:
     return record.to_dict()
 
 
-@router.post("/pz/lineage/{batch_id}/correction-stage", dependencies=[_auth])
+@router.post("/pz/lineage/{batch_id}/correction-stage", dependencies=[_auth, _perm_pz_prepare])
 def pz_correction_lifecycle_stage(
     batch_id: str,
     body: LifecycleStageRequest,
@@ -1227,7 +1232,7 @@ def pz_correction_lifecycle_stage(
     return record.to_dict()
 
 
-@router.delete("/pz/lineage/{batch_id}/correction-stage", dependencies=[_auth])
+@router.delete("/pz/lineage/{batch_id}/correction-stage", dependencies=[_auth, _perm_pz_prepare])
 def pz_correction_lifecycle_reset_stage(batch_id: str) -> Dict[str, Any]:
     """Reset a staged correction option back to OPERATOR_REVIEWED.
 
@@ -1264,7 +1269,7 @@ def pz_correction_lifecycle_reset_stage(batch_id: str) -> Dict[str, Any]:
     return record.to_dict()
 
 
-@router.post("/pz/lineage/{batch_id}/correction-commit", dependencies=[_auth])
+@router.post("/pz/lineage/{batch_id}/correction-commit", dependencies=[_auth, _perm_pz_export])
 def pz_correction_lifecycle_commit(
     batch_id: str,
     body: LifecycleCommitRequest,
@@ -1348,7 +1353,7 @@ def pz_correction_lifecycle_commit(
     return record.to_dict()
 
 
-@router.post("/pz/lineage/{batch_id}/correction-suppress", dependencies=[_auth])
+@router.post("/pz/lineage/{batch_id}/correction-suppress", dependencies=[_auth, _perm_pz_prepare])
 def pz_correction_lifecycle_suppress(
     batch_id: str,
     body: LifecycleSuppressRequest,

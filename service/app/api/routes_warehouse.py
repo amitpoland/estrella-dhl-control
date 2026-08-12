@@ -34,12 +34,14 @@ from pydantic import BaseModel, Field
 
 from ..core.logging import get_logger
 from ..core.security import require_api_key, require_api_key_privileged
+from ..auth.dependencies import require_permission
 from ..services import warehouse_db as wdb
 
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/warehouse", tags=["warehouse"])
 _auth       = Depends(require_api_key)             # reads: X-API-Key or any valid session
-_auth_write = Depends(require_api_key_privileged)  # writes: X-API-Key or session with a write-capable role (logistics/…)
+_auth_write = Depends(require_api_key_privileged)
+_perm_wh_scan = Depends(require_permission("warehouse.scan"))
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
@@ -71,7 +73,7 @@ class LocationRequest(BaseModel):
 
 # ── POST /scan ───────────────────────────────────────────────────────────────
 
-@router.post("/scan", dependencies=[_auth_write])
+@router.post("/scan", dependencies=[_auth_write, _perm_wh_scan])
 def warehouse_scan(req: ScanRequest) -> JSONResponse:
     """
     OPTIONAL event-recording endpoint. A physical scan is *traceability only* and
@@ -161,7 +163,7 @@ def get_inventory(scan_code: str) -> JSONResponse:
 
 # ── Locations ────────────────────────────────────────────────────────────────
 
-@router.post("/locations", dependencies=[_auth_write])
+@router.post("/locations", dependencies=[_auth_write, _perm_wh_scan])
 def create_location(req: LocationRequest) -> JSONResponse:
     loc_id = wdb.upsert_location(
         location_code = req.location_code,

@@ -12,9 +12,9 @@
 |---|---|---|
 | **2a** | **ALREADY ON TIP** | `require_permission` + `reports.financial` ledgers (`032fb00a`); deny tests in `test_reports_financial_permission.py` |
 | **2b** | **THIS PR** | Stack `require_users_admin` / `require_system_settings_admin` on `/auth/users*` + `/api/v1/admin*` |
-| **2c** | **DEFERRED** | customs / DHL / AWB — mandatory `/security-review` before binding |
-| **2d** | **DEFERRED** | financial PZ/proforma/wFirma — mandatory `/security-review` |
-| **2e** | **DEFERRED** | inventory / warehouse — mandatory `/security-review` |
+| **2c** | **IMPLEMENTED** | Security review 2026-08-12; stacked catalogue on DHL/AWB role gates; HOLD return/create stub |
+| **2d** | **IMPLEMENTED (SAFE rows)** | Fiscal C2 deny for logistics; HOLD mixed-class routes (create/adopt-issued/resolve/…) |
+| **2e** | **IMPLEMENTED (SAFE rows)** | inventory.execute/correct + warehouse; HOLD recon + mark-direct-dispatch |
 
 ## Production deploy
 

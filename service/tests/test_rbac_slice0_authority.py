@@ -239,16 +239,14 @@ def test_admin_users_roles_dropdown_matches_backend_roles():
 
 
 def test_slice0_does_not_tighten_tier0_pz_export_gate():
-    """Slice 0 must not change pz_create auth (still require_api_key only)."""
+    """Historical Slice 0 pin — superseded by Slice 2d Gate 3.
+
+    ``pz_create`` must now stack ``pz.export_wfirma`` (logistics denied).
+    """
     src = (_APP / "api" / "routes_wfirma.py").read_text(encoding="utf-8")
-    # Locate pz_create handler region
-    idx = src.find("pz_create")
-    assert idx > 0
-    window = src[max(0, idx - 400): idx + 200]
-    assert "require_permission" not in window
-    # Router still uses _auth = require_api_key pattern at module level
-    head = src[:2500]
-    assert "require_api_key" in head
+    assert "pz_create" in src
+    assert 'require_permission("pz.export_wfirma")' in src
+    assert "require_api_key" in src[:2500]
 
 
 def test_slice0_catalogue_anticipates_require_permission_helper():

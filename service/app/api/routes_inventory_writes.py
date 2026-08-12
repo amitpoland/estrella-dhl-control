@@ -20,13 +20,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..core.security import require_api_key
+from ..auth.dependencies import require_permission
 from ..services.inventory_location_writer import MoveStockError, move_piece
 
 
 router = APIRouter(
     prefix="/api/v1/inventory",
     tags=["inventory-writes"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(require_permission("inventory.execute"))],
 )
 
 

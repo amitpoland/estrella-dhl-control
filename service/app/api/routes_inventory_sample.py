@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..core.security import require_api_key
+from ..auth.dependencies import require_permission
 from ..services.inventory_sample_writer import (
     SampleOutError,
     sample_out,
@@ -33,7 +34,7 @@ from ..services.inventory_sample_writer import (
 router = APIRouter(
     prefix="/api/v1/inventory",
     tags=["inventory-sample"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(require_permission("inventory.execute"))],
 )
 
 

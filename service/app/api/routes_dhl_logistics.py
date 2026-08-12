@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from ..auth.dependencies import require_admin
+from ..auth.dependencies import require_dhl_resolve
 from ..core.security import require_api_key
 from ..services import dhl_logistics_projector as projector
 from ..services import dhl_logistics_resolution_db as resdb
@@ -161,7 +161,7 @@ def export_logistics_pdf(
 def resolve_logistics_shipment(
     awb: str,
     body: ResolveBody,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_dhl_resolve),
 ) -> JSONResponse:
     """Admin-only reporting resolution. Does not rewrite DHL/customs/PZ/carrier data."""
     awb = (awb or "").strip()
@@ -205,7 +205,7 @@ def resolve_logistics_shipment(
 def reopen_logistics_shipment(
     awb: str,
     body: ReopenBody,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_dhl_resolve),
 ) -> JSONResponse:
     """Admin-only undo of a reporting resolution."""
     awb = (awb or "").strip()

@@ -1,4 +1,4 @@
-﻿"""
+"""
 routes_action_proposals.py — Admin-approval pipeline for cowork action proposals.
 
 Every outbound email in the clearance workflow goes through this pipeline:

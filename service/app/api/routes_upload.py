@@ -44,6 +44,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.security import require_api_key
+from ..auth.dependencies import require_permission
 from ..core.role_gate import require_role_or_apikey, MASTER_ADMIN, MASTER_EDITOR
 from ..core.guards import guard_pz_requires_sad, guard_trigger_declared
 from ..core import timeline as tl
@@ -57,6 +58,8 @@ _DHL_BROKER_THRESHOLD_USD: float = 2500.0
 log    = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
 _auth       = Depends(require_api_key)
+_perm_pz_process = Depends(require_permission("pz.process"))
+_perm_pz_finalize = Depends(require_permission("pz.finalize"))
 # Document delete/replace mutate master-data-class document state — gate them
 # with the master-role dependency (Wave 8 hardening MEDIUM-2). Degrades to
 # api-key semantics when master_role_enforcement is off (default), so this is a
@@ -765,7 +768,7 @@ async def upload_sad(
 
 # ── Step 3: Process a ready shipment ─────────────────────────────────────────
 
-@router.post("/shipment/{batch_id}/process", dependencies=[_auth])
+@router.post("/shipment/{batch_id}/process", dependencies=[_auth, _perm_pz_process])
 async def process_shipment(
     batch_id:   str,
     background: BackgroundTasks,
@@ -907,7 +910,7 @@ async def process_shipment(
 
 # ── Step 4: Set PZ number after processing ───────────────────────────────────
 
-@router.post("/shipment/{batch_id}/set_pz", dependencies=[_auth])
+@router.post("/shipment/{batch_id}/set_pz", dependencies=[_auth, _perm_pz_finalize])
 async def set_pz_number(
     batch_id: str,
     pz_number: str = Form(...),
