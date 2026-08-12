@@ -205,86 +205,98 @@ function NewShipmentModal({ onClose, onCreated }) {
 
       if (awbSlot && awbSlot.files.length > 0) fd.append('awb', awbSlot.files[0]);
 
-      // purchase_blocks: pair purchase packing slot i with purchase invoice slot i.
+      // purchase_blocks: pair purchase packing slot i with purchase invoice
+      // slot i — but ONLY when both name the same supplier. The paired packing
+      // files take the block's supplier identity, so pairing across two
+      // different suppliers would file the packing under the invoice's party.
       const purchaseMeta = [];
+      const pairedPackUids = new Set();
       let invIdx = 0, packIdx = 0;
       purchaseSlots.forEach((slot, sIdx) => {
         slot.files.forEach(f => fd.append('invoices', f));
-        const pairedPack = purchasePackSlots[sIdx];
+        const slotSupplier = (slot.supplierOverride || '').trim();
+        const candidate    = purchasePackSlots[sIdx];
+        const pairedPack   = (candidate && candidate.files.length > 0 &&
+                              (candidate.supplierOverride || '').trim() === slotSupplier)
+                             ? candidate : null;
         purchaseMeta.push({
           invoice_index:          invIdx,
-          packing_index:          (pairedPack && pairedPack.files.length > 0) ? packIdx : -1,
+          packing_index:          pairedPack ? packIdx : -1,
           // Count of files in this packing slot so the backend range-matches
           // EVERY file (not just the first) to this block's supplier identity.
-          packing_file_count:     (pairedPack && pairedPack.files.length > 0) ? pairedPack.files.length : 0,
+          packing_file_count:     pairedPack ? pairedPack.files.length : 0,
           supplier_name:          '',
-          supplier_contractor_id: (slot.supplierOverride || '').trim(),
+          supplier_contractor_id: slotSupplier,
         });
-        if (pairedPack && pairedPack.files.length > 0) {
+        if (pairedPack) {
+          pairedPackUids.add(pairedPack.uid);
           pairedPack.files.forEach(f => fd.append('packing_lists', f));
           packIdx += pairedPack.files.length;
         }
         invIdx += slot.files.length;
       });
-      // Extra purchase packing slots beyond the invoice slots — emit a
-      // synthetic block (mirrors the sales side) so these files ALSO inherit
-      // the slot's supplier identity via the backend range-match, instead of
-      // silently registering with no supplier_contractor_id.
-      for (let i = purchaseSlots.length; i < purchasePackSlots.length; i++) {
-        const extraPack = purchasePackSlots[i];
-        if (extraPack.files.length > 0) {
-          purchaseMeta.push({
-            invoice_index:          -1,
-            packing_index:          packIdx,
-            packing_file_count:     extraPack.files.length,
-            supplier_name:          '',
-            supplier_contractor_id: (extraPack.supplierOverride || '').trim(),
-          });
-          extraPack.files.forEach(f => fd.append('packing_lists', f));
-          packIdx += extraPack.files.length;
-        }
-      }
+      // Every packing slot left unpaired — an extra slot beyond the invoice
+      // slots, or one naming a different supplier — keeps its OWN identity in
+      // a block of its own (invoice_index -1 = no invoice association), so its
+      // files range-match to the supplier the operator actually picked.
+      purchasePackSlots.forEach(pack => {
+        if (pairedPackUids.has(pack.uid) || pack.files.length === 0) return;
+        purchaseMeta.push({
+          invoice_index:          -1,
+          packing_index:          packIdx,
+          packing_file_count:     pack.files.length,
+          supplier_name:          '',
+          supplier_contractor_id: (pack.supplierOverride || '').trim(),
+        });
+        pack.files.forEach(f => fd.append('packing_lists', f));
+        packIdx += pack.files.length;
+      });
 
-      // sales_blocks: pair sales packing slot i with sales doc slot i.
+      // sales_blocks: same rule on the sales side — pair sales packing slot i
+      // with sales doc slot i only when both name the same client.
       const salesMeta = [];
+      const pairedSalesPackUids = new Set();
       let sDocIdx = 0, sPackIdx = 0;
       salesDocSlots.forEach((slot, sIdx) => {
         slot.files.forEach(f => fd.append('sales_documents', f));
-        const pairedPack = salesPackSlots[sIdx];
+        const slotClient = (slot.clientOverride || '').trim();
+        const candidate  = salesPackSlots[sIdx];
+        const pairedPack = (candidate && candidate.files.length > 0 &&
+                            (candidate.clientOverride || '').trim() === slotClient)
+                           ? candidate : null;
         salesMeta.push({
           document_index:       sDocIdx,
-          packing_index:        (pairedPack && pairedPack.files.length > 0) ? sPackIdx : -1,
+          packing_index:        pairedPack ? sPackIdx : -1,
           // Count of files in this packing slot so the backend range-matches
           // EVERY file (not just the first) to this block's client identity.
-          packing_file_count:   (pairedPack && pairedPack.files.length > 0) ? pairedPack.files.length : 0,
+          packing_file_count:   pairedPack ? pairedPack.files.length : 0,
           client_name:          '',
           client_ref:           '',
-          client_contractor_id: (slot.clientOverride || '').trim(),
+          client_contractor_id: slotClient,
         });
-        if (pairedPack && pairedPack.files.length > 0) {
+        if (pairedPack) {
+          pairedSalesPackUids.add(pairedPack.uid);
           pairedPack.files.forEach(f => fd.append('sales_packing_lists', f));
           sPackIdx += pairedPack.files.length;
         }
         sDocIdx += slot.files.length;
       });
-      // Sales packing slots without a paired sales doc — keep client_contractor_id.
-      for (let i = salesDocSlots.length; i < salesPackSlots.length; i++) {
-        const extraPack = salesPackSlots[i];
-        if (extraPack.files.length > 0) {
-          extraPack.files.forEach(f => fd.append('sales_packing_lists', f));
-          salesMeta.push({
-            document_index:       -1,
-            packing_index:        sPackIdx,
-            // Count of files so the backend range-matches EVERY file in this
-            // unpaired packing slot to this block's client identity.
-            packing_file_count:   extraPack.files.length,
-            client_name:          '',
-            client_ref:           '',
-            client_contractor_id: (extraPack.clientOverride || '').trim(),
-          });
-          sPackIdx += extraPack.files.length;
-        }
-      }
+      // Unpaired sales packing slots keep their own client identity.
+      salesPackSlots.forEach(pack => {
+        if (pairedSalesPackUids.has(pack.uid) || pack.files.length === 0) return;
+        pack.files.forEach(f => fd.append('sales_packing_lists', f));
+        salesMeta.push({
+          document_index:       -1,
+          packing_index:        sPackIdx,
+          // Count of files so the backend range-matches EVERY file in this
+          // unpaired packing slot to this block's client identity.
+          packing_file_count:   pack.files.length,
+          client_name:          '',
+          client_ref:           '',
+          client_contractor_id: (pack.clientOverride || '').trim(),
+        });
+        sPackIdx += pack.files.length;
+      });
 
       // Local-only Atlas types (service_invoice / carnet / other).
       const serviceMeta = [], carnetMeta = [], otherMeta = [];

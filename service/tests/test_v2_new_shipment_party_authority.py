@@ -134,6 +134,45 @@ def test_packing_file_count_range_match_preserved():
     assert _src().count("packing_file_count") >= 4
 
 
+# ── Pairing integrity: no packing file inherits the wrong party ───────────
+
+def test_packing_pairs_only_within_the_same_party():
+    """Slot i packing joins slot i invoice ONLY when both name the same party.
+
+    The paired packing files take the *block's* contractor id, so pairing a
+    packing slot to an invoice slot that names a different supplier would file
+    those packing files under the wrong party — exactly the identity leak this
+    campaign exists to remove.
+    """
+    src = _src()
+    assert "(candidate.supplierOverride || '').trim() === slotSupplier" in src
+    assert "(candidate.clientOverride || '').trim() === slotClient" in src
+
+
+def test_unpaired_packing_slots_keep_their_own_identity():
+    """A packing slot that did not pair still ships its own block + party."""
+    src = _src()
+    assert "pairedPackUids" in src
+    assert "pairedSalesPackUids" in src
+    # Own block, no invoice / sales-doc association, own contractor id.
+    assert "invoice_index:          -1," in src
+    assert "document_index:       -1," in src
+    assert "supplier_contractor_id: (pack.supplierOverride || '').trim()," in src
+    assert "client_contractor_id: (pack.clientOverride || '').trim()," in src
+
+
+def test_no_packing_slot_is_dropped_from_the_payload():
+    """Every populated packing slot is emitted exactly once, paired or not."""
+    src = _src()
+    for guard in ("if (pairedPackUids.has(pack.uid) || pack.files.length === 0) return;",
+                  "if (pairedSalesPackUids.has(pack.uid) || pack.files.length === 0) return;"):
+        assert guard in src
+    # The old positional loop skipped every packing slot below the invoice
+    # count, so a mismatched pair silently vanished into the invoice's block.
+    assert "for (let i = purchaseSlots.length; i < purchasePackSlots.length; i++)" not in src
+    assert "for (let i = salesDocSlots.length; i < salesPackSlots.length; i++)" not in src
+
+
 # ── Carrier / pre-check semantics ─────────────────────────────────────────
 
 def test_dhl_precheck_offered_only_for_dhl():
