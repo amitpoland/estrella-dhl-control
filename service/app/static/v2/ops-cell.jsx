@@ -851,15 +851,34 @@ const CLI_TOOLS = [
     rq3Label: 'Backend Required' },
 ];
 
+function _diagTone(status) {
+  if (status === 'ok') return 'ready';
+  if (status === 'warn' || status === 'not_configured') return 'pending';
+  if (status === 'deprecated' || status === 'not_applicable') return 'neutral';
+  return 'blocked';
+}
+
 function _DiagKpiStrip({ health, version, storage, locks }) {
+  // Backend owns aggregation — render only payload fields (no recount / no classification map).
   const hData = health.data;
-  const okCount = hData ? Object.values(hData.checks || {}).filter(c => c.status === 'ok').length : '–';
-  const total   = hData ? Object.keys(hData.checks || {}).length : '–';
-  const failCt  = hData ? (total - okCount) : 0;
+  const reqTotal = hData && hData.required_total != null ? hData.required_total : null;
+  const reqOk    = hData && hData.required_ok != null ? hData.required_ok : null;
+  const reqFail  = hData && hData.required_failed != null ? hData.required_failed : 0;
+  const warns    = hData && hData.warnings != null ? hData.warnings : 0;
+  const optNc    = hData && hData.optional_not_configured != null ? hData.optional_not_configured : 0;
+  const optFail  = hData && hData.optional_failed != null ? hData.optional_failed : 0;
+  const depr     = hData && hData.deprecated != null ? hData.deprecated : 0;
+  const overall  = hData && hData.overall ? hData.overall : null;
+  const subHealth = health.loading ? 'Loading…' : health.error ? 'Fetch error'
+    : `overall ${overall || '–'} · ${reqFail} required failing · ${optFail} optional failing · ${warns} warn · ${optNc} optional n/c · ${depr} deprecated`;
 
   const ver     = version.data;
-  const verStr  = ver ? (ver.short || ver.commit || '–').substring(0, 12) : '–';
-  const verSub  = ver && ver.deployed_at ? `deployed ${ver.deployed_at}` : '–';
+  const verStr  = ver && ver.deployed_sha
+    ? String(ver.deployed_sha).substring(0, 12)
+    : (ver && ver.short ? String(ver.short).substring(0, 12) : '–');
+  const runtimeMode = ver && ver.runtime_mode ? ver.runtime_mode : (ver && ver.environment ? ver.environment : '–');
+  const verSub  = version.loading ? 'Loading…' : version.error ? 'Fetch error'
+    : `Runtime mode: ${runtimeMode}`;
 
   const sData   = storage.data;
   const realB   = sData && sData.outputs ? (sData.outputs.real_batches || 0) : '–';
@@ -869,10 +888,10 @@ function _DiagKpiStrip({ health, version, storage, locks }) {
 
   return (
     <div data-testid="diag-kpi-strip" className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-      <MetricTile label="Health checks" value={hData ? `${okCount}/${total}` : '–'} sub={health.loading ? 'Loading…' : health.error ? 'Fetch error' : `${failCt} failing`} tone={health.error ? 'red' : failCt ? 'red' : 'green'} />
+      <MetricTile label="Required health" value={hData && reqOk != null && reqTotal != null ? `${reqOk}/${reqTotal}` : '–'} sub={subHealth} tone={health.error ? 'red' : (overall === 'degraded' || reqFail) ? 'red' : 'green'} />
       <MetricTile label="Real batches"  value={String(realB)} sub={storage.loading ? 'Loading…' : storage.error ? 'Fetch error' : 'from storage health'} tone="text" />
       <MetricTile label="Active locks"  value={String(lockCt)} sub={locks.loading ? 'Loading…' : locks.error ? 'Fetch error' : `${lData ? (lData.lock_files_found || 0) : 0} lock files`} tone="text" />
-      <MetricTile label="Version"       value={verStr} sub={version.loading ? 'Loading…' : version.error ? 'Fetch error' : verSub} tone="text" mono />
+      <MetricTile label="Deployed SHA"  value={verStr} sub={verSub} tone="text" mono />
     </div>
   );
 }
@@ -882,25 +901,38 @@ function _DiagHealthSection({ health }) {
   if (health.error)   return <Card style={{ padding: 18 }}><SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" /><div data-testid="diag-health-error" style={{ padding: 20, textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>Failed to load health checks: {health.error}</div></Card>;
   const checks = health.data && health.data.checks ? Object.entries(health.data.checks) : [];
   if (!checks.length) return <Card style={{ padding: 18 }}><SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" /><div style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No health checks returned.</div></Card>;
+  const summary = health.data || {};
   return (
     <Card style={{ padding: 18 }}>
       <div data-testid="diag-health-grid">
-      <SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full" />
+      <SectionHeader icon="❤" title="Health checks" subtitle="GET /api/v1/debug/health-full · required-only global score" />
+      <div data-testid="diag-health-summary" style={{ marginTop: 8, marginBottom: 4, fontSize: 11, color: 'var(--text-2)' }}>
+        overall=<strong style={{ color: 'var(--text)' }}>{summary.overall || '–'}</strong>
+        {' · '}required {summary.required_ok != null ? `${summary.required_ok}/${summary.required_total}` : '–'}
+        {' · '}required failing {summary.required_failed != null ? summary.required_failed : '–'}
+        {' · '}optional failing {summary.optional_failed != null ? summary.optional_failed : '–'}
+        {' · '}warnings {summary.warnings != null ? summary.warnings : '–'}
+        {' · '}optional n/c {summary.optional_not_configured != null ? summary.optional_not_configured : '–'}
+        {' · '}deprecated {summary.deprecated != null ? summary.deprecated : '–'}
+      </div>
       <div className="responsive-grid-3" style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
         {checks.map(([key, c]) => {
-          const ok = c.status === 'ok';
+          const st = c.status || 'fail';
+          const req = c.requirement || 'optional';
+          const bad = st === 'fail';
           return (
             <div key={key} data-testid={`diag-check-${key}`} style={{
               padding: '10px 12px', borderRadius: 6,
-              border: `1px solid ${ok ? 'var(--border)' : 'var(--badge-red-border)'}`,
-              background: ok ? 'var(--card)' : 'var(--badge-red-bg)',
+              border: `1px solid ${bad ? 'var(--badge-red-border)' : 'var(--border)'}`,
+              background: bad ? 'var(--badge-red-bg)' : 'var(--card)',
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-                <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, fontWeight: 600, color: ok ? 'var(--text)' : 'var(--badge-red-text)' }}>{key}</code>
-                <StatusChip kind={ok ? 'ready' : 'blocked'}>{ok ? 'OK' : (c.status || 'FAIL').toUpperCase()}</StatusChip>
+                <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, fontWeight: 600, color: bad ? 'var(--badge-red-text)' : 'var(--text)' }}>{key}</code>
+                <StatusChip kind={_diagTone(st)}>{(st || 'FAIL').toUpperCase()}</StatusChip>
               </div>
-              {c.detail && <div style={{ marginTop: 6, fontSize: 10, color: ok ? 'var(--text-3)' : 'var(--badge-red-text)' }}>{c.detail}</div>}
-              {c.fix && !ok && <div style={{ marginTop: 2, fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>Fix: {c.fix}</div>}
+              <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{req}</div>
+              {c.detail && <div style={{ marginTop: 6, fontSize: 10, color: bad ? 'var(--badge-red-text)' : 'var(--text-3)' }}>{c.detail}</div>}
+              {c.fix && bad && <div style={{ marginTop: 2, fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic' }}>Fix: {c.fix}</div>}
             </div>
           );
         })}
