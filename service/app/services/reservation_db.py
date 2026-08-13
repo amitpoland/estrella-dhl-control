@@ -659,6 +659,30 @@ def edit_wfirma_product(
 # as a declared product-sync surface.
 
 
+def confirmed_mapping_master_status(
+    *,
+    wfirma_id: str,
+    cache_kwargs: Optional[dict] = None,
+    also_set_master_status: Optional[str] = None,
+) -> Optional[str]:
+    """Product Master mapping status is a projection of canonical mapping.
+
+    Confirmed mapping (non-empty wfirma_id, cache sync_status='matched',
+    same id in cache) projects ``mapped``. Pending, missing, empty, or
+    mismatched ids do not flip Master. An explicit ``also_set_master_status``
+    still wins so existing callers (auto-register) stay unchanged.
+    """
+    if also_set_master_status is not None:
+        return also_set_master_status
+    effective_id = (wfirma_id or "").strip()
+    cache = cache_kwargs or {}
+    cache_id = str(cache.get("wfirma_product_id") or "").strip()
+    sync_status = str(cache.get("sync_status") or "").strip()
+    if effective_id and cache_id == effective_id and sync_status == "matched":
+        return "mapped"
+    return None
+
+
 def register_product_identity(
     db_path: Path,
     *,
@@ -682,11 +706,20 @@ def register_product_identity(
     id at the call site), the mirror write is SKIPPED and only the cache is
     written — mirror rows must only hold confirmed wFirma ids (C-1w1 ruling).
 
+    On a confirmed matched mapping, Product Master status is projected to
+    ``mapped`` via :func:`confirmed_mapping_master_status` so adopt /
+    update-and-adopt / create-and-adopt share auto-register's projection.
+
     Returns a dict with collision/owner fields from the mirror result merged
     with cache_row_id on non-collision success."""
     from . import wfirma_db as _wfdb  # C-1w2: transitional dual-write, cache kept until 1d.
 
     effective_id = (wfirma_id or "").strip()
+    projected_status = confirmed_mapping_master_status(
+        wfirma_id=effective_id,
+        cache_kwargs=cache_kwargs,
+        also_set_master_status=also_set_master_status,
+    )
 
     if effective_id:
         # Mirror FIRST — collision-safe (LAYER RESPONSIBILITIES).
@@ -695,7 +728,7 @@ def register_product_identity(
             wfirma_id=effective_id,
             product_code=product_code,
             name=name,
-            also_set_master_status=also_set_master_status,
+            also_set_master_status=projected_status,
         )
         if mirror_result.get("collision"):
             # Surface collision upstream; do NOT write the cache (no divergence).
