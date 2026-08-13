@@ -394,16 +394,27 @@ def assign_contractor_to_blocked_record(
 
 
 @router.get("/blocks/{batch_id}", dependencies=[_auth])
-def list_blocks(batch_id: str, include_resolved: bool = False) -> Dict[str, Any]:
+def list_blocks(
+    batch_id: str,
+    include_resolved: bool = False,
+    include_advisory: bool = True,
+) -> Dict[str, Any]:
     """List draft-birth blocked records for a batch (open-only by default).
 
     Each block is enriched (read-only) with ``source_file_name`` resolved from
     the originating sales document, so the operator UI can name the source
     packing document — the block table itself stores only ``sales_document_id``.
+
+    ``include_advisory`` defaults True (backward-compatible mixed response).
+    Pass ``false`` to exclude advisory codes such as ``contractor_conflict``
+    without mutating those rows (B-008).
     """
     batch_id = _safe_batch_id(batch_id)
     blocks: List[Dict[str, Any]] = pildb.list_draft_birth_blocks(
-        _proforma_db_path(), batch_id, include_resolved=include_resolved,
+        _proforma_db_path(),
+        batch_id,
+        include_resolved=include_resolved,
+        include_advisory=include_advisory,
     )
     # Build sales_document_id → source file name map (read-only).
     src_by_id: Dict[str, str] = {}
@@ -419,6 +430,7 @@ def list_blocks(batch_id: str, include_resolved: bool = False) -> Dict[str, Any]
     return {
         "batch_id":         batch_id,
         "include_resolved": include_resolved,
+        "include_advisory": include_advisory,
         "count":            len(blocks),
         "blocks":           blocks,
     }

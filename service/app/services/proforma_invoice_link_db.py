@@ -930,6 +930,19 @@ DRAFT_BIRTH_BLOCK_CODES = (
     "contractor_conflict",  # one client_name group carries >1 distinct contractor_id
 )
 
+# Read-side advisory class only (B-008). Persistence / lifecycle unchanged —
+# an open ``contractor_conflict`` remains valid evidence while still advisory.
+# Unknown / future codes are NOT listed here → treated as actionable (visible
+# when include_advisory=false) rather than silently hidden.
+ADVISORY_DRAFT_BIRTH_BLOCK_CODES = frozenset({
+    "contractor_conflict",
+})
+
+
+def is_advisory_draft_birth_block_code(code: str) -> bool:
+    """True only for explicitly classified advisory block codes."""
+    return str(code or "").strip() in ADVISORY_DRAFT_BIRTH_BLOCK_CODES
+
 
 def record_draft_birth_block(
     db_path:              Path,
@@ -1008,8 +1021,14 @@ def list_draft_birth_blocks(
     batch_id:         str,
     *,
     include_resolved: bool = False,
+    include_advisory: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Return draft-birth block records for *batch_id*. Open-only by default."""
+    """Return draft-birth block records for *batch_id*.
+
+    Open-only by default. ``include_advisory`` (default True) preserves the
+    historical mixed response; ``False`` drops advisory codes such as
+    ``contractor_conflict`` without mutating or resolving those rows.
+    """
     if not (batch_id or "").strip():
         return []
     try:
@@ -1024,7 +1043,14 @@ def list_draft_birth_blocks(
                 sql += " AND blocked_state='open'"
             sql += " ORDER BY updated_at DESC"
             rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
+            out = [dict(r) for r in rows]
+            for row in out:
+                row["is_advisory"] = is_advisory_draft_birth_block_code(
+                    str(row.get("code") or "")
+                )
+            if not include_advisory:
+                out = [r for r in out if not r["is_advisory"]]
+            return out
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("list_draft_birth_blocks failed (non-fatal): %s", exc)
         return []
