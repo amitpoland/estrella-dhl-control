@@ -234,4 +234,12 @@ def save_description_admin(
         after=after,
     )
 
-    return JSONResponse(_row_response(after))
+    from ..services.commercial_authority import enrich_editable_drafts_for_product_code
+    links = settings.storage_root / "proforma_links.db"
+    convergence = enrich_editable_drafts_for_product_code(
+        pc, proforma_db=links, operator="description-admin-save",
+    )
+    payload = _row_response(after)
+    payload["incomplete_convergence"] = bool(convergence.get("incomplete_convergence"))
+    payload["drafts_enriched"] = int(convergence.get("drafts_enriched") or 0)
+    return JSONResponse(payload)

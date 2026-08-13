@@ -907,6 +907,8 @@ def adopt_existing_product(
         "wfirma_untouched":  True,
         "operator":          op,
         "comparison":        comparison,
+        "incomplete_convergence": bool(_reg.get("incomplete_convergence")),
+        "master_status":     _reg.get("master_status"),
     })
 
 
@@ -1075,6 +1077,8 @@ def update_and_adopt_product(
         },
         "operator":           op,
         "comparison":         comparison,
+        "incomplete_convergence": bool(_reg.get("incomplete_convergence")),
+        "master_status":      _reg.get("master_status"),
     })
 
 
@@ -1225,6 +1229,8 @@ def create_and_adopt_product(
         "unit":              result.unit,
         "description_used":  block.get("description_line"),
         "operator":          op,
+        "incomplete_convergence": bool(_reg.get("incomplete_convergence")),
+        "master_status":     _reg.get("master_status"),
     })
 
 

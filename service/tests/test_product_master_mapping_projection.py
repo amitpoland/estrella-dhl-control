@@ -154,6 +154,7 @@ def test_create_and_adopt_projects_master_mapped(dbs, client, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert r.json()["wfirma_product_id"] == WFID
+    assert r.json().get("incomplete_convergence") is False
     assert rdb.get_product_master(dbs, CODE)["status"] == "mapped"
 
 
@@ -168,6 +169,7 @@ def test_adopt_projects_master_mapped(dbs, client, monkeypatch):
     r = client.post(f"/api/v1/wfirma/goods/adopt/{CODE}")
     assert r.status_code == 200, r.text
     assert r.json()["action"] == "adopted"
+    assert r.json().get("incomplete_convergence") is False
     assert rdb.get_product_master(dbs, CODE)["status"] == "mapped"
 
 
@@ -194,6 +196,7 @@ def test_update_and_adopt_projects_master_mapped(dbs, client, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert r.json()["action"] == "updated_and_adopted"
+    assert r.json().get("incomplete_convergence") is False
     assert rdb.get_product_master(dbs, CODE)["status"] == "mapped"
 
 

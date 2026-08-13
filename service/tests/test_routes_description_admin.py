@@ -166,6 +166,7 @@ def test_put_saves_manual_and_returns_gate_pass(client, tmp_path):
     assert data["description_pl"] == new_pl
     assert data["description_en"] == _VALID_EN
     assert data["gate"] == "PASS"
+    assert data.get("incomplete_convergence") is False
 
     # Verify GET reflects the saved value.
     r2 = client.get(f"/api/v1/description-admin/product/{_PC}", headers=_AUTH)
@@ -319,6 +320,7 @@ def test_converge_drafts_skips_posted_and_fills_editable(client, tmp_path):
     body = r.json()
     assert body["drafts_enriched"] == 1
     assert body["drafts_skipped_locked"] >= 1
+    assert body.get("incomplete_convergence") is False
 
     ed = pildb.get_draft_by_id(links, editable.id)
     elines = json.loads(ed.editable_lines_json)

@@ -128,6 +128,7 @@ _PRIVILEGED = [
     ("api/routes_admin_dhl_clearance.py", "/proactive-dispatch/{batch_id}"),
     ("api/routes_debug.py", "/clear-test-sessions"),
     ("api/routes_debug.py", "/post-pz-test"),
+    ("api/routes_debug.py", "/repair-derived-projections"),
 ]
 
 
@@ -146,7 +147,10 @@ def test_privileged_routes_use_privileged_guard(relpath, route):
 def test_safe_get_reads_remain_on_auth():
     """Read-only diagnostics must stay readable (require_api_key, viewer OK)."""
     dbg = (_SVC / "app" / "api" / "routes_debug.py").read_text(encoding="utf-8")
-    for getroute in ("/health-full", "/storage/health", "/storage/locks", "/pending"):
+    for getroute in (
+        "/health-full", "/storage/health", "/storage/locks",
+        "/pending", "/authority-consistency",
+    ):
         idx = dbg.find(f'"{getroute}"')
         assert idx != -1
         window = dbg[max(0, idx - 80): idx + 80]

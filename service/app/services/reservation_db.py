@@ -739,10 +739,28 @@ def register_product_identity(
 
     # Cache LAST — transitional dual-write (kept until 1d).
     cache_row_id = _wfdb.upsert_product(**cache_kwargs)
+    incomplete = False
+    master_status = None
+    if projected_status == "mapped":
+        master = get_product_master(db_path, product_code)
+        master_status = (master or {}).get("status")
+        if master_status != "mapped":
+            upsert_product_mirror(
+                db_path,
+                wfirma_id=effective_id,
+                product_code=product_code,
+                name=name,
+                also_set_master_status="mapped",
+            )
+            master = get_product_master(db_path, product_code)
+            master_status = (master or {}).get("status")
+            incomplete = master_status != "mapped"
     return {
         **mirror_result,
         "collision":    False,
         "cache_row_id": cache_row_id,
+        "incomplete_convergence": incomplete,
+        "master_status": master_status,
     }
 
 

@@ -22,7 +22,7 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -356,6 +356,31 @@ def persist_matched_sales_product_codes(batch_id: str) -> Dict[str, Any]:
     }
 
 
+def _editable_drafts_still_blank(proforma_db: Path, batch_id: str, pildb, ddb) -> bool:
+    """True when a canonical description exists but an editable draft line is blank."""
+    if not Path(proforma_db).exists():
+        return False
+    editable = getattr(pildb, "EDITABLE_STATES", ("draft", "editing", "post_failed"))
+    for d in pildb.list_drafts_for_batch(Path(proforma_db), batch_id):
+        if (d.draft_state or "") not in editable:
+            continue
+        try:
+            lines = json.loads(d.editable_lines_json or "[]") or []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            pc = str(ln.get("product_code") or "").strip()
+            if not pc:
+                continue
+            pd = ddb.get_product_description(pc) or {}
+            canon = str(pd.get("description_pl") or pd.get("name_pl") or "").strip()
+            if canon and not str(ln.get("name_pl") or "").strip():
+                return True
+    return False
+
+
 def promote_and_enrich_batch_drafts(
     batch_id: str,
     *,
@@ -394,8 +419,27 @@ def promote_and_enrich_batch_drafts(
                     d.updated_at, ddb.get_product_description,
                 )
                 enriched += 1
-            except Exception as exc:
+            except Exception as ext:
                 failed.append({"draft_id": d.id, "error": str(exc)[:200]})
+    incomplete = _editable_drafts_still_blank(
+        Path(proforma_db), batch_id, pildb, ddb,
+    )
+    if incomplete:
+        for d in pildb.list_drafts_for_batch(Path(proforma_db), batch_id):
+            if (d.draft_state or "") not in getattr(
+                pildb, "EDITABLE_STATES", ("draft", "editing", "post_failed")
+            ):
+                continue
+            try:
+                pildb.enrich_draft_lines(
+                    Path(proforma_db), d.id, operator,
+                    d.updated_at, ddb.get_product_description,
+                )
+            except Exception:
+                pass
+        incomplete = _editable_drafts_still_blank(
+            Path(proforma_db), batch_id, pildb, ddb,
+        )
     return {
         "ok": promo.get("status") in ("ok", "incomplete"),
         "batch_id": batch_id,
@@ -403,6 +447,7 @@ def promote_and_enrich_batch_drafts(
         "drafts_enriched": enriched,
         "drafts_failed": failed,
         "drafts_locked_skipped": skipped_locked,
+        "incomplete_convergence": incomplete,
     }
 
 
@@ -411,6 +456,7 @@ def enrich_editable_drafts_for_product_code(
     *,
     proforma_db: Path,
     operator: str = "description-admin-converge",
+    draft_ids: Optional[Iterable[int]] = None,
 ) -> Dict[str, Any]:
     """Retry PD → editable-draft enrich for one product_code.
 
@@ -431,19 +477,28 @@ def enrich_editable_drafts_for_product_code(
         "drafts_failed": [],
     }
     if not pc or not Path(proforma_db).exists():
+        out["incomplete_convergence"] = False
         return out
 
+    pildb.init_db(Path(proforma_db))
     editable = getattr(
         pildb, "EDITABLE_STATES", ("draft", "editing", "post_failed")
     )
     targets: List[Any] = []
     with sqlite3.connect(str(proforma_db)) as con:
         con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT id, draft_state, editable_lines_json, updated_at "
-            "FROM proforma_drafts"
-        ).fetchall()
+        try:
+            rows = con.execute(
+                "SELECT id, draft_state, editable_lines_json, updated_at "
+                "FROM proforma_drafts"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            out["incomplete_convergence"] = False
+            return out
+    wanted_drafts = {int(i) for i in (draft_ids or [])}
     for r in rows:
+        if wanted_drafts and int(r["id"]) not in wanted_drafts:
+            continue
         state = str(r["draft_state"] or "")
         if state not in editable:
             out["drafts_skipped_locked"] += 1
@@ -465,6 +520,33 @@ def enrich_editable_drafts_for_product_code(
             out["drafts_failed"].append({
                 "draft_id": int(r["id"]), "error": str(exc)[:200],
             })
+    still_blank = False
+    if Path(proforma_db).exists() and pc:
+        from . import document_db as ddb
+        pd = ddb.get_product_description(pc) or {}
+        canon = str(pd.get("description_pl") or pd.get("name_pl") or "").strip()
+        if canon:
+            with sqlite3.connect(str(proforma_db)) as con:
+                con.row_factory = sqlite3.Row
+                rows = con.execute(
+                    "SELECT id, draft_state, editable_lines_json FROM proforma_drafts"
+                ).fetchall()
+            for r in rows:
+                if wanted_drafts and int(r["id"]) not in wanted_drafts:
+                    continue
+                if str(r["draft_state"] or "") not in editable:
+                    continue
+                try:
+                    lines = json.loads(r["editable_lines_json"] or "[]") or []
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                for ln in lines:
+                    if str((ln or {}).get("product_code") or "").strip() != pc:
+                        continue
+                    if not str((ln or {}).get("name_pl") or "").strip():
+                        still_blank = True
+                        break
+    out["incomplete_convergence"] = still_blank
     return out
 
 
