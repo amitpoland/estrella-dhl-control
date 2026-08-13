@@ -144,7 +144,7 @@ acceptance criteria. This policy is subordinate to the four HOLD conditions in
 | PZ batch / golden constants / CLI | `pz-shipment` |
 | Production deployment | `deploy` |
 | DHL clearance / customs | `dhl-customs` *(planned — use AUTHORITY_MAP.md §DHL Clearance until built)* |
-| Proforma / conflict / workspace | `proforma-engine` *(planned — use AUTHORITY_MAP.md §Proforma until built)* |
+| Proforma / conflict / workspace | `ej-dashboard-fullstack-governance` *(B-015: planned `proforma-engine` CANCELLED — Skill Freeze)* |
 | wFirma API | `wfirma` *(planned — use AUTHORITY_MAP.md §wFirma until built)* |
 | Frontend (V1 frozen / V2 active) | `frontend-design` + `ui-ux-pro-max` |
 | Cowork / AI bridge | `cowork-integration` |

@@ -1,0 +1,17 @@
+{
+  "campaign": "B-013",
+  "baseline_sha": "ac39bfddf8032a48845cd0888c4539d850a59efb",
+  "production_sha_measured": "15cd1057cdebfac5e161ad12ea7c5514767fe554",
+  "classification": "NEEDS_OPERATOR_DECISION",
+  "final_disposition": "CLOSED_OPERATOR_DECISION",
+  "authority_owner": "PROFORMA posting / wFirma invoice line name",
+  "entry": "routes_proforma ReservationLine / post builder product_name",
+  "writer": "wfirma_client create/edit invoice lines",
+  "canonical_authority": "posted wFirma invoicecontent <name> (frozen at issue)",
+  "persistence": "wFirma remote + local draft lines (display-only canonical description)",
+  "reader": "wFirma UI + printed proforma/invoice",
+  "decision": "Keep default product_name = design_no or product_code. Do not switch default to canonical description_line without Finance/Accounting sign-off.",
+  "existing_repair_path": "POST /api/v1/proforma/{wfirma_id}/refresh-line-names gated by WFIRMA_EDIT_INVOICE_ALLOWED",
+  "external_writes_this_closure": 0,
+  "security_review": "no live wFirma writes performed; no gate flip"
+}

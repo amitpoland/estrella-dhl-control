@@ -1,0 +1,18 @@
+{
+  "campaign": "B-014",
+  "baseline_sha": "ac39bfddf8032a48845cd0888c4539d850a59efb",
+  "classification": "FEATURE_WORK",
+  "final_disposition": "CLOSED_FEATURE_COMPLETE",
+  "authority_owner": "PROFORMA UI (V2 list parity; V1 remains prod default)",
+  "entry": "operator /v2/proforma?batch_id=",
+  "writer": "POST /api/v1/admin/contractor-projection/assign/{batch}",
+  "canonical_authority": "contractor-projection birth blocks + Customer Master assign",
+  "persistence": "draft_birth_blocks + sales contractor + proforma drafts",
+  "reader": "V2 ProformaListPage birth-block panels",
+  "cutover": "HOLD — see b014-cutover-checkpoint.md",
+  "files": [
+    "service/app/static/v2/proforma-list.jsx",
+    "service/tests/test_b014_v2_birth_block_parity.py",
+    ".claude/memory/b014-cutover-checkpoint.md"
+  ]
+}

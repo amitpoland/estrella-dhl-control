@@ -1,6 +1,7 @@
 # Smoke report — B0 wFirma identity cache + review-and-assign
 
 **Date:** 2026-05-16
+**Verdict:** PASS
 **PRs merged:** #141 (feature) + #142 (hotfix)
 **Merge SHAs:** 08529b3 → ad82ab6 (post-hotfix)
 **Production SHA after deploy:** ad82ab6
