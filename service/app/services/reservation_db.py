@@ -607,12 +607,19 @@ def create_wfirma_product(
     unit: str = "szt.",
     netto: float = 0.0,
     vat_code_id: Optional[str] = None,
-    warehouse_type: str = "simple",
+    warehouse_type: Optional[str] = None,
     description: str = "",
+    *,
+    warehouse_id: Optional[str] = None,
 ):
     """Thin passthrough to wfirma_client.create_product (C-1w2: sync-layer
     passthrough — forbidden identifier lives here, not in the business route).
-    Signature mirrors wfirma_client.create_product exactly."""
+    Signature mirrors wfirma_client.create_product exactly.
+
+    warehouse_type is ignored by the client (company-derived). warehouse_id
+    reuses Atlas's existing warehouse authority when provided; otherwise the
+    client reads settings.wfirma_warehouse_id.
+    """
     from .wfirma_client import create_product  # C-1w2: sync-layer passthrough (create), not a direct wfirma_client call in a business route.
     return create_product(
         product_code=product_code,
@@ -622,6 +629,7 @@ def create_wfirma_product(
         vat_code_id=vat_code_id,
         warehouse_type=warehouse_type,
         description=description,
+        warehouse_id=warehouse_id,
     )
 
 
