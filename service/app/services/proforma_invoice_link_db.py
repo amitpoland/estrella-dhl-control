@@ -5957,4 +5957,9 @@ __all__ = [
     "_record_draft_event_conn",
     "apply_sales_price_patch",
     "apply_customer_address_to_draft",
+    # ── PR-2 / PR-3 draft-birth + canonical-name migration (B-011) ──
+    "record_draft_birth_block",
+    "resolve_draft_birth_block",
+    "list_draft_birth_blocks",
+    "migrate_draft_to_canonical_name",
 ]
