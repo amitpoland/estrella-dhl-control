@@ -1,0 +1,27 @@
+{
+  "campaign": "B-012",
+  "baseline_sha": "15cd1057cdebfac5e161ad12ea7c5514767fe554",
+  "production_sha": "d710bbf9b43ad353f90a6ac5e916b81035fd5f45",
+  "classification": "REAL_DEFECT",
+  "exact_wording": "ProformaDraftLineRow Save button (btn-line-save-*) is labelled bare Save — frontend standard 5.3/7 wants the write destination (Save to draft).",
+  "authority_owner": "PROFORMA draft line mutation UI (V1 shipment-detail.html)",
+  "prod_authority_surface": "service/app/static/shipment-detail.html :: ProformaDraftLineRow",
+  "entry": "operator click btn-line-save-*",
+  "writer": "onPatch → PATCH draft line (update_draft_line)",
+  "canonical_authority": "proforma draft DB via proforma_invoice_link_db.update_draft_line",
+  "persistence": "proforma drafts SQLite (proforma_invoice_link_db)",
+  "reader": "operator V1 ProformaDraftPanel",
+  "ui_external": "shipment-detail.html ProformaDraftLineRow; dashboard.html mirror copy",
+  "v2_note": "V2 proforma-detail.jsx uses icon-only pf-line-save with title tooltip — not production cutover surface (B-014)",
+  "conflicting_truth": false,
+  "blast_radius": "button label text only; testid unchanged; no API/persistence change",
+  "financial_customs_inventory_security": "none",
+  "files_allowed": [
+    "service/app/static/shipment-detail.html",
+    "service/app/static/dashboard.html",
+    "service/tests/test_b012_save_to_draft_label.py",
+    "BACKLOG.md",
+    ".claude/memory/b012-authority-map.json",
+    ".claude/memory/TASK_STATE.md"
+  ]
+}
