@@ -6,16 +6,18 @@ In-flight **single-task** tracker.
 
 ## Current task
 
-- **Task:** B-019 production DB backup authority
-- **Status:** `COMPLETE`
-- **Production App SHA:** `772680739bfe710f2add88f312f61cedbadccf34` (PR #1224)
-- **Scripts tip (no App redeploy):** `1dd085b913224736caee994113366e79bf756b7f` (PR #1225)
-- **Rollback unit:** `772680739bfe710f2add88f312f61cedbadccf34-20260814-011613` (restores prior App `57bf4e2b`)
-- **Restore drill:** backup_id `2026-08-13-231701` — validate PASS 30/30; external writes 0
-- **Schtask:** `EstrellaDBBackup` PRESENT — daily 02:15 SYSTEM → `C:\PZ\scripts\run_estrella_db_backup.py`
-- **Do not reopen:** B-011..B-019; B-014 V1→V2 cutover remains HOLD
-- **Next open backlog:** **B-021** (read-only assessment only — no mutation without operator auth)
+- **Task:** B-021 historical packing_contractor_resolution RO assessment
+- **Status:** `COMPLETE` — `CLOSED_NO_MUTATION`
+- **Production App SHA (reconciled):** `772680739bfe710f2add88f312f61cedbadccf34`
+- **origin/main at assessment:** `8c695b11` (docs tip; App payload unchanged vs 77268073)
+- **Evidence:** `.claude/memory/b021-ro-assessment-2026-08-14.json`
+- **Mutation candidates:** **0** (`.claude/memory/b021-mutation-candidates.json`)
+- **Population:** 38 rows — SAFE_SINGLE 22 / STALE_BUT_MASKED 13 / ORPHANED_TEST_DATA 2 / INSUFFICIENT_EVIDENCE 1 / POTENTIALLY_MISROUTING 0
+- **Step 0b reachable:** 0 (all real multiparty drafts carry client_contractor_id)
+- **Mutation performed:** false
+- **Do not reopen:** B-011..B-021 (B-014 cutover HOLD unchanged)
+- **Next open backlog:** **B-001** (SCHEDULED — review stale PR #661)
 
-### B-012/B-014 App deploy debt
+### Prior — B-019
 
-**COMPLETE** earlier same session (prod reached `57bf4e2b`, then B-019 advanced to `77268073`).
+**COMPLETE** — App `77268073`; schtask + restore drill closed.

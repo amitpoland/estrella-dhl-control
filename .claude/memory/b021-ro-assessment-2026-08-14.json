@@ -1,0 +1,1875 @@
+{
+  "campaign": "B-021",
+  "mode": "READ_ONLY",
+  "mutation_performed": false,
+  "assessed_at": "2026-08-13T23:37:36.222424+00:00",
+  "production_app_sha": "772680739bfe710f2add88f312f61cedbadccf34",
+  "storage_root": "C:\\PZ\\storage",
+  "evidence_precedence": [
+    "shipment_documents.*_contractor_id",
+    "proforma_drafts.client_contractor_id",
+    "sales_documents\u2192shipment_documents (0a inputs)",
+    "packing_contractor_resolution (UNDER AUDIT)",
+    "customer_master/names (supporting only)"
+  ],
+  "population_count": 38,
+  "classification_counts": {
+    "STALE_BUT_MASKED": 13,
+    "SAFE_SINGLE": 22,
+    "INSUFFICIENT_EVIDENCE": 1,
+    "ORPHANED_TEST_DATA": 2
+  },
+  "zero_b_reachable_count": 0,
+  "real_business_potentially_misrouting_count": 0,
+  "mutation_candidate_count": 0,
+  "mutation_candidates": [],
+  "chain_proofs": [],
+  "rows": [
+    {
+      "batch_id": "SHIPMENT_1003835895_2026-07_523c9281",
+      "role": "client",
+      "stored_contractor_id": "145607516",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "128515865",
+        "145607516",
+        "173845539",
+        "199226787",
+        "65559320",
+        "91254191"
+      ],
+      "independent_cid_count": 6,
+      "sales_doc_cids": [
+        "128515865",
+        "145607516",
+        "173845539",
+        "199226787",
+        "65559320",
+        "91254191"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 6,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 63,
+          "client_name": "Dream Rings, s.r.o.",
+          "client_contractor_id": "145607516",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 64,
+          "client_name": "Anastazia Panakova - Zlatnictvo Panaks",
+          "client_contractor_id": "128515865",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 65,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 66,
+          "client_name": "Clear-Diamonds",
+          "client_contractor_id": "91254191",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 67,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 68,
+          "client_name": "OMARA s.r.o",
+          "client_contractor_id": "173845539",
+          "draft_state": "converted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_1003835895_2026-07_523c9281",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 6,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 63,
+          "client_name": "Dream Rings, s.r.o.",
+          "client_contractor_id": "145607516",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 64,
+          "client_name": "Anastazia Panakova - Zlatnictvo Panaks",
+          "client_contractor_id": "128515865",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 65,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 66,
+          "client_name": "Clear-Diamonds",
+          "client_contractor_id": "91254191",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 67,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 68,
+          "client_name": "OMARA s.r.o",
+          "client_contractor_id": "173845539",
+          "draft_state": "converted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_1201561616_2026-07_bcd042b4",
+      "role": "client",
+      "stored_contractor_id": "",
+      "status": "confirmed",
+      "confidence": 0.0,
+      "reason": "no_match",
+      "distinct_independent_cids": [
+        "199226787",
+        "52808306"
+      ],
+      "independent_cid_count": 2,
+      "sales_doc_cids": [
+        "199226787",
+        "52808306"
+      ],
+      "multiparty": true,
+      "mismatch": "",
+      "agrees_single": "",
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 2,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 69,
+          "client_name": "DG GmbH",
+          "client_contractor_id": "52808306",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 70,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_1201561616_2026-07_bcd042b4",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 2,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 69,
+          "client_name": "DG GmbH",
+          "client_contractor_id": "52808306",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 70,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_1749271904_2026-07_52887705",
+      "role": "client",
+      "stored_contractor_id": "104677702",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "104677702",
+        "144938465",
+        "90484280"
+      ],
+      "independent_cid_count": 3,
+      "sales_doc_cids": [
+        "104677702",
+        "144938465",
+        "90484280"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 3,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 72,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 73,
+          "client_name": "Diamond Point B.V.",
+          "client_contractor_id": "90484280",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 74,
+          "client_name": "ORKNIS UAB",
+          "client_contractor_id": "144938465",
+          "draft_state": "posted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_1749271904_2026-07_52887705",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 3,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 72,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 73,
+          "client_name": "Diamond Point B.V.",
+          "client_contractor_id": "90484280",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 74,
+          "client_name": "ORKNIS UAB",
+          "client_contractor_id": "144938465",
+          "draft_state": "posted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_2315714531_2026-06_ffe086f3",
+      "role": "supplier",
+      "stored_contractor_id": "7",
+      "status": "overridden",
+      "confidence": 0.0,
+      "reason": "no_match",
+      "distinct_independent_cids": [
+        "7"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_3109419880_2026-04_a40c7ccc",
+      "role": "client",
+      "stored_contractor_id": "91254191",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "link_as_sales_operator_selected",
+      "distinct_independent_cids": [],
+      "independent_cid_count": 0,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "INSUFFICIENT_EVIDENCE",
+      "note": "no independent per-document contractor ids",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_4183498255_2026-05_33ece822",
+      "role": "client",
+      "stored_contractor_id": "128515865",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "128515865"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [
+        "128515865"
+      ],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent client cid matches batch packing row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_4183498255_2026-05_33ece822",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_4183498255_2026-05_becedfa9",
+      "role": "client",
+      "stored_contractor_id": "128515865",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "128515865"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent client cid matches batch packing row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_4183498255_2026-05_becedfa9",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_4218922912_2026-05_9040dd39",
+      "role": "client",
+      "stored_contractor_id": "52808306",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "104677702",
+        "128515865",
+        "145607516",
+        "52808306",
+        "90484280"
+      ],
+      "independent_cid_count": 5,
+      "sales_doc_cids": [
+        "104677702",
+        "128515865",
+        "145607516",
+        "52808306",
+        "90484280"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_4218922912_2026-05_9040dd39",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_4789974092_2026-05_999deef1",
+      "role": "supplier",
+      "stored_contractor_id": "7",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "7"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_5831878861_2026-08_be24f39a",
+      "role": "client",
+      "stored_contractor_id": "65559320",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "198068451",
+        "65559320"
+      ],
+      "independent_cid_count": 2,
+      "sales_doc_cids": [
+        "198068451",
+        "65559320"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 2,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 82,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 83,
+          "client_name": "MAIRO DIAMONDS s.r.o.",
+          "client_contractor_id": "198068451",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_5831878861_2026-08_be24f39a",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 2,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 82,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 83,
+          "client_name": "MAIRO DIAMONDS s.r.o.",
+          "client_contractor_id": "198068451",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "role": "client",
+      "stored_contractor_id": "56",
+      "status": "confirmed",
+      "confidence": 0.0,
+      "reason": "no_match",
+      "distinct_independent_cids": [
+        "104677702",
+        "134920664",
+        "139480415",
+        "144938465",
+        "173845539",
+        "182241571",
+        "45722450",
+        "52808306",
+        "64853396",
+        "91254191"
+      ],
+      "independent_cid_count": 10,
+      "sales_doc_cids": [
+        "104677702",
+        "134920664",
+        "139480415",
+        "144938465",
+        "173845539",
+        "182241571",
+        "45722450",
+        "52808306",
+        "64853396",
+        "91254191"
+      ],
+      "multiparty": true,
+      "mismatch": true,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 10,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 44,
+          "client_name": "MB Adagia",
+          "client_contractor_id": "139480415",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 45,
+          "client_name": "UAB Monodija Ir Ko",
+          "client_contractor_id": "134920664",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 46,
+          "client_name": "DiamondGroup GmbH",
+          "client_contractor_id": "52808306",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 47,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 48,
+          "client_name": "Guldteknik i K\u00f6ping AB",
+          "client_contractor_id": "64853396",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 49,
+          "client_name": "SAGAR SHAH",
+          "client_contractor_id": "182241571",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 50,
+          "client_name": "ORKNIS UAB",
+          "client_contractor_id": "144938465",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 51,
+          "client_name": "UAB",
+          "client_contractor_id": "45722450",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 52,
+          "client_name": "OMARA s.r.o",
+          "client_contractor_id": "173845539",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 53,
+          "client_name": "Clear-Diamonds",
+          "client_contractor_id": "91254191",
+          "draft_state": "posted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_6769309142_2026-06_b2016b29",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 10,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 44,
+          "client_name": "MB Adagia",
+          "client_contractor_id": "139480415",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 45,
+          "client_name": "UAB Monodija Ir Ko",
+          "client_contractor_id": "134920664",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 46,
+          "client_name": "DiamondGroup GmbH",
+          "client_contractor_id": "52808306",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 47,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 48,
+          "client_name": "Guldteknik i K\u00f6ping AB",
+          "client_contractor_id": "64853396",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 49,
+          "client_name": "SAGAR SHAH",
+          "client_contractor_id": "182241571",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 50,
+          "client_name": "ORKNIS UAB",
+          "client_contractor_id": "144938465",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 51,
+          "client_name": "UAB",
+          "client_contractor_id": "45722450",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 52,
+          "client_name": "OMARA s.r.o",
+          "client_contractor_id": "173845539",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 53,
+          "client_name": "Clear-Diamonds",
+          "client_contractor_id": "91254191",
+          "draft_state": "posted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "role": "client",
+      "stored_contractor_id": "91979891",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "104677702",
+        "134920664",
+        "145067816",
+        "52808306",
+        "90484280",
+        "91979891"
+      ],
+      "independent_cid_count": 6,
+      "sales_doc_cids": [
+        "104677702",
+        "134920664",
+        "145067816",
+        "52808306",
+        "90484280",
+        "91979891"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 6,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 27,
+          "client_name": "Goto Jewellery and diamonds",
+          "client_contractor_id": "91979891",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 28,
+          "client_name": "SUOKKO",
+          "client_contractor_id": "145067816",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 30,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 57,
+          "client_name": "Diamond Point B.V.",
+          "client_contractor_id": "90484280",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 58,
+          "client_name": "UAB MONODIJA IR KO",
+          "client_contractor_id": "134920664",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 59,
+          "client_name": "DG GmbH",
+          "client_contractor_id": "52808306",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_7123231135_2026-06_f255bbb5",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 6,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 27,
+          "client_name": "Goto Jewellery and diamonds",
+          "client_contractor_id": "91979891",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 28,
+          "client_name": "SUOKKO",
+          "client_contractor_id": "145067816",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 30,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 57,
+          "client_name": "Diamond Point B.V.",
+          "client_contractor_id": "90484280",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 58,
+          "client_name": "UAB MONODIJA IR KO",
+          "client_contractor_id": "134920664",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 59,
+          "client_name": "DG GmbH",
+          "client_contractor_id": "52808306",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_7880850246_2026-08_c0b2ed5a",
+      "role": "client",
+      "stored_contractor_id": "173845539",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "104677702",
+        "173845539",
+        "176578339",
+        "199226787",
+        "203763363"
+      ],
+      "independent_cid_count": 5,
+      "sales_doc_cids": [
+        "104677702",
+        "173845539",
+        "176578339",
+        "199226787",
+        "203763363"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 5,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 84,
+          "client_name": "OMARA s.r.o",
+          "client_contractor_id": "173845539",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 85,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 86,
+          "client_name": "Juliany EOOD",
+          "client_contractor_id": "176578339",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 87,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 88,
+          "client_name": "Eldoradoo Sp. z o. o.",
+          "client_contractor_id": "203763363",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_7880850246_2026-08_c0b2ed5a",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 5,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 84,
+          "client_name": "OMARA s.r.o",
+          "client_contractor_id": "173845539",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 85,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 86,
+          "client_name": "Juliany EOOD",
+          "client_contractor_id": "176578339",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 87,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 88,
+          "client_name": "Eldoradoo Sp. z o. o.",
+          "client_contractor_id": "203763363",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_8341809162_2026-07_3d940f75",
+      "role": "client",
+      "stored_contractor_id": "65559320",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "199226787",
+        "65559320",
+        "91979891"
+      ],
+      "independent_cid_count": 3,
+      "sales_doc_cids": [
+        "199226787",
+        "65559320",
+        "91979891"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 3,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 60,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 61,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 62,
+          "client_name": "Goto Jewellery and diamonds",
+          "client_contractor_id": "91979891",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_8341809162_2026-07_3d940f75",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 3,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 60,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 61,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 62,
+          "client_name": "Goto Jewellery and diamonds",
+          "client_contractor_id": "91979891",
+          "draft_state": "editing",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_8400636576_2026-06_f82f6527",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_8418664660_2026-08_6cbbed33",
+      "role": "client",
+      "stored_contractor_id": "91254191",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "104677702",
+        "139480415",
+        "199226787",
+        "65559320",
+        "90484280",
+        "91254191"
+      ],
+      "independent_cid_count": 6,
+      "sales_doc_cids": [
+        "104677702",
+        "139480415",
+        "199226787",
+        "65559320",
+        "90484280",
+        "91254191"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 6,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 76,
+          "client_name": "Clear-Diamonds",
+          "client_contractor_id": "91254191",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 77,
+          "client_name": "Diamond Point B.V.",
+          "client_contractor_id": "90484280",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 78,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 79,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 80,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 81,
+          "client_name": "MB Adagia",
+          "client_contractor_id": "139480415",
+          "draft_state": "converted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_8418664660_2026-08_6cbbed33",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 6,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 76,
+          "client_name": "Clear-Diamonds",
+          "client_contractor_id": "91254191",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 77,
+          "client_name": "Diamond Point B.V.",
+          "client_contractor_id": "90484280",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 78,
+          "client_name": "Verhoeven Joaillier",
+          "client_contractor_id": "104677702",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 79,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 80,
+          "client_name": "MICHAEL KENNY LLP",
+          "client_contractor_id": "199226787",
+          "draft_state": "converted",
+          "fixture_name": false
+        },
+        {
+          "id": 81,
+          "client_name": "MB Adagia",
+          "client_contractor_id": "139480415",
+          "draft_state": "converted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "role": "client",
+      "stored_contractor_id": "182241571",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "128515865",
+        "139480415",
+        "145607516",
+        "173845539",
+        "182241571",
+        "65559320",
+        "90484280",
+        "91254191",
+        "98436754"
+      ],
+      "independent_cid_count": 9,
+      "sales_doc_cids": [
+        "128515865",
+        "139480415",
+        "145607516",
+        "173845539",
+        "182241571",
+        "65559320",
+        "90484280",
+        "91254191",
+        "98436754"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 10,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 34,
+          "client_name": "Clear-Diamonds",
+          "client_contractor_id": "91254191",
+          "draft_state": "post_failed",
+          "fixture_name": false
+        },
+        {
+          "id": 35,
+          "client_name": "OMARA s.r.o",
+          "client_contractor_id": "173845539",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 36,
+          "client_name": "Dream Rings, s.r.o.",
+          "client_contractor_id": "145607516",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 37,
+          "client_name": "Anastazia Panakova - Zlatnictvo Panaks",
+          "client_contractor_id": "128515865",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 38,
+          "client_name": "Diamond Point",
+          "client_contractor_id": "90484280",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 39,
+          "client_name": "SAGAR SHAH",
+          "client_contractor_id": "182241571",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 40,
+          "client_name": "SAS MAYURI C/O Giraphes Services",
+          "client_contractor_id": "98436754",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 41,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 42,
+          "client_name": "MB Adagia",
+          "client_contractor_id": "139480415",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 43,
+          "client_name": "Longv\u00e9 ApS",
+          "client_contractor_id": "196893795",
+          "draft_state": "posted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_9158478722_2026-06_924c4e59",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 10,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 34,
+          "client_name": "Clear-Diamonds",
+          "client_contractor_id": "91254191",
+          "draft_state": "post_failed",
+          "fixture_name": false
+        },
+        {
+          "id": 35,
+          "client_name": "OMARA s.r.o",
+          "client_contractor_id": "173845539",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 36,
+          "client_name": "Dream Rings, s.r.o.",
+          "client_contractor_id": "145607516",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 37,
+          "client_name": "Anastazia Panakova - Zlatnictvo Panaks",
+          "client_contractor_id": "128515865",
+          "draft_state": "editing",
+          "fixture_name": false
+        },
+        {
+          "id": 38,
+          "client_name": "Diamond Point",
+          "client_contractor_id": "90484280",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 39,
+          "client_name": "SAGAR SHAH",
+          "client_contractor_id": "182241571",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 40,
+          "client_name": "SAS MAYURI C/O Giraphes Services",
+          "client_contractor_id": "98436754",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 41,
+          "client_name": "Magdalena Kumar Firma Handlowa \u201dRailing 2\u201d",
+          "client_contractor_id": "65559320",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 42,
+          "client_name": "MB Adagia",
+          "client_contractor_id": "139480415",
+          "draft_state": "posted",
+          "fixture_name": false
+        },
+        {
+          "id": 43,
+          "client_name": "Longv\u00e9 ApS",
+          "client_contractor_id": "196893795",
+          "draft_state": "posted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_9198333502_2026-05_87257361",
+      "role": "client",
+      "stored_contractor_id": "45722450",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "139480415",
+        "45722450"
+      ],
+      "independent_cid_count": 2,
+      "sales_doc_cids": [
+        "139480415",
+        "45722450"
+      ],
+      "multiparty": true,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_9198333502_2026-05_87257361",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_9807058483_2026-06_c600949a",
+      "role": "client",
+      "stored_contractor_id": "58541318",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "58541318"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [
+        "58541318"
+      ],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 1,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 55,
+          "client_name": "MDS",
+          "client_contractor_id": "58541318",
+          "draft_state": "posted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent client cid matches batch packing row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_9807058483_2026-06_c600949a",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 1.0,
+      "reason": "atlas_intake_dropdown_pick",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 1,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [
+        {
+          "id": 55,
+          "client_name": "MDS",
+          "client_contractor_id": "58541318",
+          "draft_state": "posted",
+          "fixture_name": false
+        }
+      ],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_9938632830_2026-06_1a80f9c5",
+      "role": "client",
+      "stored_contractor_id": "31",
+      "status": "confirmed",
+      "confidence": 0.85,
+      "reason": "name_plus_country_exact",
+      "distinct_independent_cids": [
+        "45722450"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [
+        "45722450"
+      ],
+      "multiparty": false,
+      "mismatch": true,
+      "agrees_single": false,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": true,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "STALE_BUT_MASKED",
+      "note": "multiparty or mismatch but step 0b not reachable for editable drafts",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SHIPMENT_9938632830_2026-06_1a80f9c5",
+      "role": "supplier",
+      "stored_contractor_id": "5",
+      "status": "confirmed",
+      "confidence": 0.85,
+      "reason": "name_plus_country_exact",
+      "distinct_independent_cids": [
+        "5"
+      ],
+      "independent_cid_count": 1,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": true,
+      "is_fixture_batch": false,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "SAFE_SINGLE",
+      "note": "single independent supplier cid matches batch row",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SMOKE-R2",
+      "role": "client",
+      "stored_contractor_id": "27",
+      "status": "confirmed",
+      "confidence": 0.85,
+      "reason": "name_plus_country_exact",
+      "distinct_independent_cids": [],
+      "independent_cid_count": 0,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": true,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "ORPHANED_TEST_DATA",
+      "note": "fixture/test batch pattern",
+      "mutation_candidate": false
+    },
+    {
+      "batch_id": "SMOKE-R3-VERIFY",
+      "role": "client",
+      "stored_contractor_id": "27",
+      "status": "auto",
+      "confidence": 0.85,
+      "reason": "name_plus_country_exact",
+      "distinct_independent_cids": [],
+      "independent_cid_count": 0,
+      "sales_doc_cids": [],
+      "multiparty": false,
+      "mismatch": false,
+      "agrees_single": false,
+      "is_fixture_batch": true,
+      "zero_a_sales_cids_present": false,
+      "zero_b_reachable": false,
+      "drafts_with_cid_count": 0,
+      "drafts_missing_cid": [],
+      "drafts_with_cid": [],
+      "classification": "ORPHANED_TEST_DATA",
+      "note": "fixture/test batch pattern",
+      "mutation_candidate": false
+    }
+  ]
+}
