@@ -1,36 +1,44 @@
 #!/usr/bin/env python3
 """Install / verify EstrellaDBBackup Windows scheduled task (B-019).
 
-Invokes production ``app.services.backup_service.run_backup`` + prune with
-cwd semantics equivalent to NSSM AppDirectory (``C:\\PZ`` so ``import app``
-resolves to ``C:\\PZ\\app``).
+Copies ``run_estrella_db_backup.py`` to ``C:\\PZ\\scripts\\`` and registers a
+daily schtask with a short ``/TR`` (schtasks limit: 261 chars).
 
-Does NOT mutate live databases — only writes under settings.backup_root
-(default ``C:\\PZ-backups``). Creating/updating the schtask requires
-Administrator.
+Does NOT mutate live databases — only writes under settings.backup_root.
+Creating/updating the schtask requires Administrator.
 """
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 TASK_NAME = "EstrellaDBBackup"
 PROD_ROOT = Path(r"C:\PZ")
+SCRIPTS_DIR = PROD_ROOT / "scripts"
+RUNNER_NAME = "run_estrella_db_backup.py"
 PYTHON = Path(r"C:\Users\Super Fashion\AppData\Local\Programs\Python\Python39\python.exe")
 
-# Double-quote safe /TR payload for schtasks.
-_TR = (
-    f'"{PYTHON}" -X utf8 -c '
-    "\"import sys; "
-    "sys.path.insert(0, r'C:\\\\PZ'); "
-    "from app.services.backup_service import run_backup, prune_backups; "
-    "from app.core.config import settings; "
-    "m = run_backup(); "
-    "print('BACKUP_OK', m.get('backup_id'), m.get('summary')); "
-    "print('PRUNE', prune_backups(settings.backup_root))\""
-)
+
+def _repo_runner() -> Path:
+    # Prefer sibling of this installer (service/scripts/), else PZ-main path.
+    here = Path(__file__).resolve().parent / RUNNER_NAME
+    if here.exists():
+        return here
+    alt = Path(r"C:\PZ-main\service\scripts") / RUNNER_NAME
+    if alt.exists():
+        return alt
+    raise FileNotFoundError(f"Cannot locate {RUNNER_NAME}")
+
+
+def _ensure_runner_on_disk() -> Path:
+    SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = SCRIPTS_DIR / RUNNER_NAME
+    src = _repo_runner()
+    shutil.copy2(src, dest)
+    return dest
 
 
 def _query_task() -> int:
@@ -49,6 +57,12 @@ def install(hour: int = 2, minute: int = 15) -> int:
         print(f"ERROR: production app missing: {PROD_ROOT / 'app'}", file=sys.stderr)
         return 1
 
+    runner = _ensure_runner_on_disk()
+    tr = f'"{PYTHON}" -X utf8 "{runner}"'
+    if len(tr) > 261:
+        print(f"ERROR: /TR length {len(tr)} exceeds 261", file=sys.stderr)
+        return 1
+
     subprocess.call(
         ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
         stdout=subprocess.DEVNULL,
@@ -61,9 +75,9 @@ def install(hour: int = 2, minute: int = 15) -> int:
         "/RU", "SYSTEM",
         "/RL", "HIGHEST",
         "/F",
-        "/TR", _TR,
+        "/TR", tr,
     ]
-    print("Creating", TASK_NAME, "…")
+    print("Creating", TASK_NAME, "TR=", tr, "len=", len(tr))
     rc = subprocess.call(cmd)
     if rc != 0:
         print("ERROR: schtasks /Create failed", rc, file=sys.stderr)
