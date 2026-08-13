@@ -48,18 +48,19 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 ## Current task
 
-- **Task:** B-009 — split contractor-backfill dropped-charge log severity by reason;
-  also close stale BACKLOG B-002..B-005 (already fixed on main).
-- **Started:** 2026-08-13 · **Status:** `IMPLEMENTING`
-- **Baseline main:** `6d53e7f2` (includes #1218 B-008). Production SHA: **UNMEASURED**
-  from this Linux cloud VM (`C:\PZ\version.txt` unavailable). Do not assume prod == main;
-  #1218 App deploy + read-only smoke still owed on Windows host.
-- **Branch:** `cursor/b009-backfill-drop-log-severity-42c1`
-- **B-008:** CLOSED via PR #1218 merge `6d53e7f2` (duplicate agent PR #1219 closed without
-  merge). Do not reopen. Canonical filter owner:
-  `proforma_invoice_link_db.list_draft_birth_blocks` + `include_advisory`.
-- **Next after B-009 (ranked):** B-010 (focused unit test, test-only) → B-011 (`__all__`
-  cosmetic) → B-017 (auth DB import silence — real trap) → B-012/B-013/B-014 (UI / sign-off).
+- **Task:** B-010 — pin `set_sales_client_name` multi-client non-clobber (test-only).
+- **Started:** 2026-08-13 · **Status:** `VALIDATING` → merge (test-only; no seven-agent gate / no deploy).
+- **Baseline main:** `c3cc16e0` (B-009 merged). Production SHA: **UNMEASURED** from this Linux VM.
+- **Branch:** `cursor/b010-set-sales-client-name-unit-42c1`
+- **B-008:** CLOSED (#1218 / `6d53e7f2`). **B-009:** CLOSED (#1220 / `c3cc16e0`).
+- **App deploy owed (Windows host):** B-008 + B-009 App-only — measure `C:\PZ\version.txt` first.
+- **Next after B-010 (ranked):** B-011 (`__all__` cosmetic) → B-017 (auth DB import silence) →
+  resume #1201 / B-021 RO.
+
+## Prior task — B-009 backfill drop-log severity (COMPLETE)
+
+- **Merged:** `c3cc16e0` (PR #1220). Seven-agent GO; App-only deploy owed on Windows.
+- **Also closed in BACKLOG:** B-002..B-005 ALREADY_FIXED hygiene.
 
 ## Prior task — PR #1201 intake multiparty seed (SUSPENDED; not abandoned)
 
