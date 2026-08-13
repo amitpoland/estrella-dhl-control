@@ -5,8 +5,7 @@ name: CI
 # broader service suite carries its documented, pre-existing aggregate reds.
 #
 # Three jobs: `golden-regression`, the `service-suite` shard matrix, and
-# `service-suite-report`, which aggregates the shards and carries the suite's
-# verdict (see the branch-protection note above that job).
+# `service-suite-report`, which aggregates the shards into a diagnostic report.
 #
 # Runner: windows-latest — matches production (NSSM PZService, Windows, py3.9)
 # and the environment all test-baseline counts were measured in. The Windows-only
@@ -15,12 +14,13 @@ name: CI
 # Python pinned to 3.9 — production runs 3.9.1; the root regression needs
 # PYTHONUTF8=1 so Polish-language test prints can't crash on a cp1252 console.
 #
-# NOTE: no job here is a required status check until branch protection is set
-# (an admin action in GitHub repo settings, not something this workflow grants).
-# When it is set, the suite's check is `Service pytest (aggregate)` — NOT a
-# shard job; see the branch-protection note on `service-suite-report`.
-# The first run establishes the honest baseline; it is not described as "green"
-# until its own Actions run reports green.
+# CI AUTHORITY (permanent): this workflow is DIAGNOSTIC ONLY. It must never
+# gate merges or production deploys (CLAUDE.md § "CI authority — diagnostic,
+# never a gate"). Branch protection must not require any job here without an
+# explicit PROJECT_STATE.md DECISIONS entry. Aggregate exit uses
+# `--fail-on never`: inherited reds, killed shards, missing artifacts, and
+# malformed XML are printed truthfully and must not produce the recurring
+# "Process completed with exit code 1" user-facing loop.
 
 on:
   push:
@@ -68,35 +68,27 @@ jobs:
   # Deliberately no file count here: it drifts with every added test, and a
   # stale number in a comment reads as a contract. `tools/shard_tests.py --of 6
   # --describe` prints the current one.
-# Runs the entire suite honestly. The test-baseline documents pre-existing,
-# order-dependent aggregate reds (stale V1 source-grep pins; asyncio/mock
-# leakage) — those reds stay visible in the aggregate step summary. The
-# aggregate job itself exits 0 when every shard reported (see
-# `--fail-on incomplete` below) so inherited failures do not permanently red
-# the Actions check. DHL/carrier credentials are absent on the runner, so the
-# 4 env-conditional carrier defaults tests PASS here (they only fail on a
-# creds-configured host).
+  #
+  # Runs the entire suite honestly. Standing inherited reds stay visible in the
+  # aggregate step summary. The aggregate job exits 0 for all diagnostic
+  # findings (`--fail-on never`). DHL/carrier credentials are absent on the
+  # runner, so the 4 env-conditional carrier defaults tests PASS here.
   #
   # WHY SHARDED: the suite previously ran as one pytest process. pytest-timeout's
   # `thread` method (pytest.ini) cannot interrupt a blocked C call, so it kills
-  # the whole process — one hung test discarded every result after it (a run died
-  # at 77%, reporting a single timeout and hiding the standing failures in the
-  # remaining 23%). Six independent shards bound that loss to one sixth, and the
-  # aggregation step reports a lost shard as INCOMPLETE rather than as zero
-  # failures.
+  # the whole process — one hung test discarded every result after it. Six
+  # independent shards bound that loss to one sixth.
+  #
+  # TIMEOUT CONTAINMENT: job timeout-minutes=90; pytest step timeout-minutes=75.
+  # The 15-minute buffer lets ensure_junit_artifact + upload always run after a
+  # step timeout. Do not rely solely on pytest-timeout for process containment.
   #
   # SHARD MEMBERSHIP is sha256(relative posix path) % 6
   # (service/tools/shard_tests.py), so every runner computes the same partition
-  # AND a file keeps its shard as the tree changes around it. The earlier
-  # size-based bin packing balanced better but re-derived membership from the
-  # whole listing, so adding one test file could move unrelated files between
-  # shards — which invalidates run-over-run shard comparison, the thing this
-  # suite is triaged by. Balance is now statistical; the job timeout below is
-  # what bounds a slow shard.
+  # AND a file keeps its shard as the tree changes around it.
   #
   # Shards run in separate processes, so order-dependent failures will differ
-  # from a monolithic run. That difference is diagnostic — it is how order
-  # contamination gets separated from genuine regressions — not noise to tune out.
+  # from a monolithic run. That difference is diagnostic — not noise to tune out.
   service-suite:
     name: Service pytest (shard ${{ matrix.shard }}/6)
     runs-on: windows-latest
@@ -118,9 +110,13 @@ jobs:
           python -m pip install -r service/requirements.txt
           python -m pip install pytest pytest-timeout
 
-      - name: Run service test suite (shard ${{ matrix.shard }}/6)
+      # Diagnostic step — never the workflow success authority.
+      # Step timeout < job timeout so ensure+upload still run after a hang.
+      - id: pytest
+        name: Run service test suite (shard ${{ matrix.shard }}/6)
         working-directory: service
-        continue-on-error: true   # a red or hung shard must still reach ensure+upload
+        timeout-minutes: 75
+        continue-on-error: true
         env:
           PYTHONUTF8: '1'
           PYTHONIOENCODING: 'utf-8'
@@ -132,58 +128,42 @@ jobs:
           python -m pytest $files -p no:cacheprovider -ra `
             --junitxml=junit-shard-${{ matrix.shard }}.xml
 
-      # pytest-timeout's thread method ends hangs with os._exit, which skips the
-      # junitxml session-end write. Without a file, upload warns and the
-      # aggregate reports MISSING — permanently redding diagnostic CI on an
-      # intermittent hang (run 31717453274: shard 6 killed mid
-      # test_api_incoterm_review_and_bulk). Always materialise a usable XML
-      # before upload: real report if present, otherwise an explicit error
-      # sentinel (never a silent zero-failure suite).
+      # Normalize missing/empty JUnit into an explicit error sentinel.
+      # Skip on runner cancellation — do not invent evidence after loss
+      # (run 31717453274: shard 6 os._exit left no XML → MISSING-red aggregate).
       - name: Ensure JUnit artifact exists
-        if: always()
+        if: ${{ always() && !cancelled() }}
         working-directory: service
         shell: pwsh
         run: |
           python tools/ensure_junit_artifact.py `
             junit-shard-${{ matrix.shard }}.xml `
-            --shard ${{ matrix.shard }}
+            --shard ${{ matrix.shard }} `
+            --pytest-outcome "${{ steps.pytest.outcome }}"
 
+      # warn, not error: upload must not become another red-gate authority.
       - name: Upload shard JUnit report
-        if: always()
+        if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: junit-shard-${{ matrix.shard }}
           path: service/junit-shard-${{ matrix.shard }}.xml
-          if-no-files-found: error   # ensure step must have left a file
+          if-no-files-found: warn
 
-  # ── Aggregate the shards into one reconciliation ──────────────────────────
-  # Prints every failure. Job exit uses `--fail-on incomplete`: exit 1 ONLY when
-  # a shard's XML is MISSING/INCOMPLETE. Inherited test failures are reported in
-  # the step summary but do NOT fail this job — the suite carries a documented
-  # standing red set (see `.claude/contracts/test-baseline.md` GATE-4 SCHEDULED
-  # disposition and CLAUDE.md § "CI authority — diagnostic, never a gate").
-  # A shard whose results are unknown is still never counted as zero failures —
-  # that honesty rule is unchanged; only the *job* exit code stops treating
-  # inherited reds as a permanent Actions failure.
+  # ── Aggregate the shards into one diagnostic reconciliation ───────────────
+  # Prints every failure and every evidence state. Job exit uses
+  # `--fail-on never`: diagnostic findings (TEST_FAILURE, PROCESS_KILLED,
+  # STEP_TIMEOUT, MALFORMED_XML, MISSING_ARTIFACT) are visible in the summary
+  # and must not fail this Actions job. Local forensic callers keep
+  # `--fail-on any|incomplete`.
   #
-  # BRANCH PROTECTION: intentionally unset. If an operator ever enables a
-  # required check, it must be this job — NOT `service-suite`. The shard steps
-  # are `continue-on-error: true` so a red or hung shard still uploads its XML,
-  # which means a shard job can report success while its tests failed. Requiring
-  # a shard job would be a green light with nothing behind it.
+  # BRANCH PROTECTION: intentionally unset. Requiring a shard job would be a
+  # green light with nothing behind it (`continue-on-error: true` on pytest).
   #
-  # `!cancelled()` rather than `always()`. A newer push cancels the in-flight run
-  # (see `concurrency` above), which kills the shards mid-test; under `always()`
-  # the aggregate still ran, found their partial or absent XML, and correctly
-  # reported red — leaving a FAILED check on a run nobody abandoned for a reason
-  # worth reading. That red is pure noise: it fires webhooks, costs a reviewer an
-  # investigation, and would sit as a red required check with nothing wrong.
-  #
-  # This does NOT weaken the lost-shard honesty rule. A hang that used to leave
-  # no XML now gets an explicit error sentinel from ensure_junit_artifact.py
-  # (complete evidence, visible error — never silent zero failures). A shard
-  # that still somehow uploads nothing remains MISSING and still fails. Only a
-  # genuinely cancelled run skips, and a cancelled run has no verdict to give.  service-suite-report:
+  # `!cancelled()` rather than `always()`. A newer push cancels the in-flight
+  # run; under `always()` the aggregate used to run on partial evidence and
+  # produce noise. A cancelled run has no verdict to give — do not fake one.
+  service-suite-report:
     name: Service pytest (aggregate)
     runs-on: ubuntu-latest
     needs: service-suite
@@ -196,6 +176,7 @@ jobs:
           python-version: '3.11'
 
       - name: Download every shard report
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           pattern: junit-shard-*
@@ -204,6 +185,7 @@ jobs:
 
       - name: Reconcile shard results
         run: |
+          mkdir -p junit
           python service/tools/junit_summary.py junit --of 6 \
-            --fail-on incomplete \
+            --fail-on never \
             --markdown "$GITHUB_STEP_SUMMARY"

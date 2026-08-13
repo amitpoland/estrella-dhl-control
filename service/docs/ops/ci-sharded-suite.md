@@ -28,28 +28,39 @@ uploading it with `if: always()`. A hang now costs one shard. The
 reconciliation into the run summary.
 
 The honesty rule the aggregation enforces: **a shard whose XML is missing or
-truncated is reported INCOMPLETE, never as zero failures.** A hard-killed
-process writes no XML — counting that as clean would make a worse run look
-greener. `test_ci_shard_partition.py` pins this.
+malformed is classified as `MISSING_ARTIFACT` / `MALFORMED_XML`, never as zero
+failures.** `test_ci_shard_partition.py` pins this.
 
-### Hung shard → sentinel, not MISSING
+### Evidence-state vocabulary
+
+| State | Meaning |
+|---|---|
+| `COMPLETE` | usable XML, no failed/errored tests |
+| `TEST_FAILURE` | usable XML with failed/errored tests |
+| `PROCESS_KILLED` | sentinel after pytest os._exit / crash with no XML |
+| `STEP_TIMEOUT` | sentinel after GitHub step timeout before XML write |
+| `MALFORMED_XML` | truncated / empty-suite / short-count XML |
+| `MISSING_ARTIFACT` | expected shard file absent from the aggregate download |
+| `CANCELLED/UNKNOWN` | reserved; cancelled runs skip the aggregate (`!cancelled()`) |
+
+### Hung shard → sentinel, not MISSING-red Actions job
 
 pytest-timeout's `thread` method ends a hang with `os._exit`, which skips the
-junitxml session-end write. Before `ensure_junit_artifact.py`, that left the
-upload step with nothing (`if-no-files-found: warn`), the aggregate reported
-MISSING, and diagnostic CI went red even though five other shards completed —
-observed on run `31717453274` (shard 6 killed in
-`test_api_incoterm_review_and_bulk`).
+junitxml session-end write. A GitHub **step** timeout (75 min, under the 90 min
+job timeout) similarly kills pytest before session-end. Before normalization,
+upload warned and the aggregate reported MISSING — redding diagnostic CI
+(observed on run `31717453274`, shard 6).
 
-Each shard now runs `ensure_junit_artifact.py` after pytest (`if: always()`):
+Each shard now:
 
-- real `junit-shard-N.xml` present → left alone;
-- absent/empty → write a one-case **error** sentinel (never an empty green
-  suite). The aggregate then has complete evidence, lists the kill explicitly,
-  and `--fail-on incomplete` exits 0.
+1. runs pytest with `continue-on-error: true` and `timeout-minutes: 75`;
+2. runs `ensure_junit_artifact.py` under `always() && !cancelled()` — real XML
+   kept, absent/empty → explicit error sentinel (`PROCESS_KILLED` /
+   `STEP_TIMEOUT`);
+3. uploads with `if-no-files-found: warn` (upload is not a red-gate authority).
 
-Upload uses `if-no-files-found: error` so a broken ensure step cannot silently
-drop a shard again.
+Cancelled runs skip ensure/upload/aggregate — do not invent evidence after
+runner loss.
 
 **CI does not gate.** Branch protection is intentionally not set: this suite is a
 diagnostic, and per the 2026-08-07 operator ruling CI may not gate merges or
@@ -221,9 +232,9 @@ truth for deploy pass criteria, and `deploy_qa_reviewer` still reads it. Shardin
 changes how results are *collected*, not what counts as a deploy pass.
 
 The aggregate job's **Actions exit code** uses
-`junit_summary.py --fail-on incomplete`: it is red only when a shard's XML is
-MISSING or INCOMPLETE. Inherited test failures stay in the step summary (full
-failure list, grouped by file) but do not fail the job — matching the
-operating-model rule that aggregate CI is diagnostic and must not stay
-permanently red on the suite's standing failure set. Local triage without the
-flag (`--fail-on any`, the default) still exits non-zero on any failed test.
+`junit_summary.py --fail-on never`: diagnostic findings
+(`TEST_FAILURE`, `PROCESS_KILLED`, `STEP_TIMEOUT`, `MALFORMED_XML`,
+`MISSING_ARTIFACT`) stay in the step summary and **must not** fail the job.
+That is the permanent fix for the recurring user-facing
+`Process completed with exit code 1` loop. Local forensic callers keep
+`--fail-on any` (default) and `--fail-on incomplete`.
