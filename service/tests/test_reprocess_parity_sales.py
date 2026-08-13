@@ -30,6 +30,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import uuid
 
 from app.services import document_db as ddb
 
@@ -197,17 +198,34 @@ def test_reprocess_twice_converges_to_one_canonical_row(docdb):
     assert all(r["sales_document_id"] in sd_ids for r in spls), "FK invariant holds after re-reprocess"
 
 
+def _insert_pre_fix_phantom(batch_id: str, document_id: str) -> str:
+    """Simulate a historical pre-B-002 row: random UUID PK + same document_id."""
+    phantom_id = str(uuid.uuid4())
+    with ddb._lock, ddb._connect() as con:
+        con.execute(
+            """INSERT INTO sales_documents
+               (id, batch_id, document_id, client_name, client_ref,
+                document_type, sales_doc_no, sales_doc_date,
+                source_file_path, extraction_status,
+                client_contractor_id, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                phantom_id, batch_id, document_id, "", "",
+                "sales_packing_list", "", "", "", "pending", "",
+                "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
+            ),
+        )
+    return phantom_id
+
+
 def test_ensure_sales_document_id_purges_lineless_phantom(docdb):
     """A pre-fix phantom (random-UUID id, same document_id, no lines) is removed
     once the canonical id==doc_id row is ensured; a phantom that owns lines is
     NEVER deleted."""
     B = "BATCH_PHANTOM"
     doc_id = "shipdoc-ccc"
-    # Pre-fix behaviour: store_sales_document mints a random-UUID id row.
-    phantom_id = ddb.store_sales_document(
-        batch_id=B, document_id=doc_id,
-        data={"document_type": "sales_packing_list", "extraction_status": "pending"},
-    )
+    # Historical pre-B-002 residue (store_sales_document no longer mints these).
+    phantom_id = _insert_pre_fix_phantom(B, doc_id)
     assert phantom_id and phantom_id != doc_id
     # Ensure the canonical row → phantom (line-less) must be purged.
     ddb.ensure_sales_document_id(B, doc_id, document_type="sales_packing_list")
@@ -221,10 +239,7 @@ def test_ensure_sales_document_id_keeps_phantom_that_owns_lines(docdb):
     deleted by the phantom cleanup."""
     B = "BATCH_PHANTOM_SAFE"
     doc_id = "shipdoc-ddd"
-    other_id = ddb.store_sales_document(
-        batch_id=B, document_id=doc_id,
-        data={"document_type": "sales_packing_list"},
-    )
+    other_id = _insert_pre_fix_phantom(B, doc_id)
     # Give the sibling real lines so it must be preserved.
     ddb.store_sales_packing_lines(other_id, B, [_row("PX", "DX", 5.0, "excel_symbol")])
     ddb.ensure_sales_document_id(B, doc_id, document_type="sales_packing_list")

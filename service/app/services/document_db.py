@@ -1652,46 +1652,29 @@ def store_sales_document(
     document_id: str,
     data:        Dict[str, Any],
 ) -> str:
-    """
-    Insert a sales document record. Returns the sales_document id.
+    """Compatibility writer — identity is owned by ``ensure_sales_document_id``.
 
-    PR-2 (contractor-at-birth): ``client_contractor_id`` is projected onto the
-    row. Precedence: explicit ``data["client_contractor_id"]`` → derived from
-    the authoritative ``shipment_documents.client_contractor_id`` for
-    *document_id*. This keeps the Customer-Master contractor authority resolved
-    at intake from being dropped at the sales boundary (the silent-drop root
-    cause). ``client_name`` is unchanged — contractor is an additive reference,
-    never the identity key.
+    B-002: never mint a random UUID PK. The persistent sales_documents.id MUST
+    equal *document_id* (shipment_documents.id from register_document) so
+    retries / alternate intake paths cannot create sibling identities.
+
+    Metadata from *data* is forwarded to the canonical helper. Contractor
+    projection remains PR-2 rules inside ``ensure_sales_document_id``.
     """
-    if _db_path is None:
+    if _db_path is None or not document_id:
         return ""
-    now = _now()
-    row_id = str(uuid.uuid4())
-    with _lock, _connect() as con:
-        cid = str(data.get("client_contractor_id", "") or "").strip()
-        if not cid:
-            cid = _shipment_doc_contractor_id(con, document_id)
-        con.execute(
-            """INSERT OR REPLACE INTO sales_documents
-               (id, batch_id, document_id, client_name, client_ref,
-                document_type, sales_doc_no, sales_doc_date,
-                source_file_path, extraction_status,
-                client_contractor_id, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                row_id, batch_id, document_id,
-                str(data.get("client_name", "")),
-                str(data.get("client_ref", "")),
-                str(data.get("document_type", "sales_invoice")),
-                str(data.get("sales_doc_no", "")),
-                str(data.get("sales_doc_date", "")),
-                str(data.get("source_file_path", "")),
-                str(data.get("extraction_status", "pending")),
-                cid,
-                now, now,
-            ),
-        )
-    return row_id
+    return ensure_sales_document_id(
+        batch_id,
+        document_id,
+        client_name=str(data.get("client_name", "") or ""),
+        client_ref=str(data.get("client_ref", "") or ""),
+        document_type=str(data.get("document_type", "sales_invoice") or "sales_invoice"),
+        source_file_path=str(data.get("source_file_path", "") or ""),
+        client_contractor_id=str(data.get("client_contractor_id", "") or "").strip(),
+        extraction_status=str(data.get("extraction_status", "pending") or "pending"),
+        sales_doc_no=str(data.get("sales_doc_no", "") or ""),
+        sales_doc_date=str(data.get("sales_doc_date", "") or ""),
+    )
 
 
 def get_sales_documents(batch_id: str) -> List[Dict[str, Any]]:
@@ -1984,9 +1967,13 @@ def ensure_sales_document_id(
     document_id:          str,
     *,
     client_name:          str = "",
+    client_ref:           str = "",
     document_type:        str = "sales_packing_list",
     source_file_path:     str = "",
     client_contractor_id: str = "",
+    extraction_status:    str = "extracted",
+    sales_doc_no:         str = "",
+    sales_doc_date:       str = "",
 ) -> str:
     """Idempotent: ensure a ``sales_documents`` row whose PRIMARY KEY ``id``
     equals *document_id*, and return that id.
@@ -2001,13 +1988,21 @@ def ensure_sales_document_id(
     aligned without rewiring the reprocess branch (``sales_doc_id`` stays
     ``document_id`` everywhere downstream).
 
-    Idempotent on the id, so re-reprocess reuses the same row. Also removes
-    line-less phantom siblings (same ``document_id`` under a stale random UUID)
-    left by the pre-fix path. Returns *document_id* (== the row id).
+    Idempotent on the id, so re-reprocess / intake retry reuses the same row.
+    Also removes line-less phantom siblings (same ``document_id`` under a stale
+    random UUID) left by the pre-fix path. Returns *document_id* (== the row id).
+
+    Optional metadata (``client_ref``, ``extraction_status``, ``sales_doc_no``,
+    ``sales_doc_date``) is applied on insert and merge-filled on update — never
+    used as a second identity key (B-002).
     """
     if _db_path is None or not document_id:
         return ""
     now = _now()
+    client_ref = (client_ref or "").strip()
+    extraction_status = (extraction_status or "extracted").strip() or "extracted"
+    sales_doc_no = (sales_doc_no or "").strip()
+    sales_doc_date = (sales_doc_date or "").strip()
     with _lock, _connect() as con:
         # PR-2: project contractor authority. Explicit arg wins; else derive
         # from the authoritative shipment_documents row (id == document_id on
@@ -2015,30 +2010,33 @@ def ensure_sales_document_id(
         cid = (client_contractor_id or "").strip() or \
             _shipment_doc_contractor_id(con, document_id)
         existing = con.execute(
-            "SELECT id, client_contractor_id FROM sales_documents WHERE id=?",
+            "SELECT id, client_contractor_id, client_name, client_ref, "
+            "       source_file_path, extraction_status, sales_doc_no, sales_doc_date "
+            "FROM sales_documents WHERE id=?",
             (document_id,),
         ).fetchone()
         if existing:
             existing_cid = (existing["client_contractor_id"] or "").strip()
             # Merge-not-replace: fill the contractor reference only when empty.
             cid_to_write = existing_cid or cid
-            if client_name and cid_to_write != existing_cid:
-                con.execute(
-                    "UPDATE sales_documents "
-                    "SET client_name=?, client_contractor_id=?, updated_at=? WHERE id=?",
-                    (client_name, cid_to_write, now, document_id),
-                )
-            elif client_name:
-                con.execute(
-                    "UPDATE sales_documents SET client_name=?, updated_at=? WHERE id=?",
-                    (client_name, now, document_id),
-                )
-            elif cid_to_write != existing_cid:
-                con.execute(
-                    "UPDATE sales_documents "
-                    "SET client_contractor_id=?, updated_at=? WHERE id=?",
-                    (cid_to_write, now, document_id),
-                )
+            name_to_write = client_name or (existing["client_name"] or "")
+            ref_to_write = client_ref or (existing["client_ref"] or "")
+            path_to_write = source_file_path or (existing["source_file_path"] or "")
+            status_to_write = (existing["extraction_status"] or "").strip() or extraction_status
+            no_to_write = sales_doc_no or (existing["sales_doc_no"] or "")
+            date_to_write = sales_doc_date or (existing["sales_doc_date"] or "")
+            con.execute(
+                "UPDATE sales_documents SET "
+                "client_name=?, client_ref=?, client_contractor_id=?, "
+                "source_file_path=?, extraction_status=?, "
+                "sales_doc_no=?, sales_doc_date=?, updated_at=? "
+                "WHERE id=?",
+                (
+                    name_to_write, ref_to_write, cid_to_write,
+                    path_to_write, status_to_write,
+                    no_to_write, date_to_write, now, document_id,
+                ),
+            )
         else:
             # Carry over operator-supplied identity from a pre-fix sibling
             # (same document_id under a stale random-UUID id) BEFORE it is
@@ -2046,18 +2044,20 @@ def ensure_sales_document_id(
             # client_name would be lost, and the reprocess client_name resolver
             # (Pass 2a, which reads sales_documents by document_id) would fall
             # through to the wFirma reverse-lookup.
-            client_ref = ""
-            if not client_name:
+            if not client_name or not client_ref:
                 sib = con.execute(
                     "SELECT client_name, client_ref FROM sales_documents "
                     "WHERE batch_id=? AND document_id=? AND id<>? "
-                    "AND TRIM(COALESCE(client_name,''))<>'' "
+                    "AND (TRIM(COALESCE(client_name,''))<>'' "
+                    "     OR TRIM(COALESCE(client_ref,''))<>'') "
                     "ORDER BY updated_at DESC LIMIT 1",
                     (batch_id, document_id, document_id),
                 ).fetchone()
                 if sib:
-                    client_name = sib[0] or ""
-                    client_ref = sib[1] or ""
+                    if not client_name:
+                        client_name = sib[0] or ""
+                    if not client_ref:
+                        client_ref = sib[1] or ""
             # OR IGNORE: a concurrent reprocess of the same document may have
             # inserted the id==document_id row between the SELECT above and here
             # (the threading lock only serialises within this process). The
@@ -2074,8 +2074,8 @@ def ensure_sales_document_id(
                 (
                     document_id, batch_id, document_id,
                     client_name, client_ref,
-                    document_type, "", "",
-                    source_file_path, "extracted",
+                    document_type, sales_doc_no, sales_doc_date,
+                    source_file_path, extraction_status,
                     cid,
                     now, now,
                 ),
