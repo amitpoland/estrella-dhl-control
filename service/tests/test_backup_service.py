@@ -15,7 +15,13 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.backup_service import run_backup, prune_backups, _parse_backup_dirname
+from app.services.backup_service import (
+    run_backup,
+    prune_backups,
+    _parse_backup_dirname,
+    get_backup_status,
+    _get_db_registry,
+)
 
 
 def test_backup_creates_timestamped_dir_and_manifest(tmp_path):
@@ -311,3 +317,62 @@ def test_parse_backup_dirname():
     assert _parse_backup_dirname("invalid") is None
     assert _parse_backup_dirname("2026-06-12") is None
     assert _parse_backup_dirname("2026-06-12-14:30:22") is None
+def test_get_db_registry_includes_domain_dbs():
+    """Registry covers domain modules added for B-019 completeness."""
+    names = {name for name, _ in _get_db_registry()}
+    for required in (
+        "warehouse_receipt",
+        "delivery_confirmations",
+        "carrier_shipments",
+        "payment_state",
+        "finance_postings",
+        "ai_call_ledger",
+    ):
+        assert required in names
+
+
+def test_get_backup_status_ignores_deploy_sha_dirs(tmp_path):
+    """Deploy-PZ SHA-named units are not treated as DB backup manifests."""
+    import json
+    deploy_unit = tmp_path / "57bf4e2b79d4d6ecd6225106320a1e56994d414a-20260814-010033"
+    deploy_unit.mkdir()
+    (deploy_unit / "manifest.json").write_text("{}", encoding="utf-8")
+
+    db_backup = tmp_path / "2026-08-14-010500"
+    db_backup.mkdir()
+    manifest = {
+        "backup_id": "2026-08-14-010500",
+        "started_at": "2026-08-14T01:05:00+00:00",
+        "finished_at": "2026-08-14T01:05:04+00:00",
+        "summary": {"total_files": 2, "success_count": 2, "total_size_bytes": 10},
+        "files": {
+            "packing": {"status": "success"},
+            "warehouse": {"status": "absent"},
+        },
+    }
+    (db_backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    status = get_backup_status(str(tmp_path))
+    assert status["healthy"] is True
+    assert status["last_backup_id"] == "2026-08-14-010500"
+    assert status["processed"] == 2
+    assert status["errors"] == 0
+    assert status["running"] is False
+
+
+def test_get_backup_status_reports_file_errors(tmp_path):
+    import json
+    db_backup = tmp_path / "2026-08-14-020000"
+    db_backup.mkdir()
+    manifest = {
+        "backup_id": "2026-08-14-020000",
+        "started_at": "2026-08-14T02:00:00+00:00",
+        "finished_at": "2026-08-14T02:00:01+00:00",
+        "summary": {"total_files": 1, "success_count": 0, "total_size_bytes": 0},
+        "files": {"packing": {"status": "error: locked"}},
+    }
+    (db_backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    status = get_backup_status(str(tmp_path))
+    assert status["healthy"] is False
+    assert status["errors"] == 1
+    assert status["last_error"] and "packing" in status["last_error"]
