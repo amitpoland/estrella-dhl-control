@@ -479,6 +479,19 @@
     <button class="refresh-btn" onclick="loadUsers()">&#8635; Refresh</button>
   </div>
 
+  <div id="db-backup-section" data-testid="admin-db-backup-panel" style="margin: 16px 28px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--separator); border-radius: var(--radius);">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:600;font-size:14px">Database backup</div>
+        <div id="db-backup-status-line" data-testid="admin-db-backup-status" style="font-size:12px;color:var(--label3);margin-top:4px">Loading status…</div>
+      </div>
+      <button type="button" class="btn" data-testid="admin-db-backup-run-now" onclick="runDbBackupNow()" id="db-backup-run-btn"
+              style="background:var(--navy);color:#fff;border:none;padding:8px 14px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px">
+        Run Now — backup databases
+      </button>
+    </div>
+  </div>
+
   <div id="email-queue-section" style="display:none"></div>
 
   <div class="tab-bar">
@@ -531,6 +544,50 @@ async function init() {
   }
   await loadUsers();
   await loadEmailQueue();
+  await loadDbBackupStatus();
+}
+
+async function loadDbBackupStatus() {
+  const line = document.getElementById('db-backup-status-line');
+  if (!line) return;
+  try {
+    const r = await fetch('/api/v1/admin/backup/status', { credentials: 'include' });
+    if (!r.ok) {
+      line.textContent = 'Status unavailable (' + r.status + ')';
+      return;
+    }
+    const s = await r.json();
+    const health = s.healthy ? 'healthy' : 'attention';
+    const when = s.last_completed_at || 'never';
+    line.textContent = health
+      + ' · last completed: ' + when
+      + ' · processed: ' + (s.processed || 0)
+      + ' · created: ' + (s.created || 0)
+      + ' · errors: ' + (s.errors || 0)
+      + (s.last_backup_id ? (' · id: ' + s.last_backup_id) : '')
+      + (s.running ? ' · RUNNING' : '');
+  } catch (e) {
+    line.textContent = 'Status error: ' + e.message;
+  }
+}
+
+async function runDbBackupNow() {
+  const btn = document.getElementById('db-backup-run-btn');
+  const line = document.getElementById('db-backup-status-line');
+  if (btn) { btn.disabled = true; btn.textContent = 'Backing up…'; }
+  try {
+    const r = await fetch('/api/v1/admin/backup/run', { method: 'POST', credentials: 'include' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.detail || ('HTTP ' + r.status));
+    if (line) line.textContent = 'Backup OK · id: ' + (body.backup_id || '?');
+    toast('Database backup completed: ' + (body.backup_id || 'ok'));
+  } catch (e) {
+    if (line) line.textContent = 'Backup failed: ' + e.message;
+    toast('Backup failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Run Now — backup databases'; }
+    await loadDbBackupStatus();
+  }
 }
 
 // ── Load users ────────────────────────────────────────────────────────────────

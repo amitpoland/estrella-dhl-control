@@ -38,11 +38,17 @@ def _get_db_registry() -> List[Tuple[str, Path]]:
     from ..auth.database import resolve_auth_db_path
     auth_db = resolve_auth_db_path(settings.auth_db_path, storage_root)
 
+    # Domain-owned SQLite files only (one file per *_db / domain module).
+    # Absent paths are recorded as "absent" in the manifest — never invented.
     return [
         ("packing", storage_root / "packing.db"),
         ("warehouse", storage_root / "warehouse.db"),
+        ("warehouse_receipt", storage_root / "warehouse_receipt.db"),
+        ("warehouses", storage_root / "warehouses.sqlite"),
         ("documents", storage_root / "documents.db"),
         ("wfirma", storage_root / "wfirma.db"),
+        ("wfirma_processing", storage_root / "wfirma_processing.db"),
+        ("wfirma_webhook_events", storage_root / "wfirma_webhook_events.db"),
         ("correction_registry", storage_root / "correction_registry.db"),
         ("intake_lineage", storage_root / "intake_lineage.db"),
         ("proforma_links", storage_root / "proforma_links.db"),
@@ -52,8 +58,19 @@ def _get_db_registry() -> List[Tuple[str, Path]]:
         ("master_audit", audit_db_path()),
         ("master_data", storage_root / "master_data.sqlite"),
         ("suppliers", storage_root / "suppliers.sqlite"),
+        ("supplier_invoice_ocr", storage_root / "supplier_invoice_ocr.sqlite"),
         ("users", auth_db),
         ("packing_resolutions", storage_root / "packing_resolutions.sqlite"),
+        ("payment_state", storage_root / "payment_state.db"),
+        ("contractor_poll", storage_root / "contractor_poll.db"),
+        ("delivery_confirmations", storage_root / "delivery_confirmations.db"),
+        ("dhl_logistics_resolutions", storage_root / "dhl_logistics_resolutions.db"),
+        ("carrier_shipments", storage_root / "carrier_shipments.db"),
+        ("finance_postings", storage_root / "finance_postings.sqlite"),
+        ("metals", storage_root / "metals.sqlite"),
+        ("stones", storage_root / "stones.sqlite"),
+        ("ai_call_ledger", storage_root / "ai_call_ledger.db"),
+        ("inventory_reconciliation", storage_root / "inventory_reconciliation.db"),
     ]
 
 
@@ -294,3 +311,87 @@ def prune_backups(backup_root: str, dry_run: bool = False) -> dict:
                     pass  # Continue with other deletions
 
     return {"kept": kept, "deleted": deleted}
+
+
+def get_backup_status(backup_root: Optional[str] = None) -> dict:
+    """Canonical status shape for Business Feature Completeness (GET .../status).
+
+    Derived from lockfile + newest timestamped ``manifest.json`` under backup_root.
+    Deploy-PZ SHA-named units are ignored (different authority).
+    """
+    if backup_root is None:
+        backup_root = settings.backup_root
+    root = Path(backup_root)
+    lockfile = root / "backup.lock"
+    running = False
+    if lockfile.exists():
+        try:
+            age = time.time() - lockfile.stat().st_mtime
+            running = age <= 3600
+        except OSError:
+            running = False
+
+    latest: Optional[dict] = None
+    latest_dir: Optional[Path] = None
+    if root.exists():
+        candidates = []
+        for item in root.iterdir():
+            if not item.is_dir():
+                continue
+            if _parse_backup_dirname(item.name) is None:
+                continue
+            manifest_path = item / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            candidates.append(item)
+        candidates.sort(key=lambda p: p.name, reverse=True)
+        if candidates:
+            latest_dir = candidates[0]
+            try:
+                with open(latest_dir / "manifest.json", "r", encoding="utf-8") as f:
+                    latest = json.load(f)
+            except Exception:
+                latest = None
+
+    last_started = (latest or {}).get("started_at")
+    last_completed = (latest or {}).get("finished_at")
+    summary = (latest or {}).get("summary") or {}
+    files = (latest or {}).get("files") or {}
+    error_files = [
+        name for name, meta in files.items()
+        if isinstance(meta, dict) and str(meta.get("status") or "").startswith("error")
+    ]
+    duration_ms = None
+    if last_started and last_completed:
+        try:
+            t0 = datetime.fromisoformat(last_started.replace("Z", "+00:00"))
+            t1 = datetime.fromisoformat(last_completed.replace("Z", "+00:00"))
+            duration_ms = int((t1 - t0).total_seconds() * 1000)
+        except Exception:
+            duration_ms = None
+
+    last_error = None
+    if error_files and latest_dir is not None:
+        first = error_files[0]
+        last_error = f"{first}: {(files.get(first) or {}).get('status')}"
+
+    # Healthy when not mid-run and last completed backup had zero file errors
+    # (or no backup yet — honest unhealthy until first success).
+    healthy = (not running) and bool(latest) and not error_files
+
+    return {
+        "healthy": healthy,
+        "running": running,
+        "last_started_at": last_started,
+        "last_completed_at": last_completed,
+        "duration_ms": duration_ms,
+        "processed": int(summary.get("total_files") or 0),
+        "created": int(summary.get("success_count") or 0),
+        "updated": 0,
+        "skipped": 0,
+        "errors": len(error_files),
+        "last_error": last_error,
+        "backup_root": str(root),
+        "last_backup_id": (latest or {}).get("backup_id") or (latest_dir.name if latest_dir else None),
+        "registry_count": len(_get_db_registry()),
+    }

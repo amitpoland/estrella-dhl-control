@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from ..auth.dependencies import require_system_settings_admin
 from ..core.config import settings
-from ..services.backup_service import run_backup, prune_backups
+from ..services.backup_service import run_backup, prune_backups, get_backup_status
 from ..services.backup_validator import validate_backup
 
 router = APIRouter(prefix="/api/v1/admin/backup", tags=["admin", "backup"])
@@ -26,6 +26,12 @@ router = APIRouter(prefix="/api/v1/admin/backup", tags=["admin", "backup"])
 
 class BackupValidateRequest(BaseModel):
     backup_id: str
+
+
+@router.get("/status")
+def backup_status(user: dict = Depends(require_system_settings_admin)):
+    """Canonical backup status — last run / health / counts (read-only)."""
+    return get_backup_status()
 
 
 @router.post("/run")
