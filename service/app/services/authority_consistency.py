@@ -20,6 +20,7 @@ BLOCKED = "blocked_authority_missing"
 CONFLICT = "conflict"
 
 KIND_DESC_STALE = "description_projection_stale"
+KIND_DESC_INVALID = "description_authority_invalid"
 KIND_MAP_STALE = "mapping_projection_stale"
 KIND_MAP_CONFLICT = "mapping_conflict"
 KIND_WAREHOUSE = "warehouse_config_invalid"
@@ -60,19 +61,27 @@ def warehouse_config_invalid() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _canonical_descriptions(docs: sqlite3.Connection) -> Dict[str, str]:
-    out: Dict[str, str] = {}
+def _product_description_rows(docs: sqlite3.Connection) -> Dict[str, Dict[str, str]]:
+    """product_code → persisted product_descriptions fields (may be unusable)."""
+    out: Dict[str, Dict[str, str]] = {}
     try:
         rows = docs.execute(
-            "SELECT product_code, description_pl, name_pl FROM product_descriptions"
+            "SELECT product_code, name_pl, description_pl, description_en, "
+            "material_pl FROM product_descriptions"
         ).fetchall()
     except sqlite3.OperationalError:
         return out
     for r in rows:
         pc = str(r["product_code"] or "").strip()
-        text = str(r["description_pl"] or "").strip() or str(r["name_pl"] or "").strip()
-        if pc and text:
-            out[pc] = text
+        if not pc:
+            continue
+        out[pc] = {
+            "product_code": pc,
+            "name_pl": str(r["name_pl"] or ""),
+            "description_pl": str(r["description_pl"] or ""),
+            "description_en": str(r["description_en"] or ""),
+            "material_pl": str(r["material_pl"] or ""),
+        }
     return out
 
 
@@ -167,14 +176,46 @@ def evaluate_authority_consistency(storage_root: Path) -> Dict[str, Any]:
     cache = _ro(root / "wfirma.db")
     findings: List[Dict[str, Any]] = []
     try:
-        descriptions = _canonical_descriptions(docs) if docs else {}
+        from .description_engine import validate_product_description_row
+
+        pd_rows = _product_description_rows(docs) if docs else {}
         draft_lines = _editable_draft_lines(proforma) if proforma else []
         mapping = _mapping_rows(reservation, cache) if reservation else {}
 
+        seen_invalid: set = set()
+        for pc, row in pd_rows.items():
+            has_text = bool(
+                str(row.get("description_pl") or "").strip()
+                or str(row.get("name_pl") or "").strip()
+            )
+            if not has_text:
+                continue
+            validity = validate_product_description_row(row)
+            if validity.is_usable:
+                continue
+            if pc in seen_invalid:
+                continue
+            seen_invalid.add(pc)
+            findings.append({
+                "kind": KIND_DESC_INVALID,
+                "class": BLOCKED,
+                "product_code": pc,
+                "detail": (
+                    "canonical product_descriptions row is not commercially "
+                    "usable: " + "; ".join(validity.reasons)
+                ),
+                "reasons": list(validity.reasons),
+            })
+
         seen_desc: set = set()
         for draft_id, pc, name_pl, _state in draft_lines:
-            canon = descriptions.get(pc)
-            if not canon:
+            if pc in seen_invalid:
+                continue
+            row = pd_rows.get(pc)
+            if not row:
+                continue
+            validity = validate_product_description_row(row)
+            if not validity.is_usable:
                 continue
             key = (draft_id, pc)
             if key in seen_desc:
@@ -186,7 +227,10 @@ def evaluate_authority_consistency(storage_root: Path) -> Dict[str, Any]:
                     "class": REPAIRABLE,
                     "product_code": pc,
                     "draft_id": draft_id,
-                    "detail": "canonical description exists; editable draft name_pl is blank",
+                    "detail": (
+                        "usable canonical description exists; "
+                        "editable draft name_pl is blank"
+                    ),
                 })
 
         for pc, row in mapping.items():
@@ -226,6 +270,7 @@ def evaluate_authority_consistency(storage_root: Path) -> Dict[str, Any]:
 
     counts = {
         KIND_DESC_STALE: 0,
+        KIND_DESC_INVALID: 0,
         KIND_MAP_STALE: 0,
         KIND_MAP_CONFLICT: 0,
         KIND_WAREHOUSE: 0,
@@ -258,7 +303,7 @@ def _assert_description_projection(
     storage_root: Path, product_codes: Iterable[str]
 ) -> bool:
     """True when no editable draft for these codes still has a blank name_pl
-    while a canonical description exists."""
+    while a *usable* canonical description exists."""
     wanted = {str(c).strip() for c in product_codes if str(c).strip()}
     if not wanted:
         return True

@@ -27,7 +27,9 @@ from app.services import proforma_invoice_link_db as pildb
 from app.services import reservation_db as rdb
 from app.services import wfirma_db as wfdb
 from app.services.authority_consistency import (
+    BLOCKED,
     CONFLICT,
+    KIND_DESC_INVALID,
     KIND_DESC_STALE,
     KIND_MAP_CONFLICT,
     KIND_MAP_STALE,
@@ -195,6 +197,76 @@ def test_repair_fills_blank_editable_draft_not_posted(storage):
     again = repair_derived_projections(storage)
     assert again["after"][KIND_DESC_STALE] == 0
     assert again["repaired_description_codes"] == []
+
+
+GENERIC_PL = "Wyrób jubilerski z 14-karatowego złota (próba 585). Biżuteria do noszenia."
+GENERIC_EN = "14kt gold nose pin"
+
+
+def test_generic_canonical_is_invalid_authority_not_stale_and_not_repaired(storage):
+    """Checker must reuse description_engine usability, not 'any non-empty text'."""
+    _seed_pd(pl=GENERIC_PL, en=GENERIC_EN)
+    draft = _birth_blank(storage, batch_id="B-AC-GENERIC")
+    before_lines = json.loads(
+        pildb.get_draft_by_id(storage / "proforma_links.db", draft.id).editable_lines_json
+    )
+    report = evaluate_authority_consistency(storage)
+    assert report["counts"][KIND_DESC_INVALID] == 1
+    assert report["counts"][KIND_DESC_STALE] == 0
+    finding = next(f for f in report["findings"] if f["kind"] == KIND_DESC_INVALID)
+    assert finding["class"] == BLOCKED
+    assert finding["product_code"] == CODE
+    repaired = repair_derived_projections(storage, product_codes=[CODE], draft_ids=[draft.id])
+    assert repaired["repaired_description_codes"] == []
+    assert any(
+        s.get("kind") == KIND_DESC_INVALID
+        or s.get("reason") == "not repairable_projection"
+        for s in repaired["skipped"]
+    )
+    after_lines = json.loads(
+        pildb.get_draft_by_id(storage / "proforma_links.db", draft.id).editable_lines_json
+    )
+    assert after_lines[0]["name_pl"] == before_lines[0]["name_pl"]
+    assert float(after_lines[0]["qty"]) == 1
+    assert float(after_lines[0]["unit_price"]) == 345.76
+    assert after_lines[0]["product_code"] == CODE
+    assert after_lines[0]["currency"] == "USD"
+    again = evaluate_authority_consistency(storage)
+    assert again["counts"][KIND_DESC_INVALID] == 1
+    assert again["counts"][KIND_DESC_STALE] == 0
+
+
+def test_valid_replacement_makes_blank_drafts_repairable_without_mutating_qty_price(storage):
+    _seed_pd(pl=GENERIC_PL, en=GENERIC_EN)
+    d1 = _birth_blank(storage, batch_id="B-AC-56", client="Monodija A")
+    d2 = _birth_blank(storage, batch_id="B-AC-58", client="Monodija B")
+    blocked = evaluate_authority_consistency(storage)
+    assert blocked["counts"][KIND_DESC_INVALID] == 1
+    assert blocked["counts"][KIND_DESC_STALE] == 0
+    assert repair_derived_projections(
+        storage, product_codes=[CODE], draft_ids=[d1.id, d2.id],
+    )["repaired_description_codes"] == []
+
+    _seed_pd(pl=CANON_PL, en=CANON_EN)
+    eligible = evaluate_authority_consistency(storage)
+    assert eligible["counts"][KIND_DESC_INVALID] == 0
+    assert eligible["counts"][KIND_DESC_STALE] == 2
+    repaired = repair_derived_projections(
+        storage, product_codes=[CODE], draft_ids=[d1.id, d2.id],
+    )
+    assert CODE in repaired["repaired_description_codes"]
+    for draft in (d1, d2):
+        ln = json.loads(
+            pildb.get_draft_by_id(storage / "proforma_links.db", draft.id).editable_lines_json
+        )[0]
+        assert ln["name_pl"] == CANON_PL
+        assert float(ln["qty"]) == 1
+        assert float(ln["unit_price"]) == 345.76
+        assert ln["product_code"] == CODE
+        assert ln["currency"] == "USD"
+    after = evaluate_authority_consistency(storage)
+    assert after["counts"][KIND_DESC_STALE] == 0
+    assert after["counts"][KIND_DESC_INVALID] == 0
 
 
 def test_mapping_stale_repair_and_idempotent(storage):
@@ -482,3 +554,17 @@ def test_repair_source_never_writes_wfirma_or_descriptions():
     assert "edit_product(" not in src
     assert "upsert_product_description" not in src
     assert "goods/add" not in src
+
+
+def test_checker_and_projection_share_validate_product_description_row():
+    """Checker must not fork a second generic-token rule; projection already uses this."""
+    root = Path(__file__).resolve().parent.parent / "app" / "services"
+    checker = (root / "authority_consistency.py").read_text(encoding="utf-8")
+    projection = (root / "proforma_invoice_link_db.py").read_text(encoding="utf-8")
+    engine = (root / "description_engine.py").read_text(encoding="utf-8")
+    assert "from .description_engine import validate_product_description_row" in checker
+    assert checker.count("validate_product_description_row") >= 3
+    assert "FORBIDDEN_DESC_TOKENS" not in checker
+    assert "Wyrób jubilerski" not in checker
+    assert "def validate_product_description_row(" in engine
+    assert "validate_product_description_row" in projection
