@@ -48,24 +48,29 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 ## Current task
 
+- **Task:** B-009 — split contractor-backfill dropped-charge log severity by reason;
+  also close stale BACKLOG B-002..B-005 (already fixed on main).
+- **Started:** 2026-08-13 · **Status:** `IMPLEMENTING`
+- **Baseline main:** `6d53e7f2` (includes #1218 B-008). Production SHA: **UNMEASURED**
+  from this Linux cloud VM (`C:\PZ\version.txt` unavailable). Do not assume prod == main;
+  #1218 App deploy + read-only smoke still owed on Windows host.
+- **Branch:** `cursor/b009-backfill-drop-log-severity-42c1`
+- **B-008:** CLOSED via PR #1218 merge `6d53e7f2` (duplicate agent PR #1219 closed without
+  merge). Do not reopen. Canonical filter owner:
+  `proforma_invoice_link_db.list_draft_birth_blocks` + `include_advisory`.
+- **Next after B-009 (ranked):** B-010 (focused unit test, test-only) → B-011 (`__all__`
+  cosmetic) → B-017 (auth DB import silence — real trap) → B-012/B-013/B-014 (UI / sign-off).
+
+## Prior task — PR #1201 intake multiparty seed (SUSPENDED; not abandoned)
+
 - **Task:** PR #1201 — prevent multi-party intake from seeding batch-level
   `packing_contractor_resolution`; then B-021 read-only historical measurement.
-- **Started:** 2026-08-12 · **Status:** `VALIDATING` — rebased on production tip; adding 0b
-  fallthrough assertion; seven-agent gate / merge / App-only deploy next; B-021 RO after smoke.
-- **Baseline / production:** `0b2020a8a0eb76f437aff90f40e1c7acb081eb7a` (`C:\PZ\version.txt`).
-- **Branch:** `fix/intake-multiparty-contractor-seed` rebased onto `0b2020a8` (was based on
-  `0dc647af`). Tip includes `_sole_cid()` + multiparty seed tests; main still has first-non-empty
-  seed — fix still required (not superseded by B-020).
+- **Started:** 2026-08-12 · **Status:** `VALIDATING` (suspended 2026-08-13 for B-008→B-009
+  operator redirect; resume after B-009 closes).
+- **Baseline / production (as last recorded):** `0b2020a8…` — **re-measure** before resume.
+- **Branch:** `fix/intake-multiparty-contractor-seed`
 - **Invariant (permanent):** `{A}`→seed · `{A,A}`→seed · `{A,B}`→**no seed** · `{}`→no seed.
-  Per-document contractor is authoritative for multi-party batches; batch-level row is only a
-  convenience for genuinely single-party batches. Empty-contractor tolerance stays intentional.
-- **B-020:** CLOSED on production (PR #1202 / `document_party_authority`). Do not reopen or
-  expand #1201 into consumer customs/carrier paths.
-- **B-021:** after #1201 deploy — **read-only only**. No DELETE/UPDATE/backfill of historical
-  `packing_contractor_resolution` rows without a separate mutation campaign.
-- **Production writes for #1201:** NONE (authority logic only). Rollback = revert merge.
-- **Commercial-description WIP:** stashed separately
-  (`wip-commercial-description-convergence-20260812`); do not mix into this campaign.
+- **B-020:** CLOSED on production (PR #1202). **B-021:** RO only after #1201 deploy.
 
 ## Prior task — Product-description authority (PR #1178) (COMPLETE; CLOSED)
 

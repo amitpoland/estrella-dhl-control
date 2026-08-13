@@ -46,6 +46,60 @@ from ..services.batch_service import get_output_dir
 
 log = get_logger(__name__)
 
+# Drop reasons emitted by proforma_service_charges_db move/drop helpers.
+_REASON_RENAME_PATH = "canonical_already_has_charge_type"
+_REASON_CANONICAL_WINS = "canonical_wins_collision"
+
+
+def _log_backfill_dropped_charges(
+    batch_id: str, dropped_charges: List[Dict[str, Any]],
+) -> None:
+    """B-009: emit distinct log severity per drop reason.
+
+    Rename-path collisions (target already had the charge type) are INFO —
+    expected during in-place rename. Canonical-wins drops stay WARNING
+    (operator-chosen discard). Unknown reasons stay WARNING (fail-visible).
+    Response payload ``dropped_charges`` is unchanged.
+    """
+    if not dropped_charges:
+        return
+    rename_path = [
+        d for d in dropped_charges
+        if (d.get("reason") or "") == _REASON_RENAME_PATH
+    ]
+    canonical_wins = [
+        d for d in dropped_charges
+        if (d.get("reason") or "") == _REASON_CANONICAL_WINS
+    ]
+    other = [
+        d for d in dropped_charges
+        if (d.get("reason") or "") not in (
+            _REASON_RENAME_PATH, _REASON_CANONICAL_WINS,
+        )
+    ]
+    if rename_path:
+        log.info(
+            "[%s] contractor backfill rename-path charge collision: "
+            "%d non-zero charge(s) kept under canonical "
+            "(reason=%s): %s",
+            batch_id, len(rename_path), _REASON_RENAME_PATH, rename_path,
+        )
+    if canonical_wins:
+        log.warning(
+            "[%s] contractor backfill DROPPED %d non-zero charge(s) under "
+            "old names (canonical-wins, operator-chosen; "
+            "reason=%s): %s",
+            batch_id, len(canonical_wins), _REASON_CANONICAL_WINS,
+            canonical_wins,
+        )
+    if other:
+        log.warning(
+            "[%s] contractor backfill DROPPED %d non-zero charge(s) under "
+            "old names (unclassified reason — fail-visible): %s",
+            batch_id, len(other), other,
+        )
+
+
 router = APIRouter(
     prefix="/api/v1/admin/contractor-projection",
     tags=["contractor-projection"],
@@ -202,12 +256,8 @@ def backfill_contractor_projection(
                     "still under old names after migration: %s",
                     batch_id, len(orphan_charges), orphan_charges)
 
-    if dropped_charges:
-        log.warning(
-            "[%s] contractor backfill DROPPED %d non-zero charge(s) under old "
-            "names (canonical-wins, operator-chosen): %s",
-            batch_id, len(dropped_charges), dropped_charges,
-        )
+    # B-009: split summary severity by drop reason (helper).
+    _log_backfill_dropped_charges(batch_id, dropped_charges)
 
     # Resolve the batch output dir once. When it does not exist (historical
     # batch with no outputs written), audit-timeline events cannot be recorded —
