@@ -1711,6 +1711,43 @@ def write_postposting_enrichment(
 _PHASE2_LEGACY_STATUS = "draft"
 
 
+def _record_draft_event_conn(
+    conn:        sqlite3.Connection,
+    *,
+    draft_id:    int,
+    event:       str,
+    detail_json: str = "{}",
+    operator:    str = "",
+    occurred_at: Optional[str] = None,
+) -> int:
+    """Insert one ``proforma_draft_events`` row on an open connection.
+
+    Does NOT commit. Callers that own a multi-statement transaction
+    (draft birth) must commit after success; failure leaves the outer
+    transaction free to roll back. Public post-birth appenders use
+    :func:`_record_draft_event`, which wraps this helper in its own
+    short transaction.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise ValueError("draft_id must be a positive int")
+    if not (event or "").strip():
+        raise ValueError("event is required")
+    detail = (detail_json or "").strip() or "{}"
+    if not (detail.startswith("{") or detail.startswith("[")):
+        raise ValueError("detail_json must be a JSON object or array")
+
+    cur = conn.execute(
+        """
+        INSERT INTO proforma_draft_events
+            (draft_id, event, detail_json, operator, occurred_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (int(draft_id), str(event), detail, str(operator or ""),
+         occurred_at or _now_utc_iso()),
+    )
+    return int(cur.lastrowid or 0)
+
+
 def _record_draft_event(
     db_path:     Path,
     *,
@@ -1723,31 +1760,23 @@ def _record_draft_event(
 
     Returns the new event row id. Idempotency is the caller's responsibility
     — events are append-only by design (an event log, not a state column).
-    """
-    if not isinstance(draft_id, int) or draft_id <= 0:
-        raise ValueError("draft_id must be a positive int")
-    if not (event or "").strip():
-        raise ValueError("event is required")
-    # Defensive: ensure stored detail is valid JSON. We don't parse the
-    # caller's payload; we just refuse obvious corruption.
-    detail = (detail_json or "").strip() or "{}"
-    if not (detail.startswith("{") or detail.startswith("[")):
-        raise ValueError("detail_json must be a JSON object or array")
 
+    Opens its own short transaction. Draft *birth* must NOT use this path —
+    use :func:`_record_draft_event_conn` on the same connection as the draft
+    INSERT so a failed birth event rolls the draft back (B-004).
+    """
     init_db(db_path)
     with _connect(db_path) as conn:
         _ensure_drafts_table(conn)
-        cur = conn.execute(
-            """
-            INSERT INTO proforma_draft_events
-                (draft_id, event, detail_json, operator, occurred_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (int(draft_id), str(event), detail, str(operator or ""),
-             _now_utc_iso()),
+        eid = _record_draft_event_conn(
+            conn,
+            draft_id=draft_id,
+            event=event,
+            detail_json=detail_json,
+            operator=operator,
         )
         conn.commit()
-        return int(cur.lastrowid or 0)
+        return eid
 
 
 def list_draft_events(
@@ -2777,8 +2806,29 @@ def auto_create_draft_from_sales_packing(
              source_json, now, now,
              initial_state, editable_json, cid, birth_incoterm),
         )
-        conn.commit()
         new_id = int(cur.lastrowid or 0)
+
+        # B-004: birth event shares this transaction. If the event INSERT
+        # fails, the draft INSERT rolls back with it — provenance treats
+        # ``created_from_sales_packing`` as the birth anchor, so a committed
+        # draft without it is invalid evidence.
+        _record_draft_event_conn(
+            conn,
+            draft_id    = new_id,
+            event       = "created_from_sales_packing",
+            detail_json = json.dumps({
+                "batch_id":    str(batch_id),
+                "client_name": str(client_name),
+                "currency":    str(currency or "").upper(),
+                "line_count":  len(editable),
+                # Non-authoritative birth advisory: lines born with a blank
+                # commercial description or zero/missing unit_price. Visibility
+                # only — readiness remains backend-derived on read/post.
+                "birth_unresolved": birth_unresolved,
+            }, ensure_ascii=False, sort_keys=True),
+            operator    = operator or "",
+            occurred_at = now,
+        )
 
         row = conn.execute(
             "SELECT * FROM proforma_drafts WHERE id=? LIMIT 1",
@@ -2789,25 +2839,7 @@ def auto_create_draft_from_sales_packing(
                 f"auto_create_draft_from_sales_packing: insert lost for "
                 f"({batch_id!r}, {client_name!r})"
             )
-
-    # Event recording uses its own connection — outside the main txn so a
-    # consumer reading the DB sees the draft+event together once committed.
-    _record_draft_event(
-        db_path,
-        draft_id    = new_id,
-        event       = "created_from_sales_packing",
-        detail_json = json.dumps({
-            "batch_id":    str(batch_id),
-            "client_name": str(client_name),
-            "currency":    str(currency or "").upper(),
-            "line_count":  len(editable),
-            # Non-authoritative birth advisory: lines born with a blank
-            # commercial description or zero/missing unit_price. Visibility
-            # only — readiness remains backend-derived on read/post.
-            "birth_unresolved": birth_unresolved,
-        }, ensure_ascii=False, sort_keys=True),
-        operator    = operator or "",
-    )
+        conn.commit()
     return (_row_to_draft(row), True)
 
 
@@ -5896,6 +5928,7 @@ __all__ = [
     "search_drafts",
     "list_draft_events",
     "_record_draft_event",
+    "_record_draft_event_conn",
     "apply_sales_price_patch",
     "apply_customer_address_to_draft",
 ]
