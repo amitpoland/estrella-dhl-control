@@ -128,19 +128,11 @@ from .services.governance_constants import (  # noqa: F401
     HUMAN_APPROVAL_REQUIRED_ACTIONS,
     assert_no_overlap,
 )
-from .auth.database import init_db
+from .auth.database import init_db, resolve_auth_db_path
 from .auth.dependencies import check_session_or_redirect
 
 configure_logging()
 log = get_logger(__name__)
-
-# ── Auth DB path ──────────────────────────────────────────────────────────────
-import pathlib as _pl
-_auth_db = (
-    _pl.Path(settings.auth_db_path)
-    if settings.auth_db_path
-    else settings.storage_root / "users.db"
-)
 
 # ── Pages that require no auth ────────────────────────────────────────────────
 _PUBLIC_PATHS = {"/login", "/signup", "/forgot-password"}
@@ -166,9 +158,11 @@ async def lifespan(app: FastAPI):
                 "Generate with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
             )
 
-    # Initialise auth DB
-    init_db(_auth_db)
-    log.info("Auth DB ready: %s", _auth_db)
+    # Auth DB path resolved at lifespan time (B-017) — never freeze at import.
+    # Same authority as settings.auth_db_path | storage_root/users.db (#1204).
+    auth_db = resolve_auth_db_path(settings.auth_db_path, settings.storage_root)
+    init_db(auth_db)
+    log.info("Auth DB ready: %s", auth_db)
 
     # Initialise operational DBs (packing / warehouse / document / wfirma).
     # These back the packing-list, warehouse-scan, document-store, and wFirma

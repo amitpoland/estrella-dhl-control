@@ -34,11 +34,9 @@ def _get_db_registry() -> List[Tuple[str, Path]]:
     """
     storage_root = Path(settings.storage_root)
 
-    # Auth database (from main.py line 125/153)
-    auth_db = (
-        Path(settings.auth_db_path) if settings.auth_db_path
-        else storage_root / "users.db"
-    )
+    # Auth database — same resolve_auth_db_path authority as lifespan / #1204
+    from ..auth.database import resolve_auth_db_path
+    auth_db = resolve_auth_db_path(settings.auth_db_path, storage_root)
 
     return [
         ("packing", storage_root / "packing.db"),
