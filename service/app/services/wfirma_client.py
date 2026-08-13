@@ -1051,33 +1051,31 @@ def get_product_by_code(product_code: str) -> Optional[WFirmaProduct]:
     )
 
 
-def create_product(
+def _resolve_goods_add_warehouse_id(warehouse_id: Optional[str] = None) -> str:
+    """Reuse Atlas's existing warehouse authority. Never invent a warehouse id."""
+    explicit = (warehouse_id or "").strip()
+    if explicit:
+        return explicit
+    return (getattr(settings, "wfirma_warehouse_id", None) or "").strip()
+
+
+def _build_create_product_xml(
+    *,
     product_code: str,
     name: str,
-    unit: str = "szt.",
-    netto: float = 0.0,
-    vat_code_id: Optional[str] = None,
-    warehouse_type: str = "simple",
-    description: str = "",
-) -> WFirmaProduct:
+    unit: str,
+    netto: float,
+    vat_code_id: Optional[str],
+    description: str,
+    warehouse_id: str,
+) -> str:
+    """goods/add body.
+
+    ``warehouse_type`` is company warehouse-module state (simple catalogue vs
+    extended Magazyn), not a per-good create choice — it is never serialised.
+    Warehouse targeting uses the existing configured ``warehouse_id``.
+    Stock quantities are never sent.
     """
-    Create a new good in wFirma.
-
-    Returns the created WFirmaProduct with the assigned wFirma ID.
-    Raises RuntimeError when wFirma rejects the create (non-OK status,
-    HTTP error, etc.).
-    Raises ConnectionError on network failure.
-
-    API: POST goods/add
-    Auth: API Key headers
-    Payload: XML with <name>, <code>, <unit>, <netto>, <type>good</type>,
-             <vat_code><id>...</id></vat_code>, <warehouse_type>, <description>
-    """
-    if not product_code:
-        raise ValueError("product_code is required")
-    if not name:
-        raise ValueError("name is required")
-
     vat_xml = (
         f"<vat_code><id>{_esc(vat_code_id)}</id></vat_code>"
         if vat_code_id else ""
@@ -1086,7 +1084,11 @@ def create_product(
         f"<description>{_esc(description)}</description>"
         if description else ""
     )
-    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+    warehouse_xml = (
+        f"<warehouse><id>{_esc(warehouse_id)}</id></warehouse>"
+        if warehouse_id else ""
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <api>
   <goods>
     <good>
@@ -1095,12 +1097,81 @@ def create_product(
       <unit>{_esc(unit)}</unit>
       <netto>{netto:.2f}</netto>
       <type>good</type>
-      <warehouse_type>{_esc(warehouse_type)}</warehouse_type>
       {vat_xml}
       {desc_xml}
+      {warehouse_xml}
     </good>
   </goods>
 </api>"""
+
+
+def create_product(
+    product_code: str,
+    name: str,
+    unit: str = "szt.",
+    netto: float = 0.0,
+    vat_code_id: Optional[str] = None,
+    warehouse_type: Optional[str] = None,
+    description: str = "",
+    *,
+    warehouse_id: Optional[str] = None,
+) -> WFirmaProduct:
+    """
+    Create a new good in wFirma.
+
+    ``warehouse_type`` is company warehouse-module state, not a create-time
+    choice. This function never serialises ``<warehouse_type>``. A leftover
+    caller argument is ignored.
+
+    Warehouse targeting reuses ``settings.wfirma_warehouse_id`` — the same
+    authority used by PZ and reservation. Pass ``warehouse_id`` only to
+    forward an already-resolved id from that authority; do not invent a
+    new warehouse constant.
+
+    When the warehouse module is enabled, a warehouse id is required so
+    goods/add cannot silently create a simple-catalogue product on an
+    extended-warehouse account.
+
+    Returns the created WFirmaProduct with the assigned wFirma ID.
+    Raises RuntimeError when wFirma rejects the create (non-OK status,
+    HTTP error, etc.).
+    Raises ConnectionError on network failure.
+    Raises ValueError when required identity/warehouse authority is missing.
+
+    API: POST goods/add
+    Auth: API Key headers
+    Payload: XML with <name>, <code>, <unit>, <netto>, <type>good</type>,
+             optional <vat_code>, optional <description>, optional
+             <warehouse><id>…</id></warehouse>. No <warehouse_type>, no stock qty.
+    """
+    if not product_code:
+        raise ValueError("product_code is required")
+    if not name:
+        raise ValueError("name is required")
+    if warehouse_type:
+        log.warning(
+            "create_product ignoring warehouse_type=%r; "
+            "wFirma derives company warehouse mode",
+            warehouse_type,
+        )
+
+    resolved_warehouse_id = _resolve_goods_add_warehouse_id(warehouse_id)
+    module_on = bool(getattr(settings, "wfirma_warehouse_module_enabled", False))
+    if module_on and not resolved_warehouse_id:
+        raise ValueError(
+            "wfirma_warehouse_id is required when the warehouse module is "
+            "enabled; refusing goods/add without existing warehouse authority"
+        )
+
+    body = _build_create_product_xml(
+        product_code=product_code,
+        name=name,
+        unit=unit,
+        netto=netto,
+        vat_code_id=vat_code_id,
+        description=description,
+        warehouse_id=resolved_warehouse_id,
+    )
     http_status, response_text = _http_request("POST", "goods", "add", body)
     if http_status >= 400:
         raise RuntimeError(f"goods/add HTTP {http_status}: {response_text[:200]}")

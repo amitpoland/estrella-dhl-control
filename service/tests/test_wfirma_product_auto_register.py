@@ -407,6 +407,47 @@ class TestEnsureProductsForBatch:
             assert row["wfirma_product_id"].startswith("WF-NEW-")
             assert row["sync_status"] == "matched"
 
+    def test_create_kwargs_reuse_warehouse_authority_and_zero_netto(
+            self, isolated_dbs, monkeypatch):
+        """Auto-register must not force warehouse_type=simple and must keep
+        netto=0. Warehouse targeting comes from settings.wfirma_warehouse_id."""
+        bid = "B_WH_POLICY"
+        rows = _awb_6049349806_lines()[:1]
+        _seed_invoice_lines(isolated_dbs / "documents.db", bid, rows)
+        _seed_canonical_descriptions(rows)
+        from app.core.config import settings as _s
+        monkeypatch.setattr(_s, "wfirma_create_product_allowed", True, raising=False)
+        monkeypatch.setattr(_s, "wfirma_warehouse_id", "WH-CFG-1", raising=False)
+        monkeypatch.setattr(_s, "wfirma_warehouse_module_enabled", True, raising=False)
+
+        def fake_create(**kwargs):
+            stub = MagicMock()
+            stub.wfirma_id = "WF-WH-1"
+            stub.name = kwargs.get("name", "")
+            stub.code = kwargs.get("product_code", "")
+            stub.unit = "szt."
+            return stub
+
+        from app.services import wfirma_product_auto_register as svc
+        with patch("app.services.wfirma_client.get_product_by_code",
+                   return_value=None) as p_get, \
+             patch("app.services.wfirma_client.create_product",
+                   side_effect=fake_create) as p_create, \
+             patch("app.services.wfirma_client.find_vat_code_id",
+                   return_value="222"):
+            r = svc.ensure_products_for_batch(bid, dry_run=False)
+
+        assert r["created"] == 1
+        assert p_get.call_count == 1
+        assert p_get.call_args.args[0] == "EJL/26-27/121-1"
+        kwargs = p_create.call_args.kwargs
+        assert kwargs["netto"] == 0.0
+        assert kwargs["unit"] == "szt."
+        assert kwargs["vat_code_id"] == "222"
+        assert kwargs["warehouse_id"] == "WH-CFG-1"
+        assert "warehouse_type" not in kwargs
+        assert kwargs["product_code"] == "EJL/26-27/121-1"
+
     def test_create_failure_writes_no_local_mapping(self, isolated_dbs, monkeypatch):
         bid = "B_CREATE_FAIL"
         rows = _awb_6049349806_lines()[:1]

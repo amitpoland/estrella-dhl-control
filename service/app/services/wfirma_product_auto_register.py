@@ -410,6 +410,7 @@ def _register_one(
             netto        = 0.0,
             vat_code_id  = wfirma_client.find_vat_code_id(23),
             description  = block.get("description_block") or "",
+            warehouse_id = (settings.wfirma_warehouse_id or "").strip() or None,
         )
     except Exception as exc:
         out["status"] = "failed"
