@@ -14075,9 +14075,10 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
   const [events, setEvents]       = React.useState(null);
   const [eventsOpen, setEventsOpen] = React.useState(false);
   // Contractor-projection blocked draft-birth records (operator-visible).
-  // Backend truth from GET /api/v1/admin/contractor-projection/blocks/{batch}.
-  // The UI only renders what the endpoint returns — no readiness logic here.
+  // Creation blockers: GET .../blocks/{batch}?include_advisory=false
+  // Advisory conflicts remain visible via a separate fetch (Lesson M).
   const [birthBlocks, setBirthBlocks] = React.useState([]);
+  const [advisoryBlocks, setAdvisoryBlocks] = React.useState([]);
 
   // ── Link-packing-as-sales state ─────────────────────────────────────────
   const [showLink, setShowLink]       = React.useState(false);
@@ -14096,13 +14097,22 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
       onToast && onToast('Failed to load Proforma drafts: ' + e.message, 'error');
     }
     // Blocked draft-birth records — separate, non-fatal: a failure here must
-    // not hide the drafts. Renders why a sales packing doc produced no draft.
+    // not hide the drafts. Creation panel uses include_advisory=false;
+    // advisory contractor_conflict stays visible in its own panel (Lesson M).
     try {
-      const b = await apiFetch(
-        `/api/v1/admin/contractor-projection/blocks/${encodeURIComponent(batchId)}`);
-      setBirthBlocks((b && b.blocks) || []);
+      const base = `/api/v1/admin/contractor-projection/blocks/${encodeURIComponent(batchId)}`;
+      const [creation, advisory] = await Promise.all([
+        apiFetch(base + '?include_advisory=false'),
+        apiFetch(base),
+      ]);
+      setBirthBlocks((creation && creation.blocks) || []);
+      const allOpen = (advisory && advisory.blocks) || [];
+      setAdvisoryBlocks(allOpen.filter(function (b) {
+        return b && (b.is_advisory === true || b.code === 'contractor_conflict');
+      }));
     } catch (e) {
       setBirthBlocks([]);
+      setAdvisoryBlocks([]);
     }
     setLoading(false);
   }, [batchId, onToast]);
@@ -15015,8 +15025,8 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
       <SectionHeader icon="◇" title="Local Proforma Drafts"
                      subtitle={`${drafts.length} draft(s) — edit locally before posting to wFirma`} />
 
-      {/* Blocked draft-birth records — operator-visible "why no draft was born".
-          Backend truth (contractor-projection blocks); never hidden (Lesson M). */}
+      {/* Blocked draft-birth records — true non-creation blockers only
+          (include_advisory=false). Advisory conflicts render below. */}
       {birthBlocks.length > 0 && (
         <div data-testid="proforma-blocked-records-panel"
              style={{ margin: '0 12px 12px', padding: '10px 12px', borderRadius: 6,
@@ -15032,8 +15042,6 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
               ? 'Pick the customer below to assign it and generate the draft — no re-intake needed.'
               : b.code === 'client_unresolved'
               ? 'Pick the correct Customer Master customer below to bind it and generate the draft.'
-              : b.code === 'contractor_conflict'
-              ? 'This client name maps to more than one contractor — pick the correct customer below to resolve it.'
               : 'Pick the customer below to resolve the client identity and generate the draft.';
             return (
               <div key={b.sales_document_id || i}
@@ -15054,6 +15062,41 @@ function ProformaDraftPanel({ batchId, onToast, clientList = [] }) {
                   </a>
                 )}
                 {/* Phase A — in-page repair: assign customer + generate draft. */}
+                <ProformaBlockedRecordResolver
+                    batchId={batchId}
+                    block={b}
+                    onToast={onToast}
+                    onResolved={refreshList} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Advisory contractor_conflict evidence — draft may already exist;
+          identity ambiguity remains open until operator reconciles (Lesson M). */}
+      {advisoryBlocks.length > 0 && (
+        <div data-testid="proforma-advisory-blocks-panel"
+             style={{ margin: '0 12px 12px', padding: '10px 12px', borderRadius: 6,
+                        background: 'var(--badge-blue-bg, #eff6ff)',
+                        border: '1px solid var(--badge-blue-border, #93c5fd)',
+                        color: 'var(--badge-blue-text, #1e3a8a)', fontSize: 12 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>
+            ℹ {advisoryBlocks.length} advisory contractor conflict(s) — draft may already exist
+          </div>
+          {advisoryBlocks.map((b, i) => {
+            const cid = (b.client_contractor_id || '').trim();
+            return (
+              <div key={b.sales_document_id || ('adv-' + i)}
+                   data-testid={`proforma-advisory-block-${b.sales_document_id || i}`}
+                   style={{ padding: '6px 0', borderTop: i ? '1px dashed var(--badge-blue-border, #93c5fd)' : 'none' }}>
+                <div><strong>Source:</strong> {b.source_file_name || b.sales_document_id || '—'}
+                  {' · '}<strong>Parsed name:</strong> {b.client_name || '— none —'}
+                  {' · '}<strong>Contractor id:</strong> {cid || '— none —'}</div>
+                <div><strong>Code:</strong> <code>{b.code || '—'}</code>
+                  {' · '}{b.lines_count || 0} line(s){b.value ? ` · ${b.value} ${b.currency || ''}` : ''}</div>
+                <div><strong>Reason:</strong> {b.reason || '—'}</div>
+                <div><strong>Action:</strong> This client name maps to more than one contractor — pick the correct customer below to resolve it.</div>
                 <ProformaBlockedRecordResolver
                     batchId={batchId}
                     block={b}
