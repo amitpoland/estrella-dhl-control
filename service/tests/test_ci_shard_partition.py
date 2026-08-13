@@ -26,6 +26,7 @@ if str(_SERVICE / "tools") not in sys.path:
     sys.path.insert(0, str(_SERVICE / "tools"))
 
 import classify_failures  # noqa: E402
+import ensure_junit_artifact  # noqa: E402
 import junit_summary  # noqa: E402
 import shard_tests  # noqa: E402
 
@@ -457,6 +458,67 @@ def test_cli_fail_on_incomplete_matches_exit_status(tmp_path):
     (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
     assert junit_summary.main([str(tmp_path), "--of", "1", "--fail-on", "incomplete"]) == 0
     assert junit_summary.main([str(tmp_path), "--of", "1", "--fail-on", "any"]) == 1
+
+
+def test_ensure_junit_writes_sentinel_when_file_missing(tmp_path):
+    """Hang kill path: no XML → explicit error sentinel, never silent green."""
+    path = tmp_path / "junit-shard-6.xml"
+    assert ensure_junit_artifact.ensure(path, "6") is True
+    rep = junit_summary.parse_report(path)
+    assert rep.complete, rep.reason
+    assert rep.counts["error"] == 1
+    assert rep.counts["failure"] == 0
+    assert [c.name for c in rep.bad] == [ensure_junit_artifact.SENTINEL_NAME]
+    # Diagnostic CI must stay green: evidence exists (the kill is listed).
+    # expected_shards=None — we are asserting this one report alone, not a
+    # full 1..N matrix (label is "6" from the filename).
+    assert junit_summary.exit_status([rep], None, fail_on="incomplete") == 0
+    assert junit_summary.exit_status([rep], None, fail_on="any") == 1
+
+
+def test_ensure_junit_keeps_existing_nonempty_report(tmp_path):
+    path = tmp_path / "junit-shard-1.xml"
+    path.write_text(_GOOD_XML, encoding="utf-8")
+    before = path.read_bytes()
+    assert ensure_junit_artifact.ensure(path, "1") is False
+    assert path.read_bytes() == before
+
+
+def test_ensure_junit_replaces_empty_file(tmp_path):
+    path = tmp_path / "junit-shard-2.xml"
+    path.write_text("", encoding="utf-8")
+    assert ensure_junit_artifact.ensure(path, "2") is True
+    assert junit_summary.parse_report(path).complete
+
+
+def test_ensure_junit_cli_is_idempotent(tmp_path):
+    path = tmp_path / "junit-shard-3.xml"
+    assert ensure_junit_artifact.main([str(path), "--shard", "3"]) == 0
+    assert ensure_junit_artifact.main([str(path), "--shard", "3"]) == 0
+    assert path.is_file() and path.stat().st_size > 0
+
+
+def test_six_shard_matrix_with_one_sentinel_stays_diagnostic_green(tmp_path):
+    """The #1216-era failure mode: five real reports + one killed shard.
+
+    Run 31717453274 lost shard 6 to pytest-timeout os._exit; aggregate went
+    MISSING-red. With the sentinel in place of the missing file, --fail-on
+    incomplete must exit 0 while still listing the kill error.
+    """
+    for n in range(1, 6):
+        (tmp_path / f"junit-shard-{n}.xml").write_text(
+            _GOOD_XML.replace("junit-shard-1", f"junit-shard-{n}"),
+            encoding="utf-8",
+        )
+    ensure_junit_artifact.ensure(tmp_path / "junit-shard-6.xml", "6")
+    reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
+    assert len(reports) == 6
+    text, suite_green = junit_summary.render(
+        reports, expected_shards=6, fail_on="incomplete")
+    assert not suite_green
+    assert "**MISSING**" not in text and "**INCOMPLETE**" not in text
+    assert ensure_junit_artifact.SENTINEL_NAME in text
+    assert junit_summary.exit_status(reports, 6, fail_on="incomplete") == 0
 
 
 def test_failures_are_grouped_by_file(tmp_path):

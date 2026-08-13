@@ -3,7 +3,7 @@
 **Workflow:** `.github/workflows/ci.yml`, jobs `service-suite` (matrix 1–6) and
 `service-suite-report`.
 **Tools:** `service/tools/shard_tests.py`, `service/tools/junit_summary.py`,
-`service/tools/classify_failures.py`.
+`service/tools/ensure_junit_artifact.py`, `service/tools/classify_failures.py`.
 **Pinned by:** `service/tests/test_ci_shard_partition.py`.
 
 ---
@@ -31,6 +31,25 @@ The honesty rule the aggregation enforces: **a shard whose XML is missing or
 truncated is reported INCOMPLETE, never as zero failures.** A hard-killed
 process writes no XML — counting that as clean would make a worse run look
 greener. `test_ci_shard_partition.py` pins this.
+
+### Hung shard → sentinel, not MISSING
+
+pytest-timeout's `thread` method ends a hang with `os._exit`, which skips the
+junitxml session-end write. Before `ensure_junit_artifact.py`, that left the
+upload step with nothing (`if-no-files-found: warn`), the aggregate reported
+MISSING, and diagnostic CI went red even though five other shards completed —
+observed on run `31717453274` (shard 6 killed in
+`test_api_incoterm_review_and_bulk`).
+
+Each shard now runs `ensure_junit_artifact.py` after pytest (`if: always()`):
+
+- real `junit-shard-N.xml` present → left alone;
+- absent/empty → write a one-case **error** sentinel (never an empty green
+  suite). The aggregate then has complete evidence, lists the kill explicitly,
+  and `--fail-on incomplete` exits 0.
+
+Upload uses `if-no-files-found: error` so a broken ensure step cannot silently
+drop a shard again.
 
 **CI does not gate.** Branch protection is intentionally not set: this suite is a
 diagnostic, and per the 2026-08-07 operator ruling CI may not gate merges or

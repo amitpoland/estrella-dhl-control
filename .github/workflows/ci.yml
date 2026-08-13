@@ -120,7 +120,7 @@ jobs:
 
       - name: Run service test suite (shard ${{ matrix.shard }}/6)
         working-directory: service
-        continue-on-error: true   # a red or hung shard must still upload its XML
+        continue-on-error: true   # a red or hung shard must still reach ensure+upload
         env:
           PYTHONUTF8: '1'
           PYTHONIOENCODING: 'utf-8'
@@ -132,14 +132,29 @@ jobs:
           python -m pytest $files -p no:cacheprovider -ra `
             --junitxml=junit-shard-${{ matrix.shard }}.xml
 
+      # pytest-timeout's thread method ends hangs with os._exit, which skips the
+      # junitxml session-end write. Without a file, upload warns and the
+      # aggregate reports MISSING — permanently redding diagnostic CI on an
+      # intermittent hang (run 31717453274: shard 6 killed mid
+      # test_api_incoterm_review_and_bulk). Always materialise a usable XML
+      # before upload: real report if present, otherwise an explicit error
+      # sentinel (never a silent zero-failure suite).
+      - name: Ensure JUnit artifact exists
+        if: always()
+        working-directory: service
+        shell: pwsh
+        run: |
+          python tools/ensure_junit_artifact.py `
+            junit-shard-${{ matrix.shard }}.xml `
+            --shard ${{ matrix.shard }}
+
       - name: Upload shard JUnit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-shard-${{ matrix.shard }}
           path: service/junit-shard-${{ matrix.shard }}.xml
-          if-no-files-found: warn   # a hard-killed shard writes nothing; the
-                                    # aggregation step reports it as MISSING
+          if-no-files-found: error   # ensure step must have left a file
 
   # ── Aggregate the shards into one reconciliation ──────────────────────────
   # Prints every failure. Job exit uses `--fail-on incomplete`: exit 1 ONLY when
@@ -164,12 +179,11 @@ jobs:
   # worth reading. That red is pure noise: it fires webhooks, costs a reviewer an
   # investigation, and would sit as a red required check with nothing wrong.
   #
-  # This does NOT weaken the lost-shard guarantee, which is the whole point of
-  # the job. A shard lost to a crash, a hang, or the 90-minute job timeout is
-  # NOT `cancelled()` — those still reach the aggregate, still report INCOMPLETE,
-  # and still fail. Only a genuinely cancelled run skips, and a cancelled run has
-  # no verdict to give.
-  service-suite-report:
+  # This does NOT weaken the lost-shard honesty rule. A hang that used to leave
+  # no XML now gets an explicit error sentinel from ensure_junit_artifact.py
+  # (complete evidence, visible error — never silent zero failures). A shard
+  # that still somehow uploads nothing remains MISSING and still fails. Only a
+  # genuinely cancelled run skips, and a cancelled run has no verdict to give.  service-suite-report:
     name: Service pytest (aggregate)
     runs-on: ubuntu-latest
     needs: service-suite
