@@ -1,0 +1,42 @@
+{
+  "campaign": "B-011",
+  "baseline_sha": "d710bbf9b43ad353f90a6ac5e916b81035fd5f45",
+  "production_sha": "d710bbf9b43ad353f90a6ac5e916b81035fd5f45",
+  "classification": "REAL_DEFECT",
+  "exact_wording": "migrate_draft_to_canonical_name is not listed in proforma_invoice_link_db.__all__ (nor are the PR-2 record_/resolve_/list_draft_birth_block helpers). Imported by name so no runtime break; invisible to static export checks.",
+  "authority_owner": "proforma_invoice_link_db public surface (__all__)",
+  "canonical_source": "service/app/services/proforma_invoice_link_db.py :: __all__",
+  "writers": ["module maintainer (export list only)"],
+  "readers": [
+    "static export / star-import consumers",
+    "service/tests/test_proforma_drafts_lifecycle_phase25.py (__all__ pins)",
+    "service/tests/test_proforma_drafts_lifecycle_phase1.py"
+  ],
+  "runtime_callers_by_attribute": {
+    "migrate_draft_to_canonical_name": "routes_contractor_projection.py (pildb.migrate_draft_to_canonical_name)",
+    "list_draft_birth_blocks": "routes_contractor_projection.py",
+    "record_draft_birth_block": "proforma_draft_sync.py",
+    "resolve_draft_birth_block": "proforma_draft_sync.py"
+  },
+  "conflicting_truth": false,
+  "unchanged_main_reproduction": "hasattr True; name not in __all__ for all four symbols",
+  "blast_radius": "__all__ list + test pin only; no persistence/lifecycle/API behavior change",
+  "financial_customs_inventory_security": "none",
+  "files_allowed": [
+    "service/app/services/proforma_invoice_link_db.py",
+    "service/tests/test_b011_proforma_public_exports.py",
+    "BACKLOG.md",
+    ".claude/memory/TASK_STATE.md",
+    ".claude/memory/b011-authority-map.json"
+  ],
+  "files_off_limits": [
+    "routes_contractor_projection.py birth-block filter (B-008)",
+    "B-009 log severity",
+    "CI #1217",
+    "intake / New Shipment",
+    "wFirma fiscal writes",
+    "MyDHL",
+    "inventory",
+    "historical data cleanup"
+  ]
+}
