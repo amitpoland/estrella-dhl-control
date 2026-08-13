@@ -930,6 +930,22 @@ DRAFT_BIRTH_BLOCK_CODES = (
     "contractor_conflict",  # one client_name group carries >1 distinct contractor_id
 )
 
+# Read-side severity (B-008). Lifecycle (open/resolved) stays orthogonal.
+# Unknown / future codes are NOT listed here → treated as actionable
+# (fail closed: stay visible when include_advisory=false).
+DRAFT_BIRTH_BLOCK_ADVISORY_CODES = frozenset({
+    "contractor_conflict",
+})
+
+
+def is_draft_birth_block_advisory(code: str) -> bool:
+    """True only for known advisory birth-block codes.
+
+    Unknown codes return False so they remain visible under
+    ``include_advisory=false`` (conservative — never silently drop).
+    """
+    return (code or "").strip() in DRAFT_BIRTH_BLOCK_ADVISORY_CODES
+
 
 def record_draft_birth_block(
     db_path:              Path,
@@ -1008,8 +1024,17 @@ def list_draft_birth_blocks(
     batch_id:         str,
     *,
     include_resolved: bool = False,
+    include_advisory: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Return draft-birth block records for *batch_id*. Open-only by default."""
+    """Return draft-birth block records for *batch_id*.
+
+    Defaults preserve historical behaviour: open-only, advisory included.
+    Pass ``include_advisory=False`` to omit known advisory codes (today:
+    ``contractor_conflict``) so creation-blocker consumers see only true
+    non-creation blocks. Filtering is read-side only — rows are never
+    resolved, deleted, or mutated. Each returned dict is annotated with
+    ``is_advisory`` (bool) derived from :func:`is_draft_birth_block_advisory`.
+    """
     if not (batch_id or "").strip():
         return []
     try:
@@ -1023,8 +1048,12 @@ def list_draft_birth_blocks(
             if not include_resolved:
                 sql += " AND blocked_state='open'"
             sql += " ORDER BY updated_at DESC"
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
+            rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        for row in rows:
+            row["is_advisory"] = is_draft_birth_block_advisory(row.get("code") or "")
+        if not include_advisory:
+            rows = [r for r in rows if not r["is_advisory"]]
+        return rows
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("list_draft_birth_blocks failed (non-fatal): %s", exc)
         return []

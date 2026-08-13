@@ -91,6 +91,10 @@ class TestBlockedRecordsVisible:
         assert 'data-testid="proforma-blocked-records-panel"' in _SRC
         assert "/api/v1/admin/contractor-projection/blocks/" in _SRC
         assert "birthBlocks" in _SRC
+        # B-008: creation panel uses include_advisory=false; advisory panel separate.
+        assert "include_advisory=false" in _SRC
+        assert "birthAdvisory" in _SRC
+        assert 'data-testid="proforma-advisory-birth-blocks-panel"' in _SRC
 
     def test_renders_required_fields_and_action(self):
         seg = _SRC[_SRC.index('proforma-blocked-records-panel'):
