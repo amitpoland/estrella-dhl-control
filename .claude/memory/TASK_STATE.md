@@ -48,19 +48,56 @@ checkpoint_recorded_at: <ISO-8601 timestamp>
 
 ## Current task
 
-- **Task:** B-010 — pin `set_sales_client_name` multi-client non-clobber (test-only).
-- **Started:** 2026-08-13 · **Status:** `VALIDATING` → merge (test-only; no seven-agent gate / no deploy).
-- **Baseline main:** `c3cc16e0` (B-009 merged). Production SHA: **UNMEASURED** from this Linux VM.
-- **Branch:** `cursor/b010-set-sales-client-name-unit-42c1`
-- **B-008:** CLOSED (#1218 / `6d53e7f2`). **B-009:** CLOSED (#1220 / `c3cc16e0`).
-- **App deploy owed (Windows host):** B-008 + B-009 App-only — measure `C:\PZ\version.txt` first.
-- **Next after B-010 (ranked):** B-011 (`__all__` cosmetic) → B-017 (auth DB import silence) →
-  resume #1201 / B-021 RO.
+- **Task:** Close owed B-008/B-009 **production App deployment debt**, then open B-011.
+- **Started:** 2026-08-13 · **Status:** `EXECUTION_BLOCKED`
+- **HOLD class:** missing credentials / access — this cloud session is Linux-only; cannot
+  read `C:\PZ\version.txt`, NSSM, or PZService. Production deploy authority is Windows host.
+- **Do not start B-011** until deployment debt is CLOSED on Windows.
+- **Baseline main (measured here):** `965344452c81a7f2e26ac90b39a3b60ff738277a`
+- **Production SHA:** **UNMEASURED** (must read `C:\PZ\version.txt` on Windows — never assume).
+- **B-008 / B-009 / B-010 code campaigns:** remain CLOSED. Do not reopen business logic.
 
-## Prior task — B-009 backfill drop-log severity (COMPLETE)
+### Exact App files (#1218 + #1220) — tip SHA256 at `96534445`
 
-- **Merged:** `c3cc16e0` (PR #1220). Seven-agent GO; App-only deploy owed on Windows.
-- **Also closed in BACKLOG:** B-002..B-005 ALREADY_FIXED hygiene.
+| Rel path under `service/app` → `C:\PZ\app` | tip SHA256 |
+|---|---|
+| `api/routes_contractor_projection.py` | `5b0de4cf5ab5779cbda668998df3ca438cc1825fa2ff0a3371b7682f2183671b` |
+| `services/proforma_invoice_link_db.py` | `dd4af5a77a1877bf31fdea5dabccbc486ddfc17cf48bcb9ad614c13e41ae2bb4` |
+| `static/shipment-detail.html` | `ab658d17d97879b039722519e4ac0fbb073c01e7bb8ac6b4f2897c65e624e718` |
+
+- **Engine delta** tip vs `80b7ae09`: **NONE** → App-only if deploy needed.
+- **Ride-along if prod == `80b7ae09`:** exactly those 3 App files (clean B-008/B-009 payload).
+- **Ride-along if prod == `0b2020a8` or `7150996b`:** LARGE App delta → **HOLD** until full
+  tip payload is seven-agent gated (do not ship unreviewed ride-along).
+
+### EXECUTION_BLOCKED checkpoint
+
+```yaml
+state: EXECUTION_BLOCKED
+suspended_from: VALIDATING
+blocked_reason_class: EXTERNAL_INFRASTRUCTURE
+blocked_dependency: Windows production host (C:\PZ + PZService + NSSM + Deploy-PZ.ps1)
+recorded_branch: main
+recorded_head: 965344452c81a7f2e26ac90b39a3b60ff738277a
+preserved_files:
+  - .claude/deploy/Measure-B008-B009-AppDebt.ps1
+authority_owner: production App state (C:\PZ)
+next_command: >-
+  On Windows (Cursor on Estrella host): cd C:\PZ-main; git pull --ff-only origin main;
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\.claude\deploy\Measure-B008-B009-AppDebt.ps1
+  → classify DEPLOY_REQUIRED | RELOAD_ONLY | ALREADY_LIVE | NSSM_PATH_HOLD;
+  if DEPLOY_REQUIRED and ride-along App count==3: seven-agent gate on tip App payload then
+  Deploy-PZ.ps1 -Release -Scope App; if ride-along>3 HOLD for full-payload gate;
+  read-only smoke (include_advisory default vs false; no draft-birth mutation; external writes=0);
+  close deploy debt in TASK_STATE; THEN open B-011.
+retry_policy: NO_REPEATED_RETRIES
+checkpoint_recorded_at: 2026-08-13T17:03:00Z
+```
+
+## Prior task — B-010 set_sales_client_name scope pin (COMPLETE; test-only)
+
+- **Merged:** `4857d992` (FF to main; no PR required). No App deploy.
+- **State docs:** `96534445` recorded B-008/B-009 App deploy still owed on Windows.
 
 ## Prior task — PR #1201 intake multiparty seed (SUSPENDED; not abandoned)
 
