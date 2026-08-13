@@ -21,6 +21,19 @@ _lock = threading.Lock()
 _db_path: Optional[Path] = None
 
 
+def resolve_auth_db_path(auth_db_path: str = "", storage_root: Optional[Path] = None) -> Path:
+    """Single auth-DB location rule: AUTH_DB_PATH if set, else ``{storage_root}/users.db``.
+
+    Call at lifespan / call time — never freeze this Path at ``import app.main``.
+    Same authority used by #1204 fail-closed ``_connect`` after ``init_db``.
+    """
+    if auth_db_path:
+        return Path(auth_db_path)
+    if storage_root is None:
+        raise ValueError("storage_root is required when auth_db_path is empty")
+    return Path(storage_root) / "users.db"
+
+
 def init_db(db_path: Path) -> None:
     """Create tables and run migrations. Call once at startup."""
     global _db_path
