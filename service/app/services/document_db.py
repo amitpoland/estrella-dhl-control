@@ -2178,7 +2178,9 @@ def replace_sales_packing_lines(
     Scoping is strict on (sales_document_id, batch_id) — never touches
     rows for other clients or other batches.
 
-    Returns ``{"deleted": int, "inserted": int}``.
+    Returns ``{"deleted": int, "inserted": int}`` where ``deleted`` is the
+    actual row count removed by the DELETE (``SELECT changes()``), not a
+    pre-DELETE estimate.
     """
     if _db_path is None or not sales_document_id or not batch_id:
         return {"deleted": 0, "inserted": 0}
@@ -2186,19 +2188,14 @@ def replace_sales_packing_lines(
     deleted = 0
     inserted = 0
     with _lock, _connect() as con:
-        # Defensive: count first so the response is honest even if INSERT
-        # fails midway.
-        deleted = con.execute(
-            "SELECT COUNT(*) FROM sales_packing_lines "
-            "WHERE sales_document_id=? AND batch_id=?",
-            (sales_document_id, batch_id),
-        ).fetchone()[0]
-
+        # Honesty: report rows actually removed (sqlite changes()), not a
+        # pre-DELETE COUNT that stays non-zero if DELETE fails (B-003).
         con.execute(
             "DELETE FROM sales_packing_lines "
             "WHERE sales_document_id=? AND batch_id=?",
             (sales_document_id, batch_id),
         )
+        deleted = int(con.execute("SELECT changes()").fetchone()[0])
         parent_cid = _sales_doc_contractor_id(con, sales_document_id)
         for ln in (lines or []):
             try:
