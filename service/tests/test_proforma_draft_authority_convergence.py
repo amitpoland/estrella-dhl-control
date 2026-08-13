@@ -365,6 +365,7 @@ class TestWrittenZeroStillEnrichesStaleDraft:
         )
         assert int(out["promote"].get("written") or 0) == 0
         assert out["drafts_enriched"] == 1
+        assert out["incomplete_convergence"] is False
 
         d1 = pildb.get_draft_by_id(storage / "proforma_links.db", draft.id)
         ln = _lines(d1)[0]
@@ -547,4 +548,28 @@ class TestSinglePromoteEnrichAuthority:
         assert "promote_pz_rows_to_product_descriptions" not in src
         assert "patch_audit_pz_description_promote" in src
         assert 'result["pz_description_promote"]' in src
+
+    def test_no_second_production_promote_enrich_algorithm(self):
+        """Only commercial_authority.py may pair promote primitive + draft enrich."""
+        services = Path(__file__).resolve().parent.parent / "app" / "services"
+        offenders = []
+        for path in services.glob("*.py"):
+            if path.name == "commercial_authority.py":
+                continue
+            src = path.read_text(encoding="utf-8")
+            if (
+                "promote_pz_rows_to_product_descriptions" in src
+                and "enrich_draft_lines(" in src
+            ):
+                offenders.append(path.name)
+        assert offenders == [], offenders
+
+    def test_authority_consistency_is_the_only_derived_repair_entry(self):
+        src = self._src("services/authority_consistency.py")
+        assert "def evaluate_authority_consistency" in src
+        assert "def repair_derived_projections" in src
+        assert "create_product(" not in src
+        debug = self._src("api/routes_debug.py")
+        assert "/authority-consistency" in debug
+        assert "/repair-derived-projections" in debug
 

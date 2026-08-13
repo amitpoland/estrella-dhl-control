@@ -5,6 +5,8 @@ Debug endpoints — Guardian Agent observability layer.
 
 GET  /api/v1/debug/pending      → ring buffers + active sessions + pending dict
 GET  /api/v1/debug/health-full  → capability-aware system diagnostic (required-only overall)
+GET  /api/v1/debug/authority-consistency → description/mapping projection drift (read-only)
+POST /api/v1/debug/repair-derived-projections → fill proven local projections only
 POST /api/v1/debug/post-pz-test → fire a test message to #PZ and report delivery
 """
 
@@ -14,7 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
+from pydantic import BaseModel, Field
 
 from ..core.config import settings
 from ..core.logging import get_logger
@@ -556,3 +559,43 @@ async def post_pz_test() -> Dict[str, Any]:
         "preview":   text[:120],
         "channel":   "pz",
     }
+
+
+@router.get("/authority-consistency", dependencies=[_auth])
+def authority_consistency() -> Dict[str, Any]:
+    """Read-only description/mapping/warehouse projection check. No writes."""
+    from ..services.authority_consistency import evaluate_authority_consistency
+
+    report = evaluate_authority_consistency(Path(settings.storage_root))
+    return {
+        "ok": report["ok"],
+        "counts": report["counts"],
+        "by_class": report["by_class"],
+        "sample": report["sample"],
+        "wfirma_writes": False,
+    }
+
+
+class RepairDerivedProjectionsRequest(BaseModel):
+    product_codes: Optional[List[str]] = Field(default=None)
+    draft_ids: Optional[List[int]] = Field(default=None)
+
+
+@router.post("/repair-derived-projections", dependencies=[_privileged])
+def repair_derived_projections(
+    body: Optional[RepairDerivedProjectionsRequest] = Body(default=None),
+) -> Dict[str, Any]:
+    """Repair proven local projections only. Never writes wFirma or descriptions.
+
+    Optional product_codes / draft_ids scope the write. Missing Product Master
+    rows are never inserted.
+    """
+    from ..services.authority_consistency import repair_derived_projections as _repair
+
+    req = body or RepairDerivedProjectionsRequest()
+    return _repair(
+        Path(settings.storage_root),
+        product_codes=req.product_codes,
+        draft_ids=req.draft_ids,
+    )
+
