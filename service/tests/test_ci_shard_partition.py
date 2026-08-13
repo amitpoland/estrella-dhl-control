@@ -5,11 +5,12 @@ file exactly once.  A partition bug is invisible in CI: a dropped file just
 stops being reported, and the run looks *greener* than the tree actually is.
 These tests make the contract explicit.
 
-Also pins tools/junit_summary.py's central honesty rule — a shard whose XML is
-missing or truncated must be reported INCOMPLETE, never counted as zero
-failures.  That rule is the whole reason sharding is safe to adopt: a shard
-killed by pytest-timeout's thread method loses its results, and the aggregate
-must say so rather than quietly under-count.
+Also pins tools/junit_summary.py's honesty rule — a shard whose XML is
+missing or malformed must be classified as MISSING_ARTIFACT / MALFORMED_XML
+(never counted as zero failures), and pins Actions diagnostic exit
+(``--fail-on never``) so ordinary diagnostic findings cannot produce the
+recurring exit-code-1 loop. Also pins ``.github/workflows/ci.yml`` YAML parse
+so ``service-suite-report`` cannot be silently dropped into a comment again.
 
 Run: python -m pytest tests/test_ci_shard_partition.py -q
 """
@@ -26,6 +27,7 @@ if str(_SERVICE / "tools") not in sys.path:
     sys.path.insert(0, str(_SERVICE / "tools"))
 
 import classify_failures  # noqa: E402
+import ensure_junit_artifact  # noqa: E402
 import junit_summary  # noqa: E402
 import shard_tests  # noqa: E402
 
@@ -316,16 +318,17 @@ def test_summary_counts_a_complete_shard(tmp_path):
     assert [c.name for c in rep.bad] == ["test_bad"]
 
 
-def test_truncated_shard_xml_is_incomplete_not_zero_failures(tmp_path):
+def test_truncated_shard_xml_is_malformed_not_zero_failures(tmp_path):
     """The load-bearing rule: a hard-killed shard must not read as a clean shard."""
     p = tmp_path / "junit-shard-2.xml"
     p.write_text(_GOOD_XML[: len(_GOOD_XML) // 2], encoding="utf-8")
     rep = junit_summary.parse_report(p)
     assert not rep.complete
     assert rep.cases == [], "an unparseable shard reports no results at all"
+    assert junit_summary.classify_state(rep) == junit_summary.STATE_MALFORMED_XML
     text, ok = junit_summary.render([rep], expected_shards=1)
-    assert not ok, "an incomplete shard can never produce a green aggregate"
-    assert "INCOMPLETE" in text
+    assert not ok, "a malformed shard can never produce a green aggregate"
+    assert "MALFORMED_XML" in text
     assert "floor, not the suite result" in text
 
 
@@ -335,7 +338,7 @@ def test_empty_shard_xml_is_incomplete(tmp_path):
     assert not junit_summary.parse_report(p).complete
 
 
-def test_valid_but_empty_shard_xml_is_incomplete_not_green(tmp_path):
+def test_valid_but_empty_shard_xml_is_malformed_not_green(tmp_path):
     """The false-GREEN case, which the truncated/missing tests do NOT cover.
 
     A shard that collected nothing — pytest exit 5, a bad file list, a filter
@@ -343,7 +346,7 @@ def test_valid_but_empty_shard_xml_is_incomplete_not_green(tmp_path):
     Unparseable input fails loudly; THIS input used to aggregate as "complete,
     0 failures" and turn the whole run green off a shard whose tests never ran.
     That is the silent downgrade the aggregate exists to prevent, so it must be
-    INCOMPLETE.
+    MALFORMED_XML (no testcases).
     """
     p = tmp_path / "junit-shard-4.xml"
     p.write_text(
@@ -357,10 +360,10 @@ def test_valid_but_empty_shard_xml_is_incomplete_not_green(tmp_path):
     assert "no testcases" in rep.reason
     text, ok = junit_summary.render([rep], expected_shards=1)
     assert not ok, "an empty shard can never produce a green aggregate"
-    assert "INCOMPLETE" in text
+    assert "MALFORMED_XML" in text
 
 
-def test_short_count_shard_xml_is_incomplete(tmp_path):
+def test_short_count_shard_xml_is_malformed(tmp_path):
     """Declared-vs-present mismatch: the document parses but is missing cases.
 
     pytest writes its own total on ``<testsuite tests="N">``. A process killed
@@ -378,6 +381,7 @@ def test_short_count_shard_xml_is_incomplete(tmp_path):
     rep = junit_summary.parse_report(p)
     assert not rep.complete
     assert "short count" in rep.reason
+    assert junit_summary.classify_state(rep) == junit_summary.STATE_MALFORMED_XML
     _, ok = junit_summary.render([rep], expected_shards=1)
     assert not ok
 
@@ -397,7 +401,7 @@ def test_missing_shard_is_reported_against_the_expected_count(tmp_path):
     reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
     text, ok = junit_summary.render(reports, expected_shards=2)
     assert not ok
-    assert "MISSING" in text
+    assert "MISSING_ARTIFACT" in text
 
 
 def test_all_green_shards_produce_a_green_aggregate(tmp_path):
@@ -412,51 +416,176 @@ def test_all_green_shards_produce_a_green_aggregate(tmp_path):
     reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
     text, ok = junit_summary.render(reports, expected_shards=1)
     assert ok, text
-    assert "no failures" in text
+    assert "COMPLETE" in text
     assert junit_summary.exit_status(reports, 1, fail_on="any") == 0
     assert junit_summary.exit_status(reports, 1, fail_on="incomplete") == 0
+    assert junit_summary.exit_status(reports, 1, fail_on="never") == 0
 
 
-def test_fail_on_incomplete_exits_zero_when_shards_complete_with_failures(tmp_path):
-    """CI diagnostic mode: inherited reds must not fail the Actions job.
-
-    The standing service-suite red set (~600 failures) is documented and tracked
-    outside CI. Permanently exiting 1 on those reds made every push look broken
-    and contradicted the operating-model rule that aggregate CI is diagnostic.
-    ``--fail-on incomplete`` keeps the full failure report and only fails the
-    job when evidence itself is missing.
-    """
+def test_inherited_failures_visible_and_never_exit_zero(tmp_path):
+    """Actions diagnostic mode: inherited reds visible, workflow exit 0."""
     (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
     reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
     text, suite_green = junit_summary.render(
-        reports, expected_shards=1, fail_on="incomplete")
-    assert not suite_green, "suite_green still means zero failures"
-    assert "diagnostic report only" in text
+        reports, expected_shards=1, fail_on="never")
+    assert not suite_green
+    assert "TEST_FAILURE" in text
     assert "Failures by file" in text and "test_bad" in text
     assert junit_summary.exit_status(reports, 1, fail_on="any") == 1
     assert junit_summary.exit_status(reports, 1, fail_on="incomplete") == 0
+    assert junit_summary.exit_status(reports, 1, fail_on="never") == 0
 
 
-def test_fail_on_incomplete_still_fails_on_missing_shard(tmp_path):
-    """Diagnostic mode must not hide a lost shard — that is the honesty rule."""
+def test_fail_on_incomplete_still_fails_on_missing_shard_locally(tmp_path):
+    """Forensic --fail-on incomplete still returns 1 on MISSING_ARTIFACT."""
     (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
     reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
     assert junit_summary.exit_status(reports, 2, fail_on="incomplete") == 1
-    text, _ = junit_summary.render(reports, expected_shards=2, fail_on="incomplete")
-    assert "MISSING" in text
+    assert junit_summary.exit_status(reports, 2, fail_on="never") == 0
+    text, _ = junit_summary.render(reports, expected_shards=2, fail_on="never")
+    assert "MISSING_ARTIFACT" in text
 
 
-def test_fail_on_incomplete_still_fails_on_truncated_shard(tmp_path):
+def test_fail_on_incomplete_still_fails_on_malformed_shard_locally(tmp_path):
     p = tmp_path / "junit-shard-1.xml"
     p.write_text(_GOOD_XML[: len(_GOOD_XML) // 2], encoding="utf-8")
     reports = [junit_summary.parse_report(p)]
     assert junit_summary.exit_status(reports, 1, fail_on="incomplete") == 1
+    assert junit_summary.exit_status(reports, 1, fail_on="never") == 0
 
 
-def test_cli_fail_on_incomplete_matches_exit_status(tmp_path):
+def test_cli_fail_on_modes(tmp_path):
     (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
     assert junit_summary.main([str(tmp_path), "--of", "1", "--fail-on", "incomplete"]) == 0
     assert junit_summary.main([str(tmp_path), "--of", "1", "--fail-on", "any"]) == 1
+    assert junit_summary.main([str(tmp_path), "--of", "1", "--fail-on", "never"]) == 0
+
+
+def test_ensure_junit_writes_sentinel_when_file_missing(tmp_path):
+    """Hang kill path: no XML → explicit error sentinel, never silent green."""
+    path = tmp_path / "junit-shard-6.xml"
+    assert ensure_junit_artifact.ensure(path, "6") is True
+    rep = junit_summary.parse_report(path)
+    assert rep.complete, rep.reason
+    assert rep.counts["error"] == 1
+    assert junit_summary.classify_state(rep) == junit_summary.STATE_PROCESS_KILLED
+    assert junit_summary.exit_status([rep], None, fail_on="incomplete") == 0
+    assert junit_summary.exit_status([rep], None, fail_on="any") == 1
+    assert junit_summary.exit_status([rep], None, fail_on="never") == 0
+
+
+def test_ensure_junit_step_timeout_sentinel(tmp_path):
+    path = tmp_path / "junit-shard-3.xml"
+    assert ensure_junit_artifact.ensure(
+        path, "3", reason=ensure_junit_artifact.REASON_STEP_TIMEOUT) is True
+    rep = junit_summary.parse_report(path)
+    assert junit_summary.classify_state(rep) == junit_summary.STATE_STEP_TIMEOUT
+
+
+def test_ensure_junit_infers_step_timeout_from_cancelled_outcome():
+    assert ensure_junit_artifact.infer_reason("cancelled") == (
+        ensure_junit_artifact.REASON_STEP_TIMEOUT)
+    assert ensure_junit_artifact.infer_reason("failure") == (
+        ensure_junit_artifact.REASON_PROCESS_KILLED)
+
+
+def test_ensure_junit_keeps_existing_nonempty_report(tmp_path):
+    path = tmp_path / "junit-shard-1.xml"
+    path.write_text(_GOOD_XML, encoding="utf-8")
+    before = path.read_bytes()
+    assert ensure_junit_artifact.ensure(path, "1") is False
+    assert path.read_bytes() == before
+
+
+def test_ensure_junit_replaces_empty_file(tmp_path):
+    path = tmp_path / "junit-shard-2.xml"
+    path.write_text("", encoding="utf-8")
+    assert ensure_junit_artifact.ensure(path, "2") is True
+    assert junit_summary.parse_report(path).complete
+    assert junit_summary.classify_state(
+        junit_summary.parse_report(path)) == junit_summary.STATE_PROCESS_KILLED
+
+
+def test_ensure_junit_cli_is_idempotent(tmp_path):
+    path = tmp_path / "junit-shard-3.xml"
+    assert ensure_junit_artifact.main([str(path), "--shard", "3"]) == 0
+    assert ensure_junit_artifact.main([str(path), "--shard", "3"]) == 0
+    assert path.is_file() and path.stat().st_size > 0
+
+
+def test_six_shard_matrix_with_one_sentinel_stays_diagnostic_green(tmp_path):
+    """Five normal shards + one killed sentinel → summary names kill, exit 0.
+
+    Run 31717453274 lost shard 6 to pytest-timeout os._exit; aggregate went
+    MISSING-red. With the sentinel + --fail-on never, Actions stays green.
+    """
+    for n in range(1, 6):
+        (tmp_path / f"junit-shard-{n}.xml").write_text(
+            _GOOD_XML.replace("junit-shard-1", f"junit-shard-{n}"),
+            encoding="utf-8",
+        )
+    ensure_junit_artifact.ensure(tmp_path / "junit-shard-6.xml", "6")
+    reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
+    assert len(reports) == 6
+    text, suite_green = junit_summary.render(
+        reports, expected_shards=6, fail_on="never")
+    assert not suite_green
+    assert "MISSING_ARTIFACT" not in text
+    assert "PROCESS_KILLED" in text
+    assert ensure_junit_artifact.SENTINEL_NAME in text
+    assert junit_summary.exit_status(reports, 6, fail_on="never") == 0
+    assert junit_summary.exit_status(reports, 6, fail_on="incomplete") == 0
+
+
+def test_truly_missing_artifact_reported_but_never_exits_nonzero(tmp_path):
+    """Aggregate with a truly missing artifact reports MISSING_ARTIFACT, exit 0."""
+    (tmp_path / "junit-shard-1.xml").write_text(_GOOD_XML, encoding="utf-8")
+    reports = [junit_summary.parse_report(p) for p in junit_summary.collect([str(tmp_path)])]
+    text, _ = junit_summary.render(reports, expected_shards=6, fail_on="never")
+    assert "MISSING_ARTIFACT" in text
+    assert junit_summary.exit_status(reports, 6, fail_on="never") == 0
+    assert junit_summary.exit_status(reports, 6, fail_on="incomplete") == 1
+
+
+def test_ci_workflow_yaml_parses_and_keeps_aggregate_job():
+    """Malformed YAML must not silently drop service-suite-report again.
+
+    #1217 briefly glued ``service-suite-report:`` onto a comment line; PyYAML
+    then parsed only golden-regression + service-suite. Pin the three jobs,
+    pytest step timeout < job timeout, upload warn, and --fail-on never.
+    """
+    try:
+        import yaml
+    except ImportError:
+        pytest.skip("PyYAML not installed in this environment")
+    root = Path(__file__).resolve().parents[2]
+    wf = yaml.safe_load((root / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"))
+    jobs = wf["jobs"]
+    assert set(jobs) >= {"golden-regression", "service-suite", "service-suite-report"}
+    suite = jobs["service-suite"]
+    assert suite["timeout-minutes"] == 90
+    pytest_step = next(s for s in suite["steps"] if s.get("id") == "pytest")
+    assert pytest_step["timeout-minutes"] == 75
+    assert pytest_step["timeout-minutes"] < suite["timeout-minutes"]
+    assert pytest_step.get("continue-on-error") is True
+    upload = next(s for s in suite["steps"] if s.get("name") == "Upload shard JUnit report")
+    assert upload["with"]["if-no-files-found"] == "warn"
+    ensure = next(s for s in suite["steps"] if s.get("name") == "Ensure JUnit artifact exists")
+    assert "!cancelled()" in str(ensure.get("if"))
+    reconcile = jobs["service-suite-report"]["steps"][-1]["run"]
+    assert "--fail-on never" in reconcile
+    # The job key must be a real mapping key, not residual comment text.
+    raw = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^  service-suite-report:\s*$", raw), (
+        "service-suite-report must be a standalone YAML job key")
+
+
+def test_ci_workflow_has_no_branch_protection_coupling():
+    raw = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
+           ).read_text(encoding="utf-8")
+    assert "required-status" not in raw.lower()
+    assert "github/branch-protection" not in raw.lower()
 
 
 def test_failures_are_grouped_by_file(tmp_path):

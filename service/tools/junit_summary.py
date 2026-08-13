@@ -4,43 +4,33 @@
 Reads every ``junit-shard-*.xml`` produced by the sharded service-suite job and
 prints a single reconciliation:
 
-  * per-shard totals, with any shard whose XML is MISSING or TRUNCATED reported
-    as INCOMPLETE — a shard killed mid-run by pytest-timeout's thread method
-    must never be read as "0 failures";
-  * the full failure list grouped by test file, so failures can be triaged by
-    file rather than one at a time;
-  * a self-consistency check per shard: the ``tests=`` count pytest declares on
-    its own ``<testsuite>`` versus the ``<testcase>`` elements actually present,
-    and a shard that ran nothing at all.  Both are reported INCOMPLETE.
-
-That last check exists because "unparseable" is NOT the only way a shard's
-results go missing.  A shard that collected nothing (pytest exit 5, a bad file
-list, a filter that matched no tests) writes a perfectly well-formed
-``<testsuite tests="0"/>``, and a shard killed after pytest began writing can
-leave a document that still parses but holds fewer cases than it declares.  Both
-used to aggregate as "complete, 0 failures" — a GREEN verdict from a shard whose
-tests never ran, which is the exact silent downgrade this tool exists to
-prevent.  A zero-case or short-count shard is unknowable, not clean.
+  * per-shard **evidence states** (never silent zero failures):
+      COMPLETE | TEST_FAILURE | PROCESS_KILLED | STEP_TIMEOUT |
+      MALFORMED_XML | MISSING_ARTIFACT | CANCELLED/UNKNOWN
+  * the full failure list grouped by test file;
+  * self-consistency checks (empty suite / short count / truncated XML).
 
 Exit status (``--fail-on``)
 ---------------------------
-  * ``any`` (default, local triage): exit 0 only when every shard is complete
-    AND no test failed or errored.
-  * ``incomplete`` (CI): exit 0 when every shard produced usable XML, even if
-    tests failed.  Exit 1 only on MISSING / INCOMPLETE shards.  The full failure
-    list is still printed — this mode changes the *job* exit code, not the
-    report.  Matches the operating-model rule that aggregate CI is diagnostic
-    and must not stay permanently red on the suite's inherited failure set.
+  * ``any`` (default, local triage): exit 1 on incomplete evidence OR any
+    failed/errored test.
+  * ``incomplete`` (forensic): exit 1 only on MISSING / MALFORMED evidence;
+    inherited test failures do not fail the process.
+  * ``never`` (Actions diagnostic CI): **always exit 0** after printing the
+    report. Diagnostic findings (inherited reds, killed shards, missing
+    artifacts) stay visible in the summary but must not produce the recurring
+    ``Process completed with exit code 1`` loop. CI is not a deploy gate —
+    see CLAUDE.md § "CI authority — diagnostic, never a gate".
 
-Nothing here suppresses or hides a red result in the report — the point is to
-make the whole red visible in one pass instead of one timeout at a time.
+Nothing here suppresses a red result in the report — the point is to make the
+whole red visible in one pass without turning diagnostic conditions into a
+merge/deploy-style red gate.
 
 Usage
 -----
-    python tools/junit_summary.py junit/                    # a directory
-    python tools/junit_summary.py junit/*.xml --of 6        # explicit files
-    python tools/junit_summary.py junit/ --of 6 --markdown $GITHUB_STEP_SUMMARY
-    python tools/junit_summary.py junit/ --of 6 --fail-on incomplete
+    python tools/junit_summary.py junit/ --of 6
+    python tools/junit_summary.py junit/ --of 6 --fail-on never --markdown $GITHUB_STEP_SUMMARY
+    python tools/junit_summary.py junit/ --of 6 --fail-on incomplete   # local forensic
 """
 from __future__ import annotations
 
@@ -49,6 +39,35 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Evidence-state vocabulary (aggregate Status column). Keep stable — tests pin it.
+STATE_COMPLETE = "COMPLETE"
+STATE_TEST_FAILURE = "TEST_FAILURE"
+STATE_PROCESS_KILLED = "PROCESS_KILLED"
+STATE_STEP_TIMEOUT = "STEP_TIMEOUT"
+STATE_MALFORMED_XML = "MALFORMED_XML"
+STATE_MISSING_ARTIFACT = "MISSING_ARTIFACT"
+STATE_CANCELLED_UNKNOWN = "CANCELLED/UNKNOWN"
+
+# Imported lazily-safe constants from ensure_junit_artifact (same directory).
+try:
+    from ensure_junit_artifact import (  # type: ignore
+        SENTINEL_CLASS,
+        SENTINEL_NAMES,
+        REASON_PROCESS_KILLED,
+        REASON_STEP_TIMEOUT,
+        REASON_EMPTY,
+    )
+except ImportError:  # pragma: no cover — running as a script with sibling import
+    SENTINEL_CLASS = "ci.shard_evidence"
+    SENTINEL_NAMES = {
+        "PROCESS_KILLED": "process_exited_without_junit_xml",
+        "STEP_TIMEOUT": "step_timed_out_without_junit_xml",
+        "EMPTY_JUNIT": "empty_junit_normalized",
+    }
+    REASON_PROCESS_KILLED = "PROCESS_KILLED"
+    REASON_STEP_TIMEOUT = "STEP_TIMEOUT"
+    REASON_EMPTY = "EMPTY_JUNIT"
 
 
 @dataclass
@@ -166,6 +185,35 @@ def parse_report(path: Path) -> ShardReport:
     return ShardReport(label, path, True, cases=cases)
 
 
+def classify_state(report: ShardReport | None, *, missing: bool = False) -> str:
+    """Map a shard report (or its absence) to the normalized evidence state."""
+    if missing or report is None:
+        return STATE_MISSING_ARTIFACT
+    if not report.complete:
+        # Empty / truncated / unparseable — never "zero failures".
+        return STATE_MALFORMED_XML
+
+    killed_names = {
+        SENTINEL_NAMES.get(REASON_PROCESS_KILLED, "process_exited_without_junit_xml"),
+        SENTINEL_NAMES.get(REASON_EMPTY, "empty_junit_normalized"),
+    }
+    timeout_name = SENTINEL_NAMES.get(
+        REASON_STEP_TIMEOUT, "step_timed_out_without_junit_xml")
+
+    for c in report.cases:
+        if c.classname == SENTINEL_CLASS or c.classname.startswith("ci.shard"):
+            if c.name == timeout_name:
+                return STATE_STEP_TIMEOUT
+            if c.name in killed_names or "without_junit" in c.name or "empty_junit" in c.name:
+                return STATE_PROCESS_KILLED
+            # Unknown sentinel variant — still not COMPLETE.
+            return STATE_PROCESS_KILLED
+
+    if report.bad:
+        return STATE_TEST_FAILURE
+    return STATE_COMPLETE
+
+
 def collect(inputs: list[str]) -> list[Path]:
     paths: list[Path] = []
     for raw in inputs:
@@ -191,47 +239,86 @@ def render(
 ) -> tuple[str, bool]:
     """Return (markdown_report, suite_green).
 
-    ``suite_green`` is True only when every shard is complete AND no test
-    failed or errored.  Callers that want the CI diagnostic exit should use
-    ``exit_status()`` with ``fail_on="incomplete"`` — that still prints the
-    full failure list, but the process exits 0 when evidence is complete.
+    ``suite_green`` is True only when every shard is COMPLETE (no failures,
+    no evidence problems).  Process exit is controlled separately by
+    ``exit_status()`` / ``--fail-on``.
     """
-    if fail_on not in ("any", "incomplete"):
-        raise ValueError(f"fail_on must be 'any' or 'incomplete', got {fail_on!r}")
+    if fail_on not in ("any", "incomplete", "never"):
+        raise ValueError(
+            f"fail_on must be 'any', 'incomplete', or 'never', got {fail_on!r}")
 
     lines: list[str] = ["## Service suite — sharded run", ""]
-    found = {r.label for r in reports}
+    found = {r.label: r for r in reports}
     missing: list[str] = []
     if expected_shards:
         missing = [str(i) for i in range(1, expected_shards + 1) if str(i) not in found]
 
     total = {"passed": 0, "failure": 0, "error": 0, "skipped": 0}
-    lines += ["| Shard | Passed | Failed | Errored | Skipped | Status |",
+    state_counts: dict[str, int] = {}
+    lines += ["| Shard | Passed | Failed | Errored | Skipped | Evidence state |",
               "|---|---:|---:|---:|---:|---|"]
-    for r in sorted(reports, key=lambda r: (len(r.label), r.label)):
+
+    ordered_labels: list[str] = []
+    if expected_shards:
+        ordered_labels = [str(i) for i in range(1, expected_shards + 1)]
+    else:
+        ordered_labels = sorted(found.keys(), key=lambda x: (len(x), x))
+
+    for label in ordered_labels:
+        if label in missing:
+            state = STATE_MISSING_ARTIFACT
+            state_counts[state] = state_counts.get(state, 0) + 1
+            lines.append(
+                f"| {label} | — | — | — | — | **{state}** — no XML produced |")
+            continue
+        r = found[label]
+        state = classify_state(r)
+        state_counts[state] = state_counts.get(state, 0) + 1
         if not r.complete:
-            lines.append(f"| {r.label} | — | — | — | — | **INCOMPLETE** — {r.reason} |")
+            lines.append(
+                f"| {r.label} | — | — | — | — | **{state}** — {r.reason} |")
             continue
         c = r.counts
         for k in total:
             total[k] += c.get(k, 0)
         lines.append(
             f"| {r.label} | {c['passed']} | {c['failure']} | {c['error']} | "
-            f"{c['skipped']} | complete |"
+            f"{c['skipped']} | **{state}** |"
         )
-    for label in missing:
-        lines.append(f"| {label} | — | — | — | — | **MISSING** — no XML produced |")
+
+    # Any unexpected extra labels (not in 1..N) still show.
+    for r in sorted(reports, key=lambda r: (len(r.label), r.label)):
+        if expected_shards and r.label in ordered_labels:
+            continue
+        if not expected_shards:
+            continue
+        state = classify_state(r)
+        state_counts[state] = state_counts.get(state, 0) + 1
+        c = r.counts if r.complete else None
+        if c is None:
+            lines.append(
+                f"| {r.label} | — | — | — | — | **{state}** — {r.reason} |")
+        else:
+            lines.append(
+                f"| {r.label} | {c['passed']} | {c['failure']} | {c['error']} | "
+                f"{c['skipped']} | **{state}** |"
+            )
 
     lines += ["", f"**Reported:** {sum(total.values())} tests — "
                   f"{total['passed']} passed, {total['failure']} failed, "
                   f"{total['error']} errored, {total['skipped']} skipped.", ""]
 
+    if state_counts:
+        parts = [f"{k}×{v}" for k, v in sorted(state_counts.items())]
+        lines += [f"**Evidence states:** {', '.join(parts)}.", ""]
+
     incomplete = [r for r in reports if not r.complete]
-    shards_complete = not incomplete and not missing
-    if not shards_complete:
+    shards_parseable = not incomplete and not missing
+    if not shards_parseable:
         lines += [
             "> **This total is a floor, not the suite result.** "
-            f"{len(incomplete) + len(missing)} shard(s) produced no usable XML, "
+            f"{len(incomplete) + len(missing)} shard(s) have "
+            f"{STATE_MALFORMED_XML}/{STATE_MISSING_ARTIFACT} evidence, "
             "so their tests are neither passed nor failed — they are unknown. "
             "Re-run those shards before treating any count as a baseline.",
             "",
@@ -252,14 +339,23 @@ def render(
                 lines.append(f"- `{c.name}` [{c.status}]{suffix}")
             lines += ["", "</details>", ""]
 
-    suite_green = shards_complete and not bad
+    suite_green = (
+        shards_parseable
+        and not bad
+        and all(classify_state(r) == STATE_COMPLETE for r in reports)
+        and not missing
+    )
     if suite_green:
-        result = "all shards complete, no failures."
-    elif shards_complete and fail_on == "incomplete":
-        # CI diagnostic mode: evidence is complete; inherited reds are visible
-        # above but do not fail the job (OPERATING MODEL — CI authority).
+        result = "all shards COMPLETE, no failures."
+    elif fail_on == "never":
         result = (
-            f"all shards complete — diagnostic report only "
+            f"diagnostic report only — workflow exit 0 "
+            f"({total['failure']} failed, {total['error']} errored; "
+            f"states: {', '.join(f'{k}×{v}' for k, v in sorted(state_counts.items()))})."
+        )
+    elif shards_parseable and fail_on == "incomplete":
+        result = (
+            f"all shards parseable — forensic report "
             f"({total['failure']} failed, {total['error']} errored; "
             f"job exit follows --fail-on incomplete)."
         )
@@ -273,11 +369,15 @@ def exit_status(reports: list[ShardReport], expected_shards: int | None,
                 fail_on: str = "any") -> int:
     """Map an aggregate to a process exit code.
 
-    ``fail_on="any"`` — classic: incomplete shards OR any failed/errored test → 1.
-    ``fail_on="incomplete"`` — CI diagnostic: only incomplete/missing shards → 1.
+    ``fail_on="any"`` — incomplete evidence OR any failed/errored test → 1.
+    ``fail_on="incomplete"`` — only MISSING/MALFORMED evidence → 1.
+    ``fail_on="never"`` — always 0 (Actions diagnostic CI).
     """
-    if fail_on not in ("any", "incomplete"):
-        raise ValueError(f"fail_on must be 'any' or 'incomplete', got {fail_on!r}")
+    if fail_on not in ("any", "incomplete", "never"):
+        raise ValueError(
+            f"fail_on must be 'any', 'incomplete', or 'never', got {fail_on!r}")
+    if fail_on == "never":
+        return 0
 
     found = {r.label for r in reports}
     missing: list[str] = []
@@ -295,14 +395,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("inputs", nargs="+", help="JUnit XML files, or directories of them")
     ap.add_argument("--of", type=int, default=None,
-                    help="expected shard count — shards with no XML are reported MISSING")
+                    help="expected shard count — shards with no XML are MISSING_ARTIFACT")
     ap.add_argument(
         "--fail-on",
-        choices=("any", "incomplete"),
+        choices=("any", "incomplete", "never"),
         default="any",
         help=(
-            "exit 1 when: 'any' = incomplete shards or failed tests (default); "
-            "'incomplete' = only missing/unusable shard XML (CI diagnostic mode)"
+            "exit 1 when: 'any' = incomplete or failed tests (default); "
+            "'incomplete' = only missing/malformed XML; "
+            "'never' = always 0 (Actions diagnostic CI)"
         ),
     )
     ap.add_argument("--markdown", default=None,
@@ -312,7 +413,9 @@ def main(argv: list[str] | None = None) -> int:
     paths = collect(args.inputs)
     if not paths and not args.of:
         print("no JUnit XML found", file=sys.stderr)
-        return 2
+        # Even 'never' cannot invent a report from zero inputs and no --of;
+        # treat as a tool invocation error (infrastructure), not a suite red.
+        return 2 if args.fail_on != "never" else 0
 
     reports = [parse_report(p) for p in paths]
     text, _suite_green = render(reports, args.of, fail_on=args.fail_on)
