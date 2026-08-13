@@ -16366,7 +16366,7 @@ function ProformaDraftLineRow({ line, editable, onPatch, onDelete, sourceLines }
         {editable && dirty && (
           <Btn small variant="primary"
                onClick={save}
-               data-testid={`btn-line-save-${line.line_id}`}>Save</Btn>
+               data-testid={`btn-line-save-${line.line_id}`}>Save to draft</Btn>
         )}
         {editable && onDelete && (
           <Btn small
