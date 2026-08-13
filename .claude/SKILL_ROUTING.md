@@ -26,7 +26,7 @@ Authority: this file is the single source for keyword → skill mapping.
 | TASK_TYPE | Keywords (any match scores +1) | PRIMARY_SKILL | SECONDARY_SKILL | Notes |
 |---|---|---|---|---|
 | `UI_FRONTEND` | ui, frontend, v2, dashboard, component, layout, css, page, visual, render, html, style, button, modal, tab, panel, form, chart, design, improve ui, fix ui, redesign, restyle, polish, modernize, clean up | `frontend-design` + `ej-dashboard-design` | `ui-ux-pro-max` | Always consult `ej-dashboard-design` (project governance layer) together with `frontend-design` — no automatic inheritance, both must be active. Read `EJ_OVERRIDES.md` before applying `ui-ux-pro-max` output. V1 frozen — check Lesson F. |
-| `PROFORMA` | proforma, conflict, draft, snapshot, series, workspace, readiness, wired, pregate, pre-gate | `backend-route-and-service-builder` | *(planned: `proforma-engine`)* | `proforma-engine` planned but not installed. Use `backend-route-and-service-builder` until built. |
+| `PROFORMA` | proforma, conflict, draft, snapshot, series, workspace, readiness, wired, pregate, pre-gate | `ej-dashboard-fullstack-governance` | `ej-dashboard-design` (UI) / `backend-route-and-service-builder` (plan-only) | B-015 CLOSED 2026-08-13 — planned `proforma-engine` **CANCELLED** (Skill Freeze 2026-07-04). PROFORMA is covered by fullstack-governance + existing sales-proforma / routes_proforma authority. No MISSING_SKILL. |
 | `DHL_CUSTOMS` | dhl, customs, clearance, awb, carrier, label, sad, invoice line, customs duty, tariff, packing | `pz-shipment` | `customs-pz-safety-checker` | `customs-pz-safety-checker` mandatory for any PZ guard changes. |
 | `WFIRMA_PZ` | wfirma, accounting, tax, vat, booked, pz calc, pz doc, pz number, pz import, zc429 | `backend-route-and-service-builder` | `wfirma-api-integration` (reference) | `wfirma-api-integration` reference skill **INSTALLED 2026-07-04** — read it for wFirma API behavior (auth, invoices, webhooks, gotchas). Implementation authority stays `ej-dashboard-fullstack-governance`; protected-domain approval (invoices/VAT/accounting/webhooks/persistence) is NOT bypassed. `pz-shipment` for PZ specifics. |
 | `BACKEND_API` | backend, api, route, endpoint, service, database, db, sqlite, model, schema, migration | `backend-route-and-service-builder` | — | Read-only planner — produces plan, does not write code directly. |
@@ -78,7 +78,7 @@ CONFIDENCE:     LOW
 | Prompt | TASK_TYPE | SELECTED_SKILL | SECONDARY | CONFIDENCE | Notes |
 |---|---|---|---|---|---|
 | "Improve V2 UI" | `UI_FRONTEND` | `frontend-design` | `ui-ux-pro-max` | HIGH | "v2" + "ui" = 2 hits |
-| "Fix proforma readiness" | `PROFORMA` | `backend-route-and-service-builder` | *(proforma-engine planned)* | MEDIUM | "proforma" + "readiness" = 2 hits; MISSING_SKILL: proforma-engine |
+| "Fix proforma readiness" | `PROFORMA` | `ej-dashboard-fullstack-governance` | `ej-dashboard-design` | HIGH | "proforma" + "readiness" = 2 hits; B-015 cancelled planned skill |
 | "Check DHL customs" | `DHL_CUSTOMS` | `pz-shipment` | `customs-pz-safety-checker` | HIGH | "dhl" + "customs" = 2 hits |
 | "Add backend route" | `BACKEND_API` | `backend-route-and-service-builder` | — | HIGH | "backend" + "route" = 2 hits |
 | "Prepare deployment" | `DEPLOY_RELEASE` | `deploy` | — | HIGH | "deploy" = 1 strong hit (HIGH by single-keyword strength rule for deploy domain) |
@@ -103,7 +103,7 @@ The following keywords are strong enough that 1 hit = HIGH confidence (not MEDIU
 
 | Planned skill | Domain | Target domain | Status |
 |---|---|---|---|
-| `proforma-engine` | PROFORMA | Proforma / conflict / workspace | PLANNED — file when B2–B9 types designed |
+| `proforma-engine` | PROFORMA | Proforma / conflict / workspace | **CANCELLED (B-015, 2026-08-13)** — Skill Freeze; route via `ej-dashboard-fullstack-governance`. Do not install. |
 | `dhl-customs` | DHL_CUSTOMS | DHL clearance / customs | PLANNED |
 | `wfirma-api-integration` | WFIRMA_PZ | wFirma API / PZ accounting | **INSTALLED 2026-07-04** — reference-only (`.claude/skills/wfirma-api-integration/`), subordinate to `ej-dashboard-fullstack-governance`; no protected-domain bypass |
 | `frontend-design` (global) | UI_FRONTEND | V1/V2 frontend | EXISTS as repo skill; invoke directly |

@@ -741,6 +741,219 @@ function PfImportWizardModal({ batchId, onClose, onCreated }) {
   );
 }
 
+// ── B-014: Draft birth-block panels (parity with V1 ProformaDraftPanel) ─────
+// Authority: GET /api/v1/admin/contractor-projection/blocks/{batch}
+//   creation blockers → ?include_advisory=false
+//   advisory conflicts → full list filtered to contractor_conflict / is_advisory
+// Assign: POST /api/v1/admin/contractor-projection/assign/{batch}
+
+function V2BirthBlockResolver({ batchId, block, onToast, onResolved }) {
+  const sdId = String((block && block.sales_document_id) || '');
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState((block && block.client_name) || '');
+  const [results, setResults] = useState([]);
+  const [searched, setSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const runSearch = () => {
+    setSearching(true);
+    setSearched(true);
+    const term = (q || '').trim();
+    const url = '/api/v1/customer-master/' + (term ? ('?q=' + encodeURIComponent(term)) : '');
+    window.EstrellaShared.apiFetch(url)
+      .then(r => setResults((r && r.customers) || []))
+      .catch(e => {
+        onToast && onToast('Customer search failed: ' + (e.message || e), 'error');
+        setResults([]);
+      })
+      .finally(() => setSearching(false));
+  };
+
+  const onAssign = () => {
+    if (!selected || !selected.bill_to_contractor_id) {
+      onToast && onToast('Pick a Customer Master customer first', 'info');
+      return;
+    }
+    setSaving(true);
+    window.EstrellaShared.apiFetch(
+      '/api/v1/admin/contractor-projection/assign/' + encodeURIComponent(batchId),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sales_document_id: sdId,
+          contractor_id: selected.bill_to_contractor_id,
+        }),
+      },
+    )
+      .then(r => {
+        if (r && r.ok) {
+          onToast && onToast(
+            'Customer assigned — draft generated for '
+              + (r.canonical_name || selected.bill_to_name || 'this document'),
+            'success',
+          );
+          setOpen(false);
+          onResolved && onResolved();
+        } else {
+          onToast && onToast('Assign failed: ' + ((r && (r.detail || r.reason || r.error)) || 'see logs'), 'error');
+        }
+      })
+      .catch(e => onToast && onToast('Assign failed: ' + (e.message || e), 'error'))
+      .finally(() => setSaving(false));
+  };
+
+  if (!sdId) return null;
+
+  return (
+    <div style={{ marginTop: 6 }} data-testid={`v2-birth-block-resolver-${sdId}`}>
+      {!open ? (
+        <button type="button" data-testid={`v2-birth-block-open-${sdId}`}
+          onClick={() => setOpen(true)}
+          style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, borderRadius: 5,
+            cursor: 'pointer', background: 'var(--card)', color: 'var(--text)',
+            border: '1px solid var(--border)' }}>
+          Assign customer…
+        </button>
+      ) : (
+        <div style={{ marginTop: 6, padding: 8, background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            <input data-testid={`v2-birth-block-q-${sdId}`} value={q}
+              onChange={e => setQ(e.target.value)}
+              placeholder="Search Customer Master"
+              style={{ flex: 1, padding: '4px 8px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border)' }} />
+            <button type="button" data-testid={`v2-birth-block-search-${sdId}`}
+              disabled={searching} onClick={runSearch}
+              style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+              {searching ? '…' : 'Search'}
+            </button>
+            <button type="button" onClick={() => setOpen(false)}
+              style={{ padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}>Cancel</button>
+          </div>
+          {searched && results.length === 0 && (
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>No customers matched.</div>
+          )}
+          {results.slice(0, 8).map((c, i) => (
+            <label key={c.bill_to_contractor_id || i}
+              data-testid={`v2-birth-block-pick-${c.bill_to_contractor_id || i}`}
+              style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, padding: '3px 0', cursor: 'pointer' }}>
+              <input type="radio" name={`v2-bb-${sdId}`}
+                checked={!!(selected && selected.bill_to_contractor_id === c.bill_to_contractor_id)}
+                onChange={() => setSelected(c)} />
+              <span>{c.bill_to_name || '—'} · {c.country || '—'} · {c.nip || '—'}</span>
+            </label>
+          ))}
+          <button type="button" data-testid={`v2-birth-block-assign-${sdId}`}
+            disabled={saving || !selected} onClick={onAssign}
+            style={{ marginTop: 6, padding: '4px 12px', fontSize: 11, fontWeight: 700,
+              cursor: selected ? 'pointer' : 'not-allowed', background: 'var(--accent)',
+              color: 'var(--accent-text)', border: '1px solid var(--border)', borderRadius: 5,
+              opacity: (saving || !selected) ? 0.5 : 1 }}>
+            {saving ? 'Assigning…' : 'Assign and generate draft'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function V2DraftBirthBlocksPanel({ batchId, onResolved }) {
+  const [birthBlocks, setBirthBlocks] = useState([]);
+  const [advisoryBlocks, setAdvisoryBlocks] = useState([]);
+  const toast = (msg, kind) => {
+    if (window.EstrellaShared && window.EstrellaShared.toast) {
+      window.EstrellaShared.toast(msg, kind);
+    }
+  };
+
+  const refresh = React.useCallback(() => {
+    if (!batchId) return;
+    const base = `/api/v1/admin/contractor-projection/blocks/${encodeURIComponent(batchId)}`;
+    Promise.all([
+      window.EstrellaShared.apiFetch(base + '?include_advisory=false'),
+      window.EstrellaShared.apiFetch(base),
+    ]).then(([creation, advisory]) => {
+      setBirthBlocks((creation && creation.blocks) || []);
+      const allOpen = (advisory && advisory.blocks) || [];
+      setAdvisoryBlocks(allOpen.filter(function (b) {
+        return b && (b.is_advisory === true || b.code === 'contractor_conflict');
+      }));
+    }).catch(() => {
+      setBirthBlocks([]);
+      setAdvisoryBlocks([]);
+    });
+  }, [batchId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const onResolvedLocal = () => {
+    refresh();
+    onResolved && onResolved();
+  };
+
+  if (!birthBlocks.length && !advisoryBlocks.length) return null;
+
+  return (
+    <div data-testid="v2-proforma-birth-blocks" style={{ marginBottom: 16 }}>
+      {birthBlocks.length > 0 && (
+        <div data-testid="proforma-blocked-records-panel"
+          style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 6,
+            background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)',
+            color: 'var(--badge-amber-text)', fontSize: 12 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>
+            {birthBlocks.length} sales document(s) could not produce a Proforma draft
+          </div>
+          {birthBlocks.map((b, i) => {
+            const cid = (b.client_contractor_id || '').trim();
+            return (
+              <div key={b.sales_document_id || i}
+                data-testid={`proforma-blocked-record-${b.sales_document_id || i}`}
+                style={{ padding: '6px 0', borderTop: i ? '1px dashed var(--badge-amber-border)' : 'none' }}>
+                <div><strong>Source:</strong> {b.source_file_name || b.sales_document_id || '—'}
+                  {' · '}<strong>Parsed name:</strong> {b.client_name || '— none —'}
+                  {' · '}<strong>Contractor id:</strong> {cid || '— none —'}</div>
+                <div><strong>Code:</strong> <code>{b.code || '—'}</code>
+                  {' · '}{b.lines_count || 0} line(s)</div>
+                <div><strong>Reason:</strong> {b.reason || '—'}</div>
+                {cid && (
+                  <a data-testid={`proforma-blocked-cm-link-${b.sales_document_id || i}`}
+                    href={`/v2/master?entity=clients&contractor_id=${encodeURIComponent(cid)}`}
+                    style={{ color: 'var(--accent)', fontWeight: 600, marginRight: 10 }}>
+                    Open in Customer Master →
+                  </a>
+                )}
+                <V2BirthBlockResolver batchId={batchId} block={b} onToast={toast} onResolved={onResolvedLocal} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {advisoryBlocks.length > 0 && (
+        <div data-testid="proforma-advisory-blocks-panel"
+          style={{ padding: '10px 12px', borderRadius: 6,
+            background: 'var(--badge-blue-bg)', border: '1px solid var(--badge-blue-border)',
+            color: 'var(--badge-blue-text)', fontSize: 12 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>
+            {advisoryBlocks.length} advisory contractor conflict(s) — draft may already exist
+          </div>
+          {advisoryBlocks.map((b, i) => (
+            <div key={b.sales_document_id || ('adv-' + i)}
+              data-testid={`proforma-advisory-block-${b.sales_document_id || i}`}
+              style={{ padding: '6px 0', borderTop: i ? '1px dashed var(--badge-blue-border)' : 'none' }}>
+              <div><strong>Source:</strong> {b.source_file_name || b.sales_document_id || '—'}
+                {' · '}<strong>Parsed name:</strong> {b.client_name || '— none —'}</div>
+              <div><strong>Reason:</strong> {b.reason || '—'}</div>
+              <V2BirthBlockResolver batchId={batchId} block={b} onToast={toast} onResolved={onResolvedLocal} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ProformaListPage — main component ─────────────────────────────────────────
 
 function ProformaListPage({ onDrill }) {
@@ -801,6 +1014,9 @@ function ProformaListPage({ onDrill }) {
 
       {/* PL-1: Pipeline KPI strip */}
       <PipelineKpiStrip batchId={batchId} />
+
+      {/* B-014: birth-block / advisory panels (V1 parity; V1 remains prod default) */}
+      <V2DraftBirthBlocksPanel batchId={batchId} onResolved={draftsHook.reload} />
 
       {/* Link-as-sales backfill (existing, preserved) */}
       {window.LinkAsSalesBackfill && (
