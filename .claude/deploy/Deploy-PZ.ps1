@@ -34,8 +34,12 @@
     automatically. CI is not consulted; inherited-red CI never blocks. Requires the
     operator signing key (PZ_DEPLOY_AUTH_KEY_FILE) in the shell - the internal mint
     uses the same external key and the same single-use artifacts as the manual flow.
-    -ReviewedSHA / -Reconcile / -Rollback remain available as advanced/debug modes;
-    a normal operator should never need them.
+    Production writes also require Windows Administrator: a non-elevated -Release
+    self-elevates once via UAC before any authorization is minted or consumed, then
+    the elevated child re-runs this same script. Declining UAC is FAILED SAFE with
+    production untouched and no authorization ceremony. No per-PR BAT or second
+    deploy script. -ReviewedSHA / -Reconcile / -Rollback remain available as
+    advanced/debug modes; a normal operator should never need them.
 
 .PARAMETER WhatIf
     Zero-write plan. Requires no authorization, creates no lock, no artifact, no
@@ -100,13 +104,211 @@ param(
     [string]$FromSha,
     [string]$ToSha,
     [switch]$ForceUnlock,
-    [switch]$NoRun
+    [switch]$NoRun,
+    # Internal: elevated child transcript path. Set only by Request-AdministratorElevationIfNeeded.
+    # Must resolve under %LOCALAPPDATA%\PZ-deploy\logs\deploy-*.log — never an arbitrary path.
+    [string]$DeployLog
 )
 
 $ErrorActionPreference = "Stop"
 
 $script:UNIT_RX = '^[0-9a-f]{40}-\d{8}-\d{6}$'
 $script:SHA_RX = '^[0-9a-f]{40}$'
+
+# ---------------------------------------------------------------- privilege
+function Test-IsAdministrator {
+    <#
+      Windows token authority only. Username heuristics are refused: membership in
+      the built-in Administrators role is what sc.exe / production writes require.
+    #>
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return [bool]$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-DeployElevationArgumentList {
+    <#
+      Structural rebuild of THIS script's supported switches only. Never concatenates
+      an unvalidated command string. SHA / Unit values are shape-checked before they
+      are passed through; Scope is ValidateSet-bound at the param block.
+    #>
+    param([string]$LogPath)
+    $scriptPath = $PSCommandPath
+    if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+    if (-not $scriptPath -or -not (Test-Path -LiteralPath $scriptPath)) {
+        throw "BLOCKED: cannot resolve Deploy-PZ.ps1 path for Administrator elevation."
+    }
+    if ((Split-Path -LiteralPath $scriptPath -Leaf) -ne 'Deploy-PZ.ps1') {
+        throw "BLOCKED: elevation refused - resolved script '$(Split-Path -LiteralPath $scriptPath -Leaf)' is not Deploy-PZ.ps1 (sole execution authority)."
+    }
+
+    $tokens = [System.Collections.Generic.List[string]]::new()
+    [void]$tokens.Add('-NoProfile')
+    [void]$tokens.Add('-ExecutionPolicy')
+    [void]$tokens.Add('Bypass')
+    [void]$tokens.Add('-File')
+    [void]$tokens.Add($scriptPath)
+
+    if ($Release) { [void]$tokens.Add('-Release') }
+    if ($Rollback) { [void]$tokens.Add('-Rollback') }
+    if ($Reconcile) { [void]$tokens.Add('-Reconcile') }
+    if ($Bootstrap) { [void]$tokens.Add('-Bootstrap') }
+    if ($ForceUnlock) { [void]$tokens.Add('-ForceUnlock') }
+
+    if ($ReviewedSHA) {
+        if ($ReviewedSHA -notmatch $script:SHA_RX) {
+            throw "BLOCKED: elevation refused - -ReviewedSHA is not a full 40-character commit SHA."
+        }
+        [void]$tokens.Add('-ReviewedSHA')
+        [void]$tokens.Add($ReviewedSHA.ToLower())
+    }
+    if ($Unit) {
+        if ($Unit -notmatch $script:UNIT_RX) {
+            throw "BLOCKED: elevation refused - -Unit is not a valid unit identifier."
+        }
+        [void]$tokens.Add('-Unit')
+        [void]$tokens.Add($Unit)
+    }
+    if ($FromSha) {
+        if ($FromSha -notmatch $script:SHA_RX) {
+            throw "BLOCKED: elevation refused - -FromSha is not a full 40-character commit SHA."
+        }
+        [void]$tokens.Add('-FromSha')
+        [void]$tokens.Add($FromSha.ToLower())
+    }
+    if ($ToSha) {
+        if ($ToSha -notmatch $script:SHA_RX) {
+            throw "BLOCKED: elevation refused - -ToSha is not a full 40-character commit SHA."
+        }
+        [void]$tokens.Add('-ToSha')
+        [void]$tokens.Add($ToSha.ToLower())
+    }
+    # Always pin Scope explicitly so App|Engine|Both survives elevation exactly.
+    if ($Scope -notin @('App', 'Engine', 'Both')) {
+        throw "BLOCKED: elevation refused - -Scope '$Scope' is not App|Engine|Both."
+    }
+    [void]$tokens.Add('-Scope')
+    [void]$tokens.Add($Scope)
+
+    if ($LogPath) {
+        Assert-CanonicalDeployLogPath -Path $LogPath
+        [void]$tokens.Add('-DeployLog')
+        [void]$tokens.Add($LogPath)
+    }
+
+    # -WhatIf and -NoRun are never elevated: plan mode needs no privilege; -NoRun is tests-only.
+    return ,$tokens.ToArray()
+}
+
+function Assert-CanonicalDeployLogPath {
+    param([Parameter(Mandatory)][string]$Path)
+    if ($Path -match '\.\.') {
+        throw "BLOCKED: -DeployLog refuses path traversal."
+    }
+    $leaf = Split-Path -LiteralPath $Path -Leaf
+    if ($leaf -notmatch '^deploy-\d{8}-\d{6}-\d{3}\.log$') {
+        throw "BLOCKED: -DeployLog leaf must match deploy-yyyyMMdd-HHmmss-fff.log."
+    }
+    $expectedRoot = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'PZ-deploy\logs'))
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $prefix = $expectedRoot.TrimEnd('\') + '\'
+    if (-not ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "BLOCKED: -DeployLog must resolve under %LOCALAPPDATA%\PZ-deploy\logs (got '$full')."
+    }
+}
+
+function Assert-DeployAuthEnvSurvivesElevation {
+    <#
+      Start-Process -Verb RunAs does not inherit process-scoped $env: from the parent.
+      User/Machine env (setx) is loaded into the elevated child. Fail closed BEFORE UAC
+      when the signing-key paths exist only as process-scoped values.
+    #>
+    foreach ($name in @('PZ_DEPLOY_AUTH_KEY_FILE', 'PZ_DEPLOY_AUTH_DIR')) {
+        $user = [Environment]::GetEnvironmentVariable($name, 'User')
+        $machine = [Environment]::GetEnvironmentVariable($name, 'Machine')
+        $proc = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ($user -or $machine) { continue }
+        if ($proc) {
+            throw "FAILED SAFE: $name is set only in this process. UAC elevation starts a new elevated shell that does not inherit process-scoped env. Persist with setx (User-level), open a new shell, then re-run. Production untouched. Authorization not minted."
+        }
+        throw "FAILED SAFE: $name is not set at User or Machine scope (required for elevated Deploy-PZ). Use setx as documented by sign_deploy_authorization.py. Production untouched. Authorization not minted."
+    }
+}
+
+function ConvertTo-ProcessArgumentString {
+    param([Parameter(Mandatory)][string[]]$Tokens)
+    # Quote only when needed; escape embedded quotes. Prevents path/arg injection via spaces.
+    return (($Tokens | ForEach-Object {
+        $t = [string]$_
+        if ($t -match '[\s"]') {
+            '"' + ($t -replace '(\\*)"','$1$1\"') + '"'
+        } else {
+            $t
+        }
+    }) -join ' ')
+}
+
+function Request-AdministratorElevationIfNeeded {
+    <#
+      Privilege proof BEFORE authorization. Non-elevated production-write invocations
+      must not reach Invoke-ReleaseMint / Assert-Authorization / Set-ServiceState.
+      One UAC transition maximum: an already-Administrator process returns and continues.
+      The elevated child is THIS same Deploy-PZ.ps1 with structurally rebuilt arguments.
+    #>
+    if ($script:PlanOnly) { return }
+    if (Test-IsAdministrator) {
+        Write-Host "== Privilege: Administrator proven (token) =="
+        return
+    }
+
+    Write-Host "== ELEVATION REQUIRED: production write needs Administrator; requesting UAC =="
+    Write-Host "  Authorization will NOT be minted in this (non-elevated) process."
+    Assert-DeployAuthEnvSurvivesElevation
+
+    $logDir = Join-Path $env:LOCALAPPDATA 'PZ-deploy\logs'
+    if (-not (Test-Path -LiteralPath $logDir)) {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
+    $logPath = Join-Path $logDir ("deploy-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+    Assert-CanonicalDeployLogPath -Path $logPath
+    Write-Host "  Elevated transcript: $logPath"
+
+    $tokens = Get-DeployElevationArgumentList -LogPath $logPath
+    $argString = ConvertTo-ProcessArgumentString -Tokens $tokens
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $psExe)) {
+        throw "BLOCKED: Windows PowerShell host not found at $psExe; cannot request UAC elevation."
+    }
+
+    $proc = $null
+    try {
+        $proc = Start-Process -FilePath $psExe -Verb RunAs -ArgumentList $argString -Wait -PassThru
+    }
+    catch {
+        $msg = [string]$_.Exception.Message
+        if ($msg -match '(?i)cancel') {
+            throw "FAILED SAFE: Administrator elevation was declined. Production untouched. Authorization not minted."
+        }
+        throw "FAILED SAFE: Administrator elevation failed ($msg). Production untouched. Authorization not minted."
+    }
+    if ($null -eq $proc) {
+        throw "FAILED SAFE: Administrator elevation was declined. Production untouched. Authorization not minted."
+    }
+    # Replay the elevated child's canonical transcript into this console so the operator
+    # who typed -Release sees RELEASE RESULT / FAILED SAFE without a second log authority.
+    if (Test-Path -LiteralPath $logPath) {
+        Write-Host ""
+        Write-Host "---- elevated Deploy-PZ transcript ($logPath) ----"
+        Get-Content -LiteralPath $logPath | ForEach-Object { Write-Host $_ }
+        Write-Host "---- end transcript ----"
+    }
+    else {
+        Write-Host "WARNING: elevated transcript missing at $logPath; see the elevated console window for RELEASE RESULT."
+    }
+    # Propagate the elevated child's exit code. Do NOT claim DEPLOYED from a successful UAC launch.
+    # Never continue into mint/consume/stop in this unelevated parent.
+    exit [int]$proc.ExitCode
+}
 
 # ---------------------------------------------------------------- configuration
 function Get-DeployConfig {
@@ -163,8 +365,9 @@ function Invoke-ReleaseMint {
       This removes the separate copy/paste signing command, not the signature: the signer
       still refuses without the key (which lives outside the repository, in the operator's
       shell), still validates the gate evidence, and still binds action/scope/direction.
-      Called ONLY after the read-only identity checks have passed, so a failed identity
-      never wastes a single-use jti - the consumption-ordering guarantee of -Release.
+      Called ONLY after Administrator privilege is proven (Request-AdministratorElevationIfNeeded
+      at Invoke-Deploy entry) AND after the read-only identity checks have passed, so a failed
+      identity or missing privilege never wastes a single-use jti.
     #>
     param($Cfg, [string]$Sha, [string]$Action, [string]$UnitScope, [string]$FromSha)
     if ($script:PlanOnly) { Write-Host "  would mint $Action authorization for $Sha"; return }
@@ -255,8 +458,9 @@ function Set-ServiceState {
             }
             $hint = ""
             if ($scCode -eq 5) {
-                # ACCESS_DENIED: elevated Administrator required. Never widen service ACLs.
-                $hint = " Access Denied (exit 5): re-run Deploy-PZ from an elevated Administrator shell; do not widen service ACLs."
+                # ACCESS_DENIED defense-in-depth: self-elevation should have run before mint.
+                # Never widen service ACLs; never use a per-PR BAT as the permanent fix.
+                $hint = " Access Denied (exit 5): Deploy-PZ should have self-elevated via UAC before authorization; re-run from an elevated Administrator shell if needed; do not widen service ACLs."
             }
             throw "BLOCKED: sc.exe $verb $svc failed (exit $scCode); service remained $after. $trimmed.$hint"
         }
@@ -1717,34 +1921,59 @@ function Invoke-ReleaseFlow {
 function Invoke-Deploy {
     param([switch]$PlanOnly)
     $script:PlanOnly = [bool]$PlanOnly
-    $cfg = Get-DeployConfig
-    if ($script:PlanOnly) { Write-Host "*** -WhatIf: PLAN ONLY - no writes, no lock, no service change, no authorization required ***" }
-
-    if ($Release) {
-        # One-command mode is deliberately incompatible with every manual override: a
-        # release that also accepted a hand-picked SHA or direction would be the manual
-        # flow wearing the automatic flow's name.
-        if ($ReviewedSHA -or $Reconcile -or $Rollback -or $Bootstrap -or $FromSha -or $ToSha -or $Unit) {
-            throw "BLOCKED: -Release takes no target, mode, or direction parameters. It resolves origin/main, proves the runtime identity, and selects NO-OP / DEPLOY / RECONCILE itself. Use the advanced modes directly if you need manual control."
+    $transcriptStarted = $false
+    if ($DeployLog) {
+        # Elevated child only: path was minted by the unelevated parent under LOCALAPPDATA.
+        Assert-CanonicalDeployLogPath -Path $DeployLog
+        $logDir = Split-Path -LiteralPath $DeployLog -Parent
+        if (-not (Test-Path -LiteralPath $logDir)) {
+            New-Item -ItemType Directory -Path $logDir -Force | Out-Null
         }
-        Invoke-ReleaseFlow -Cfg $cfg
-        return
+        Start-Transcript -Path $DeployLog -Force | Out-Null
+        $transcriptStarted = $true
     }
+    try {
+        if ($script:PlanOnly) {
+            Write-Host "*** -WhatIf: PLAN ONLY - no writes, no lock, no service change, no authorization required ***"
+        }
+        else {
+            # Privilege BEFORE mint/consume/service: non-elevated parents terminate here after
+            # UAC without touching authorization. Elevated children prove Administrator and continue.
+            Request-AdministratorElevationIfNeeded
+        }
+        $cfg = Get-DeployConfig
 
-    if ($Rollback) { Invoke-Rollback -Cfg $cfg -UnitId $Unit; return }
-    if ($Reconcile) { Invoke-Reconcile -Cfg $cfg -From $FromSha -To $ToSha; return }
-    # -FromSha / -ToSha are meaningless outside reconcile, and silently ignoring them is how an
-    # operator ends up believing a direction was enforced when the run was an ordinary deploy.
-    if ($FromSha -or $ToSha) {
-        throw "BLOCKED: -FromSha / -ToSha are only valid with -Reconcile. An ordinary deploy converges to -ReviewedSHA and makes no claim about the identity it started from; accepting these here would advertise a proof that never ran."
-    }
+        if ($Release) {
+            # One-command mode is deliberately incompatible with every manual override: a
+            # release that also accepted a hand-picked SHA or direction would be the manual
+            # flow wearing the automatic flow's name.
+            if ($ReviewedSHA -or $Reconcile -or $Rollback -or $Bootstrap -or $FromSha -or $ToSha -or $Unit) {
+                throw "BLOCKED: -Release takes no target, mode, or direction parameters. It resolves origin/main, proves the runtime identity, and selects NO-OP / DEPLOY / RECONCILE itself. Use the advanced modes directly if you need manual control."
+            }
+            Invoke-ReleaseFlow -Cfg $cfg
+            return
+        }
 
-    if (-not $ReviewedSHA) {
-        throw "BLOCKED: -ReviewedSHA is required. Supply the exact SHA approved by the 7-agent gate, or use -Release for the one-command flow; the deployed target of a manual deploy is never inferred from origin/main."
+        if ($Rollback) { Invoke-Rollback -Cfg $cfg -UnitId $Unit; return }
+        if ($Reconcile) { Invoke-Reconcile -Cfg $cfg -From $FromSha -To $ToSha; return }
+        # -FromSha / -ToSha are meaningless outside reconcile, and silently ignoring them is how an
+        # operator ends up believing a direction was enforced when the run was an ordinary deploy.
+        if ($FromSha -or $ToSha) {
+            throw "BLOCKED: -FromSha / -ToSha are only valid with -Reconcile. An ordinary deploy converges to -ReviewedSHA and makes no claim about the identity it started from; accepting these here would advertise a proof that never ran."
+        }
+
+        if (-not $ReviewedSHA) {
+            throw "BLOCKED: -ReviewedSHA is required. Supply the exact SHA approved by the 7-agent gate, or use -Release for the one-command flow; the deployed target of a manual deploy is never inferred from origin/main."
+        }
+        Invoke-Preflight -Cfg $cfg
+        Assert-ReviewedTarget -Cfg $cfg -Sha $ReviewedSHA
+        Invoke-DeployMain -cfg $cfg -TargetSha $ReviewedSHA
     }
-    Invoke-Preflight -Cfg $cfg
-    Assert-ReviewedTarget -Cfg $cfg -Sha $ReviewedSHA
-    Invoke-DeployMain -cfg $cfg -TargetSha $ReviewedSHA
+    finally {
+        if ($transcriptStarted) {
+            try { Stop-Transcript | Out-Null } catch { }
+        }
+    }
 }
 
 if (-not $NoRun) { Invoke-Deploy -PlanOnly:$WhatIf }
