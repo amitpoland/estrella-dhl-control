@@ -3527,15 +3527,21 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           type="button"
                           data-testid="pipeline-summary-sales-pill"
                           data-sales-hint={pipelineRow.salesHint}
-                          data-nav-target="Sales"
-                          onClick={() => setActiveTab('Sales')}
-                          title="Open Sales tab"
-                          aria-label="Sales linkage — open Sales tab"
+                          data-nav-target="/v2/proforma"
+                          data-proforma-cutover="v2"
+                          onClick={() => {
+                            const href = batchId
+                              ? ('/v2/proforma?batch_id=' + encodeURIComponent(batchId))
+                              : '/v2/proforma';
+                            window.location.assign(href);
+                          }}
+                          title="Open Pro Forma (V2)"
+                          aria-label="Sales / Pro Forma — open V2 Pro Forma"
                           style={{ ...pillNeutral, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                         >
                           Sales: {pipelineRow.salesHint === 'present'
                             ? 'Linked'
-                            : 'See Sales tab'}
+                            : 'See Pro Forma'}
                         </button>
                         {(() => {
                           // Pipeline-stage-aware wFirma pill.
@@ -3566,16 +3572,22 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           }
                           const needsAttn = proformaPipeline && proformaPipeline.needs_attention;
                           if (needsAttn) pillStyle = { ...pillStyle, outline: '2px solid var(--badge-red-border)', outlineOffset: 1 };
+                          // B-014 HARD CUTOVER: Overview Pro Forma status → V2 hub
+                          // (not PZ / Accounting / V1 draft panel).
+                          const v2ProformaHref = batchId
+                            ? ('/v2/proforma?batch_id=' + encodeURIComponent(batchId))
+                            : '/v2/proforma';
                           return (
                             <button
                               type="button"
                               data-testid="pipeline-summary-wfirma-pill"
                               data-wfirma-hint={pipelineRow.wfirmaHint}
                               data-pipeline-stage={dataStage}
-                              data-nav-target="PZ / Accounting"
-                              onClick={() => setActiveTab('PZ / Accounting')}
-                              title="Open PZ / Accounting tab"
-                              aria-label={`wFirma / Proforma status: ${pillLabel} — open PZ / Accounting tab`}
+                              data-nav-target="/v2/proforma"
+                              data-proforma-cutover="v2"
+                              onClick={() => { window.location.assign(v2ProformaHref); }}
+                              title="Open Pro Forma (V2)"
+                              aria-label={`Proforma status: ${pillLabel} — open V2 Pro Forma`}
                               style={{ ...pillStyle, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                             >
                               wFirma: {proformaPipelineLoading ? '…' : pillLabel}
@@ -3598,10 +3610,16 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
                           <button
                             type="button"
                             data-testid="pipeline-summary-sales-attention"
-                            data-nav-target="Sales"
-                            onClick={() => setActiveTab('Sales')}
-                            title="Open Sales tab"
-                            aria-label="Sales & Accounting needs attention — open Sales tab"
+                            data-nav-target="/v2/proforma"
+                            data-proforma-cutover="v2"
+                            onClick={() => {
+                              const href = batchId
+                                ? ('/v2/proforma?batch_id=' + encodeURIComponent(batchId))
+                                : '/v2/proforma';
+                              window.location.assign(href);
+                            }}
+                            title="Open Pro Forma (V2)"
+                            aria-label="Sales & Accounting needs attention — open V2 Pro Forma"
                             style={{ ...pillAmber, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
                           >
                             ⚠ Needs attention
@@ -5956,83 +5974,14 @@ function BatchDetailPage({ batchId, onBack, onToast }) {
           );
         })()}
 
-        {activeTab === 'Sales' && (() => {
-          const sl = salesLinkage;
-          const isErr = sl && sl.error;
-          const summary         = sl && !isErr ? (sl.summary || {}) : {};
-          const items           = sl && !isErr ? (sl.items || []) : [];
-          const warnings        = sl && !isErr ? (sl.audit_warnings || []) : [];
-          const blockingReasons = sl && !isErr ? (sl.blocking_reasons || []) : [];
-          const ready           = sl && !isErr ? !!sl.ready_for_invoice : false;
-          const blocked         = sl && !isErr ? !!sl.blocked : false;
-          // Display reasons: prefer explicit blocking_reasons, fall back to audit_warnings
-          // (preview mode never populates blocking_reasons; audit_warnings carry the same info).
-          const displayReasons  = blockingReasons.length > 0 ? blockingReasons : warnings;
-
-          // Group items by client_name (+ client_ref) — one card per client document
-          const groups = {};
-          for (const it of items) {
-            const key = (it.client_name || '—') + ' | ' + (it.client_ref || '');
-            if (!groups[key]) groups[key] = { client_name: it.client_name || '—', client_ref: it.client_ref || '', rows: [] };
-            groups[key].rows.push(it);
-          }
-          const groupList = Object.values(groups);
-
-          const sectionStyle = { padding: 14, marginBottom: 12 };
-          const tblStyle = { width: '100%', borderCollapse: 'collapse', fontSize: 11 };
-          const thStyle  = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em' };
-          const tdStyle  = { padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-2)' };
-
-          // C14A: transit detection — used for context banner and summary counter label only.
-          // Per-line sales status badge is NOT remapped: "missing_scan" reflects the real
-          // sales-linkage state (warehouse scan pending). The transit banner explains why.
-          // C18A: handle non-synthetic batches where ALL pieces are PURCHASE_TRANSIT.
-          const isTransit = !!(invState &&
-                               ((invState.synthetic === true) ||
-                                (invState.total > 0 &&
-                                 invState.total === ((invState.counts || {}).PURCHASE_TRANSIT || 0))) &&
-                               ((invState.counts || {}).PURCHASE_TRANSIT || 0) > 0);
-          const STATUS_BADGE = {
-            ready:            { bg: 'var(--badge-green-bg)',  text: 'var(--badge-green-text)',  label: 'Ready' },
-            pending_dispatch: { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'Pending dispatch' },
-            not_ready:        { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  label: 'Not ready' },
-            missing_scan:     { bg: 'var(--badge-amber-bg)',  text: 'var(--badge-amber-text)',  label: 'Pending arrival' },  // C14A: amber not red; "pending arrival" while in transit
-            in_transit:       { bg: 'var(--badge-blue-bg)',   text: 'var(--badge-blue-text)',   label: 'In transit' },
-          };
-          const statusBadge = (s) => {
-            const c = STATUS_BADGE[s] || { bg: 'var(--bg-2)', text: 'var(--text-3)', label: s || '—' };
-            return <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: c.bg, color: c.text }}>{c.label}</span>;
-          };
-
-          return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {/* PR-202: Proforma draft editor is a Sales-flow surface.
-                  This primary mount lives in the Sales tab; the existing
-                  PZ/Accounting mount is preserved for backwards
-                  compatibility but the Sales tab is the canonical
-                  operator entry point. */}
-              <div data-testid="sales-tab-proforma-draft-panel">
-                <ProformaDraftPanel batchId={batchId} onToast={onToast} />
-              </div>
-
-              {/* Phase 2: Readiness banner */}
-              <ReadinessBanner
-                data-testid="readiness-banner-sales"
-                domain="sales"
-                status={batchReadiness && batchReadiness.sales ? batchReadiness.sales.status : null}
-                ready={batchReadiness && batchReadiness.sales ? batchReadiness.sales.ready : false}
-                message={batchReadiness && batchReadiness.sales ? batchReadiness.sales.message : null}
-                loading={batchReadinessLoading && !batchReadiness}
-                error={batchReadinessError}
-              />
-              {/* C27.1: Sales Linkage block removed from Pro Forma surface.
-                  Domain belonged to sales linkage / warehouse diagnostics,
-                  not document editing. Data still available via
-                  /api/v1/sales-linkage/{batch_id} endpoint for any future
-                  Warehouse-tab relocation (C27.3+). */}
-            </div>
-          );
-        })()}
+        {activeTab === 'Sales' && (
+          // B-014 HARD CUTOVER: Sales/Pro Forma canonical entry → V2.
+          // ProformaDraftPanel source is retained (not deleted) but no longer
+          // mounted here. Rollback = App rollback unit, not a Classic escape.
+          // C27.1: Sales Linkage block removed from Pro Forma surface
+          // (historical — Sales tab content is now the V2 cutover gate only).
+          <SalesProformaV2CutoverGate batchId={batchId} />
+        )}
 
 
         {/* ── PZ / Accounting — Sections moved from Overview ── */}
@@ -13763,6 +13712,55 @@ function ProformaReadinessCard({ batchId, onToast }) {
 
 
 // ════════════════════════════════════════════════════════════════════════
+//  SalesProformaV2CutoverGate — B-014 HARD CUTOVER
+//  Canonical Sales/Pro Forma entry from V1 shipment-detail → V2 hub.
+//  Does not delete ProformaDraftPanel; does not widen permissions.
+// ────────────────────────────────────────────────────────────────────────────
+function SalesProformaV2CutoverGate({ batchId }) {
+  const href = batchId
+    ? ('/v2/proforma?batch_id=' + encodeURIComponent(batchId))
+    : '/v2/proforma';
+  React.useEffect(() => {
+    if (!batchId) return;
+    window.location.assign(href);
+  }, [batchId, href]);
+  return (
+    <div
+      data-testid="sales-tab-proforma-cutover-gate"
+      style={{
+        padding: 24, marginBottom: 12, borderRadius: 8,
+        border: '1px solid var(--border)', background: 'var(--card)',
+        display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 560,
+      }}
+    >
+      <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em',
+                    textTransform: 'uppercase', color: 'var(--text-3)' }}>
+        Pro Forma
+      </div>
+      <div style={{ fontSize: 14, color: 'var(--text)', fontWeight: 600 }}>
+        Opening the V2 Pro Forma workspace…
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+        Canonical entry is now{' '}
+        <code style={{ fontSize: 11 }}>/v2/proforma?batch_id=…</code>.
+        The classic draft panel remains in source for recovery via App rollback only.
+      </div>
+      <a
+        href={href}
+        data-testid="sales-tab-proforma-v2-entry"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+          padding: '10px 16px', borderRadius: 6, width: 'fit-content',
+          background: 'var(--accent)', color: 'var(--accent-contrast, #fff)',
+          fontWeight: 700, fontSize: 13, textDecoration: 'none',
+        }}
+      >
+        Open Pro Forma (V2) →
+      </a>
+    </div>
+  );
+}
+
 //  ProformaDraftPanel — Phase 6 dashboard wiring for the local editable
 //  Proforma Draft lifecycle (Phases 1–5 backend).
 //

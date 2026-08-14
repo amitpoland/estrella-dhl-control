@@ -1,26 +1,20 @@
 {
   "campaign": "B-014",
-  "mode": "IMPLEMENT_GAPS_THEN_REMEASURE",
-  "baseline_sha": "9fa7126d1feb15436ad0c86df851a326b2def702",
-  "branch": "fix/b014-v2-reset-reopen-deeplink",
-  "classification": "RUNTIME_FIX",
-  "operator_decision": "B_DEFER_CUTOVER_IMPLEMENT_GAPS",
-  "authority_owner": "PROFORMA UI — reuse routes_proforma re-open + reset-from-sales-packing (no new financial authority)",
-  "entry_v1": "/dashboard/shipment-detail.html?id={batch} → Sales → ProformaDraftPanel",
-  "entry_v2": "/v2/proforma_detail?draft={id}",
-  "implemented": [
-    "V2 detail tb-reset-all / tb-reset-lines → PzApi.resetDraftFromSalesPacking(..., resetAll)",
-    "V2 detail tb-reopen → prompt YES_REOPEN_LOCAL_PROFORMA_DRAFT + PzApi.reopenDraft",
-    "Documents hub Edit → /v2/proforma_detail?draft=; shell accepts draft_id alias"
+  "mode": "HARD_CUTOVER_IN_PROGRESS",
+  "operator_decision": "APPROVED_HARD_CUTOVER",
+  "starting_sha": "cc8d6b30abb3d614f8cfca8f6451c09afe6bd427",
+  "merged_pr_gaps": 1232,
+  "authority_owner": "PROFORMA UI entry surface (V2 canonical)",
+  "scope_files": [
+    "service/app/static/shipment-detail.html"
   ],
-  "recommendation_soft": "CUTOVER_READY_WITH_EXPLICIT_KNOWN_GAPS",
-  "recommendation_hard": "PENDING_DEPLOY_AND_REMEASURE",
-  "blocking_gaps_for_hard_pre": [
-    "reset-from-sales-packing UI missing on V2 Atlas shell",
-    "re-open not on V2 detail toolbar",
-    "Documents ?draft_id= vs shell ?draft="
+  "not_modified": [
+    "routes_proforma.py",
+    "engine",
+    "RBAC",
+    "wFirma flags",
+    "ProformaDraftPanel source (retained)"
   ],
-  "evidence": ".claude/memory/b014-cutover-decision-evidence.md",
-  "production_writes": 0,
-  "note": "Hard CUTOVER_READY only after App-deploy + RO remeasure of three gaps; cutover activation requires explicit operator approval"
+  "hard_cutover_activated": true,
+  "production_writes_verify": 0
 }

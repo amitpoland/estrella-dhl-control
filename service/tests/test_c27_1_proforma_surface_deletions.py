@@ -179,14 +179,24 @@ def test_c27_1_replacement_comments_present(html_src):
 
 
 def test_proforma_draft_panel_still_mounted(html_src):
-    """ProformaDraftPanel mount must remain — it is the canonical draft
-    list surface (Screen A precursor)."""
-    assert 'data-testid="sales-tab-proforma-draft-panel"' in html_src, (
-        "Canonical proforma-draft-panel mount missing"
+    """B-014 HARD CUTOVER: Sales entry routes to V2; panel source retained.
+
+    Canonical operator entry is SalesProformaV2CutoverGate →
+    /v2/proforma?batch_id=. ProformaDraftPanel source stays in the file
+    for App-rollback recovery; it is no longer mounted on Sales.
+    """
+    assert 'data-testid="sales-tab-proforma-cutover-gate"' in html_src, (
+        "B-014 cutover gate missing on Sales tab"
     )
-    assert "<ProformaDraftPanel batchId={batchId}" in html_src, (
-        "ProformaDraftPanel component invocation missing"
+    assert "SalesProformaV2CutoverGate" in html_src
+    assert "/v2/proforma?batch_id=" in html_src
+    assert "function ProformaDraftPanel(" in html_src, (
+        "ProformaDraftPanel source must remain (not deleted in cutover)"
     )
+    # Must not remount the V1 panel as the Sales entry.
+    start = html_src.index("{activeTab === 'Sales' && (")
+    end = html_src.index("{activeTab === 'PZ / Accounting' && (", start)
+    assert "<ProformaDraftPanel" not in html_src[start:end]
 
 
 def test_setup_detail_panel_still_present(html_src):
