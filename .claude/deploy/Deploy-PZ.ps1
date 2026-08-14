@@ -191,7 +191,7 @@ function Get-DeployElevationArgumentList {
     [void]$tokens.Add($Scope)
 
     if ($LogPath) {
-        Assert-CanonicalDeployLogPath -Path $LogPath
+        Assert-CanonicalDeployLogPath -LogFilePath $LogPath
         [void]$tokens.Add('-DeployLog')
         [void]$tokens.Add($LogPath)
     }
@@ -201,16 +201,19 @@ function Get-DeployElevationArgumentList {
 }
 
 function Assert-CanonicalDeployLogPath {
-    param([Parameter(Mandatory)][string]$Path)
-    if ($Path -match '\.\.') {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LogFilePath
+    )
+    if ($LogFilePath -match '\.\.') {
         throw "BLOCKED: -DeployLog refuses path traversal."
     }
-    $leaf = Split-Path -LiteralPath $Path -Leaf
+    $leaf = Split-Path -LiteralPath $LogFilePath -Leaf
     if ($leaf -notmatch '^deploy-\d{8}-\d{6}-\d{3}\.log$') {
         throw "BLOCKED: -DeployLog leaf must match deploy-yyyyMMdd-HHmmss-fff.log."
     }
     $expectedRoot = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'PZ-deploy\logs'))
-    $full = [System.IO.Path]::GetFullPath($Path)
+    $full = [System.IO.Path]::GetFullPath($LogFilePath)
     $prefix = $expectedRoot.TrimEnd('\') + '\'
     if (-not ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase))) {
         throw "BLOCKED: -DeployLog must resolve under %LOCALAPPDATA%\PZ-deploy\logs (got '$full')."
@@ -270,7 +273,7 @@ function Request-AdministratorElevationIfNeeded {
         New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     }
     $logPath = Join-Path $logDir ("deploy-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
-    Assert-CanonicalDeployLogPath -Path $logPath
+    Assert-CanonicalDeployLogPath -LogFilePath $logPath
     Write-Host "  Elevated transcript: $logPath"
 
     $tokens = Get-DeployElevationArgumentList -LogPath $logPath
@@ -1924,7 +1927,7 @@ function Invoke-Deploy {
     $transcriptStarted = $false
     if ($DeployLog) {
         # Elevated child only: path was minted by the unelevated parent under LOCALAPPDATA.
-        Assert-CanonicalDeployLogPath -Path $DeployLog
+        Assert-CanonicalDeployLogPath -LogFilePath $DeployLog
         $logDir = Split-Path -LiteralPath $DeployLog -Parent
         if (-not (Test-Path -LiteralPath $logDir)) {
             New-Item -ItemType Directory -Path $logDir -Force | Out-Null
