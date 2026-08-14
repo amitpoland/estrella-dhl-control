@@ -592,7 +592,7 @@ exist but are NOT the production surface — cutover is operator-approved Atlas-
 
 | Status | Path | Note |
 |---|---|---|
-| **Canonical** | `service/app/static/v2/` — `proforma-detail.jsx`, loaded by `index.html:326` | Babel-in-browser JSX, no build step. The one implementation. |
+| **Canonical** | `service/app/static/v2/` — `proforma-detail.jsx`, loaded by `index.html:380` | Babel-in-browser JSX, no build step. The one implementation. |
 | **Retired — duplicate source** | `service/frontend/proforma-v2/` | Independent Vite/React app, frozen 2026-06-30. Deleted. |
 | **Retired — duplicate build** | `service/app/static/v2/proforma-react/` | Build output of the above (its `vite.config.js` `outDir`). Deleted. |
 

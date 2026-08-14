@@ -17,7 +17,7 @@ Deleted from the repository:
 | `service/app/static/v2/proforma-react/` | its committed build output | 3 tracked |
 
 Canonical Proforma V2 frontend — `service/app/static/v2/proforma-detail.jsx`, loaded by
-`service/app/static/v2/index.html:326` — is **unmodified** by this campaign.
+`service/app/static/v2/index.html:380` — is **unmodified** by this campaign.
 
 ## 2. Why the endpoint existed at all
 
@@ -54,6 +54,33 @@ obsolete app was authenticated — but authenticated is not unreachable.
    repository. The other 8 are accumulated output of earlier deploys — each one an independently
    reachable URL under the `/v2/{path:path}` handler. Reconciliation must clear the **directory**,
    not the three filenames this commit deleted.
+
+### 3b. RE-INVENTORY 2026-08-14 (original §3 text above left intact)
+
+The §3.3 count was accurate for the 2026-07-01 census and is **no longer the production state**.
+Read-only re-inventory of `C:\PZ\app\static\v2\proforma-react\` on 2026-08-14, taken at rebase of
+this branch onto `36d2f89d`:
+
+| File | Bytes | Last write |
+|---|---|---|
+| `index.html` | 853 | 2026-06-30 00:55 |
+| `assets/index-jaQaH3iP.css` | 2706 | 2026-06-30 00:55 |
+| `assets/index-CGYvGRbx.js` | 331195 | **2026-08-08 13:52** |
+
+**3 files, not 11.** The 8 destination-only bundles recorded in the census are gone — production was
+re-synced between the census and now, so the accumulated-residue problem §3.3 describes has already
+been resolved by ordinary deploys. Reconciliation still must clear the **directory**, but the
+directory now contains exactly the three files this commit deletes.
+
+The `2026-08-08` timestamp on `index-CGYvGRbx.js` is the load-bearing fact: that is commit
+`0582ee3f` (the Incoterm invent fix) reaching production **inside the duplicate bundle**. The
+retired implementation was not dormant residue — it was live payload still receiving fixes. This is
+the direct evidence for retiring it rather than continuing to patch both surfaces.
+
+Consequence for deployment: these three files are deployed runtime payload, so removing them from
+the repository does **not** by itself make `/v2/proforma-react/*` return 404. An App deploy of the
+merge SHA is required, and it is a **separate, separately-authorized step** — this campaign performs
+no production mutation.
 
 ## 4. How the cleanup may happen — and how it may not
 
