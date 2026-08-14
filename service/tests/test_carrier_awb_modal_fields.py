@@ -72,8 +72,9 @@ def test_shipment_request_custom_product_code():
 
 
 def test_shipment_request_default_description():
+    """Model default is empty — route projects from canonical authority."""
     req = _req()
-    assert req.description == "Jewellery"
+    assert req.description == ""
 
 
 def test_shipment_request_custom_description():
@@ -431,8 +432,32 @@ def test_build_receiver_details_company_field_separate():
     assert ci["companyName"] == "Estrella Jewels"
 
 
+def test_build_receiver_details_person_preferred_over_name():
+    """Customer Master delivery shape: name=company, person=contact."""
+    addr = {
+        "name": "Bijoux Entrepôt",
+        "person": "Jean-Pierre Dupont",
+        "city": "Roissy", "country_code": "FR",
+        "street": "ZI Nord",
+    }
+    details = _build_receiver_details(addr)
+    ci = details["contactInformation"]
+    assert ci["companyName"] == "Bijoux Entrepôt"
+    assert ci["fullName"] == "Jean-Pierre Dupont"
+    assert ci["fullName"] != ci["companyName"]
+
+
+def test_build_receiver_details_company_does_not_invent_contact():
+    """When only company is supplied, fullName stays empty — no silent invent."""
+    addr = {"company": "Only Corp", "city": "Berlin", "country_code": "DE"}
+    details = _build_receiver_details(addr)
+    ci = details["contactInformation"]
+    assert ci["companyName"] == "Only Corp"
+    assert ci["fullName"] == ""
+
+
 def test_build_receiver_details_company_fallback_to_name():
-    """When no company key, DHL companyName falls back to name (existing behaviour)."""
+    """When no company key and no person, DHL companyName falls back to name."""
     addr = {"name": "Acme Corp", "city": "London", "country_code": "GB"}
     details = _build_receiver_details(addr)
     ci = details["contactInformation"]

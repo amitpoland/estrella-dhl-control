@@ -939,6 +939,57 @@ def _english_description_from_item_type(item_type: str) -> str:
         return ""
 
 
+_GENERIC_SHIPMENT_DESC = frozenset({"jewellery", "jewelry", "biżuteria", "bizuteria"})
+
+
+def is_generic_shipment_description(text: Optional[str]) -> bool:
+    """True when *text* is blank or the legacy local Jewellery/Jewelry fallback."""
+    t = (text or "").strip().lower()
+    return (not t) or t in _GENERIC_SHIPMENT_DESC
+
+
+def project_shipment_content_description(
+    lines: Optional[List[Dict[str, Any]]],
+) -> str:
+    """Project DHL ``content.description`` from draft/product line authority.
+
+    Authority (one truth):
+      draft editable line ``item_type``
+      → ``_english_description_from_item_type``
+        (``customs_description_engine.render_product_description_en`` /
+         ``ITEM_TYPE_EN`` — e.g. STUD → ``Stud Earrings``)
+      → unique nouns joined with ``, ``
+
+    When ``item_type`` is missing, a non-generic ``description_en`` already
+    stamped by product description authority is used as a secondary source.
+    Never invents ``Jewellery``. Returns ``""`` when no usable authority exists.
+    """
+    if not lines:
+        return ""
+    nouns: List[str] = []
+    seen: set = set()
+    for ln in lines:
+        if not isinstance(ln, dict):
+            continue
+        itype = (ln.get("item_type") or ln.get("category") or "").strip()
+        noun = _english_description_from_item_type(itype) if itype else ""
+        if not noun:
+            en = (ln.get("description_en") or "").strip()
+            if en and not is_generic_shipment_description(en):
+                # Refuse forbidden generic placeholders from product_descriptions.
+                if _contains_forbidden_desc_token(en):
+                    continue
+                noun = en
+        if not noun:
+            continue
+        key = noun.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        nouns.append(noun)
+    return ", ".join(nouns)
+
+
 def regenerate_descriptions_for_packing_lines(
     *,
     batch_id: str,

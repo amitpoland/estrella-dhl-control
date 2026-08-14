@@ -218,9 +218,31 @@ const PF_CTG_LABELS = {
   BRC: 'Bracelet', BRACELET: 'Bracelet',
   NKL: 'Necklace', NECKLACE: 'Necklace', BRO: 'Brooch', SET: 'Set',
   CHAIN: 'Chain', BANGLE: 'Bangle',
+  // Match description_grammar.ITEM_TYPE_EN — AWB shipment description authority
+  STUD: 'Stud Earrings', HOOP: 'Hoop Earrings',
+  CUFFLINK: 'Cufflinks', CUFFLINKS: 'Cufflinks', ANKLET: 'Anklet',
 };
 function PfCtgLabel(t) {
   return PF_CTG_LABELS[(t || '').toUpperCase()] || t || '';
+}
+
+function _awbShipmentDescriptionFromLines(lines) {
+  // Same noun authority as description_engine.project_shipment_content_description
+  // (ITEM_TYPE_EN via PfCtgLabel / ctgLabel). Never invents 'Jewellery'.
+  const seen = {};
+  const nouns = [];
+  (lines || []).forEach(l => {
+    const fromType = (l && l.ctgLabel)
+      || PfCtgLabel(l && ((l._raw && l._raw.item_type) || l.item_type));
+    const noun = (fromType || (l && l.desc_en) || '').trim();
+    if (!noun) return;
+    const key = noun.toLowerCase();
+    if (seen[key]) return;
+    if (key === 'jewellery' || key === 'jewelry') return;
+    seen[key] = true;
+    nouns.push(noun);
+  });
+  return nouns.join(', ');
 }
 
 // Logistics-style numeric edit row with unit suffix (wireframe EditField).
@@ -1343,7 +1365,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     declared_value: (prefill.declared_value || '').toString(),
     currency:       prefill.currency || 'EUR',
     // Description & references
-    description:         prefill.description || 'Jewellery',
+    description:         prefill.description || '',
     customer_reference:  prefill.customer_reference || '',
     shipment_reference:  prefill.shipment_reference || '',
     // Recipient
@@ -1444,7 +1466,18 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       setMasterState('loading');
       window.PzApi.getCustomerMaster(prefill.client_contractor_id)
         .then(r => {
-          if (r && r.ok && r.data) { setMaster(r.data); setMasterState('loaded'); }
+          if (r && r.ok && r.data) {
+            setMaster(r.data);
+            setMasterState('loaded');
+            // Contact Full Name authority = Customer Master ship_to_person
+            // (same field the save-confirm map uses). Never invent from company.
+            const person = (r.data.ship_to_person || '').trim();
+            if (person) {
+              setForm(prev => (prev.name && String(prev.name).trim())
+                ? prev
+                : { ...prev, name: person });
+            }
+          }
           else setMasterState('failed');
         })
         .catch(() => setMasterState('failed'));
@@ -1748,7 +1781,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         height_cm: parseFloat(form.height_cm),
       },
       recipient_address: {
-        name:         form.name || form.company_name,
+        // Contact full name and company stay separate — never copy company into name.
+        name:         form.name || undefined,
+        person:       form.name || undefined,
         company:      form.company_name || undefined,
         street:       form.street,
         city:         form.city,
@@ -1758,7 +1793,8 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         email:        form.email || undefined,
       },
       product_code:       form.product_code || 'P',
-      description:        form.description || 'Jewellery',
+      // Blank/generic → backend projects from draft item_type authority.
+      description:        form.description || null,
       customer_reference: form.customer_reference || null,
       shipment_reference: form.shipment_reference || null,
       receiver_vat_id:    form.receiver_vat_id || null,
@@ -6790,6 +6826,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
     const shipTo = {
       name: sel.ship_to_name || sel.bill_to_name || '',
+      person: sel.ship_to_person || '',
       street: sel.ship_to_street || sel.bill_to_street || '',
       city: sel.ship_to_city || sel.bill_to_city || '',
       zip: sel.ship_to_zip || sel.bill_to_postal_code || '',
@@ -7748,7 +7785,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             currency:           draftCurrency || 'EUR',
             // Recipient identity — Customer Master via ship_to / buyer_override
             company_name:       (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
-            name:               '',
+            // Contact Full Name — Customer Master ship_to_person (via ship_to
+            // override person when present). Empty until CM baseline loads;
+            // AwbGenerateModal fills from getCustomerMaster.ship_to_person.
+            // Never invent from company name.
+            name:               (sto && sto.person)  || '',
             street:             (sto && sto.street)  || (bo && bo.street)  || '',
             city:               (sto && sto.city)    || (bo && bo.city)    || '',
             postal_code:        (sto && sto.zip)     || (bo && bo.zip)     || '',
@@ -7764,8 +7805,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             shipment_reference: batchId || '',
             // Proforma number for the result summary card (display only)
             proforma_number:    _awbProformaNo,
-            // Description — default; operator overrides in modal
-            description:        'Jewellery',
+            // Description — draft line item_type → ITEM_TYPE_EN nouns (STUD →
+            // Stud Earrings). Never invent 'Jewellery' when lines resolve.
+            description:        _awbShipmentDescriptionFromLines(lines),
             // Client identity — Customer Master baseline for the shipping
             // save-confirmation workflow (compare + explicit-save target).
             client_contractor_id: (liveDraft && liveDraft.client_contractor_id)

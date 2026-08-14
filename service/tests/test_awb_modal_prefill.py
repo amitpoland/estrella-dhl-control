@@ -109,3 +109,16 @@ def test_missing_total_shows_honest_hint():
     assert "Declared value not found from proforma total" in SRC
     # hint renders only when the field is empty
     assert "!form.declared_value && (" in SRC
+
+
+def test_awb_description_prefill_not_hardcoded_jewellery():
+    block = _prefill_block()
+    assert "_awbShipmentDescriptionFromLines(lines)" in block
+    assert "description:        'Jewellery'" not in block
+
+
+def test_awb_contact_name_not_hardcoded_empty_only():
+    """Contact Full Name may come from ship_to.person — not forced to ''."""
+    block = _prefill_block()
+    assert "sto.person" in block
+    assert "name:               ''," not in block

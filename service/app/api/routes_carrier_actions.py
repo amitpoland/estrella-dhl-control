@@ -398,7 +398,7 @@ class ShipmentRequestBody(BaseModel):
     special_instructions: Optional[str] = None
     # Upgraded AWB modal fields — all optional, defaults applied in ShipmentRequest
     product_code: Optional[str] = None        # DHL productCode; defaults to "P"
-    description: Optional[str] = None         # shipment description; defaults to "Jewellery"
+    description: Optional[str] = None         # shipment description; canonical projection when blank/generic
     customer_reference: Optional[str] = None  # proforma/order reference
     shipment_reference: Optional[str] = None  # internal batch reference
     receiver_vat_id: Optional[str] = None     # receiver EU VAT number
@@ -455,6 +455,99 @@ def _resolve_booking_incoterm(
             except Exception:
                 cm_default = None
     return resolve_incoterm(draft_incoterm, cm_default)
+
+
+def _load_draft_editable_lines(
+    *,
+    storage_root,
+    batch_id: str,
+    client_ref: Optional[str],
+) -> list:
+    """Read draft editable_lines for shipment description projection. Read-only."""
+    import json as _json
+    from pathlib import Path as _Path
+    from ..services import proforma_invoice_link_db as pildb
+
+    client_name = (client_ref or "").strip() or None
+    if not client_name:
+        return []
+    pf_db = _Path(storage_root) / "proforma_links.db"
+    if not pf_db.exists():
+        return []
+    draft = pildb.get_draft(pf_db, batch_id, client_name)
+    if draft is None:
+        return []
+    try:
+        lines = _json.loads(getattr(draft, "editable_lines_json", None) or "[]") or []
+    except Exception:
+        return []
+    return lines if isinstance(lines, list) else []
+
+
+def _resolve_shipment_description(
+    *,
+    body_description: Optional[str],
+    storage_root,
+    batch_id: str,
+    client_ref: Optional[str],
+) -> str:
+    """Shipment description: operator override → canonical line projection → last resort.
+
+    Canonical authority is ``description_engine.project_shipment_content_description``
+    (item_type → ITEM_TYPE_EN via customs renderer). Local ``Jewellery`` is only
+    used when neither an explicit non-generic override nor a draft projection exists
+    (DHL requires a non-empty content.description).
+    """
+    from ..services.description_engine import (
+        is_generic_shipment_description,
+        project_shipment_content_description,
+    )
+
+    explicit = (body_description or "").strip()
+    if explicit and not is_generic_shipment_description(explicit):
+        return explicit
+    projected = project_shipment_content_description(
+        _load_draft_editable_lines(
+            storage_root=storage_root,
+            batch_id=batch_id,
+            client_ref=client_ref,
+        )
+    )
+    if projected:
+        return projected
+    return explicit or "Jewellery"
+
+
+def _carrier_address_from_delivery_authority(address: dict) -> dict:
+    """Map Customer Master ``resolve_delivery_address`` shape → carrier recipient_address.
+
+    CM authority: ``name`` = company, ``person`` = contact full name, ``country``.
+    Carrier/DHL adapter: ``company`` / ``name`` (contact) / ``person`` / ``country_code``.
+    Does not invent a contact person when CM ``person`` is blank.
+    """
+    company = (address.get("name") or address.get("company") or "").strip()
+    person = (address.get("person") or "").strip()
+    country = (
+        address.get("country_code")
+        or address.get("countryCode")
+        or address.get("country")
+        or ""
+    ).strip()
+    out = {
+        "company": company,
+        # Prefer person for contact; leave name empty when person missing (no invent).
+        "name": person,
+        "person": person,
+        "street": (address.get("street") or address.get("addressLine1") or "").strip(),
+        "city": (address.get("city") or address.get("cityName") or "").strip(),
+        "postal_code": (
+            address.get("postal_code") or address.get("postalCode") or ""
+        ).strip(),
+        "country_code": country,
+        "phone": (address.get("phone") or "").strip(),
+        "email": (address.get("email") or "").strip(),
+    }
+    return {k: v for k, v in out.items() if v != "" or k in ("name", "person", "company")}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -861,12 +954,15 @@ def create_shipment(
                 raw_fallback=body.recipient_address
             )
 
-            # Remove 'source' metadata before passing to carrier API
-            carrier_address = {k: v for k, v in recipient_address.items() if k != 'source'}
+            # Map CM delivery shape (name=company, person=contact, country)
+            # onto carrier recipient_address keys the DHL adapter understands.
+            source = recipient_address.get('source', 'unknown')
+            carrier_address = _carrier_address_from_delivery_authority(
+                {k: v for k, v in recipient_address.items() if k != 'source'}
+            )
 
             # Log address source for audit trail
             import logging
-            source = recipient_address.get('source', 'unknown')
             logging.info(f"AWB {batch_id}: address authority source={source}")
 
         except CustomerNotFoundError as exc:
@@ -924,7 +1020,12 @@ def create_shipment(
         dimensions=body.dimensions,
         special_instructions=body.special_instructions,
         product_code=body.product_code or "P",
-        description=body.description or "Jewellery",
+        description=_resolve_shipment_description(
+            body_description=body.description,
+            storage_root=settings.storage_root,
+            batch_id=batch_id,
+            client_ref=body.client_ref,
+        ),
         customer_reference=body.customer_reference,
         shipment_reference=body.shipment_reference,
         receiver_vat_id=body.receiver_vat_id,
