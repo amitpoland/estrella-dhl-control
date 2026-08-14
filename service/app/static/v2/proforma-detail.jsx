@@ -1041,9 +1041,15 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
     window.PzApi.getProformaSendOptions(draft.id)
       .then(r => {
         if (cancelled) return;
-        setOpts(r);
+        if (!r || !r.ok) {
+          setOptsError((r && (r.error || r.detail)) || 'Failed to load send options');
+          setLoadingOpts(false);
+          return;
+        }
+        const payload = r.data || r;
+        setOpts(payload);
         const init = {};
-        (r.documents || []).forEach(d => {
+        (payload.documents || []).forEach(d => {
           // Default: select Proforma when available (legacy behaviour).
           init[d.type] = !!(d.available && d.type === 'official_proforma');
         });
@@ -1083,11 +1089,16 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
     }
     window.PzApi.sendProformaEmail(draft.id, payload)
       .then(r => {
-        if (r && r.ok) {
-          setResult(r);
+        const body = (r && r.ok) ? (r.data || r) : null;
+        if (body && (body.ok || r.ok)) {
+          setResult(body);
           setLoading(false);
         } else {
-          setApiError((r && r.detail) || (r && r.error) || 'Send failed — check backend logs.');
+          setApiError(
+            (r && (r.error || r.detail))
+            || (body && (body.detail || body.error))
+            || 'Send failed — check backend logs.'
+          );
           setLoading(false);
         }
       })
