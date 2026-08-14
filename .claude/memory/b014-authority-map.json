@@ -1,18 +1,26 @@
 {
   "campaign": "B-014",
-  "baseline_sha": "ac39bfddf8032a48845cd0888c4539d850a59efb",
-  "classification": "FEATURE_WORK",
-  "final_disposition": "CLOSED_FEATURE_COMPLETE",
-  "authority_owner": "PROFORMA UI (V2 list parity; V1 remains prod default)",
-  "entry": "operator /v2/proforma?batch_id=",
-  "writer": "POST /api/v1/admin/contractor-projection/assign/{batch}",
-  "canonical_authority": "contractor-projection birth blocks + Customer Master assign",
-  "persistence": "draft_birth_blocks + sales contractor + proforma drafts",
-  "reader": "V2 ProformaListPage birth-block panels",
-  "cutover": "HOLD — see b014-cutover-checkpoint.md",
-  "files": [
-    "service/app/static/v2/proforma-list.jsx",
-    "service/tests/test_b014_v2_birth_block_parity.py",
-    ".claude/memory/b014-cutover-checkpoint.md"
-  ]
+  "mode": "IMPLEMENT_GAPS_THEN_REMEASURE",
+  "baseline_sha": "9fa7126d1feb15436ad0c86df851a326b2def702",
+  "branch": "fix/b014-v2-reset-reopen-deeplink",
+  "classification": "RUNTIME_FIX",
+  "operator_decision": "B_DEFER_CUTOVER_IMPLEMENT_GAPS",
+  "authority_owner": "PROFORMA UI — reuse routes_proforma re-open + reset-from-sales-packing (no new financial authority)",
+  "entry_v1": "/dashboard/shipment-detail.html?id={batch} → Sales → ProformaDraftPanel",
+  "entry_v2": "/v2/proforma_detail?draft={id}",
+  "implemented": [
+    "V2 detail tb-reset-all / tb-reset-lines → PzApi.resetDraftFromSalesPacking(..., resetAll)",
+    "V2 detail tb-reopen → prompt YES_REOPEN_LOCAL_PROFORMA_DRAFT + PzApi.reopenDraft",
+    "Documents hub Edit → /v2/proforma_detail?draft=; shell accepts draft_id alias"
+  ],
+  "recommendation_soft": "CUTOVER_READY_WITH_EXPLICIT_KNOWN_GAPS",
+  "recommendation_hard": "PENDING_DEPLOY_AND_REMEASURE",
+  "blocking_gaps_for_hard_pre": [
+    "reset-from-sales-packing UI missing on V2 Atlas shell",
+    "re-open not on V2 detail toolbar",
+    "Documents ?draft_id= vs shell ?draft="
+  ],
+  "evidence": ".claude/memory/b014-cutover-decision-evidence.md",
+  "production_writes": 0,
+  "note": "Hard CUTOVER_READY only after App-deploy + RO remeasure of three gaps; cutover activation requires explicit operator approval"
 }

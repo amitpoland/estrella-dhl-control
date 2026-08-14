@@ -31,6 +31,7 @@ PIN_PREFIXES = ("tb-", "proforma-", "party-", "pf-", "reservation-",
 TOOLBAR_TESTIDS = (
     "tb-edit", "tb-edit-save", "tb-edit-cancel", "tb-delete", "tb-purge",
     "tb-duplicate", "tb-approve", "tb-post", "tb-convert", "tb-preview",
+    "tb-reset-lines", "tb-reset-all", "tb-reopen",
     "proforma-detail-download-pdf", "tb-send", "tb-generate",
     "tb-awb-generate", "tb-invoice-history", "tb-more", "tb-back",
 )

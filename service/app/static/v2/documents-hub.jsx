@@ -271,10 +271,9 @@ function PiKanban({ toast, reload }) {
         } else throw new Error((res && res.data && res.data.detail) || 'Post failed');
       }
       if (kind === 'unapprove') {
-        const res = await PzApi.reopenDraft(draft.id, {
-          expected_updated_at: draft.updated_at || '',
-          confirm_token: 'YES_REOPEN_LOCAL_PROFORMA_DRAFT',
-        });
+        // PzApi.reopenDraft(draftId, updatedAt) — token is baked into the transport
+        // (same YES_REOPEN_LOCAL_PROFORMA_DRAFT as V1 / detail). Do not pass a body object.
+        const res = await PzApi.reopenDraft(draft.id, draft.updated_at || '');
         if (res && res.ok) { toast('Draft re-opened to editing.'); load(); }
         else throw new Error((res && res.data && res.data.detail) || 'Re-open failed');
       }
@@ -432,7 +431,7 @@ function PiCard({ draft, lane, onApprove, onDelete, onPost, onUnapprove }) {
             {/* DC-4 Edit → navigate to proforma detail (§D canonical owner) */}
             <a
               data-testid={`documents-hub-pi-btn-edit-${draft.id}`}
-              href={`/v2/proforma?draft_id=${draft.id}`}
+              href={`/v2/proforma_detail?draft=${draft.id}`}
               title="DC-4 · Edit — opens proforma detail page (canonical owner per §D)"
               style={{
                 display: 'inline-flex', alignItems: 'center', padding: '4px 10px',
