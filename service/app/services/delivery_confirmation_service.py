@@ -29,7 +29,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from . import delivery_confirmation_db as dcdb
 
@@ -101,30 +101,50 @@ def _safe_awb_dir_name(awb: str) -> str:
 
 
 def resolve_customer_email(draft: Any, storage_root: Path) -> str:
-    """Resolve the customer email for a proforma draft, or "".
+    """Resolve primary customer To email for a proforma draft, or "".
 
-    Mirrors the authority chain used by ``routes_proforma._resolve_proforma_recipient``:
-      draft.client_contractor_id → Customer Master → pick_email (bill_to first).
-    Best-effort and never raises.
+    Delegates to Customer Communication Recipients (legacy bill_to/ship_to
+    fallback inside that resolver). Best-effort and never raises.
     """
+    resolved = resolve_customer_recipients(draft, storage_root)
+    return (resolved.get("primary") or "") if resolved else ""
+
+
+def resolve_customer_recipients(draft: Any, storage_root: Path) -> Dict[str, Any]:
+    """ONE Customer Master To/CC resolution for confirmation / reminder."""
+    empty: Dict[str, Any] = {
+        "to": [], "cc": [], "source": "none", "primary": None, "contractor_id": None,
+    }
     if draft is None:
-        return ""
+        return empty
     try:
+        from . import customer_communication_recipients as ccr
         cid = (getattr(draft, "client_contractor_id", "") or "").strip()
         if not cid:
-            return ""
-        from .customer_master_db import get_customer as _get_cm
-        from .customer_master import pick_email as _pick_email
+            return empty
         cm_path = Path(storage_root) / "customer_master.sqlite"
-        if not cm_path.exists():
-            return ""
-        cm = _get_cm(cm_path, int(cid))
-        if cm is None:
-            return ""
-        return _pick_email(cm) or ""
+        return ccr.resolve_customer_communication_recipients(
+            db_path=cm_path, contractor_id=cid,
+        )
     except Exception as exc:  # pragma: no cover - defensive
-        log.debug("resolve_customer_email failed: %s", exc)
-        return ""
+        log.debug("resolve_customer_recipients failed: %s", exc)
+        return empty
+
+
+def _compose_confirmation_cc(to_addrs: Sequence[str], customer_cc: Sequence[str]) -> str:
+    """Customer Master CC + mandatory internal confirmation CC."""
+    from ..config.email_routing import resolve_customer_delivery_confirmation_cc
+    from . import customer_communication_recipients as ccr
+
+    to_str = ccr.format_address_list(to_addrs)
+    internal_raw = resolve_customer_delivery_confirmation_cc(to_str)
+    internal = [p.strip() for p in (internal_raw or "").split(",") if p.strip()]
+    merged = ccr.merge_cc_layers(
+        customer_cc=customer_cc,
+        mandatory_internal_cc=internal,
+        to=to_addrs,
+    )
+    return ccr.format_address_list(merged)
 
 
 # ── Outbound delivered → notify ──────────────────────────────────────────────────
@@ -209,19 +229,27 @@ def maybe_notify_outbound_delivered(
     # Provenance only — never operative customer-email batch authority.
     origin = (origin_batch_id or batch_id or "").strip() or None
 
-    # Resolve customer email if the caller did not supply it.
+    # Resolve customer recipients if the caller did not supply email_to.
+    from . import customer_communication_recipients as ccr
+
     email_to = (customer_email or "").strip()
+    customer_cc: List[str] = []
     draft = None
-    if not email_to and draft_id is not None:
+    if draft_id is not None:
         try:
             from . import proforma_invoice_link_db as pildb
             draft = pildb.get_draft_by_id(storage_root / "proforma_links.db", int(draft_id))
         except Exception:
             draft = None
-        if draft is not None:
-            email_to = resolve_customer_email(draft, storage_root)
-            if not customer_name:
-                customer_name = getattr(draft, "client_name", None)
+    if draft is not None:
+        if not customer_name:
+            customer_name = getattr(draft, "client_name", None)
+        resolved = resolve_customer_recipients(draft, storage_root)
+        customer_cc = list(resolved.get("cc") or [])
+        if not email_to:
+            email_to = ccr.format_address_list(resolved.get("to") or []) or (
+                resolve_customer_email(draft, storage_root)
+            )
     if not email_to:
         return {"notified": False, "reason": "no_customer_email", "awb": awb}
 
@@ -273,12 +301,13 @@ def maybe_notify_outbound_delivered(
         delivery_location=delivery_location,
     )
 
-    from ..config.email_routing import resolve_customer_delivery_confirmation_cc
-    email_cc = resolve_customer_delivery_confirmation_cc(email_to)
+    to_parts = [p.strip() for p in email_to.split(",") if p.strip()]
+    email_cc = _compose_confirmation_cc(to_parts, customer_cc)
     if not email_cc:
         log.warning(
-            "delivery confirmation CC empty (CUSTOMER_DELIVERY_CONFIRMATION_CC) "
-            "for awb=%s — sending To=%s without internal CC",
+            "customer delivery confirmation CC empty for awb=%s to=%s "
+            "(CUSTOMER_DELIVERY_CONFIRMATION_CC unset and no Customer Master CC) "
+            "— sending To without CC",
             awb, email_to,
         )
 
@@ -534,7 +563,6 @@ def send_awaiting_customer_reminder(draft_id: int) -> Dict[str, Any]:
     (confirmed_good / issue_reported stay untouched; awaiting remains awaiting).
     """
     from ..core.config import settings
-    from ..config.email_routing import resolve_customer_delivery_confirmation_cc
 
     if not settings.customer_delivery_confirmation_enabled:
         return {"reminded": False, "reason": "feature_disabled"}
@@ -557,16 +585,23 @@ def send_awaiting_customer_reminder(draft_id: int) -> Dict[str, Any]:
         return {"reminded": False, "reason": "no_awb"}
 
     email_to = ((notification or {}).get("email_to") or "").strip()
-    if not email_to:
-        try:
-            from . import proforma_invoice_link_db as pildb
-            draft = pildb.get_draft_by_id(
-                _storage_root() / "proforma_links.db", int(draft_id),
+    customer_cc: List[str] = []
+    draft = None
+    try:
+        from . import proforma_invoice_link_db as pildb
+        draft = pildb.get_draft_by_id(
+            _storage_root() / "proforma_links.db", int(draft_id),
+        )
+    except Exception:
+        draft = None
+    if draft is not None:
+        resolved = resolve_customer_recipients(draft, _storage_root())
+        customer_cc = list(resolved.get("cc") or [])
+        if not email_to:
+            from . import customer_communication_recipients as ccr
+            email_to = ccr.format_address_list(resolved.get("to") or []) or (
+                resolve_customer_email(draft, _storage_root())
             )
-        except Exception:
-            draft = None
-        if draft is not None:
-            email_to = resolve_customer_email(draft, _storage_root())
     if not email_to:
         return {"reminded": False, "reason": "no_customer_email", "awb": awb}
 
@@ -613,7 +648,8 @@ def send_awaiting_customer_reminder(draft_id: int) -> Dict[str, Any]:
         "Reminder: we have not yet received your delivery confirmation.\n\n"
         + text_body
     )
-    email_cc = resolve_customer_delivery_confirmation_cc(email_to)
+    to_parts = [p.strip() for p in email_to.split(",") if p.strip()]
+    email_cc = _compose_confirmation_cc(to_parts, customer_cc)
 
     try:
         from . import email_service

@@ -8898,34 +8898,47 @@ def _enrich_customer_resolution_with_email(cr: Dict[str, Any]) -> None:
 
 
 def _resolve_proforma_recipient(draft: "pildb.ProformaDraft") -> str:
-    """Resolve customer email from Customer Master via draft's client_name.
+    """Resolve primary customer email (legacy single-string).
 
-    Authority chain (PROJECT_STATE.md DECISIONS 2026-06-07):
-      draft.client_name → _resolve_customer(batch_id) → wfirma_customer_id
-      → customer_master_db → pick_email(customer)
-
-    pick_email priority: bill_to_email first, ship_to_email fallback.
-    Returns empty string if not resolvable.
+    Prefer Customer Communication Recipients; fall back to pick_email.
+    Multi-To / CC lives in ``_resolve_proforma_recipients``.
     """
-    cn = (draft.client_name or "").strip()
-    if not cn:
-        return ""
-    try:
-        cr = _resolve_customer(cn, batch_id=getattr(draft, "batch_id", None))
-    except Exception:
-        return ""
-    cid = cr.get("wfirma_customer_id") or ""
+    resolved = _resolve_proforma_recipients(draft)
+    return (resolved.get("primary") or "") if resolved else ""
+
+
+def _resolve_proforma_recipients(
+    draft: "pildb.ProformaDraft",
+    *,
+    to_override: Optional[list] = None,
+    cc_override: Optional[list] = None,
+) -> Dict[str, Any]:
+    """ONE Customer Master communication-recipient resolution for document send."""
+    from ..services import customer_communication_recipients as ccr
+
+    empty = {"to": [], "cc": [], "source": "none", "primary": None, "contractor_id": None}
+    cid = (getattr(draft, "client_contractor_id", None) or "").strip()
     if not cid:
-        return ""
+        # Legacy name → contractor resolution (same as prior pick_email path).
+        cn = (draft.client_name or "").strip()
+        if not cn:
+            return empty
+        try:
+            cr = _resolve_customer(cn, batch_id=getattr(draft, "batch_id", None))
+        except Exception:
+            return empty
+        cid = str(cr.get("wfirma_customer_id") or "").strip()
+        if not cid:
+            return empty
     try:
-        from ..services.customer_master_db import get_customer as _get_cm
-        from ..services.customer_master import pick_email as _pick_email
-        cm = _get_cm(_customer_master_db_path(), int(cid))
-        if cm is None:
-            return ""
-        return _pick_email(cm)
+        return ccr.resolve_customer_communication_recipients(
+            db_path=_customer_master_db_path(),
+            contractor_id=cid,
+            to_override=to_override,
+            cc_override=cc_override,
+        )
     except Exception:
-        return ""
+        return empty
 
 
 def _proforma_email_body(draft: "pildb.ProformaDraft", subject: str) -> str:
@@ -9092,13 +9105,47 @@ def send_proforma_email(
     recipient_override = _sanitise_email_field(
         body.get("recipient_override") or "", "recipient_override"
     )
-    recipient = recipient_override or _resolve_proforma_recipient(d)
-    if not recipient:
+    # One-off multi-recipient overrides (do NOT write back to Customer Master).
+    to_override_raw = body.get("recipients_to")
+    cc_override_raw = body.get("recipients_cc")
+    to_override = None
+    cc_override = None
+    if isinstance(to_override_raw, list) and to_override_raw:
+        to_override = [
+            _sanitise_email_field(str(x), "recipients_to") for x in to_override_raw
+        ]
+        to_override = [x for x in to_override if x]
+    elif recipient_override:
+        to_override = [recipient_override]
+    if isinstance(cc_override_raw, list):
+        cc_override = [
+            _sanitise_email_field(str(x), "recipients_cc") for x in cc_override_raw
+        ]
+        cc_override = [x for x in cc_override if x]
+    elif "cc" in body:
+        # Legacy cc list = one-off CC override (still no CM write-back).
+        cc_list = body.get("cc") or []
+        if isinstance(cc_list, list):
+            cc_override = [_sanitise_email_field(c, "cc") for c in cc_list]
+            cc_override = [c for c in cc_override if c]
+        else:
+            one = _sanitise_email_field(str(cc_list), "cc")
+            cc_override = [one] if one else []
+
+    resolved = _resolve_proforma_recipients(
+        d, to_override=to_override, cc_override=cc_override,
+    )
+    to_list = list(resolved.get("to") or [])
+    if not to_list:
         raise HTTPException(
             status_code=422,
-            detail="No recipient email found. Set bill_to_email in Customer Master "
-                   "or provide recipient_override.",
+            detail="No recipient email found. Set Customer Communication Recipients "
+                   "in Customer Master or provide recipients_to / recipient_override.",
         )
+    from ..services import customer_communication_recipients as ccr
+    recipient = ccr.format_address_list(to_list)
+    customer_cc = list(resolved.get("cc") or [])
+    cc_str = ccr.format_address_list(customer_cc)
 
     default_subject, default_html = cs.customer_documents_email_bodies(d, document_types)
     subject = _sanitise_subject(
@@ -9106,12 +9153,6 @@ def send_proforma_email(
     )
     message_body = (body.get("message_body") or "").strip()
     html_body = message_body if message_body else default_html
-    cc_list = body.get("cc") or []
-    if isinstance(cc_list, list):
-        cc_validated = [_sanitise_email_field(c, "cc") for c in cc_list]
-        cc_str = ", ".join(c for c in cc_validated if c)
-    else:
-        cc_str = _sanitise_email_field(str(cc_list), "cc")
 
     batch_id = d.batch_id or ""
     try:

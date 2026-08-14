@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -435,6 +435,28 @@ def init_db(db_path: Path) -> None:
             # Commercial Incoterm default for Proforma draft hierarchy
             ("default_incoterm",          "TEXT"),
         ])
+
+        # Customer Communication Recipients — multi To/CC (Customer Master child).
+        # Additive / recoverable: CREATE IF NOT EXISTS only; no parent-column drop.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS customer_communication_recipients (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                bill_to_contractor_id TEXT NOT NULL,
+                email                 TEXT NOT NULL,
+                role                  TEXT NOT NULL,
+                label                 TEXT,
+                is_primary            INTEGER NOT NULL DEFAULT 0,
+                is_active             INTEGER NOT NULL DEFAULT 1,
+                sort_order            INTEGER NOT NULL DEFAULT 0,
+                created_at            TEXT NOT NULL,
+                updated_at            TEXT NOT NULL,
+                UNIQUE (bill_to_contractor_id, email, role)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS ix_ccr_contractor
+            ON customer_communication_recipients (bill_to_contractor_id)
+        """)
 
 
 def _migrate_add_columns(conn: sqlite3.Connection,
@@ -1153,6 +1175,97 @@ def get_effective_defaults(customer: "CustomerMaster") -> Dict[str, Any]:
     out["insurance_enabled"]         = c.insurance_enabled
 
     return out
+
+
+# ── Customer Communication Recipients (multi To/CC) ───────────────────────────
+
+def list_communication_recipients(
+    db_path: Path,
+    bill_to_contractor_id: str,
+) -> List[Dict[str, Any]]:
+    """Return active+inactive recipient rows for a contractor (deterministic order)."""
+    cid = (bill_to_contractor_id or "").strip()
+    if not cid:
+        return []
+    init_db(Path(db_path))
+    with _connect(Path(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            """
+            SELECT id, bill_to_contractor_id, email, role, label,
+                   is_primary, is_active, sort_order, created_at, updated_at
+            FROM customer_communication_recipients
+            WHERE bill_to_contractor_id = ?
+            ORDER BY
+              CASE role WHEN 'to' THEN 0 ELSE 1 END,
+              is_primary DESC,
+              sort_order ASC,
+              email COLLATE NOCASE ASC
+            """,
+            (cid,),
+        )
+        rows = []
+        for r in cur.fetchall():
+            rows.append({
+                "id": r["id"],
+                "bill_to_contractor_id": r["bill_to_contractor_id"],
+                "email": r["email"],
+                "role": r["role"],
+                "label": r["label"],
+                "is_primary": bool(r["is_primary"]),
+                "is_active": bool(r["is_active"]),
+                "sort_order": int(r["sort_order"] or 0),
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            })
+        return rows
+
+
+def replace_communication_recipients(
+    db_path: Path,
+    bill_to_contractor_id: str,
+    rows: Sequence[Dict[str, Any]],
+) -> None:
+    """Atomic replace of communication recipients for one contractor."""
+    from datetime import datetime, timezone
+
+    cid = (bill_to_contractor_id or "").strip()
+    if not cid:
+        raise ValueError("bill_to_contractor_id is required")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    init_db(Path(db_path))
+    with _connect(Path(db_path)) as conn:
+        conn.execute(
+            "DELETE FROM customer_communication_recipients WHERE bill_to_contractor_id = ?",
+            (cid,),
+        )
+        for r in rows or []:
+            role = (r.get("role") or "").strip().lower()
+            if role not in ("to", "cc"):
+                raise ValueError(f"invalid role: {role!r}")
+            email = (r.get("email") or "").strip()
+            if not email:
+                raise ValueError("email is required")
+            conn.execute(
+                """
+                INSERT INTO customer_communication_recipients (
+                    bill_to_contractor_id, email, role, label,
+                    is_primary, is_active, sort_order, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cid,
+                    email,
+                    role,
+                    r.get("label"),
+                    1 if r.get("is_primary") else 0,
+                    1 if r.get("is_active", True) else 0,
+                    int(r.get("sort_order") or 0),
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
 
 
 # ── C-2b: sync-layer passthroughs (customer authority) ───────────────────────
