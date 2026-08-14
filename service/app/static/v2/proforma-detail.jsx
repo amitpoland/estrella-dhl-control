@@ -1015,6 +1015,7 @@ function PurgeDraftModal({ draft, onClose, onSuccess }) {
 // ── Unified Customer Send Modal ──────────────────────────────────────────────
 // WIRED: GET …/send-options + POST …/send-email — one Send surface.
 // Document eligibility is backend-only (never invent types in React).
+// CMR is never a document checkbox — confirmation may attach it server-side.
 function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSuccess }) {
   const [loading,    setLoading]    = React.useState(false);
   const [loadingOpts, setLoadingOpts] = React.useState(true);
@@ -1027,7 +1028,20 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
   const [result,     setResult]     = React.useState(null);
 
   const docNo = liveDraft.wfirma_proforma_fullnumber || `Draft #${draft.id}`;
+  const customerName = liveDraft.client_name || draft.client_name || '—';
   const effectiveRecipient = recipientOverride.trim() || recipientEmail || '';
+  const FALLBACK_DOCS = [
+    { type: 'official_proforma', label: 'Proforma', available: false },
+    { type: 'invoice', label: 'Invoice', available: false },
+    { type: 'packing_list', label: 'Packing List', available: false },
+    { type: 'air_waybill', label: 'Air Waybill', available: false },
+  ];
+  const DOC_ICONS = {
+    official_proforma: '📄',
+    invoice: '🧾',
+    packing_list: '📦',
+    air_waybill: '✈',
+  };
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1050,7 +1064,7 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
         setOpts(payload);
         const init = {};
         (payload.documents || []).forEach(d => {
-          // Default: select Proforma when available (legacy behaviour).
+          // Default: select available Proforma (legacy behaviour).
           init[d.type] = !!(d.available && d.type === 'official_proforma');
         });
         setSelected(init);
@@ -1064,7 +1078,8 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
     return () => { cancelled = true; };
   }, [draft.id]);
 
-  const selectedTypes = (opts && opts.documents || [])
+  const docs = (opts && opts.documents) || FALLBACK_DOCS;
+  const selectedTypes = docs
     .filter(d => selected[d.type] && d.available)
     .map(d => d.type);
 
@@ -1074,7 +1089,7 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
   };
 
   const runAction = (action) => {
-    if (loading || !effectiveRecipient && action === 'send_documents') return;
+    if (loading || (!effectiveRecipient && action === 'send_documents')) return;
     if (action === 'send_documents' && selectedTypes.length === 0) return;
     setLoading(true);
     setApiError(null);
@@ -1108,18 +1123,38 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
       });
   };
 
+  const deliveryStatusLabel = (() => {
+    const op = opts && opts.delivery && opts.delivery.operator_status;
+    if (op === 'awaiting_customer') return 'Awaiting customer reply';
+    if (op === 'confirmed_good') return 'Confirmed — good condition';
+    if (op === 'issue_reported') return 'Issue reported';
+    if (op === 'token_issued') return 'Confirmation link issued';
+    if (opts && opts.delivery && opts.delivery.awb) return 'Delivered';
+    return 'No delivery record';
+  })();
+
   const shell = (title, children) => (
     <div style={{
       position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
     }} onClick={onClose} data-testid="send-proforma-modal">
       <div onClick={e => e.stopPropagation()} style={{
-        background: 'var(--card)', borderRadius: 12, width: 560, maxWidth: '92vw',
-        maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
+        background: 'var(--card)', borderRadius: 12, width: 640, maxWidth: '94vw',
+        maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
       }}>
-        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>{title}</div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }} data-testid="send-modal-title">{title}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4, lineHeight: 1.5 }}>
+              <strong>{docNo}</strong>
+              <span style={{ margin: '0 6px', color: 'var(--text-3)' }}>·</span>
+              Customer: {customerName}
+              <span style={{ margin: '0 6px', color: 'var(--text-3)' }}>·</span>
+              Recipient: {effectiveRecipient || '—'}
+            </div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close"
+            style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
         </div>
         <div style={{ padding: '20px 24px' }}>{children}</div>
       </div>
@@ -1127,7 +1162,7 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
   );
 
   if (result) {
-    return shell('✓ Queued', (
+    return shell('Queued', (
       <div data-testid="send-proforma-success">
         <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>
           <p>Send action <strong>{result.action || 'send_documents'}</strong> queued for <strong>{docNo}</strong>.</p>
@@ -1136,6 +1171,7 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
             {result.subject ? <div><strong>Subject:</strong> {result.subject}</div> : null}
             {result.queued_id || result.email_id ? <div><strong>Queue ID:</strong> <code>{result.queued_id || result.email_id}</code></div> : null}
             {result.document_types ? <div><strong>Documents:</strong> {(result.document_types || []).join(', ')}</div> : null}
+            {result.cmr_attached != null ? <div><strong>CMR attached:</strong> {result.cmr_attached ? 'yes' : 'no'}</div> : null}
           </div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
@@ -1145,11 +1181,16 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
     ));
   }
 
-  return shell('➤ Send', (
+  const inputStyle = {
+    width: '100%', padding: '8px 12px',
+    border: '1px solid var(--border)', borderRadius: 8,
+    background: 'var(--bg)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 13,
+  };
+
+  return shell('Send to Customer', (
     <div>
-      <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
-        Choose customer documents and/or delivery actions for <strong>{docNo}</strong>.
-        Eligibility comes from the document manifest and delivery confirmation — not from the browser.
+      <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 18, lineHeight: 1.55 }}>
+        Customer documents and delivery actions are validated by Atlas before sending.
       </div>
 
       {loadingOpts ? (
@@ -1161,45 +1202,119 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
         </div>
       ) : null}
 
-      {/* Documents */}
-      <div style={{ marginBottom: 18 }} data-testid="send-documents-group">
-        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 8 }}>Documents</div>
-        {(opts && opts.documents || [
-          { type: 'official_proforma', label: 'Proforma', available: false },
-          { type: 'invoice', label: 'Invoice', available: false },
-          { type: 'packing_list', label: 'Packing List', available: false },
-        ]).map(d => (
-          <label key={d.type} data-testid={`send-doc-${d.type}`}
-            style={{
-              display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8,
-              opacity: d.available ? 1 : 0.55, cursor: d.available ? 'pointer' : 'not-allowed',
-              fontSize: 13, color: 'var(--text)',
-            }}>
-            <input
-              type="checkbox"
-              checked={!!selected[d.type]}
-              disabled={!d.available || loading}
-              onChange={() => toggleDoc(d.type, d.available)}
-              data-testid={`send-doc-check-${d.type}`}
-              style={{ marginTop: 2 }}
-            />
-            <span>
-              <strong>{d.label}</strong>
-              {!d.available ? (
-                <span style={{ display: 'block', fontSize: 11, color: 'var(--text-3)' }}>{d.reason || 'Not available'}</span>
-              ) : null}
-            </span>
-          </label>
-        ))}
+      <div style={{ marginBottom: 20 }} data-testid="send-documents-group">
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 10 }}>
+          Document package
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {docs.filter(d => d.type !== 'cmr').map(d => (
+            <label key={d.type} data-testid={`send-doc-${d.type}`}
+              style={{
+                display: 'flex', alignItems: 'flex-start', gap: 12,
+                padding: '12px 14px', borderRadius: 10,
+                border: '1px solid var(--border)',
+                background: d.available ? 'var(--bg-subtle)' : 'var(--card)',
+                opacity: d.available ? 1 : 0.7,
+                cursor: d.available ? 'pointer' : 'not-allowed',
+              }}>
+              <input
+                type="checkbox"
+                checked={!!selected[d.type]}
+                disabled={!d.available || loading}
+                onChange={() => toggleDoc(d.type, d.available)}
+                data-testid={`send-doc-check-${d.type}`}
+                style={{ marginTop: 3 }}
+              />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span aria-hidden="true">{DOC_ICONS[d.type] || '📎'}</span>
+                  <strong style={{ fontSize: 13, color: 'var(--text)' }}>{d.label}</strong>
+                  <span data-testid={`send-doc-badge-${d.type}`} style={{
+                    fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
+                    background: d.available ? 'var(--badge-green-bg, #e8f5e9)' : 'var(--badge-amber-bg, #fff8e1)',
+                    color: d.available ? 'var(--badge-green-text, #1b5e20)' : 'var(--badge-amber-text, #8a6d00)',
+                  }}>
+                    {d.available ? 'Ready' : 'Not available'}
+                  </span>
+                </span>
+                <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-3)', marginTop: 4, lineHeight: 1.4 }}>
+                  {d.available
+                    ? (
+                      d.type === 'air_waybill' && d.reference
+                        ? `${d.source || 'Carrier'} · AWB ${d.reference}`
+                        : (d.reference || (d.type === 'packing_list' ? 'Commercial packing list' : 'Ready to send'))
+                    )
+                    : (d.reason || 'Not available')}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
       </div>
 
-      {/* Recipient / subject — documents path */}
+      <div style={{ marginBottom: 20 }} data-testid="send-actions-group">
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 10 }}>
+          Delivery follow-up
+        </div>
+        <div style={{
+          border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px',
+          marginBottom: 10, background: 'var(--bg-subtle)',
+        }} data-testid="send-confirmation-card">
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Delivery Confirmation</div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 8 }}>
+            Ask the customer to confirm that the shipment arrived in good condition or report damage / missing goods.
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }} data-testid="send-delivery-status">
+            Status: {deliveryStatusLabel}
+          </div>
+          {opts && opts.cmr_will_attach ? (
+            <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginBottom: 10 }} data-testid="send-cmr-note">
+              CMR will be included with the confirmation.
+            </div>
+          ) : null}
+          <Btn
+            variant="outline"
+            disabled={loading || loadingOpts || !(opts && opts.actions && opts.actions.send_confirmation)}
+            onClick={() => runAction('send_confirmation')}
+            title={(opts && opts.confirmation_reason) || 'Send delivery confirmation'}
+            data-testid="send-confirmation-submit"
+          >
+            Send Confirmation
+          </Btn>
+        </div>
+
+        {(opts && opts.awaiting_customer) ? (
+          <div style={{
+            border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px',
+            background: 'var(--bg-subtle)',
+          }} data-testid="send-reminder-card">
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Awaiting Customer Reply</div>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 10 }}>
+              Send a reminder with the same secure receipt link. Reply state is not changed.
+            </div>
+            <Btn
+              variant="outline"
+              disabled={loading || loadingOpts || !(opts && opts.actions && opts.actions.send_reminder)}
+              onClick={() => runAction('send_reminder')}
+              data-testid="send-reminder-submit"
+            >
+              Send Reminder
+            </Btn>
+          </div>
+        ) : (
+          <button type="button" disabled style={{ display: 'none' }} data-testid="send-reminder-submit" aria-hidden="true" />
+        )}
+      </div>
+
       <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 10 }}>
+          Message
+        </div>
         <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
           Recipient {recipientEmail ? '' : '(no email on file — enter manually)'}
         </label>
         {recipientEmail ? (
-          <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 13 }} data-testid="send-proforma-default-recipient">
+          <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 13, marginBottom: 8 }} data-testid="send-proforma-default-recipient">
             {recipientEmail}
           </div>
         ) : null}
@@ -1209,75 +1324,35 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
           onChange={e => setRecipientOverride(e.target.value)}
           placeholder={recipientEmail ? 'Override recipient (optional)' : 'Enter recipient email address'}
           data-testid="send-proforma-recipient-override"
-          style={{
-            width: '100%', padding: '8px 12px', marginTop: 8,
-            border: '1px solid var(--border)', borderRadius: 8,
-            background: 'var(--bg)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 13,
-          }}
+          style={inputStyle}
         />
-      </div>
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>Subject (documents)</label>
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', margin: '12px 0 6px' }}>Subject</label>
         <input
           type="text"
           value={subjectOverride}
           onChange={e => setSubjectOverride(e.target.value)}
           placeholder={`Documents for ${docNo}`}
           data-testid="send-proforma-subject"
-          style={{
-            width: '100%', padding: '8px 12px',
-            border: '1px solid var(--border)', borderRadius: 8,
-            background: 'var(--bg)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 13,
-          }}
+          style={inputStyle}
         />
       </div>
 
-      {/* Actions */}
-      <div style={{ marginBottom: 12 }} data-testid="send-actions-group">
-        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 8 }}>Actions</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <Btn
-            variant="primary"
-            disabled={!effectiveRecipient || loading || selectedTypes.length === 0 || loadingOpts}
-            onClick={() => runAction('send_documents')}
-            data-testid="send-documents-submit"
-          >
-            {loading ? '⏳ Sending…' : '➤ Send selected documents'}
-          </Btn>
-          <Btn
-            variant="outline"
-            disabled={loading || loadingOpts || !(opts && opts.actions && opts.actions.send_confirmation)}
-            onClick={() => runAction('send_confirmation')}
-            title={(opts && opts.confirmation_reason) || 'Send delivery confirmation'}
-            data-testid="send-confirmation-submit"
-          >
-            Send confirmation
-          </Btn>
-          <Btn
-            variant="outline"
-            disabled={loading || loadingOpts || !(opts && opts.actions && opts.actions.send_reminder)}
-            onClick={() => runAction('send_reminder')}
-            title={
-              (opts && opts.awaiting_customer)
-                ? 'Send reminder while awaiting customer reply'
-                : 'Reminder available only when Awaiting Customer Reply'
-            }
-            data-testid="send-reminder-submit"
-          >
-            Send reminder
-            {opts && opts.awaiting_customer ? ' (Awaiting Customer Reply)' : ''}
-          </Btn>
-        </div>
-      </div>
-
       {apiError && (
-        <div style={{ marginTop: 8, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="send-proforma-error">
+        <div style={{ marginBottom: 12, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="send-proforma-error">
           ⚠ {apiError}
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
         <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
+        <Btn
+          variant="primary"
+          disabled={!effectiveRecipient || loading || selectedTypes.length === 0 || loadingOpts}
+          onClick={() => runAction('send_documents')}
+          data-testid="send-documents-submit"
+        >
+          {loading ? 'Sending…' : `Send ${selectedTypes.length} document${selectedTypes.length === 1 ? '' : 's'}`}
+        </Btn>
       </div>
     </div>
   ));

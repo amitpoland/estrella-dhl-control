@@ -294,9 +294,9 @@ def maybe_notify_outbound_delivered(
             # Empty: never bind customer MIME to import/customs audit namespace.
             batch_id="",
             email_type="customer_delivery_confirmation",
-            # Explicit zero: do NOT omit attachments (None → audit fallback can
-            # union agency_reply_package / dhl_reply_package onto the customer).
-            attachments=[],
+            # Explicit list only: CMR when canonical export exists, else [].
+            # Never omit attachments (None → audit/customs/DHL package fallback).
+            attachments=_cmr_attachment_for_draft(draft_id),
         )
         dcdb.mark_notification_queued(
             db,
@@ -320,6 +320,40 @@ def maybe_notify_outbound_delivered(
         "receipt_link": link,
         "origin_batch_id": origin,
     }
+
+
+def _cmr_attachment_for_draft(draft_id: Optional[int]) -> list:
+    """Explicit CMR attachment list for customer_delivery_confirmation.
+
+    Fail closed: returns [] when CMR unavailable. Never omits the attachments
+    argument (None would allow audit-package fallback).
+    """
+    if draft_id is None:
+        return []
+    try:
+        from . import commercial_cmr as ccmr
+        from ..core.config import settings
+        exported = ccmr.export_cmr_pdf_for_draft(
+            draft_id=int(draft_id),
+            storage_root=Path(settings.storage_root),
+            proforma_db=Path(settings.storage_root) / "proforma_links.db",
+            carrier_db=(
+                Path(settings.carrier_storage_root or (Path(settings.storage_root) / "carrier"))
+                / "carrier_shipments.db"
+            ),
+        )
+    except Exception as exc:
+        log.warning("CMR export for confirmation failed draft=%s: %s", draft_id, exc)
+        return []
+    if not exported:
+        return []
+    pdf_bytes, filename = exported
+    out_dir = _storage_root() / "delivery_confirmation_pdfs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in filename)
+    path = out_dir / f"{int(draft_id)}_{safe}"
+    path.write_bytes(pdf_bytes)
+    return [{"label": safe, "path": str(path)}]
 
 
 def retry_failed_confirmation_for_draft(draft_id: int) -> Dict[str, Any]:
@@ -352,6 +386,143 @@ def retry_failed_confirmation_for_draft(draft_id: int) -> Dict[str, Any]:
         delivered=True,
         customer_email=notification.get("email_to"),
         customer_name=notification.get("client_name"),
+    )
+
+
+def _prove_outbound_delivered(awb: str) -> Dict[str, Any]:
+    """Read-only proof that an outbound AWB is delivered. Never invents delivery.
+
+    Uses carrier booking recognition + tracking terminal cache (no live refresh)
+    so this path cannot recurse into the outbound delivery hook.
+    """
+    awb = (awb or "").strip()
+    if not awb:
+        return {"ok": False, "reason": "no_awb"}
+    try:
+        from ..core.config import settings
+        from .carrier.persistence import shipment_db
+        carrier_root = Path(
+            settings.carrier_storage_root or (Path(settings.storage_root) / "carrier")
+        )
+        carrier_db = carrier_root / "carrier_shipments.db"
+        row = shipment_db.get_shipment_by_tracking_ref(carrier_db, awb)
+        if row is None:
+            return {"ok": False, "reason": "awb_not_recognised"}
+        batch_id = (row.get("batch_id") or "").strip()
+        cache_dir = Path(settings.storage_root) / "outputs" / batch_id if batch_id else None
+        if cache_dir is None or not cache_dir.is_dir():
+            # Fall back to carrier storage batch folder if present.
+            alt = carrier_root / "shipments" / batch_id if batch_id else None
+            cache_dir = alt if alt and alt.is_dir() else Path(settings.storage_root)
+        from . import tracking_service as ts
+        cached = ts._load_cache(cache_dir)
+        hit = ts.select_cached_tracking_record(cached, awb) or {}
+        if (hit.get("status") or "").strip().lower() == "delivered":
+            return {
+                "ok": True,
+                "awb": awb,
+                "origin_batch_id": batch_id or None,
+                "client_name": (row.get("client_ref") or "").strip() or None,
+                "carrier_delivered_at": hit.get("last_update"),
+                "booking_created_at": row.get("created_at"),
+            }
+        if ts._delivery_proof_present(cache_dir):
+            return {
+                "ok": True,
+                "awb": awb,
+                "origin_batch_id": batch_id or None,
+                "client_name": (row.get("client_ref") or "").strip() or None,
+                "carrier_delivered_at": hit.get("last_update"),
+                "booking_created_at": row.get("created_at"),
+            }
+        return {"ok": False, "reason": "not_delivered"}
+    except Exception as exc:
+        log.debug("delivered proof failed awb=%s: %s", awb, exc)
+        return {"ok": False, "reason": "proof_error"}
+
+
+def send_confirmation_for_draft(draft_id: int) -> Dict[str, Any]:
+    """Operator Send Confirmation — reuse existing delivery-confirmation authority.
+
+    Paths:
+      * failed notification → retry_failed_confirmation_for_draft
+      * no notification yet → maybe_notify only when outbound AWB is proven delivered
+      * awaiting / confirmed / issue → refuse (reminder or already done)
+
+    Never fabricates delivery. CMR attaches when canonical CMR export is available.
+    """
+    db = _db_path()
+    summary = dcdb.get_delivery_summary_for_draft(db, int(draft_id))
+    notification = dcdb.get_notification_for_draft(db, int(draft_id))
+    op = (summary or {}).get("operator_status") if summary else None
+    if op in ("confirmed_good", "issue_reported"):
+        return {"notified": False, "reason": f"already_{op}"}
+    if op == "awaiting_customer":
+        return {"notified": False, "reason": "awaiting_customer"}
+    if notification and (notification.get("status") or "") == "failed":
+        return retry_failed_confirmation_for_draft(int(draft_id))
+
+    awb = (
+        ((summary or {}).get("awb") if summary else None)
+        or ((notification or {}).get("awb") if notification else None)
+        or ""
+    ).strip()
+    if not awb:
+        # Resolve AWB from carrier shipment linked to the draft.
+        try:
+            from ..core.config import settings
+            from . import proforma_invoice_link_db as pildb
+            from .carrier.persistence import shipment_db
+            from .shipment_document_manifest import _batch_client_count
+
+            draft = pildb.get_draft_by_id(
+                Path(settings.storage_root) / "proforma_links.db", int(draft_id),
+            )
+            if draft is not None:
+                batch_id = (draft.batch_id or "").strip()
+                client_name = (draft.client_name or "").strip() or None
+                proforma_db = Path(settings.storage_root) / "proforma_links.db"
+                single_client = _batch_client_count(proforma_db, batch_id) <= 1
+                row = shipment_db.get_shipment_for_draft(
+                    (
+                        Path(settings.carrier_storage_root or (Path(settings.storage_root) / "carrier"))
+                        / "carrier_shipments.db"
+                    ),
+                    batch_id,
+                    client_name,
+                    allow_single_client_fallback=single_client,
+                )
+                if row:
+                    awb = (row.get("tracking_ref") or "").strip()
+        except Exception as exc:
+            log.debug("confirmation AWB resolve failed: %s", exc)
+    if not awb:
+        return {"notified": False, "reason": "no_awb"}
+
+    # If already queued/sent successfully, do not re-spam — operator uses reminder.
+    if notification and (notification.get("status") or "") in ("queued", "sent"):
+        return {
+            "notified": False,
+            "reason": "already_notified",
+            "status": notification.get("status"),
+        }
+
+    proof = _prove_outbound_delivered(awb)
+    if not proof.get("ok"):
+        return {
+            "notified": False,
+            "reason": proof.get("reason") or "not_delivered",
+            "awb": awb,
+        }
+
+    return maybe_notify_outbound_delivered(
+        awb,
+        draft_id=int(draft_id),
+        origin_batch_id=proof.get("origin_batch_id"),
+        client_name=proof.get("client_name"),
+        delivered=True,
+        carrier_delivered_at=proof.get("carrier_delivered_at"),
+        booking_created_at=proof.get("booking_created_at"),
     )
 
 

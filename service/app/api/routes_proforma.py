@@ -8953,13 +8953,14 @@ def get_proforma_send_options(draft_id: int) -> JSONResponse:
     if d is None:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
     from ..services import customer_send as cs
-    carrier_db = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    carrier_root = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    carrier_db = Path(carrier_root) / "carrier_shipments.db"
     try:
         opts = cs.project_customer_send_options(
             draft_id=int(draft_id),
             storage_root=settings.storage_root,
             proforma_db=_proforma_db_path(),
-            carrier_db=Path(carrier_db),
+            carrier_db=carrier_db,
         )
     except Exception as exc:
         # DraftNotFound already covered; other aggregator errors → 500 honest
@@ -9006,10 +9007,10 @@ def send_proforma_email(
     if action not in ("send_documents", "send_confirmation", "send_reminder"):
         raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
 
-    # ── Confirmation retry (failed notification only) ─────────────────────
+    # ── Confirmation (failed retry OR first manual notify when eligible) ───
     if action == "send_confirmation":
         from ..services import delivery_confirmation_service as dcs
-        result = dcs.retry_failed_confirmation_for_draft(int(draft_id))
+        result = dcs.send_confirmation_for_draft(int(draft_id))
         if not result.get("notified"):
             raise HTTPException(
                 status_code=422,
@@ -9064,13 +9065,14 @@ def send_proforma_email(
     if not document_types:
         raise HTTPException(status_code=422, detail="No document types selected.")
 
-    carrier_db = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    carrier_root = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    carrier_db = Path(carrier_root) / "carrier_shipments.db"
     try:
         manifest = sdm.build_manifest(
             int(draft_id),
             storage_root=settings.storage_root,
             proforma_db=_proforma_db_path(),
-            carrier_db=Path(carrier_db),
+            carrier_db=carrier_db,
         )
         document_types = cs.assert_types_customer_sendable(manifest, document_types)
     except ValueError as exc:
@@ -9117,6 +9119,7 @@ def send_proforma_email(
             draft=d,
             document_types=document_types,
             storage_root=settings.storage_root,
+            manifest=manifest,
         )
     except Exception as exc:
         log.warning("send_proforma_email: materialize failed draft=%s: %s", draft_id, exc)
