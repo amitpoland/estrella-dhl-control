@@ -52,13 +52,17 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from ..core.security import require_api_key
 from ..auth.dependencies import require_role, require_permission
-from ..services.carrier.coordinator import CarrierCoordinator, CoordinatorConfig
+from ..services.carrier.coordinator import (
+    CarrierCoordinator,
+    CoordinatorConfig,
+    register_external_shipment,
+)
 from ..services.carrier.factory import CarrierConfig
 from ..services.carrier.cmr_number import cmr_document_number
 from ..services.carrier.models.shipment import CarrierGateError, ShipmentRequest
@@ -213,6 +217,37 @@ def _shipment_doc_file(kind: str, batch_id: str, tracking_ref: str) -> Optional[
     candidate = (doc_dir / f"{batch_id}-{tracking_ref}.pdf").resolve()
     if candidate.parent != doc_dir or not candidate.is_file():
         return None
+    return candidate
+
+
+def _persist_shipment_doc(
+    kind: str, batch_id: str, tracking_ref: str, pdf_bytes: bytes,
+) -> Path:
+    """Write PDF bytes into the existing shipment-document store.
+
+    Same naming and containment as ``_shipment_doc_file`` / the live adapter
+    label writer. Overwrite-safe (retry replaces the same confined path).
+    Never accepts a caller-supplied filesystem path.
+    """
+    if kind not in _SHIPMENT_DOC_KINDS:
+        raise ValueError(f"unknown shipment document kind {kind!r}")
+    if not (isinstance(batch_id, str) and isinstance(tracking_ref, str)):
+        raise ValueError("batch_id and tracking_ref are required")
+    if not (_SAFE_BATCH.match(batch_id) and _SAFE_REF.match(tracking_ref)):
+        raise ValueError("unsafe batch_id or tracking_ref")
+    if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+        raise ValueError("file is not a PDF")
+    from ..core.config import settings
+    max_bytes = int(getattr(settings, "max_upload_bytes", 20 * 1024 * 1024) or (20 * 1024 * 1024))
+    if len(pdf_bytes) > max_bytes:
+        raise ValueError("file too large")
+    subdir = _SHIPMENT_DOC_KINDS[kind][0]
+    doc_dir = (_carrier_root() / subdir).resolve()
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    candidate = (doc_dir / f"{batch_id}-{tracking_ref}.pdf").resolve()
+    if candidate.parent != doc_dir:
+        raise ValueError("path escape")
+    candidate.write_bytes(pdf_bytes)
     return candidate
 
 
@@ -374,6 +409,14 @@ class ShipmentRequestBody(BaseModel):
                                               # two clients in the same batch never share an AWB
     # Optional echo only — server re-resolves from draft → CM; never invents.
     incoterm: Optional[str] = None
+
+
+class ExternalShipmentBody(BaseModel):
+    """Customer-arranged FedEx/UPS registration — no carrier API fields."""
+    provider: str
+    tracking_ref: str
+    client_ref: Optional[str] = None
+    service_product: Optional[str] = None
 
 
 def _resolve_booking_incoterm(
@@ -938,6 +981,181 @@ def create_shipment(
         "declared_value": body.declared_value,
         "currency": body.currency,
     })
+
+
+def _external_shipment_payload(batch_id: str, result, db_path: Path) -> dict:
+    """GET-shaped payload for an external registration (no DHL adapter fields)."""
+    tracking_ref = result.tracking_ref if isinstance(result.tracking_ref, str) else None
+    row = shipment_db.get_shipment(db_path, result.idempotency_key) or {}
+    doc_urls = _shipment_doc_urls(batch_id, tracking_ref)
+    commercial_documents_url = (
+        f"/api/v1/carrier/{batch_id}/documents" if _doc_package_file(batch_id) else None
+    )
+    return {
+        "batch_id": batch_id,
+        "idempotency_key": result.idempotency_key,
+        "export_shipment_id": result.idempotency_key,
+        "cmr_number": cmr_document_number(result.idempotency_key),
+        "client_ref": row.get("client_ref"),
+        "mode": result.mode.value,
+        "state": result.state.value,
+        "tracking_ref": tracking_ref,
+        "simulated": bool(result.simulated),
+        "replayed": bool(result.replayed),
+        "booked_by": (result.booked_by if isinstance(result.booked_by, str) else None),
+        "carrier": row.get("provider"),
+        "service_code": row.get("service_product"),
+        "box_type_code": row.get("box_type_code"),
+        "weight_kg": row.get("weight_kg"),
+        "declared_value": row.get("declared_value"),
+        "currency": row.get("currency"),
+        "created_at": row.get("created_at"),
+        **_do_not_use_info(batch_id, tracking_ref),
+        **doc_urls,
+        "commercial_documents_url": commercial_documents_url,
+        "documents_available": commercial_documents_url is not None,
+        "saved_labels_exist": _batch_has_any_label(batch_id),
+        "error": result.error,
+    }
+
+
+@router.post(
+    "/{batch_id}/shipment/external",
+    summary="Register a customer-arranged FedEx/UPS shipment (no carrier API)",
+)
+def register_external_shipment_route(
+    batch_id: str,
+    body: ExternalShipmentBody,
+    _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_awb_create,
+    db_path: Path = Depends(_get_shipment_db_path),
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Persist provider + tracking on carrier_shipments. Never calls DHL/FedEx/UPS."""
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        raise HTTPException(status_code=422, detail="Invalid batch_id")
+    from ..services.carrier.models.shipment import normalize_tracking_ref
+    tracking = normalize_tracking_ref(body.tracking_ref)
+    if tracking and not _SAFE_REF.match(tracking):
+        raise HTTPException(
+            status_code=422,
+            detail="tracking_ref must be 4–64 letters, digits, underscore or hyphen",
+        )
+    operator = _clean_operator(x_operator)
+    try:
+        result = register_external_shipment(
+            db_path,
+            batch_id=batch_id,
+            provider=body.provider,
+            tracking_ref=body.tracking_ref,
+            client_ref=body.client_ref,
+            operator=operator,
+            service_product=body.service_product,
+        )
+    except CarrierGateError as exc:
+        msg = str(exc)
+        code = 409 if "already exists" in msg else 422
+        raise HTTPException(status_code=code, detail=msg)
+    return JSONResponse(_external_shipment_payload(batch_id, result, db_path))
+
+
+@router.post(
+    "/{batch_id}/shipment/external/document",
+    summary="Upload the externally-issued AWB PDF into the existing label store",
+)
+async def upload_external_awb_document(
+    batch_id: str,
+    tracking_ref: str = Form(...),
+    client_ref: Optional[str] = Form(None),
+    awb_file: UploadFile = File(...),
+    _auth: None = Depends(require_api_key),
+    _op_auth: None = Depends(require_role("admin", "logistics")),
+    _perm: None = _perm_awb_create,
+    db_path: Path = Depends(_get_shipment_db_path),
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Link uploaded AWB bytes to the existing shipment via the label store.
+
+    Ownership: the shipment row for this batch + tracking must already exist
+    and must be a customer-arranged (FEDEX/UPS) row. Cross-batch tracking
+    numbers are rejected. Retry overwrites the same confined path.
+    """
+    del x_operator  # audit lives on the shipment row; upload does not re-attribute.
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        raise HTTPException(status_code=422, detail="Invalid batch_id")
+    from ..services.carrier.models.shipment import normalize_tracking_ref
+    tracking = normalize_tracking_ref(tracking_ref)
+    if not tracking or not _SAFE_REF.match(tracking):
+        raise HTTPException(status_code=422, detail="Invalid tracking_ref")
+
+    shipment_db.init_db(db_path)
+    scoped = (client_ref or "").strip() or None
+    row = shipment_db.get_shipment_for_draft(
+        db_path,
+        batch_id,
+        scoped,
+        allow_single_client_fallback=not scoped,
+    )
+    if row is None or (row.get("tracking_ref") or "") != tracking:
+        # Exact tracking match on this batch (client-scoped row may be missing
+        # when the operator omitted client_ref on register).
+        with_ref = shipment_db.get_shipment_by_tracking_ref(db_path, tracking)
+        if with_ref is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No external shipment found for this batch and tracking number.",
+            )
+        if with_ref.get("batch_id") != batch_id:
+            raise HTTPException(
+                status_code=409,
+                detail="tracking_ref belongs to a different batch.",
+            )
+        row = with_ref
+
+    if (row.get("tracking_ref") or "") != tracking:
+        raise HTTPException(
+            status_code=404,
+            detail="No external shipment found for this batch and tracking number.",
+        )
+    if row.get("batch_id") != batch_id:
+        raise HTTPException(
+            status_code=409,
+            detail="tracking_ref belongs to a different batch.",
+        )
+    provider = (row.get("provider") or "").strip().upper()
+    if provider not in shipment_db.EXTERNAL_PROVIDERS:
+        raise HTTPException(
+            status_code=422,
+            detail="AWB upload on this path is only for customer-arranged FedEx/UPS shipments.",
+        )
+    if scoped and row.get("client_ref") and row.get("client_ref") != scoped:
+        raise HTTPException(
+            status_code=409,
+            detail="Shipment belongs to a different client in this batch.",
+        )
+
+    content = await awb_file.read()
+    try:
+        _persist_shipment_doc("label", batch_id, tracking, content)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    result_row = shipment_db.get_shipment(db_path, row["idempotency_key"])
+    from ..services.carrier.models.shipment import ShipmentMode, ShipmentResult, ShipmentState
+    fake = ShipmentResult(
+        idempotency_key=row["idempotency_key"],
+        mode=ShipmentMode(result_row["mode"] if result_row else "external"),
+        state=ShipmentState(result_row["state"] if result_row else "complete"),
+        tracking_ref=tracking,
+        simulated=False,
+        booked_by=(result_row or {}).get("booked_by"),
+        replayed=True,
+        service_product=(result_row or {}).get("service_product"),
+    )
+    payload = _external_shipment_payload(batch_id, fake, db_path)
+    payload["awb_document_saved"] = True
+    return JSONResponse(payload)
 
 
 @router.get("/{batch_id}/shipment")

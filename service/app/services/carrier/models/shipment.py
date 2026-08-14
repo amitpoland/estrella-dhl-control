@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re as _re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -15,6 +16,9 @@ from typing import Optional
 class ShipmentMode(str, Enum):
     SHADOW = "shadow"
     LIVE = "live"
+    # Customer-arranged FedEx/UPS: operator-supplied tracking, no carrier API.
+    # Distinct from LIVE (a DHL API transaction) and SHADOW (simulated DHL).
+    EXTERNAL = "external"
 
 
 class ShipmentState(str, Enum):
@@ -118,6 +122,44 @@ def compute_idempotency_key(request: ShipmentRequest) -> str:
         "currency": request.currency,
     }
     client_ref = getattr(request, "client_ref", None)
+    if client_ref:
+        payload["client_ref"] = client_ref
+    canonical = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def normalize_tracking_ref(raw: Optional[str]) -> str:
+    """Whitespace / digit-hyphen convention shared with intake AWB normalize.
+
+    Same rules as ``routes_upload._normalize_awb``: strip, drop interior
+    spaces, drop hyphens that sit between digits. No other rewriting.
+    """
+    stripped = (raw or "").strip()
+    if not stripped:
+        return ""
+    normalized = stripped.replace(" ", "")
+    return _re.sub(r"(?<=\d)-(?=\d)", "", normalized)
+
+
+def compute_external_idempotency_key(
+    *,
+    batch_id: str,
+    provider: str,
+    tracking_ref: str,
+    client_ref: Optional[str] = None,
+) -> str:
+    """Idempotency key for a customer-arranged (non-DHL) registration.
+
+    Distinct from ``compute_idempotency_key`` (DHL booking intent) and
+    ``compute_return_idempotency_key`` (return drafts). Same facts always
+    replay onto the same ``carrier_shipments`` row — no second table.
+    """
+    payload = {
+        "origin": "external",
+        "batch_id": batch_id,
+        "provider": provider,
+        "tracking_ref": tracking_ref,
+    }
     if client_ref:
         payload["client_ref"] = client_ref
     canonical = json.dumps(payload, sort_keys=True)

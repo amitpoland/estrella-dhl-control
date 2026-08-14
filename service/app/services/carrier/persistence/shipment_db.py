@@ -25,7 +25,7 @@ _DDL = """
 CREATE TABLE IF NOT EXISTS carrier_shipments (
     idempotency_key TEXT PRIMARY KEY,
     batch_id        TEXT NOT NULL,
-    mode            TEXT NOT NULL CHECK(mode IN ('shadow', 'live')),
+    mode            TEXT NOT NULL CHECK(mode IN ('shadow', 'live', 'external')),
     state           TEXT NOT NULL CHECK(state IN ('pending', 'submitted', 'complete', 'failed')),
     error           TEXT,
     simulated       INTEGER NOT NULL DEFAULT 0 CHECK(simulated IN (0, 1)),
@@ -105,6 +105,9 @@ _ADDITIVE_COLUMNS = [
 # customer-arranged (operator registers provider + tracking + external AWB).
 PROVIDER_DHL = "DHL"
 PROVIDERS = ("DHL", "FEDEX", "UPS")
+EXTERNAL_PROVIDERS = ("FEDEX", "UPS")
+_MODE_CHECK_LEGACY = "CHECK(mode IN ('shadow', 'live'))"
+_MODE_CHECK_CURRENT = "CHECK(mode IN ('shadow', 'live', 'external'))"
 
 
 def resolve_provider(stored: Optional[str]) -> str:
@@ -148,7 +151,8 @@ def init_db(db_path: Path) -> None:
     """Create the carrier_shipments table if it does not exist.
 
     Idempotent: additive ALTER TABLE for Phase-5 columns so existing DBs
-    are migrated transparently.
+    are migrated transparently. Existing DBs whose CHECK still forbids
+    ``external`` are rebuilt in place (same table, same rows).
     """
     with _connect(db_path) as conn:
         conn.executescript(_DDL)
@@ -160,6 +164,48 @@ def init_db(db_path: Path) -> None:
             except sqlite3.OperationalError as _exc:
                 if "duplicate column" not in str(_exc).lower():
                     raise
+        _ensure_external_mode_allowed(conn)
+
+
+def _ensure_external_mode_allowed(conn: sqlite3.Connection) -> None:
+    """Widen the mode CHECK so customer-arranged rows can persist honestly.
+
+    SQLite cannot ALTER a CHECK. New databases get the expanded constraint
+    from ``_DDL``. Older databases still have ``('shadow', 'live')`` baked
+    into sqlite_master — those are rebuilt, copying every existing column.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type='table' AND name='carrier_shipments'"
+    ).fetchone()
+    sql = (row[0] if row else "") or ""
+    if "'external'" in sql:
+        return
+    if _MODE_CHECK_LEGACY not in sql:
+        return
+    old_cols = [r[1] for r in conn.execute("PRAGMA table_info(carrier_shipments)")]
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("ALTER TABLE carrier_shipments RENAME TO carrier_shipments__pre_ext")
+    conn.execute(sql.replace(_MODE_CHECK_LEGACY, _MODE_CHECK_CURRENT, 1))
+    for col, ddl in _ADDITIVE_COLUMNS:
+        try:
+            conn.execute(
+                f"ALTER TABLE carrier_shipments ADD COLUMN {col} {ddl}"
+            )
+        except sqlite3.OperationalError as _exc:
+            if "duplicate column" not in str(_exc).lower():
+                raise
+    new_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(carrier_shipments)")
+    }
+    copy_cols = [c for c in old_cols if c in new_cols]
+    col_sql = ", ".join(copy_cols)
+    conn.execute(
+        f"INSERT INTO carrier_shipments ({col_sql}) "
+        f"SELECT {col_sql} FROM carrier_shipments__pre_ext"
+    )
+    conn.execute("DROP TABLE carrier_shipments__pre_ext")
+    conn.execute("PRAGMA foreign_keys=ON")
 
 
 def insert_shipment(
@@ -357,7 +403,7 @@ def get_shipment_for_draft(
                 (batch_id, client_ref),
             ).fetchone()
             if row:
-                return dict(row)
+                return _row(row)
 
         if allow_single_client_fallback:
             rows = conn.execute(
@@ -380,7 +426,7 @@ def get_shipment_for_draft(
                     and row["client_ref"] != client_ref
                 ):
                     return None
-                return row
+                return _row(row)
 
     return None
 

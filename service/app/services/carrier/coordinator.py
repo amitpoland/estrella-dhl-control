@@ -36,17 +36,21 @@ from .models.shipment import (
     ShipmentRequest,
     ShipmentResult,
     ShipmentState,
+    compute_external_idempotency_key,
     compute_idempotency_key,
+    normalize_tracking_ref,
 )
 from .persistence.redactor import redact_response
 from .persistence.shadow_log_db import append_entry as _shadow_log_append
 from .persistence.shadow_log_db import init_db as _init_shadow_log
 from .persistence.shipment_db import get_shipment as _db_get
 from .persistence.shipment_db import get_shipment_by_batch_id as _db_get_by_batch
+from .persistence.shipment_db import get_shipment_for_draft as _db_get_for_draft
 from .persistence.shipment_db import init_db as _init_shipment_db
 from .persistence.shipment_db import insert_shipment as _db_insert
 from .persistence.shipment_db import update_state as _db_update
 from .persistence.shipment_db import persist_notification_audit as _db_persist_notify
+from .persistence.shipment_db import EXTERNAL_PROVIDERS, PROVIDER_DHL
 from .notification_audit import build_notification_audit
 from ...core.config import settings
 
@@ -364,3 +368,152 @@ class CarrierCoordinator:
             pass  # best-effort — state already COMPLETE above
 
         return complete
+
+
+def register_external_shipment(
+    db_path: Path,
+    *,
+    batch_id: str,
+    provider: str,
+    tracking_ref: str,
+    client_ref: Optional[str] = None,
+    operator: Optional[str] = None,
+    service_product: Optional[str] = None,
+) -> ShipmentResult:
+    """Register a customer-arranged FedEx/UPS shipment. Never calls a carrier API.
+
+    Writes the existing ``carrier_shipments`` row (mode=external, state=complete)
+    with provider + tracking_ref. DHL is rejected — it stays on create_shipment.
+    Same facts replay onto the stored row (no adapter, no second table).
+    """
+    _init_shipment_db(db_path)
+
+    p = (provider or "").strip().upper()
+    if p == PROVIDER_DHL:
+        raise CarrierGateError(
+            "DHL shipments must be created through the existing booking path."
+        )
+    if p not in EXTERNAL_PROVIDERS:
+        raise CarrierGateError(
+            f"Unknown carrier provider {p!r}; expected one of {EXTERNAL_PROVIDERS}"
+        )
+
+    ref = normalize_tracking_ref(tracking_ref)
+    if not ref:
+        raise CarrierGateError("tracking_ref is required")
+
+    scoped = (client_ref or "").strip() or None
+    key = compute_external_idempotency_key(
+        batch_id=batch_id,
+        provider=p,
+        tracking_ref=ref,
+        client_ref=scoped,
+    )
+    existing = _db_get(db_path, key)
+    if existing:
+        return _complete_or_replay_external(
+            db_path, key, existing, ref, operator=operator,
+        )
+
+    other = _db_get_for_draft(
+        db_path, batch_id, scoped, allow_single_client_fallback=True,
+    )
+    if other and other.get("idempotency_key") != key:
+        other_state = other.get("state") or ""
+        if other_state in ("complete", "submitted", "pending"):
+            raise CarrierGateError(
+                "A shipment already exists for this draft; "
+                "refusing a second outbound registration."
+            )
+
+    _db_insert(
+        db_path,
+        ShipmentResult(
+            idempotency_key=key,
+            mode=ShipmentMode.EXTERNAL,
+            state=ShipmentState.PENDING,
+            simulated=False,
+            service_product=service_product,
+        ),
+        batch_id,
+        scoped,
+        operator=operator,
+        provider=p,
+    )
+    _db_update(
+        db_path,
+        key,
+        ShipmentState.COMPLETE,
+        tracking_ref=ref,
+        mode=ShipmentMode.EXTERNAL,
+        simulated=False,
+    )
+    if service_product:
+        from .persistence.shipment_db import update_shipment_fields as _db_update_fields
+        _db_update_fields(db_path, key, service_product=service_product)
+
+    row = _db_get(db_path, key) or {}
+    return ShipmentResult(
+        idempotency_key=key,
+        mode=ShipmentMode.EXTERNAL,
+        state=ShipmentState.COMPLETE,
+        tracking_ref=ref,
+        simulated=False,
+        service_product=row.get("service_product") or service_product,
+        booked_by=row.get("booked_by"),
+        replayed=False,
+    )
+
+
+def _complete_or_replay_external(
+    db_path: Path,
+    key: str,
+    row: dict,
+    tracking_ref: str,
+    *,
+    operator: Optional[str] = None,
+) -> ShipmentResult:
+    """Replay COMPLETE; finish a crashed PENDING; refuse FAILED. No adapter."""
+    del operator  # attribution is frozen at insert; replay must not overwrite.
+    state = ShipmentState(row["state"])
+    if state == ShipmentState.COMPLETE:
+        return ShipmentResult(
+            idempotency_key=key,
+            mode=ShipmentMode(row["mode"]),
+            state=ShipmentState.COMPLETE,
+            tracking_ref=row.get("tracking_ref") or tracking_ref,
+            error=row.get("error"),
+            simulated=bool(row.get("simulated")),
+            service_product=row.get("service_product"),
+            replayed=True,
+            booked_by=row.get("booked_by"),
+        )
+    if state == ShipmentState.PENDING:
+        _db_update(
+            db_path,
+            key,
+            ShipmentState.COMPLETE,
+            tracking_ref=tracking_ref,
+            mode=ShipmentMode.EXTERNAL,
+            simulated=False,
+        )
+        stored = _db_get(db_path, key) or row
+        return ShipmentResult(
+            idempotency_key=key,
+            mode=ShipmentMode.EXTERNAL,
+            state=ShipmentState.COMPLETE,
+            tracking_ref=tracking_ref,
+            simulated=False,
+            service_product=stored.get("service_product"),
+            booked_by=stored.get("booked_by"),
+            replayed=False,
+        )
+    if state == ShipmentState.FAILED:
+        raise CarrierGateError(
+            f"Shipment {key[:12]}… previously failed: "
+            f"{row.get('error') or 'unknown error'}. "
+            "Submit a new request with different parameters to retry."
+        )
+    raise CarrierGateError(
+        f"Shipment {key[:12]}… is in unexpected state {row['state']!r}."
+    )

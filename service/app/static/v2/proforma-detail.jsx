@@ -1345,6 +1345,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
+  const [selectedCarrier, setSelectedCarrier] = React.useState('DHL');
+  const [externalTracking, setExternalTracking] = React.useState('');
+  const [awbFile, setAwbFile] = React.useState(null);
+  const isExternal = selectedCarrier === 'FEDEX' || selectedCarrier === 'UPS';
 
   // ── DHL account authority (operator ruling 2026-07-20) ──────────────────
   // The modal keeps NO account state of its own: the hook holds the server's
@@ -1573,6 +1577,44 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   };
 
   const handleSubmit = () => {
+    if (isExternal) {
+      if (loading) return;
+      const tracking = (externalTracking || '').trim();
+      if (!tracking) { setApiError('Tracking / AWB number is required'); return; }
+      if (!awbFile) { setApiError('Upload the carrier AWB PDF'); return; }
+      setLoading(true);
+      setApiError(null);
+      window.PzApi.registerExternalShipment(batchId, {
+        provider: selectedCarrier,
+        tracking_ref: tracking,
+        client_ref: (prefill && prefill.client_name) || null,
+      }).then(r => {
+        const data = (r && r.ok) ? r.data : null;
+        if (!data) {
+          const msg = (r && (r.error || (r.data && (r.data.detail || r.data.error))))
+            || 'External shipment registration failed.';
+          setApiError(typeof msg === 'object' ? JSON.stringify(msg) : msg);
+          setLoading(false);
+          return null;
+        }
+        return window.PzApi.uploadExternalAwb(batchId, {
+          tracking_ref: data.tracking_ref || tracking,
+          client_ref: (prefill && prefill.client_name) || null,
+          file: awbFile,
+        }).then(u => {
+          if (u && u.ok) setResult({ ...data, ...u.data });
+          else {
+            setResult(data);
+            setApiError('Shipment saved; AWB file upload failed: ' + ((u && u.error) || 'unknown'));
+          }
+          setLoading(false);
+        });
+      }).catch(e => {
+        setApiError((e && e.message) ? e.message : 'External shipment registration failed.');
+        setLoading(false);
+      });
+      return;
+    }
     if (loading || isPending) return;
     const missing = [];
     if (!form.weight_kg)      missing.push('Weight (kg)');
@@ -1762,7 +1804,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
               {isReplay
                 ? 'A shipment already exists for these package values — no new DHL shipment was created.'
-                : 'DHL Express AWB generated successfully'}
+                : (result.carrier && result.carrier !== 'DHL'
+                    ? (result.carrier + ' shipment registered')
+                    : 'DHL Express AWB generated successfully')}
             </div>
             {isLegacy ? (
               <div style={{
@@ -1896,12 +1940,14 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     <div style={overlay} onClick={onClose} data-testid="awb-generate-modal">
       <div onClick={e => e.stopPropagation()} style={card}>
         <div style={header}>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>Generate DHL Express AWB</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>
+            {isExternal ? 'Register customer-arranged shipment' : 'Generate DHL Express AWB'}
+          </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}
             aria-label="Close">×</button>
         </div>
         <div style={{ padding: '20px 24px' }}>
-          {isPending && (
+          {selectedCarrier === 'DHL' && isPending && (
             <div style={{
               padding: '10px 14px', background: 'var(--badge-amber-bg, #fef3c7)',
               borderRadius: 6, border: '1px solid var(--badge-amber-border, #d97706)',
@@ -1912,6 +1958,43 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             </div>
           )}
 
+          <div style={sectionHead}>Carrier</div>
+          <div style={fieldStyle}>
+            <label htmlFor="awb-carrier" style={labelStyle}>Carrier *</label>
+            <select id="awb-carrier" value={selectedCarrier}
+              onChange={e => { setSelectedCarrier(e.target.value); setApiError(null); setSaveConfirm(null); setLegacyConfirm(false); }}
+              style={selStyle} data-testid="awb-carrier-select">
+              <option value="DHL">DHL Express</option>
+              <option value="FEDEX">FedEx</option>
+              <option value="UPS">UPS</option>
+            </select>
+          </div>
+
+          {isExternal && (
+            <div data-testid="awb-external-form">
+              <div style={sectionHead}>Customer-arranged shipment</div>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14 }}>
+                Record the tracking number and AWB issued by the customer&apos;s carrier.
+                This does not book a shipment.
+              </div>
+              <div style={fieldStyle}>
+                <label htmlFor="awb-external-tracking" style={labelStyle}>Tracking / AWB Number *</label>
+                <input id="awb-external-tracking" value={externalTracking}
+                  onChange={e => setExternalTracking(e.target.value)}
+                  style={inputStyle} data-testid="awb-field-tracking-ref"
+                  placeholder="Carrier tracking or AWB number" />
+              </div>
+              <div style={fieldStyle}>
+                <label htmlFor="awb-external-file" style={labelStyle}>AWB document (PDF) *</label>
+                <input id="awb-external-file" type="file" accept="application/pdf,.pdf"
+                  onChange={e => setAwbFile((e.target.files && e.target.files[0]) || null)}
+                  style={{ ...inputStyle, padding: 6 }} data-testid="awb-field-awb-file" />
+              </div>
+            </div>
+          )}
+
+          {selectedCarrier === 'DHL' && (
+          <div data-testid="awb-dhl-form">
           {/* ── DHL Service ── */}
           <div style={sectionHead}>DHL Service</div>
           <div style={fieldStyle}>
@@ -2101,6 +2184,8 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               onChange={e => set('special_instructions', e.target.value)} style={inputStyle}
               data-testid="awb-field-instructions" />
           </div>
+          </div>
+          )}
 
           {apiError && (
             <div style={{
@@ -2109,7 +2194,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             }} data-testid="awb-error">{apiError}</div>
           )}
 
-          {savedNote && (
+          {selectedCarrier === 'DHL' && savedNote && (
             <div style={{
               padding: '8px 14px', background: 'var(--badge-green-bg)', borderRadius: 6,
               border: '1px solid var(--badge-green-border)',
@@ -2122,7 +2207,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           {/* Customer Master save-confirmation — booking is HELD until the
               operator picks Yes (save + continue), No (this AWB only), or
               Cancel (no save, no booking). Master is never written silently. */}
-          {saveConfirm && saveConfirm.baselineIssue && (
+          {selectedCarrier === 'DHL' && saveConfirm && saveConfirm.baselineIssue && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
               border: '1px solid var(--badge-red-border)', marginBottom: 16,
@@ -2150,7 +2235,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             </div>
           )}
 
-          {saveConfirm && !saveConfirm.baselineIssue && (
+          {selectedCarrier === 'DHL' && saveConfirm && !saveConfirm.baselineIssue && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
               border: '1px solid var(--badge-amber-border)', marginBottom: 16,
@@ -2209,11 +2294,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               Hidden while the sender has no Client Master record, because the
               backend then uses its legacy account path and there is no
               operator decision to present. */}
-          {dhlSenderKnown && (
+          {selectedCarrier === 'DHL' && dhlSenderKnown && (
             <DhlAccountPanel state={dhlAccounts} />
           )}
 
-          {legacyConfirm && (
+          {selectedCarrier === 'DHL' && legacyConfirm && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
               border: '1px solid var(--badge-amber-border)', marginBottom: 16,
@@ -2242,13 +2327,17 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           )}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontSize: 11, color: isPending ? 'var(--badge-amber-text, #92400e)' : 'var(--text-3)' }}>
-              {_footerLabel} · batch: <code>{batchId}</code>
+            <div style={{ fontSize: 11, color: (selectedCarrier === 'DHL' && isPending) ? 'var(--badge-amber-text, #92400e)' : 'var(--text-3)' }}>
+              {isExternal ? (selectedCarrier + ' — customer-arranged') : _footerLabel} · batch: <code>{batchId}</code>
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
-              <Btn variant="primary" onClick={handleSubmit} disabled={loading || isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit} data-testid="awb-submit-btn">
-                {loading ? 'Creating AWB…' : 'Create AWB'}
+              <Btn variant="primary" onClick={handleSubmit}
+                disabled={loading || (selectedCarrier === 'DHL' && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit))}
+                data-testid="awb-submit-btn">
+                {loading
+                  ? (isExternal ? 'Saving…' : 'Creating AWB…')
+                  : (isExternal ? 'Register external shipment' : 'Create AWB')}
               </Btn>
             </div>
           </div>

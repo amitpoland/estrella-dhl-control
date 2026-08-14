@@ -741,6 +741,36 @@
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
 
+    // POST /api/v1/carrier/{batch_id}/shipment/external
+    // Customer-arranged FedEx/UPS registration. Never calls a carrier API.
+    // body: { provider: 'FEDEX'|'UPS', tracking_ref, client_ref?, service_product? }
+    registerExternalShipment: (batchId, body) =>
+      _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment/external`, body),
+
+    // POST /api/v1/carrier/{batch_id}/shipment/external/document (multipart)
+    // Uploads the externally-issued AWB PDF into the existing shipment label store.
+    uploadExternalAwb: async (batchId, args) => {
+      const op = _resolveOperator();
+      const fd = new FormData();
+      fd.append('tracking_ref', args && args.tracking_ref);
+      if (args && args.client_ref) fd.append('client_ref', args.client_ref);
+      fd.append('awb_file', args && args.file);
+      try {
+        const data = await _apiFetch(
+          `${BASE}/carrier/${encodeURIComponent(batchId)}/shipment/external/document`,
+          { method: 'POST', body: fd, headers: op ? { 'X-Operator': op } : {} }
+        );
+        return { ok: true, data };
+      } catch (err) {
+        return {
+          ok: false,
+          status: (err && err.status) || 0,
+          error: (err && err.message) || 'Upload failed',
+          type: err && err.type,
+        };
+      }
+    },
+
     // POST /api/v1/carrier/{batch_id}/return/prepare — linked return DRAFT only.
     // Never calls MyDHL createShipment. Live Create remains HOLD.
     prepareReturnDraft: (batchId, body) =>
