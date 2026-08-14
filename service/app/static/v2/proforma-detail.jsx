@@ -1012,168 +1012,275 @@ function PurgeDraftModal({ draft, onClose, onSuccess }) {
 }
 
 
-// ── Send Proforma Email Modal ────────────────────────────────────────────────
-// WIRED: POST /api/v1/proforma/draft/{id}/send-email — uses PzApi.sendProformaEmail
-// M2 — Send proforma PDF to customer via email queue.
+// ── Unified Customer Send Modal ──────────────────────────────────────────────
+// WIRED: GET …/send-options + POST …/send-email — one Send surface.
+// Document eligibility is backend-only (never invent types in React).
 function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSuccess }) {
   const [loading,    setLoading]    = React.useState(false);
+  const [loadingOpts, setLoadingOpts] = React.useState(true);
+  const [opts,       setOpts]       = React.useState(null);
+  const [optsError,  setOptsError]  = React.useState(null);
   const [apiError,   setApiError]   = React.useState(null);
   const [recipientOverride, setRecipientOverride] = React.useState('');
   const [subjectOverride,   setSubjectOverride]   = React.useState('');
+  const [selected,   setSelected]   = React.useState({});
   const [result,     setResult]     = React.useState(null);
 
   const docNo = liveDraft.wfirma_proforma_fullnumber || `Draft #${draft.id}`;
-  const defaultSubject = `Proforma ${docNo}`;
   const effectiveRecipient = recipientOverride.trim() || recipientEmail || '';
-  const effectiveSubject   = subjectOverride.trim() || defaultSubject;
 
-  const handleSend = () => {
-    if (loading || !effectiveRecipient) return;
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoadingOpts(true);
+    setOptsError(null);
+    if (!window.PzApi.getProformaSendOptions) {
+      setOptsError('Send-options API missing — redeploy required.');
+      setLoadingOpts(false);
+      return;
+    }
+    window.PzApi.getProformaSendOptions(draft.id)
+      .then(r => {
+        if (cancelled) return;
+        if (!r || !r.ok) {
+          setOptsError((r && (r.error || r.detail)) || 'Failed to load send options');
+          setLoadingOpts(false);
+          return;
+        }
+        const payload = r.data || r;
+        setOpts(payload);
+        const init = {};
+        (payload.documents || []).forEach(d => {
+          // Default: select Proforma when available (legacy behaviour).
+          init[d.type] = !!(d.available && d.type === 'official_proforma');
+        });
+        setSelected(init);
+        setLoadingOpts(false);
+      })
+      .catch(e => {
+        if (cancelled) return;
+        setOptsError((e && e.message) || 'Failed to load send options');
+        setLoadingOpts(false);
+      });
+    return () => { cancelled = true; };
+  }, [draft.id]);
+
+  const selectedTypes = (opts && opts.documents || [])
+    .filter(d => selected[d.type] && d.available)
+    .map(d => d.type);
+
+  const toggleDoc = (type, available) => {
+    if (!available || loading) return;
+    setSelected(prev => Object.assign({}, prev, { [type]: !prev[type] }));
+  };
+
+  const runAction = (action) => {
+    if (loading || !effectiveRecipient && action === 'send_documents') return;
+    if (action === 'send_documents' && selectedTypes.length === 0) return;
     setLoading(true);
     setApiError(null);
-    window.PzApi.sendProformaEmail(draft.id, {
-      confirm_token:      'YES_SEND_PROFORMA_EMAIL',
+    const payload = {
+      confirm_token: 'YES_SEND_PROFORMA_EMAIL',
+      action: action,
       recipient_override: recipientOverride.trim() || '',
-      subject_override:   subjectOverride.trim() || '',
-    })
+      subject_override: subjectOverride.trim() || '',
+    };
+    if (action === 'send_documents') {
+      payload.document_types = selectedTypes;
+    }
+    window.PzApi.sendProformaEmail(draft.id, payload)
       .then(r => {
-        if (r && r.ok) {
-          setResult(r);
+        const body = (r && r.ok) ? (r.data || r) : null;
+        if (body && (body.ok || r.ok)) {
+          setResult(body);
           setLoading(false);
         } else {
-          setApiError((r && r.detail) || (r && r.error) || 'Send failed — check backend logs.');
+          setApiError(
+            (r && (r.error || r.detail))
+            || (body && (body.detail || body.error))
+            || 'Send failed — check backend logs.'
+          );
           setLoading(false);
         }
       })
       .catch(e => {
-        const msg = (e && e.message) ? e.message : 'Send failed — check backend logs.';
-        setApiError(msg);
+        setApiError((e && e.message) ? e.message : 'Send failed — check backend logs.');
         setLoading(false);
       });
   };
 
-  if (result) {
-    return (
-      <div style={{
-        position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
-      }} onClick={() => { onSuccess && onSuccess(); onClose(); }} data-testid="send-proforma-modal">
-        <div onClick={e => e.stopPropagation()} style={{
-          background: 'var(--card)', borderRadius: 12, width: 480, maxWidth: '92vw',
-          boxShadow: '0 20px 60px var(--shadow-heavy)',
-        }}>
-          <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--badge-green-text)' }}>✓ Email Queued</div>
-            <button onClick={() => { onSuccess && onSuccess(); onClose(); }} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
-          </div>
-          <div style={{ padding: '20px 24px' }} data-testid="send-proforma-success">
-            <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>
-              <p>Proforma <strong>{docNo}</strong> has been queued for delivery.</p>
-              <div style={{ marginTop: 12, padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 12 }}>
-                <div><strong>Recipient:</strong> {result.recipient}</div>
-                <div><strong>Subject:</strong> {result.subject}</div>
-                <div><strong>Queue ID:</strong> <code>{result.queued_id}</code></div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
-              <Btn variant="primary" onClick={() => { onSuccess && onSuccess(); onClose(); }}>Done</Btn>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
+  const shell = (title, children) => (
     <div style={{
       position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
     }} onClick={onClose} data-testid="send-proforma-modal">
       <div onClick={e => e.stopPropagation()} style={{
-        background: 'var(--card)', borderRadius: 12, width: 520, maxWidth: '92vw',
+        background: 'var(--card)', borderRadius: 12, width: 560, maxWidth: '92vw',
         maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
       }}>
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>➤ Send Proforma Email</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>{title}</div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}>×</button>
         </div>
-        <div style={{ padding: '20px 24px' }}>
-          <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
-            Send proforma <strong>{docNo}</strong> as PDF attachment to the customer.
-            The email will be queued and delivered via SMTP.
-          </div>
-
-          {/* Recipient display */}
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
-              Recipient {recipientEmail ? '' : '(no email on file — enter manually)'}
-            </label>
-            {recipientEmail ? (
-              <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 13, color: 'var(--text)' }} data-testid="send-proforma-default-recipient">
-                {recipientEmail}
-              </div>
-            ) : null}
-            <input
-              type="email"
-              value={recipientOverride}
-              onChange={e => setRecipientOverride(e.target.value)}
-              placeholder={recipientEmail ? 'Override recipient (optional)' : 'Enter recipient email address'}
-              data-testid="send-proforma-recipient-override"
-              style={{
-                width: '100%', padding: '8px 12px', marginTop: 8,
-                border: '1px solid var(--border)', borderRadius: 8,
-                background: 'var(--bg)', color: 'var(--text)',
-                fontFamily: 'inherit', fontSize: 13,
-              }}
-            />
-          </div>
-
-          {/* Subject */}
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
-              Subject
-            </label>
-            <input
-              type="text"
-              value={subjectOverride}
-              onChange={e => setSubjectOverride(e.target.value)}
-              placeholder={defaultSubject}
-              data-testid="send-proforma-subject"
-              style={{
-                width: '100%', padding: '8px 12px',
-                border: '1px solid var(--border)', borderRadius: 8,
-                background: 'var(--bg)', color: 'var(--text)',
-                fontFamily: 'inherit', fontSize: 13,
-              }}
-            />
-          </div>
-
-          {/* Attachment info */}
-          <div style={{ padding: '10px 14px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 12, color: 'var(--text-2)', marginBottom: 16 }} data-testid="send-proforma-pdf-info">
-            📎 Attachment: <strong>proforma-{docNo.replace(/\//g, '-').replace(/\s+/g, '_')}.pdf</strong>
-          </div>
-
-          {apiError && (
-            <div style={{ marginTop: 0, marginBottom: 12, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="send-proforma-error">
-              ⚠ {apiError}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
-            <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
-            <Btn
-              variant="primary"
-              disabled={!effectiveRecipient || loading}
-              onClick={handleSend}
-              data-testid="send-proforma-submit"
-            >
-              {loading ? '⏳ Sending…' : '➤ Send Email'}
-            </Btn>
-          </div>
-        </div>
+        <div style={{ padding: '20px 24px' }}>{children}</div>
       </div>
     </div>
   );
+
+  if (result) {
+    return shell('✓ Queued', (
+      <div data-testid="send-proforma-success">
+        <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>
+          <p>Send action <strong>{result.action || 'send_documents'}</strong> queued for <strong>{docNo}</strong>.</p>
+          <div style={{ marginTop: 12, padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 12 }}>
+            {result.recipient ? <div><strong>Recipient:</strong> {result.recipient}</div> : null}
+            {result.subject ? <div><strong>Subject:</strong> {result.subject}</div> : null}
+            {result.queued_id || result.email_id ? <div><strong>Queue ID:</strong> <code>{result.queued_id || result.email_id}</code></div> : null}
+            {result.document_types ? <div><strong>Documents:</strong> {(result.document_types || []).join(', ')}</div> : null}
+          </div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
+          <Btn variant="primary" onClick={() => { onSuccess && onSuccess(); onClose(); }}>Done</Btn>
+        </div>
+      </div>
+    ));
+  }
+
+  return shell('➤ Send', (
+    <div>
+      <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
+        Choose customer documents and/or delivery actions for <strong>{docNo}</strong>.
+        Eligibility comes from the document manifest and delivery confirmation — not from the browser.
+      </div>
+
+      {loadingOpts ? (
+        <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }} data-testid="send-options-loading">Loading send options…</div>
+      ) : null}
+      {optsError ? (
+        <div style={{ marginBottom: 12, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)' }} data-testid="send-options-error">
+          {optsError}
+        </div>
+      ) : null}
+
+      {/* Documents */}
+      <div style={{ marginBottom: 18 }} data-testid="send-documents-group">
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 8 }}>Documents</div>
+        {(opts && opts.documents || [
+          { type: 'official_proforma', label: 'Proforma', available: false },
+          { type: 'invoice', label: 'Invoice', available: false },
+          { type: 'packing_list', label: 'Packing List', available: false },
+        ]).map(d => (
+          <label key={d.type} data-testid={`send-doc-${d.type}`}
+            style={{
+              display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8,
+              opacity: d.available ? 1 : 0.55, cursor: d.available ? 'pointer' : 'not-allowed',
+              fontSize: 13, color: 'var(--text)',
+            }}>
+            <input
+              type="checkbox"
+              checked={!!selected[d.type]}
+              disabled={!d.available || loading}
+              onChange={() => toggleDoc(d.type, d.available)}
+              data-testid={`send-doc-check-${d.type}`}
+              style={{ marginTop: 2 }}
+            />
+            <span>
+              <strong>{d.label}</strong>
+              {!d.available ? (
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--text-3)' }}>{d.reason || 'Not available'}</span>
+              ) : null}
+            </span>
+          </label>
+        ))}
+      </div>
+
+      {/* Recipient / subject — documents path */}
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
+          Recipient {recipientEmail ? '' : '(no email on file — enter manually)'}
+        </label>
+        {recipientEmail ? (
+          <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 13 }} data-testid="send-proforma-default-recipient">
+            {recipientEmail}
+          </div>
+        ) : null}
+        <input
+          type="email"
+          value={recipientOverride}
+          onChange={e => setRecipientOverride(e.target.value)}
+          placeholder={recipientEmail ? 'Override recipient (optional)' : 'Enter recipient email address'}
+          data-testid="send-proforma-recipient-override"
+          style={{
+            width: '100%', padding: '8px 12px', marginTop: 8,
+            border: '1px solid var(--border)', borderRadius: 8,
+            background: 'var(--bg)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 13,
+          }}
+        />
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>Subject (documents)</label>
+        <input
+          type="text"
+          value={subjectOverride}
+          onChange={e => setSubjectOverride(e.target.value)}
+          placeholder={`Documents for ${docNo}`}
+          data-testid="send-proforma-subject"
+          style={{
+            width: '100%', padding: '8px 12px',
+            border: '1px solid var(--border)', borderRadius: 8,
+            background: 'var(--bg)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 13,
+          }}
+        />
+      </div>
+
+      {/* Actions */}
+      <div style={{ marginBottom: 12 }} data-testid="send-actions-group">
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 8 }}>Actions</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <Btn
+            variant="primary"
+            disabled={!effectiveRecipient || loading || selectedTypes.length === 0 || loadingOpts}
+            onClick={() => runAction('send_documents')}
+            data-testid="send-documents-submit"
+          >
+            {loading ? '⏳ Sending…' : '➤ Send selected documents'}
+          </Btn>
+          <Btn
+            variant="outline"
+            disabled={loading || loadingOpts || !(opts && opts.actions && opts.actions.send_confirmation)}
+            onClick={() => runAction('send_confirmation')}
+            title={(opts && opts.confirmation_reason) || 'Send delivery confirmation'}
+            data-testid="send-confirmation-submit"
+          >
+            Send confirmation
+          </Btn>
+          <Btn
+            variant="outline"
+            disabled={loading || loadingOpts || !(opts && opts.actions && opts.actions.send_reminder)}
+            onClick={() => runAction('send_reminder')}
+            title={
+              (opts && opts.awaiting_customer)
+                ? 'Send reminder while awaiting customer reply'
+                : 'Reminder available only when Awaiting Customer Reply'
+            }
+            data-testid="send-reminder-submit"
+          >
+            Send reminder
+            {opts && opts.awaiting_customer ? ' (Awaiting Customer Reply)' : ''}
+          </Btn>
+        </div>
+      </div>
+
+      {apiError && (
+        <div style={{ marginTop: 8, padding: '10px 14px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, fontSize: 12, color: 'var(--badge-red-text)', fontWeight: 600 }} data-testid="send-proforma-error">
+          ⚠ {apiError}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
+        <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
+      </div>
+    </div>
+  ));
 }
 
 // ── Prior Invoice History Modal ──────────────────────────────────────────────
@@ -1342,8 +1449,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     // Value
     declared_value: (prefill.declared_value || '').toString(),
     currency:       prefill.currency || 'EUR',
-    // Description & references
-    description:         prefill.description || 'Jewellery',
+    // Description & references — description starts empty; filled ONLY from
+    // backend GET .../shipment-description (description_engine projection).
+    // Frontend never maps item_type → DHL text.
+    description:         '',
     customer_reference:  prefill.customer_reference || '',
     shipment_reference:  prefill.shipment_reference || '',
     // Recipient
@@ -1376,6 +1485,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [cmAccounts, setCmAccounts] = React.useState([]);
   const [cmAccountsStatus, setCmAccountsStatus] = React.useState('idle');
   const [selectedCmAccountId, setSelectedCmAccountId] = React.useState(null);
+  // Shipment description authority is backend-only. Modal displays the
+  // canonical projection; descriptionDirty becomes true only when the
+  // operator edits the field — then description_override is sent.
+  const [descriptionCanonical, setDescriptionCanonical] = React.useState('');
+  const [descriptionDirty, setDescriptionDirty] = React.useState(false);
+  const [descriptionLoad, setDescriptionLoad] = React.useState('loading');
 
   // ── DHL account authority (operator ruling 2026-07-20) ──────────────────
   // The modal keeps NO account state of its own: the hook holds the server's
@@ -1437,6 +1552,27 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     window.PzApi.getCarrierStatus && window.PzApi.getCarrierStatus()
       .then(r => setCarrierStatus(r && r.ok ? r.data : null))
       .catch(() => setCarrierStatus(null));
+    // Canonical shipment description — sole automatic mapper is backend
+    // description_engine.project_shipment_content_description. Display only;
+    // never treat this value as an operator override on submit.
+    if (window.PzApi.getCarrierShipmentDescription) {
+      setDescriptionLoad('loading');
+      window.PzApi.getCarrierShipmentDescription(batchId, prefill.client_name || null)
+        .then(r => {
+          const text = (r && r.ok && r.data && r.data.shipment_description)
+            ? String(r.data.shipment_description).trim()
+            : '';
+          setDescriptionCanonical(text);
+          setDescriptionLoad(text ? 'loaded' : 'empty');
+          setForm(prev => {
+            if (descriptionDirty) return prev;
+            return { ...prev, description: text };
+          });
+        })
+        .catch(() => setDescriptionLoad('failed'));
+    } else {
+      setDescriptionLoad('failed');
+    }
     // Customer Master baseline for the save-confirmation comparison.
     // Missing contractor id or a failed fetch does NOT skip the gate — it
     // arms the fail-visible baseline panel instead (never fail open).
@@ -1444,7 +1580,18 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       setMasterState('loading');
       window.PzApi.getCustomerMaster(prefill.client_contractor_id)
         .then(r => {
-          if (r && r.ok && r.data) { setMaster(r.data); setMasterState('loaded'); }
+          if (r && r.ok && r.data) {
+            setMaster(r.data);
+            setMasterState('loaded');
+            // Contact Full Name authority = Customer Master ship_to_person
+            // (same field the save-confirm map uses). Never invent from company.
+            const person = (r.data.ship_to_person || '').trim();
+            if (person) {
+              setForm(prev => (prev.name && String(prev.name).trim())
+                ? prev
+                : { ...prev, name: person });
+            }
+          }
           else setMasterState('failed');
         })
         .catch(() => setMasterState('failed'));
@@ -1683,7 +1830,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     if (!form.street)         missing.push('Street');
     if (!form.city)           missing.push('City');
     if (!form.country_code)   missing.push('Country code');
-    if (!form.description)    missing.push('Description');
+    // Description: when operator edited, require non-empty override. When still
+    // on canonical display (or empty canonical), backend projects / last-resorts.
+    if (descriptionDirty && !(form.description || '').trim()) {
+      missing.push('Description');
+    }
     if (missing.length) { setApiError(`Missing required fields: ${missing.join(', ')}`); return; }
     // DHL rejects receiver contact without a phone (minLength 1) — block
     // locally with the exact reason instead of a DHL 422 round-trip.
@@ -1748,7 +1899,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         height_cm: parseFloat(form.height_cm),
       },
       recipient_address: {
-        name:         form.name || form.company_name,
+        // Contact full name and company stay separate — never copy company into name.
+        name:         form.name || undefined,
+        person:       form.name || undefined,
         company:      form.company_name || undefined,
         street:       form.street,
         city:         form.city,
@@ -1758,7 +1911,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         email:        form.email || undefined,
       },
       product_code:       form.product_code || 'P',
-      description:        form.description || 'Jewellery',
+      // Automatic description is backend-only. Send override ONLY when the
+      // operator edited the field — never re-post the canonical display value
+      // as though it were a manual description.
+      ...(descriptionDirty
+        ? { description_override: (form.description || '').trim() || null }
+        : {}),
       customer_reference: form.customer_reference || null,
       shipment_reference: form.shipment_reference || null,
       receiver_vat_id:    form.receiver_vat_id || null,
@@ -2204,8 +2362,29 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           <div style={fieldStyle}>
             <label htmlFor="awb-description" style={labelStyle}>Shipment Description * (appears on customs label)</label>
             <input id="awb-description" value={form.description}
-              onChange={e => set('description', e.target.value)} style={inputStyle}
+              onChange={e => {
+                setDescriptionDirty(true);
+                set('description', e.target.value);
+              }} style={inputStyle}
               data-testid="awb-field-description" />
+            {!descriptionDirty && descriptionLoad === 'loading' && (
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}
+                data-testid="awb-description-loading">
+                Loading description from product lines…
+              </div>
+            )}
+            {!descriptionDirty && descriptionLoad === 'empty' && (
+              <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 3 }}
+                data-testid="awb-description-empty-hint">
+                No product-line description yet — booking will use the backend last-resort if still empty.
+              </div>
+            )}
+            {!descriptionDirty && descriptionLoad === 'loaded' && descriptionCanonical && (
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}
+                data-testid="awb-description-canonical-hint">
+                From product lines (backend). Edit only to override.
+              </div>
+            )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
@@ -2609,7 +2788,7 @@ function ProformaActionBar({
               onClick={() => setShowSendModal(true)}
               disabled={!canSend}
               title={canSend
-                ? 'Send proforma PDF to customer via email'
+                ? 'Send customer documents / confirmation / reminder'
                 : (sendDisabledReason || 'Email send not available')}
               data-testid="tb-send"
             >
@@ -2747,18 +2926,9 @@ function ProformaActionBar({
             >
               {cloning ? '⏳ Cloning…' : '⎘ Duplicate'}
             </Btn>
-            <Btn
-              variant="outline" small
-              disabled
-              title={
-                'Document-package generation (proforma PDF · packing list · CMR · CN23) is not yet wired — ' +
-                'backend gap M4: POST /api/v1/proforma/draft/{id}/generate-documents (see BACKEND_GAP_REGISTER.md §2, priority LOW). ' +
-                'For now use ◫ Preview to view the layouts and ⎙ Print for the wFirma proforma PDF.'
-              }
-              data-testid="tb-generate"
-            >
-              ⚙ Generate ▾
-            </Btn>
+            {/* Obsolete permanently-disabled Generate (unwired M4) removed —
+                Documents hub owns Generate Commercial Package; Preview/Print cover layouts.
+                Campaign: unified customer Send / Documents. */}
             <Btn
               variant="outline" small
               disabled
@@ -5144,7 +5314,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // M7 — Prior Invoice History modal state
   const [showInvoiceHistory, setShowInvoiceHistory] = React.useState(false);
 
-  // M2 — Send Proforma Email modal state
+  // Unified customer Send modal state
   const [showSendModal, setShowSendModal] = React.useState(false);
 
   // M8 — AWB Generate modal state
@@ -6464,14 +6634,16 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         : '';
   // M7 — Prior Invoice History: enabled when wFirma contractor ID is available
   const contractorId  = (cr && cr.wfirma_customer_id) || null;
-  // M2 — Send Email: enabled when posted to wFirma (has PDF) and not in terminal state
+  // Unified Send: open when not cancelled/deleted. Document availability comes
+  // from send-options (manifest) — including invoice after conversion.
   const hasWfirmaId   = !!(liveDraft.wfirma_proforma_id || (draft && draft.wfirma_proforma_id));
-  const sendableStates = ['posted', 'approved', 'ready'];
-  const canSend       = hasWfirmaId && sendableStates.includes(draftState);
+  const sendableStates = ['posted', 'approved', 'ready', 'converted', 'invoiced', 'draft', 'editing'];
+  const canSend       = !['cancelled', 'deleted'].includes(draftState)
+    && sendableStates.includes(draftState);
   // M2 — Customer email from Customer Master (bill_to_email)
   const customerEmail = (cr && cr.customer && cr.customer.bill_to_email) || '';
-  const sendDisabledReason = !hasWfirmaId
-    ? 'Post draft to wFirma first — no PDF available for email'
+  const sendDisabledReason = ['cancelled', 'deleted'].includes(draftState)
+    ? `Cannot send in '${draftState}' state`
     : !sendableStates.includes(draftState)
       ? `Cannot send in '${draftState}' state`
       : '';
@@ -6790,6 +6962,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
     const shipTo = {
       name: sel.ship_to_name || sel.bill_to_name || '',
+      person: sel.ship_to_person || '',
       street: sel.ship_to_street || sel.bill_to_street || '',
       city: sel.ship_to_city || sel.bill_to_city || '',
       zip: sel.ship_to_zip || sel.bill_to_postal_code || '',
@@ -7748,7 +7921,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             currency:           draftCurrency || 'EUR',
             // Recipient identity — Customer Master via ship_to / buyer_override
             company_name:       (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
-            name:               '',
+            // Contact Full Name — Customer Master ship_to_person (via ship_to
+            // override person when present). Empty until CM baseline loads;
+            // AwbGenerateModal fills from getCustomerMaster.ship_to_person.
+            // Never invent from company name.
+            name:               (sto && sto.person)  || '',
             street:             (sto && sto.street)  || (bo && bo.street)  || '',
             city:               (sto && sto.city)    || (bo && bo.city)    || '',
             postal_code:        (sto && sto.zip)     || (bo && bo.zip)     || '',
@@ -7764,8 +7941,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             shipment_reference: batchId || '',
             // Proforma number for the result summary card (display only)
             proforma_number:    _awbProformaNo,
-            // Description — default; operator overrides in modal
-            description:        'Jewellery',
+            // Description is loaded by AwbGenerateModal from
+            // GET /api/v1/carrier/{batch}/shipment-description — never mapped
+            // from item_type in the browser.
             // Client identity — Customer Master baseline for the shipping
             // save-confirmation workflow (compare + explicit-save target).
             client_contractor_id: (liveDraft && liveDraft.client_contractor_id)

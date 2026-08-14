@@ -815,19 +815,52 @@ def _build_receiver_details(addr: dict) -> dict:
     (postalCode, email) are OMITTED when blank, never sent as "". phone is
     DHL-required and guarded upstream in create_shipment(); it is only
     included here when non-blank so an empty string can never be emitted.
+
+    Contact identity (Customer Master delivery authority / AWB modal):
+      company  → companyName
+      person   → fullName  (preferred contact person)
+      name     → contact fullName when company is already set (UI shape);
+                 company when person is set and company is absent (CM shape);
+                 both when only name is present (legacy)
+    Never invents a contact person from company when person is explicitly empty
+    and company is supplied without a separate contact name.
     """
     postal_address: dict = {
         "cityName":    addr.get("city") or addr.get("cityName") or "",
-        "countryCode": addr.get("country_code") or addr.get("countryCode") or "",
+        "countryCode": (
+            addr.get("country_code")
+            or addr.get("countryCode")
+            or addr.get("country")
+            or ""
+        ),
         "addressLine1": addr.get("street") or addr.get("addressLine1") or "",
     }
     postal_code = (addr.get("postal_code") or addr.get("postalCode") or "").strip()
     if postal_code:
         postal_address["postalCode"] = postal_code
 
+    company = (addr.get("company") or "").strip()
+    person = (addr.get("person") or "").strip()
+    name = (addr.get("name") or "").strip()
+    full_explicit = (addr.get("fullName") or "").strip()
+
+    if company and person:
+        company_name, full_name = company, person
+    elif company:
+        # UI shape: company + optional contact in name/fullName — do not
+        # silently copy company into fullName when contact was omitted.
+        company_name = company
+        full_name = person or full_explicit or name
+    elif person:
+        # CM delivery shape: name=company, person=contact
+        company_name, full_name = name, person
+    else:
+        company_name = name or company
+        full_name = full_explicit or name
+
     contact: dict = {
-        "fullName":    addr.get("name") or addr.get("fullName") or "",
-        "companyName": addr.get("company") or addr.get("name") or "",
+        "fullName":    full_name,
+        "companyName": company_name,
     }
     phone = (addr.get("phone") or "").strip()
     if phone:

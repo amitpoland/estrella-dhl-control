@@ -122,6 +122,8 @@ def resolve_dhl_cc() -> str:
 # attachments=None must fail closed to zero — never last-resort audit union.
 CUSTOMER_FACING_EMAIL_TYPES: frozenset = frozenset({
     "customer_delivery_confirmation",
+    "customer_delivery_reminder",
+    "proforma_send",
 })
 
 

@@ -18,6 +18,7 @@ import json
 import sqlite3
 import xml.etree.ElementTree as ET
 from collections import Counter
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -8826,7 +8827,10 @@ def purge_proforma_draft(
 #   5. SMTP config is production-gated via ZOHO_FROM_EMAIL
 
 _PROFORMA_SEND_TOKEN = "YES_SEND_PROFORMA_EMAIL"
-_PROFORMA_TERMINAL_STATES = frozenset({"cancelled", "deleted", "converted", "invoiced"})
+# Cancelled/deleted drafts must not email customers. Converted/invoiced drafts
+# remain sendable so Invoice (+ packing list) can be attached after conversion.
+_PROFORMA_TERMINAL_STATES = frozenset({"cancelled", "deleted"})
+_PROFORMA_SEND_LEGACY_TERMINAL = frozenset({"cancelled", "deleted", "converted", "invoiced"})
 
 import re as _re_proforma
 
@@ -8937,30 +8941,53 @@ def _proforma_email_body(draft: "pildb.ProformaDraft", subject: str) -> str:
     )
 
 
+@router.get("/draft/{draft_id}/send-options", dependencies=[_auth])
+def get_proforma_send_options(draft_id: int) -> JSONResponse:
+    """Read-only Send-options projection (documents + confirmation/reminder).
+
+    Eligibility is backend-only — React must not invent customer-safe types.
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    from ..services import customer_send as cs
+    carrier_db = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    try:
+        opts = cs.project_customer_send_options(
+            draft_id=int(draft_id),
+            storage_root=settings.storage_root,
+            proforma_db=_proforma_db_path(),
+            carrier_db=Path(carrier_db),
+        )
+    except Exception as exc:
+        # DraftNotFound already covered; other aggregator errors → 500 honest
+        from ..services.shipment_document_manifest import DraftNotFound
+        if isinstance(exc, DraftNotFound):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        log.warning("send-options failed draft=%s: %s", draft_id, exc)
+        raise HTTPException(status_code=500, detail="send-options failed") from exc
+    return JSONResponse(opts)
+
+
 @router.post("/draft/{draft_id}/send-email", dependencies=[_auth_write])
 def send_proforma_email(
     draft_id:   int,
     body:       Dict[str, Any],
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
-    """Send proforma PDF to customer via email.
+    """Unified customer Send: documents / confirmation retry / reminder.
 
-    Guards:
-      - 400: invalid draft_id
-      - 400: missing X-Operator
-      - 422: invalid confirm_token
-      - 404: draft not found
-      - 422: draft in terminal state (cancelled/deleted/converted/invoiced)
-      - 422: no wfirma_proforma_id (no PDF available)
-      - 422: customer email not resolvable
-      - 409: duplicate pending send (idempotency)
+    Body::
+        confirm_token (required)
+        action: send_documents | send_confirmation | send_reminder
+                (default send_documents)
+        document_types: optional list — default [official_proforma] for
+                        backward compatibility with the legacy Proforma-only send
+        recipient_override / subject_override / message_body / cc — documents only
 
-    Lesson E:
-      1. Validates draft state + PDF + recipient at execution time
-      2. Idempotent via queue_email._find_pending_duplicate
-      3. Terminal-state suppression
-      4. Durable queue entry before SMTP attempt
-      5. SMTP config production-gated
+    Never accepts attachment paths or URLs from the browser.
     """
     if not isinstance(draft_id, int) or draft_id <= 0:
         raise HTTPException(status_code=400, detail="invalid draft_id")
@@ -8968,7 +8995,6 @@ def send_proforma_email(
         raise HTTPException(status_code=400, detail="body must be a JSON object")
     operator = _require_operator(x_operator)
 
-    # 1. Confirm token — prevents accidental sends
     token = str(body.get("confirm_token") or "")
     if token != _PROFORMA_SEND_TOKEN:
         raise HTTPException(
@@ -8976,12 +9002,37 @@ def send_proforma_email(
             detail=f"Invalid confirmation token — expected {_PROFORMA_SEND_TOKEN}",
         )
 
-    # 2. Load draft (Lesson E P1: validate at execution time)
+    action = (body.get("action") or "send_documents").strip().lower()
+    if action not in ("send_documents", "send_confirmation", "send_reminder"):
+        raise HTTPException(status_code=400, detail=f"Unknown action '{action}'")
+
+    # ── Confirmation retry (failed notification only) ─────────────────────
+    if action == "send_confirmation":
+        from ..services import delivery_confirmation_service as dcs
+        result = dcs.retry_failed_confirmation_for_draft(int(draft_id))
+        if not result.get("notified"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Confirmation send refused: {result.get('reason')}",
+            )
+        return JSONResponse({"ok": True, "action": action, **result})
+
+    # ── Awaiting-customer reminder ────────────────────────────────────────
+    if action == "send_reminder":
+        from ..services import delivery_confirmation_service as dcs
+        result = dcs.send_awaiting_customer_reminder(int(draft_id))
+        if not result.get("reminded"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Reminder refused: {result.get('reason')}",
+            )
+        return JSONResponse({"ok": True, "action": action, **result})
+
+    # ── Document send (default / legacy) ──────────────────────────────────
     d = pildb.get_draft_by_id(_proforma_db_path(), int(draft_id))
     if d is None:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
 
-    # 3. Terminal-state guard (Lesson E P3)
     state = (d.draft_state or d.status or "").strip().lower()
     if state in _PROFORMA_TERMINAL_STATES:
         raise HTTPException(
@@ -8989,16 +9040,53 @@ def send_proforma_email(
             detail=f"Cannot send email: draft is in terminal state '{state}'",
         )
 
-    # 4. PDF guard — wfirma_proforma_id must exist
-    if not d.wfirma_proforma_id:
+    # Reject browser-supplied paths / URLs (fail closed).
+    for forbidden in ("attachments", "file_paths", "paths", "urls"):
+        if forbidden in body and body.get(forbidden) not in (None, "", [], {}):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Field '{forbidden}' is not accepted — "
+                       "document selection uses document_types only.",
+            )
+
+    from ..services import customer_send as cs
+    from ..services import shipment_document_manifest as sdm
+
+    raw_types = body.get("document_types")
+    if raw_types is None:
+        # Legacy Proforma-only send.
+        document_types = ["official_proforma"]
+    elif not isinstance(raw_types, list):
+        raise HTTPException(status_code=400, detail="document_types must be a list")
+    else:
+        document_types = cs.normalize_document_types(raw_types)
+
+    if not document_types:
+        raise HTTPException(status_code=422, detail="No document types selected.")
+
+    carrier_db = settings.carrier_storage_root or (settings.storage_root / "carrier")
+    try:
+        manifest = sdm.build_manifest(
+            int(draft_id),
+            storage_root=settings.storage_root,
+            proforma_db=_proforma_db_path(),
+            carrier_db=Path(carrier_db),
+        )
+        document_types = cs.assert_types_customer_sendable(manifest, document_types)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except sdm.DraftNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Legacy guard: official_proforma still requires wfirma id (also enforced
+    # by sendability predicate).
+    if "official_proforma" in document_types and not d.wfirma_proforma_id:
         raise HTTPException(
             status_code=422,
             detail="Cannot send email: draft has no wFirma proforma (no PDF available). "
                    "Post the draft to wFirma first.",
         )
 
-    # 5. Resolve recipient (Lesson E P1: execution-time validation)
-    #    Sanitise against CRLF injection (security review gate).
     recipient_override = _sanitise_email_field(
         body.get("recipient_override") or "", "recipient_override"
     )
@@ -9010,13 +9098,12 @@ def send_proforma_email(
                    "or provide recipient_override.",
         )
 
-    # 6. Build email — sanitise subject + CC against header injection
-    doc_no = d.wfirma_proforma_fullnumber or f"Draft #{d.id}"
+    default_subject, default_html = cs.customer_documents_email_bodies(d, document_types)
     subject = _sanitise_subject(
-        (body.get("subject_override") or "").strip() or f"Proforma {doc_no}"
+        (body.get("subject_override") or "").strip() or default_subject
     )
     message_body = (body.get("message_body") or "").strip()
-    html_body = message_body if message_body else _proforma_email_body(d, subject)
+    html_body = message_body if message_body else default_html
     cc_list = body.get("cc") or []
     if isinstance(cc_list, list):
         cc_validated = [_sanitise_email_field(c, "cc") for c in cc_list]
@@ -9024,56 +9111,22 @@ def send_proforma_email(
     else:
         cc_str = _sanitise_email_field(str(cc_list), "cc")
 
-    # 7. Fetch proforma PDF from wFirma (authority: wfirma_proforma_id)
-    #
-    # Authority chain:
-    #   draft.wfirma_proforma_id → wfirma_client.fetch_invoice_pdf (read-only)
-    #   → PDF bytes → temp file under storage_root → queue_email(attachments=...)
-    #   → email_sender._attachments_for_queue (security: path under storage_root)
-    #   → SMTP attachment → temp file cleanup
-    #
-    # The fetch is read-only (GET invoices/download/{id}).  If wFirma is
-    # unreachable or the PDF is missing, the send is blocked with 422.
     batch_id = d.batch_id or ""
-    wfirma_id = d.wfirma_proforma_id.strip()
-    pdf_filename = f"proforma-{doc_no.replace('/', '-').replace(' ', '_')}.pdf"
-
-    from ..services import wfirma_client as _wfc
     try:
-        pdf_bytes = _wfc.fetch_invoice_pdf(wfirma_id)
+        attach_meta = cs.materialize_customer_attachments(
+            draft=d,
+            document_types=document_types,
+            storage_root=settings.storage_root,
+        )
     except Exception as exc:
-        log.warning(
-            "send_proforma_email: fetch_invoice_pdf failed for wfirma_id=%s: %s",
-            wfirma_id, exc,
-        )
+        log.warning("send_proforma_email: materialize failed draft=%s: %s", draft_id, exc)
         raise HTTPException(
             status_code=422,
-            detail="Cannot send email: failed to fetch proforma PDF from wFirma. "
-                   f"wfirma_id={wfirma_id}. Try again later or check wFirma status.",
-        )
+            detail=f"Cannot build customer attachments: {exc}",
+        ) from exc
 
-    if not pdf_bytes or len(pdf_bytes) < 10:
-        raise HTTPException(
-            status_code=422,
-            detail="Cannot send email: wFirma returned empty PDF. "
-                   f"wfirma_id={wfirma_id}.",
-        )
-
-    # Write PDF to a temp file under storage_root so _attachments_for_queue
-    # security check passes (path must be under storage_root).
-    _pdf_dir = settings.storage_root / "proforma_email_pdfs"
-    _pdf_dir.mkdir(parents=True, exist_ok=True)
-    # Sanitise filename for filesystem safety (no path traversal)
-    _safe_fn = "".join(
-        c if (c.isalnum() or c in "._-") else "_" for c in pdf_filename
-    )
-    # Add draft_id prefix to avoid race conditions on concurrent requests
-    _safe_fn = f"{draft_id}_{_safe_fn}"
-    _pdf_path = _pdf_dir / _safe_fn
-    _pdf_path.write_bytes(pdf_bytes)
-
-    # 8. Queue email (Lesson E P2+P4: idempotency + replay safety)
     from ..services import email_service
+    attach_paths = [Path(a["path"]) for a in attach_meta]
     try:
         queue_id = email_service.queue_email(
             to=recipient,
@@ -9083,27 +9136,25 @@ def send_proforma_email(
             cc=cc_str,
             from_address="import@estrellajewels.eu",
             email_type="proforma_send",
-            attachments=[{"label": _safe_fn, "path": str(_pdf_path)}],
+            attachments=attach_meta,
         )
     except email_service.FollowupSuppressedError as fse:
-        # Clean up temp PDF on suppression
-        try:
-            _pdf_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for p in attach_paths:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise HTTPException(
             status_code=409,
             detail=f"Send suppressed: {fse.detail}",
         )
     finally:
-        # Clean up temp PDF after queue_email() — SMTP is synchronous,
-        # so the file has been consumed by the time we get here.
-        try:
-            _pdf_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for p in attach_paths:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
 
-    # 9. Timeline event
     from ..core import timeline as tl
     audit_root = settings.storage_root / "batches" / batch_id if batch_id else None
     if audit_root and (audit_root / "audit.json").exists():
@@ -9113,30 +9164,31 @@ def send_proforma_email(
             "operator",
             operator,
             {
-                "draft_id":     draft_id,
-                "recipient":    recipient,
-                "subject":      subject,
-                "queue_id":     queue_id,
-                "pdf":          pdf_filename,
-                "pdf_attached": True,
-                "pdf_bytes":    len(pdf_bytes),
+                "draft_id":        draft_id,
+                "recipient":       recipient,
+                "subject":         subject,
+                "queue_id":        queue_id,
+                "document_types":  list(document_types),
+                "attachment_labels": [a["label"] for a in attach_meta],
+                "pdf_attached":    True,
             },
         )
 
     log.info(
-        "proforma email queued: draft=%d recipient=%s subject=%r queue_id=%s operator=%s",
-        draft_id, recipient, subject, queue_id, operator,
+        "customer send queued: draft=%d action=%s docs=%s recipient=%s queue_id=%s operator=%s",
+        draft_id, action, document_types, recipient, queue_id, operator,
     )
 
     return JSONResponse({
-        "ok":           True,
-        "queued_id":    queue_id,
-        "recipient":    recipient,
-        "subject":      subject,
-        "pdf_filename": pdf_filename,
-        "pdf_attached": True,
-        "pdf_bytes":    len(pdf_bytes),
-        "audit_event":  "proforma_email_queued",
+        "ok":              True,
+        "action":          action,
+        "queued_id":       queue_id,
+        "recipient":       recipient,
+        "subject":         subject,
+        "document_types":  list(document_types),
+        "pdf_attached":    True,
+        "attachment_count": len(attach_meta),
+        "audit_event":     "proforma_email_queued",
     })
 
 
