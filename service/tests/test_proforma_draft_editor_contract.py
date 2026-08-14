@@ -1223,25 +1223,29 @@ def test_ui_charge_form_blocks_mismatched_currency_client_side():
     )
 
 
-# ── 27. PR-202: ProformaDraftPanel mounted in Sales tab ─────────────────
+# ── 27. PR-202 / B-014: Sales tab Pro Forma entry (HARD CUTOVER → V2) ────
 
 def test_ui_proforma_draft_panel_mounted_in_sales_tab():
+    """SUPERSEDED by B-014 hard cutover: Sales tab no longer mounts the V1
+    panel; it routes to /v2/proforma?batch_id=. Panel source is retained.
+    """
     src = (Path(__file__).resolve().parents[1] / "app" / "static"
            / "shipment-detail.html").read_text(encoding="utf-8")
-    # Locate the Sales-tab RENDER branch (activeTab === 'Sales' && (() => {).
-    # An earlier hit appears in a useEffect — skip past it.
-    start = src.index("activeTab === 'Sales' && (() =>")
-    # Bound at the next sibling activeTab render branch.
-    end   = src.index("activeTab === 'PZ / Accounting'", start)
+    start = src.index("{activeTab === 'Sales' && (")
+    end   = src.index("{activeTab === 'PZ / Accounting' && (", start)
     sales_block = src[start:end]
-    assert "<ProformaDraftPanel" in sales_block, (
-        "Sales tab must mount <ProformaDraftPanel> as the primary "
-        "operator entry point"
+    assert "SalesProformaV2CutoverGate" in sales_block, (
+        "Sales tab must mount SalesProformaV2CutoverGate (B-014 hard cutover)"
     )
-    # And keep a distinguishing data-testid so smoke tests can locate it.
-    assert "sales-tab-proforma-draft-panel" in sales_block, (
-        "Sales-tab mount must carry data-testid='sales-tab-proforma-draft-panel'"
+    assert "<ProformaDraftPanel" not in sales_block, (
+        "Sales tab must NOT mount <ProformaDraftPanel> after B-014 hard cutover"
     )
+    assert "function ProformaDraftPanel(" in src, (
+        "ProformaDraftPanel source must remain (not deleted in cutover campaign)"
+    )
+    assert 'data-testid="sales-tab-proforma-cutover-gate"' in src
+    assert 'data-testid="sales-tab-proforma-v2-entry"' in src
+    assert "/v2/proforma?batch_id=" in src
 
 
 # ── 28. PR-202: No wFirma/PZ/DHL/post execution added in this PR ────────

@@ -2,10 +2,10 @@
 
 ## Current task
 
-- **Task:** B-014 Decision B — port Reset ALL + re-open + deep-link to V2
-- **Status:** `IN_PROGRESS` (implement → PR → 7-agent → App-deploy → RO remeasure)
-- **Branch:** `fix/b014-v2-reset-reopen-deeplink` (from main `9fa7126d`)
-- **Authority:** same `POST .../re-open` + `POST .../reset-from-sales-packing` — no new financial path
-- **Safety:** no live approve/convert/post/reset/re-open/wFirma writes in prod browser verify
-- **Do not:** activate V1→V2 hard cutover without explicit operator approval
-- **Prior closed:** #1231 DEPLOYED; queue otherwise exhausted
+- **Task:** B-014 HARD CUTOVER — V1 Sales/Pro Forma entry → V2
+- **Status:** `IN_PROGRESS` (implement → PR → 7-agent → App-deploy → RO verify → CLOSE)
+- **Baseline prod/main start:** `cc8d6b30abb3d614f8cfca8f6451c09afe6bd427`
+- **Branch:** `fix/b014-hard-cutover-v1-to-v2`
+- **Scope:** `shipment-detail.html` navigation only — ProformaDraftPanel source retained
+- **Do not:** delete V1 panel; widen permissions; touch routes_proforma / engine / wFirma
+- **Verify:** GET/navigation/static only — no Reset/Re-open/Approve/Convert/wFirma writes
