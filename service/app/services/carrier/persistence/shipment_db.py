@@ -93,7 +93,28 @@ _ADDITIVE_COLUMNS = [
     ("contact_needs_review", "INTEGER NOT NULL DEFAULT 0"),
     ("dhl_return_capability", "TEXT"),        # pending until account confirmed
     ("create_return_available", "INTEGER NOT NULL DEFAULT 0"),
+    # Carrier/provider owning this shipment — DHL | FEDEX | UPS.
+    # Nullable: rows booked before this column existed carry NULL. Every such
+    # row was created through the DHL-only live adapter (adapters/live.py has
+    # no other carrier), so NULL resolves to DHL at read time via
+    # resolve_provider(). Legacy rows are NOT rewritten on disk.
+    ("provider", "TEXT"),
 ]
+
+# Provider vocabulary. DHL is booked through the live adapter; FEDEX/UPS are
+# customer-arranged (operator registers provider + tracking + external AWB).
+PROVIDER_DHL = "DHL"
+PROVIDERS = ("DHL", "FEDEX", "UPS")
+
+
+def resolve_provider(stored: Optional[str]) -> str:
+    """Provider for a shipment row — the ONE place NULL is interpreted.
+
+    NULL means the row predates the provider column. Only the DHL adapter
+    existed then, so DHL is evidence-backed, not a guess. Callers must use
+    this instead of defaulting a blank carrier in a projection or a UI.
+    """
+    return (stored or "").strip().upper() or PROVIDER_DHL
 
 # Outbound-only filter — return drafts must never leak into AWB attribution.
 _OUTBOUND_ONLY = (
@@ -107,6 +128,20 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
+
+
+def _row(row) -> Optional[dict]:
+    """Normalize a carrier_shipments row — the single read boundary.
+
+    Every reader goes through here so ``provider`` is interpreted in exactly
+    one place and no consumer (CMR, Logistics, Packing List, UI) has to invent
+    a carrier for a legacy NULL.
+    """
+    if row is None:
+        return None
+    d = dict(row)
+    d["provider"] = resolve_provider(d.get("provider"))
+    return d
 
 
 def init_db(db_path: Path) -> None:
@@ -134,6 +169,7 @@ def insert_shipment(
     client_ref: Optional[str] = None,
     *,
     operator: Optional[str] = None,
+    provider: str = PROVIDER_DHL,
 ) -> None:
     """
     Record a new shipment idempotency entry.
@@ -149,7 +185,15 @@ def insert_shipment(
     insert — state transitions never touch it — so the audit trail always names
     the operator who initiated the real booking, never a later replayer. None
     stores NULL (legacy/unattributed callers behave exactly as before).
+
+    provider (keyword-only) is the carrier owning this shipment. Defaults to
+    DHL — the only carrier with a booking adapter — so existing callers are
+    unchanged. Customer-arranged FEDEX/UPS registrations pass their own.
     """
+    if provider not in PROVIDERS:
+        raise ValueError(
+            f"Unknown carrier provider {provider!r}; expected one of {PROVIDERS}"
+        )
     if result.mode == ShipmentMode.LIVE:
         raise ValueError(
             "Live shipment results must not be inserted into carrier_shipments DB. "
@@ -160,8 +204,8 @@ def insert_shipment(
             """
             INSERT INTO carrier_shipments
                 (idempotency_key, batch_id, client_ref, mode, state, error, simulated,
-                 service_product, dimensions_json, booked_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 service_product, dimensions_json, booked_by, provider)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.idempotency_key,
@@ -174,6 +218,7 @@ def insert_shipment(
                 result.service_product,
                 result.dimensions_json,
                 operator,
+                provider,
             ),
         )
 
@@ -195,7 +240,7 @@ def get_shipment(db_path: Path, idempotency_key: str) -> Optional[dict]:
             "SELECT * FROM carrier_shipments WHERE idempotency_key = ?",
             (idempotency_key,),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def get_shipment_by_batch_id(db_path: Path, batch_id: str) -> Optional[dict]:
@@ -212,7 +257,7 @@ def get_shipment_by_batch_id(db_path: Path, batch_id: str) -> Optional[dict]:
             f"AND {_OUTBOUND_ONLY} ORDER BY created_at DESC LIMIT 1",
             (batch_id,),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def get_legacy_shipment(db_path: Path, batch_id: str) -> Optional[dict]:
@@ -238,7 +283,7 @@ def get_legacy_shipment(db_path: Path, batch_id: str) -> Optional[dict]:
             "ORDER BY created_at DESC LIMIT 1",
             (batch_id,),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def get_client_shipment(
@@ -273,7 +318,7 @@ def get_client_shipment(
             "ORDER BY created_at DESC LIMIT 1",
             (batch_id, client_ref),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def get_shipment_for_draft(
@@ -499,7 +544,7 @@ def get_do_not_use(db_path: Path, batch_id: str, tracking_ref: str) -> Optional[
             """,
             (batch_id, tracking_ref),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def update_shipment_fields(
@@ -569,7 +614,7 @@ def get_shipment_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[d
             ).fetchone()
     except sqlite3.OperationalError:
         return None
-    return dict(row) if row else None
+    return _row(row)
 
 
 def list_tracked_shipments(
@@ -699,7 +744,7 @@ def get_return_draft(
                 "AND LOWER(COALESCE(shipment_direction, '')) = 'return'",
                 (idempotency_key,),
             ).fetchone()
-            return dict(row) if row else None
+            return _row(row)
 
         clauses = [
             "LOWER(COALESCE(shipment_direction, '')) = 'return'",
@@ -717,7 +762,7 @@ def get_return_draft(
             "ORDER BY created_at DESC LIMIT 1",
             tuple(args),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def update_return_draft(

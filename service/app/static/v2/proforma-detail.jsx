@@ -5930,7 +5930,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       linked:            !!ship,
       export_shipment_id,
       outbound_awb:      ship ? (ship.tracking_ref || null) : null,   // AWB only, from tracking_ref
-      carrier:           ship ? (ship.carrier || 'DHL') : null,
+      // Carrier comes from carrier_shipments.provider via the shipment API.
+      // No frontend default: the backend already resolved legacy NULL rows, so
+      // a blank here is honest-missing, not an excuse to print DHL.
+      carrier:           ship ? (ship.carrier || null) : null,
       service:           ship ? (ship.service_code || null) : null,
       tracking_url:      ship ? (ship.tracking_url || null) : null,
       status:            ship ? (ship.state || ship.status || null) : null,
@@ -7212,7 +7215,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               </div>
               {carrierShipment ? (
                 <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 20px', marginBottom: 8, boxShadow: '0 1px 2px var(--shadow)' }} data-testid="pf-logistics-awb">
-                  {_kv('Carrier', carrierShipment.carrier || 'DHL', 'pf-logistics-awb-carrier')}
+                  {_kv('Carrier', carrierShipment.carrier || '—', 'pf-logistics-awb-carrier')}
                   {_kv('AWB / tracking', carrierShipment.tracking_ref
                     || (carrierShipment.saved_labels_exist
                         ? 'recorded before reference store — see saved labels'
@@ -7335,7 +7338,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               <OutboundShipmentTracking
                 awb={(carrierShipment && carrierShipment.tracking_ref) || (_transport && _transport.outbound_awb) || ''}
                 batchId={liveDraft.batch_id || (draft && draft.batch_id) || ''}
-                carrier={(carrierShipment && carrierShipment.carrier) || 'DHL'}
+                carrier={(carrierShipment && carrierShipment.carrier) || null}
                 draftId={draft && draft.id}
               />
               <ImportClearanceLogisticsPanel

@@ -927,7 +927,9 @@ def create_shipment(
         # whether labels exist on the server for this batch anyway.
         "saved_labels_exist": _batch_has_any_label(batch_id),
         # AWB logistics summary — echoes the shipment intent for display.
-        "carrier": "DHL",
+        # This route books through the DHL adapter only, so the provider is DHL
+        # by construction; named from the shared constant, not a loose literal.
+        "carrier": shipment_db.PROVIDER_DHL,
         "service_code": (result.service_product if isinstance(result.service_product, str)
                          else (body.product_code or "P")),
         "box_type_code": body.box_type_code,
@@ -1005,7 +1007,10 @@ def get_shipment(
         "error": row["error"],
         # AWB logistics/document visibility (all additive)
         "tracking_ref": tracking_ref,
-        "carrier": "DHL",
+        # Carrier owning this shipment, from carrier_shipments.provider.
+        # shipment_db._row() already resolved a legacy NULL to DHL, so this is
+        # never blank and no consumer needs a fallback of its own.
+        "carrier": row.get("provider"),
         "service_code": row.get("service_product"),
         "box_type_code": row.get("box_type_code"),
         "weight_kg": row.get("weight_kg"),
