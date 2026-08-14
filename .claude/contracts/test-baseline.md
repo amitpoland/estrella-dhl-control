@@ -60,7 +60,9 @@ fix the isolation-leak fixtures in the wfirma/dashboard-pz modules). Not enumera
 bloat the table); the six module names above are the tracked scope.
 
 **Deploy-authority governance violations — 3 tests (SCHEDULED, registered 2026-08-14, `a0269210` / PR #1236 deploy gate):**
-`service/tests/test_deploy_authority.py` measures **85 passed / 3 failed** on the deploy host. The three reds are
+`service/tests/test_deploy_authority.py` measures **3 failed** on the deploy host, against a passed count that
+tracks suite growth (85 at `a0269210`; **86** after PR #1238 added the PS 5.1 `Split-Path -LiteralPath -Leaf` pin).
+The registered invariant is the failure *set*, never the passed total. The three reds are
 **outside both metered file-globs** (`tests/test_pz_*.py`, `tests/test_carrier_*.py`) — zero floor impact — and are
 registered here rather than left unlisted, because the QA reviewer of the `a0269210` round declined to dispose them
 silently under the 6-module precedent above: those were stale V1 source-grep pins and event-loop leakage, whereas
