@@ -533,3 +533,130 @@ def test_v2_pzapi_proposal_helpers_body_attribution():
     ap_block = src.split("approveProposal:")[1].split("rejectProposal:")[0]
     assert "_call('POST'" in ap_block, "approveProposal must use _call (body attribution), not _postM"
     assert "_postM(" not in ap_block, "approveProposal must NOT use _postM (X-Operator header is ignored here)"
+
+
+# ── Single Proforma V2 frontend authority (duplicate-frontend retirement) ─────
+#
+# The repo once carried TWO complete Proforma V2 implementations:
+#   * service/app/static/v2/            — canonical, Babel-served, current
+#   * service/frontend/proforma-v2/     — independent Vite app, frozen 2026-06-30
+#
+# The Vite app built to service/app/static/v2/proforma-react/, and that build was
+# COMMITTED. Because /v2/{path:path} (main.py) serves any file under static/v2/,
+# the stale bundle was directly reachable at /v2/proforma-react/index.html by any
+# authenticated operator — it was never "orphan", only unlinked from navigation.
+# It still carried behaviour removed from the canonical path in #940/#943:
+# the supplier purchase-invoice bleed into client_po, and a hardcoded 'India'
+# origin fallback. Both trees were retired together; restoring either one alone
+# re-creates the split. These guards fail if a second implementation reappears.
+
+_RETIRED_BUILD  = _V2 / "proforma-react"
+_RETIRED_SOURCE = pathlib.Path(__file__).parent.parent.parent / "service" / "frontend" / "proforma-v2"
+
+
+def test_retired_vite_build_artifact_absent():
+    """The reachable stale bundle must not come back under static/v2/."""
+    assert not _RETIRED_BUILD.exists(), (
+        f"{_RETIRED_BUILD} is back. It is served by /v2/{{path}} and therefore "
+        "reachable at /v2/proforma-react/ — a second Proforma V2 implementation."
+    )
+
+
+def test_retired_vite_source_tree_absent():
+    """The stale Vite source must not come back (it rebuilds the bundle above)."""
+    assert not _RETIRED_SOURCE.exists(), (
+        f"{_RETIRED_SOURCE} is back. Retired as duplicate Proforma V2 authority; "
+        "the canonical implementation is service/app/static/v2/."
+    )
+
+
+def test_v2_index_does_not_reference_retired_bundle():
+    """The canonical shell must not load or link the retired build."""
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "proforma-react" not in html, "v2/index.html references the retired proforma-react bundle"
+
+
+def test_v2_shell_loads_canonical_proforma_detail():
+    """Positive pin: the shell still loads the canonical Babel-served implementation."""
+    html = _INDEX.read_text(encoding="utf-8", errors="replace")
+    assert "proforma-detail.jsx" in html, "v2/index.html no longer loads proforma-detail.jsx"
+    assert (_V2 / "proforma-detail.jsx").exists(), "canonical proforma-detail.jsx missing"
+
+
+def test_no_first_party_source_references_retired_frontend():
+    """No live code, test, config, CI or deploy script may reference the retired paths.
+
+    reports/ is EXCLUDED: those are immutable historical evidence files that
+    legitimately describe the retired tree. Scans first-party source only.
+    """
+    repo = pathlib.Path(__file__).parent.parent.parent
+    needles = ("frontend/proforma-v2", "proforma-react")
+    exts = {".py", ".jsx", ".js", ".mjs", ".html", ".yml", ".yaml", ".sh", ".ps1", ".json", ".mk"}
+    skip_dirs = {"reports", ".git", "node_modules", "__pycache__", ".pytest_cache", "tasks"}
+
+    offenders = []
+    for path in repo.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in exts:
+            continue
+        if any(part in skip_dirs for part in path.relative_to(repo).parts):
+            continue
+        if path.name == pathlib.Path(__file__).name:
+            continue  # this guard file names the paths on purpose
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for needle in needles:
+            if needle in text:
+                offenders.append(f"{path.relative_to(repo).as_posix()} -> {needle!r}")
+
+    assert not offenders, (
+        "Live references to the retired Proforma V2 frontend:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_js_test_tooling_owns_its_dependencies():
+    """service/tests/js must own esbuild — never borrow it from a frontend app."""
+    import json as _json  # noqa: PLC0415
+
+    js_dir = pathlib.Path(__file__).parent / "js"
+    pkg = js_dir / "package.json"
+    assert pkg.exists(), "service/tests/js/package.json missing (JS test tooling authority)"
+    assert (js_dir / "package-lock.json").exists(), "service/tests/js/package-lock.json missing"
+
+    deps = _json.loads(pkg.read_text(encoding="utf-8")).get("devDependencies", {})
+    assert "esbuild" in deps, "esbuild must be an explicit devDependency of the test package"
+
+    reducer = js_dir / "test_acc_receivable_reducer.mjs"
+    src = reducer.read_text(encoding="utf-8", errors="replace")
+    assert "frontend/proforma-v2" not in src, "JS test still resolves esbuild from the retired app"
+    assert "require('esbuild')" in src, "JS test must resolve esbuild via normal module resolution"
+
+
+def test_retired_bundle_url_no_longer_serves_the_obsolete_app(dev_client):
+    """/v2/proforma-react/* must not serve the retired implementation.
+
+    Asset paths 404 (they have a suffix). The extension-free directory path
+    falls through to the canonical SPA shell by design — what matters is that
+    neither returns the retired Vite application.
+    """
+    asset = dev_client.get("/v2/proforma-react/assets/index-CGYvGRbx.js")
+    assert asset.status_code == 404, "retired bundle asset is still served"
+
+    page = dev_client.get("/v2/proforma-react/index.html")
+    assert page.status_code == 404, "retired bundle index.html is still served"
+
+    # Extension-free path → canonical shell, never the retired app.
+    spa = dev_client.get("/v2/proforma-react/")
+    assert "proforma-react/assets" not in spa.text, "retired app served at its old path"
+
+
+def test_canonical_v2_shell_still_serves(dev_client):
+    """The canonical shell and its Proforma detail implementation still load."""
+    assert dev_client.get("/v2/index.html").status_code == 200
+    assert dev_client.get("/v2/proforma-detail.jsx").status_code == 200
+
+
+def test_retired_bundle_path_keeps_prod_auth_gate(prod_client):
+    """The retirement must not open a hole: /v2/* stays session-gated in prod."""
+    r = prod_client.get("/v2/proforma-react/assets/index-CGYvGRbx.js")
+    assert r.status_code == 302 and "/login" in r.headers.get("location", ""), (
+        "retired-bundle path bypasses the /v2 auth gate"
+    )

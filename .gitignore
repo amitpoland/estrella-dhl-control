@@ -12,6 +12,12 @@ venv/
 .venv/
 service/.venv/
 
+# Node dependency trees (installed via `npm ci`, never tracked). Repo-wide rule:
+# the only previous node_modules/ ignore lived inside service/frontend/proforma-v2/,
+# retired as duplicate frontend authority. JS test tooling now lives in
+# service/tests/js/ and installs its own dependencies there.
+node_modules/
+
 # Claude Code / Ruflo MCP sandbox artifacts
 .claude/worktrees/
 .claude/agents/prompt-engineer.md

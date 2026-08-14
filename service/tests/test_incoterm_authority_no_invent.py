@@ -273,8 +273,9 @@ def test_no_invent_dap_in_active_sources():
         root / "static" / "v2" / "estrella-doc-proforma.jsx",
         root / "static" / "v2" / "estrella-doc-cmr.jsx",
         root / "static" / "v2" / "proforma-detail.jsx",
-        # Legacy bundled SPA still served under /v2/proforma-react — neutralize invents.
-        root / "static" / "v2" / "proforma-react" / "assets" / "index-CGYvGRbx.js",
+        # A second, separately-built Proforma bundle was listed here too, because
+        # the same invent had to be neutralized twice. It is retired (see
+        # test_atlas_v2_sprint1.py) — one implementation now, so one place to check.
     ]
     banned = ['|| "DAP"', "|| 'DAP'", '||"DAP"', "||'DAP'", '"incoterm": "DAP"']
     for path in paths:

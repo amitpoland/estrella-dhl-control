@@ -262,3 +262,27 @@ For the decision list: retire routes + worker together, or re-register the route
 | `C:\PZ-verify` (full tree) | Grep `worker_tick` → 3 hits, all inside `reservation_worker.py` |
 | `service/app/` | Grep for `process_ready_reservations\|refresh_queue_readiness\|import_purchase_packing\|import_sales_packing\|sync_wfirma_products_by_codes` → all external call sites confirmed inside `routes_reservations.py` only |
 | `service/app/` | Grep `create_task.*reservation\|Thread.*reservation\|add_job.*reservation` → 0 hits |
+
+---
+
+## APPENDED CORRECTION — 2026-08-01 (original text above left intact)
+
+**Corrects:** the word "ORPHAN" at line 61 and "ORPHAN — not wired to any route" in the Claim 4b
+table, row 4, at line 83.
+
+"Orphan" and "not wired to any route" were accurate about *navigation* and misleading about
+*reachability*. The Vite build at `v2/proforma-react/` was **directly reachable by URL**. There is
+no per-app route to wire: `service/app/main.py:673-704` registers a catch-all
+`@app.get("/v2/{path:path}")` that serves any file under `service/app/static/v2/`. Committing the
+build directory published it. `GET /v2/proforma-react/index.html` served the duplicate proforma app
+to any authenticated operator who reached the URL. The route applies the same session/API-key gate
+as the rest of `/v2/` in non-dev environments — authenticated, but not unreachable.
+
+Read the original rows as: *not linked from navigation, not the production surface, but live at a
+guessable URL.*
+
+**Resolved 2026-08-01.** Both the duplicate source (`service/frontend/proforma-v2/`) and the
+reachable build (`service/app/static/v2/proforma-react/`) were deleted; Claim 4b's count of four
+proforma implementations drops to three. Canonical authority and the reachability facts are
+recorded in `docs/governance/AUTHORITY_MAP.md`; production residue in
+`docs/deploy-prep/2026-08-01-proforma-react-production-reconciliation.md`.

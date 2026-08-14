@@ -183,3 +183,27 @@ Tracked schema/harness drift — GATE-4 **SCHEDULED**, out of scope for PR #1037
 **HOLD:** stops here at merge-ready draft for operator review. Do not merge or deploy. Promoting a
 draft service ID **into Customer Master** remains a separate, hard-gated campaign (financial
 approval + security review) and was not built — this PR keeps Customer Master read-only.
+
+---
+
+## APPENDED CORRECTION — 2026-08-01 (original text above left intact)
+
+**Corrects:** §1, line 28 — "No current route switches the production detail page to
+`proforma-react/`."
+
+That sentence is true as written and incomplete in effect. No route *switched* to the Vite build,
+but the build was still **served**. `service/app/main.py:673-704` registers a catch-all
+`@app.get("/v2/{path:path}")` over `service/app/static/v2/`, so no per-app route registration was
+ever needed: `GET /v2/proforma-react/index.html` returned the duplicate app to any authenticated
+operator. Non-dev requests pass the same session/API-key gate as the rest of `/v2/` — the obsolete
+implementation was authenticated, not unreachable.
+
+§1's substantive rulings stand: the two implementations were independent (not a source/generated
+pair), there was no parity relationship, and the existence of both was architectural residue.
+
+**Resolved 2026-08-01.** The retirement campaign §1 anticipated has been executed:
+`service/frontend/proforma-v2/` and `service/app/static/v2/proforma-react/` are both deleted, with
+route- and filesystem-level guards in `service/tests/test_atlas_v2_sprint1.py`. Canonical authority:
+`docs/governance/AUTHORITY_MAP.md`. Production residue:
+`docs/deploy-prep/2026-08-01-proforma-react-production-reconciliation.md`. This correction changes
+nothing about PR #1037's own HOLD status or its Customer Master read-only guarantee.

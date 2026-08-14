@@ -8,7 +8,11 @@
 //   * cross-currency amounts are NEVER summed into one number
 //   * unavailable rows and unparseable values are skipped
 //
-// Run:  node --test service/tests/js/test_acc_receivable_reducer.mjs
+// Dependencies are owned by service/tests/js/package.json (run `npm ci` there
+// first). esbuild was previously borrowed from a duplicate Proforma V2 Vite app
+// that has since been retired, so test tooling now owns the dependency itself.
+//
+// Run:  cd service/tests/js && npm ci && npm test
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -19,7 +23,7 @@ import { createRequire } from 'node:module';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const esbuild = require(resolve(__dirname, '../../frontend/proforma-v2/node_modules/esbuild'));
+const esbuild = require('esbuild');
 
 function loadReducer() {
   const src = readFileSync(resolve(__dirname, '../../app/static/v2/accounting-hub.jsx'), 'utf8');
