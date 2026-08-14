@@ -398,7 +398,8 @@ class ShipmentRequestBody(BaseModel):
     special_instructions: Optional[str] = None
     # Upgraded AWB modal fields — all optional, defaults applied in ShipmentRequest
     product_code: Optional[str] = None        # DHL productCode; defaults to "P"
-    description: Optional[str] = None         # shipment description; canonical projection when blank/generic
+    description: Optional[str] = None         # legacy; ignored for automatic projection
+    description_override: Optional[str] = None  # only when operator explicitly edits description
     customer_reference: Optional[str] = None  # proforma/order reference
     shipment_reference: Optional[str] = None  # internal batch reference
     receiver_vat_id: Optional[str] = None     # receiver EU VAT number
@@ -486,26 +487,32 @@ def _load_draft_editable_lines(
 
 def _resolve_shipment_description(
     *,
-    body_description: Optional[str],
+    description_override: Optional[str],
     storage_root,
     batch_id: str,
     client_ref: Optional[str],
 ) -> str:
-    """Shipment description: operator override → canonical line projection → last resort.
+    """Shipment description: explicit operator override → canonical projection → last resort.
 
-    Canonical authority is ``description_engine.project_shipment_content_description``
-    (item_type → ITEM_TYPE_EN via customs renderer). Local ``Jewellery`` is only
-    used when neither an explicit non-generic override nor a draft projection exists
-    (DHL requires a non-empty content.description).
+    Canonical automatic authority is ONLY
+    ``description_engine.project_shipment_content_description``.
+
+    ``description_override`` is used solely when the operator intentionally edits
+    the field. An automatically displayed canonical value must NOT be posted back
+    as an override (that would let the browser become a competing mapper).
+
+    Local ``Jewellery`` is transport last-resort only when override is absent and
+    the draft has no usable item_type/description_en evidence.
     """
     from ..services.description_engine import (
         is_generic_shipment_description,
         project_shipment_content_description,
     )
 
-    explicit = (body_description or "").strip()
-    if explicit and not is_generic_shipment_description(explicit):
-        return explicit
+    override = (description_override or "").strip()
+    if override and not is_generic_shipment_description(override):
+        return override
+
     projected = project_shipment_content_description(
         _load_draft_editable_lines(
             storage_root=storage_root,
@@ -515,7 +522,33 @@ def _resolve_shipment_description(
     )
     if projected:
         return projected
-    return explicit or "Jewellery"
+    # Generic override (Jewellery) or blank → still try projection first (above);
+    # only then fall back for DHL's non-empty content.description contract.
+    return override or "Jewellery"
+
+
+def _project_shipment_description_for_client(
+    *,
+    storage_root,
+    batch_id: str,
+    client_ref: Optional[str],
+) -> dict:
+    """Read-only canonical projection for AWB modal display. Never books."""
+    from ..services.description_engine import project_shipment_content_description
+
+    projected = project_shipment_content_description(
+        _load_draft_editable_lines(
+            storage_root=storage_root,
+            batch_id=batch_id,
+            client_ref=client_ref,
+        )
+    )
+    return {
+        "batch_id": batch_id,
+        "client_ref": (client_ref or "").strip() or None,
+        "shipment_description": projected or "",
+        "source": "canonical" if projected else "empty",
+    }
 
 
 def _carrier_address_from_delivery_authority(address: dict) -> dict:
@@ -643,6 +676,31 @@ def list_carrier_services(_auth: None = Depends(require_api_key)) -> JSONRespons
     Availability for a specific shipment requires a DHL /rates query (not yet implemented).
     """
     return JSONResponse(_DHL_SERVICES)
+
+
+@router.get(
+    "/{batch_id}/shipment-description",
+    summary="Canonical AWB shipment description projection (read-only)",
+)
+def get_shipment_description_projection(
+    batch_id: str,
+    client_ref: Optional[str] = None,
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Return the sole automatic shipment-description projection for the AWB modal.
+
+    Authority: draft editable_lines → description_engine.project_shipment_content_description.
+    Read-only — no DHL call, no booking, no Customer/Product Master writes.
+    """
+    from ..core.config import settings
+
+    return JSONResponse(
+        _project_shipment_description_for_client(
+            storage_root=settings.storage_root,
+            batch_id=batch_id,
+            client_ref=client_ref,
+        )
+    )
 
 
 # ── DHL account resolution helper ─────────────────────────────────────────────
@@ -1021,7 +1079,7 @@ def create_shipment(
         special_instructions=body.special_instructions,
         product_code=body.product_code or "P",
         description=_resolve_shipment_description(
-            body_description=body.description,
+            description_override=body.description_override,
             storage_root=settings.storage_root,
             batch_id=batch_id,
             client_ref=body.client_ref,

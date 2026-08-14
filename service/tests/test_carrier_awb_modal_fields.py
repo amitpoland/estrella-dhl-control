@@ -375,7 +375,9 @@ def test_shipment_request_body_forwards_product_code(client):
                     "weight_kg": 1.0,
                     "dimensions": {"length_cm": 10, "width_cm": 10, "height_cm": 10},
                     "product_code": "Y",
-                    "description": "Silver bracelets",
+                    # Operator edit path — description alone must NOT become authority.
+                    "description": "ignored-legacy-autofill",
+                    "description_override": "Silver bracelets",
                     "customer_reference": "PRO/042/2026",
                     "shipment_reference": "BATCH-001",
                     "receiver_vat_id": "GB123",

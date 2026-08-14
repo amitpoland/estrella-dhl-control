@@ -113,8 +113,9 @@ def test_missing_total_shows_honest_hint():
 
 def test_awb_description_prefill_not_hardcoded_jewellery():
     block = _prefill_block()
-    assert "_awbShipmentDescriptionFromLines(lines)" in block
+    assert "_awbShipmentDescriptionFromLines" not in block
     assert "description:        'Jewellery'" not in block
+    assert "getCarrierShipmentDescription" in SRC
 
 
 def test_awb_contact_name_not_hardcoded_empty_only():
@@ -122,3 +123,11 @@ def test_awb_contact_name_not_hardcoded_empty_only():
     block = _prefill_block()
     assert "sto.person" in block
     assert "name:               ''," not in block
+
+
+def test_awb_modal_uses_description_override_dirty_flag():
+    """Automatic canonical display must not be posted as body.description."""
+    assert "description_override" in SRC
+    assert "descriptionDirty" in SRC
+    assert "_awbShipmentDescriptionFromLines" not in SRC
+    assert "STUD: 'Stud Earrings'" not in SRC

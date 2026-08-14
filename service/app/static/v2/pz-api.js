@@ -741,6 +741,17 @@
     createCarrierShipment: (batchId, body) =>
       _postM(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment`, body),
 
+    // GET /api/v1/carrier/{batch_id}/shipment-description?client_ref=
+    // Read-only canonical projection (description_engine). Display only —
+    // booking resolves description on the server; do not treat this string
+    // as an operator override unless the operator edits it.
+    getCarrierShipmentDescription: (batchId, clientRef) => {
+      const q = clientRef
+        ? `?client_ref=${encodeURIComponent(clientRef)}`
+        : '';
+      return _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/shipment-description${q}`);
+    },
+
     // POST /api/v1/carrier/{batch_id}/shipment/external
     // Customer-arranged FedEx/UPS registration. Never calls a carrier API.
     // body: { provider: 'FEDEX'|'UPS', tracking_ref, client_ref?, service_product? }
