@@ -94,11 +94,11 @@ def get_manifest(draft_id: int, _auth: None = Depends(require_api_key)) -> JSONR
 def _render_commercial_packing_list_pdf(draft_id: int) -> tuple[bytes, str]:
     """Return (pdf_bytes, filename) from the ONE commercial packing authority.
 
-    Reuses ``doc_package.render_packing_list_pdf`` → ``commercial_packing_list``.
+    Thin draft-load wrapper over ``commercial_packing_list.export_packing_list_pdf_for_draft``.
     No second field mapping or renderer.
     """
     from ..services import proforma_invoice_link_db as pildb
-    from ..services.carrier import doc_package
+    from ..services.commercial_packing_list import export_packing_list_pdf_for_draft
 
     storage_root = _storage_root()
     draft = pildb.get_draft_by_id(_proforma_db(), int(draft_id))
@@ -106,7 +106,6 @@ def _render_commercial_packing_list_pdf(draft_id: int) -> tuple[bytes, str]:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
 
     batch_id = (draft.batch_id or "").strip()
-    client_name = (draft.client_name or "").strip()
     if not batch_id:
         raise HTTPException(
             status_code=422,
@@ -117,14 +116,18 @@ def _render_commercial_packing_list_pdf(draft_id: int) -> tuple[bytes, str]:
         )
 
     try:
-        company = doc_package._load_company_profile(storage_root)
-        pdraft = doc_package._load_proforma_draft(batch_id, client_name, storage_root)
-        customer = doc_package._resolve_customer_from_batch(
-            batch_id, client_name, storage_root,
+        packing_pdf, filename, _document = export_packing_list_pdf_for_draft(
+            draft=draft,
+            storage_root=storage_root,
         )
-        packing_pdf = doc_package.render_packing_list_pdf(
-            batch_id, storage_root, company, customer, pdraft or draft,
-        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": str(exc),
+                "code": "PACKING_LIST_EMPTY",
+            },
+        ) from exc
     except Exception as exc:
         log.warning("packing-list.pdf render failed for draft %s: %s", draft_id, exc)
         raise HTTPException(
@@ -136,22 +139,7 @@ def _render_commercial_packing_list_pdf(draft_id: int) -> tuple[bytes, str]:
             },
         ) from exc
 
-    if not packing_pdf or len(packing_pdf) < 10:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Commercial Packing List has no lines to export.",
-                "code": "PACKING_LIST_EMPTY",
-            },
-        )
-
-    prof_ref = (
-        getattr(draft, "wfirma_proforma_fullnumber", None)
-        or getattr(draft, "wfirma_proforma_id", None)
-        or f"draft-{draft_id}"
-    )
-    safe_ref = str(prof_ref).replace("/", "-").replace("\\", "-").replace(" ", "_")
-    return packing_pdf, f"packing-list-{safe_ref}.pdf"
+    return packing_pdf, filename
 
 
 @router.get("/draft/{draft_id}/packing-list.pdf")

@@ -28,6 +28,7 @@ def test_customer_sendable_whitelist():
     assert cs.is_customer_sendable_document(_entry("official_proforma"))
     assert cs.is_customer_sendable_document(_entry("invoice"))
     assert cs.is_customer_sendable_document(_entry("packing_list"))
+    assert cs.is_customer_sendable_document(_entry("air_waybill"))
 
 
 @pytest.mark.parametrize(
@@ -60,8 +61,8 @@ def test_customer_sendable_requires_generated_and_download():
 
 def test_normalize_dedupes_and_orders():
     assert cs.normalize_document_types(
-        ["packing_list", "official_proforma", "packing_list", "invoice"]
-    ) == ["official_proforma", "invoice", "packing_list"]
+        ["packing_list", "air_waybill", "official_proforma", "packing_list", "invoice"]
+    ) == ["official_proforma", "invoice", "packing_list", "air_waybill"]
 
 
 def test_assert_types_rejects_unknown_and_unavailable():
@@ -71,21 +72,21 @@ def test_assert_types_rejects_unknown_and_unavailable():
                 _entry("official_proforma"),
                 _entry("invoice", status=PENDING, download=False, url=None, reason="no inv"),
                 _entry("packing_list"),
+                _entry("air_waybill"),
             ],
             "transport": [_entry("cmr")],
             "carrier": [_entry("dhl_label")],
         }
     }
     assert cs.assert_types_customer_sendable(
-        manifest, ["packing_list", "official_proforma"]
-    ) == ["official_proforma", "packing_list"]
+        manifest, ["packing_list", "official_proforma", "air_waybill"]
+    ) == ["official_proforma", "packing_list", "air_waybill"]
     with pytest.raises(ValueError, match="not customer-sendable"):
         cs.assert_types_customer_sendable(manifest, ["cmr"])
     with pytest.raises(ValueError, match="not available"):
         cs.assert_types_customer_sendable(manifest, ["invoice"])
     with pytest.raises(ValueError, match="No document"):
         cs.assert_types_customer_sendable(manifest, [])
-
 
 def test_proforma_send_in_customer_facing_boundary():
     assert "proforma_send" in CUSTOMER_FACING_EMAIL_TYPES

@@ -649,3 +649,88 @@ def render_packing_list_pdf_from_authorities(
     if not document.get("batch_id"):
         document["batch_id"] = batch_id
     return render_commercial_packing_list_pdf(document)
+
+
+def fingerprint_commercial_packing_document(document: Dict[str, Any]) -> Dict[str, Any]:
+    """Semantic identity for Preview-model ↔ PDF-model drift tests.
+
+    Compares business facts, not pixels. Rows are ordered by ``sr``.
+    """
+    rows_out: List[Dict[str, Any]] = []
+    for r in (document or {}).get("rows") or []:
+        if not isinstance(r, dict):
+            continue
+        rows_out.append({
+            "sr": r.get("sr"),
+            "product_code": r.get("product_code"),
+            "design": r.get("design"),
+            "description_en": r.get("description_en"),
+            "qty": r.get("qty"),
+            "unit_price": r.get("unit_price"),
+            "total_value": r.get("total_value"),
+            "client_po": r.get("client_po"),
+            "gross_wt": r.get("gross_wt"),
+            "net_wt": r.get("net_wt"),
+            "origin": r.get("origin"),
+        })
+    return {
+        "authority": (document or {}).get("authority"),
+        "doc_ref": (document or {}).get("doc_ref"),
+        "invoice_ref": (document or {}).get("invoice_ref"),
+        "currency": (document or {}).get("currency"),
+        "total_qty": (document or {}).get("total_qty"),
+        "grand_total": (document or {}).get("grand_total"),
+        "rows": rows_out,
+    }
+
+
+def export_packing_list_pdf_for_draft(
+    *,
+    draft: Any,
+    storage_root: Path,
+    delivery_addr: Optional[Dict[str, str]] = None,
+) -> tuple:
+    """ONE Packing List export used by Documents Hub download + customer email.
+
+    Loads company/customer the same way as Path-DOC / shipment-documents, then
+    builds ``build_commercial_packing_document`` and renders PDF bytes.
+
+    Returns ``(pdf_bytes, filename, document_model)``.
+    """
+    from .carrier import doc_package
+
+    storage_root = Path(storage_root)
+    batch_id = (getattr(draft, "batch_id", None) or "").strip()
+    client_name = (getattr(draft, "client_name", None) or "").strip()
+    draft_id = int(getattr(draft, "id"))
+    if not batch_id:
+        raise ValueError("Draft has no batch_id — cannot render packing list.")
+
+    company = doc_package._load_company_profile(storage_root)
+    pdraft = doc_package._load_proforma_draft(batch_id, client_name, storage_root)
+    customer = doc_package._resolve_customer_from_batch(
+        batch_id, client_name, storage_root,
+    )
+    effective = pdraft or draft
+    document = build_commercial_packing_document(
+        draft=effective,
+        storage_root=storage_root,
+        company=company,
+        customer=customer,
+        delivery_addr=delivery_addr,
+    )
+    if not document.get("batch_id"):
+        document["batch_id"] = batch_id
+    packing_pdf = render_commercial_packing_list_pdf(document)
+    if not packing_pdf or len(packing_pdf) < 10:
+        raise ValueError("Commercial Packing List has no lines to export.")
+    if not (document.get("rows") or []):
+        raise ValueError("Commercial Packing List has no lines to export.")
+
+    prof_ref = (
+        getattr(draft, "wfirma_proforma_fullnumber", None)
+        or getattr(draft, "wfirma_proforma_id", None)
+        or f"draft-{draft_id}"
+    )
+    safe_ref = str(prof_ref).replace("/", "-").replace("\\", "-").replace(" ", "_")
+    return packing_pdf, f"packing-list-{safe_ref}.pdf", document
