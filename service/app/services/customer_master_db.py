@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -434,6 +434,10 @@ def init_db(db_path: Path) -> None:
             ("deleted_at",                "TEXT"),
             # Commercial Incoterm default for Proforma draft hierarchy
             ("default_incoterm",          "TEXT"),
+            # External enrichment provenance (Cowork research acceptance) —
+            # internal only: NOT in _customer_to_dict, NOT disclosed via MCP.
+            ("last_enrichment_sync_at",   "TEXT"),
+            ("enrichment_sync_source",    "TEXT"),
         ])
 
 
@@ -932,6 +936,62 @@ def update_vat_eu_result(
             "SET vat_eu_valid=?, vat_eu_validated_at=? "
             "WHERE bill_to_contractor_id=?",
             (_to_int(vat_eu_valid), vat_eu_validated_at, bill_to_contractor_id),
+        )
+        return cur.rowcount > 0
+
+
+#: The ONLY columns the external-enrichment acceptance path may fill.
+#: Mirrors RESEARCHABLE_PHASE_1 in customer_external_enrichment.py — pinned
+#: equal by test. Anything else is hard-rejected below.
+_ENRICHMENT_ALLOWED_COLS = frozenset({
+    "bill_to_street", "bill_to_city", "bill_to_postal_code",
+    "bill_to_phone", "bill_to_email", "industry",
+})
+
+
+def update_enrichment_fields(
+    db_path: Path,
+    bill_to_contractor_id: str,
+    field_values: Dict[str, str],
+    *,
+    last_enrichment_at: Optional[str] = None,
+) -> bool:
+    """Targeted fill-when-empty write for accepted external-enrichment proposals.
+
+    The Customer Master keeps the write: callers (customer_external_enrichment)
+    never touch this table directly. Restricted to _ENRICHMENT_ALLOWED_COLS —
+    any other column raises ValueError (fail closed). Each column uses
+    COALESCE(NULLIF(col,''), NULLIF(?,'')) so an existing non-empty canonical
+    value always wins (same semantics as upsert_identity_only). Also stamps
+    last_enrichment_sync_at / enrichment_sync_source / updated_at.
+
+    Returns True if the contractor row exists, False otherwise.
+    Caller is responsible for audit logging (see update_vat_eu_result).
+    """
+    bad = set(field_values) - _ENRICHMENT_ALLOWED_COLS
+    if bad:
+        raise ValueError(
+            f"update_enrichment_fields: columns not allowed: {sorted(bad)}")
+    if not field_values:
+        return False
+    now = _now_iso()
+    sets = []
+    params: list = []
+    for col in sorted(field_values):
+        sets.append(f"{col} = COALESCE(NULLIF({col}, ''), NULLIF(?, ''))")
+        params.append(field_values[col])
+    sets.append("last_enrichment_sync_at = ?")
+    params.append(last_enrichment_at or now)
+    sets.append("enrichment_sync_source = ?")
+    params.append("cowork_external_enrichment")
+    sets.append("updated_at = ?")
+    params.append(now)
+    params.append(bill_to_contractor_id)
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE customer_master SET " + ", ".join(sets) +
+            " WHERE bill_to_contractor_id = ?",
+            params,
         )
         return cur.rowcount > 0
 

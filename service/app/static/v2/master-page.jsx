@@ -422,6 +422,9 @@ function RecordDetailModal({ record, entityLabel, onClose }) {
       ),
       record.bill_to_contractor_id && React.createElement(ClientUsagePanel, {
         contractorId: String(record.bill_to_contractor_id),
+      }),
+      record.bill_to_contractor_id && React.createElement(EnrichmentPanel, {
+        contractorId: String(record.bill_to_contractor_id),
       })
     )
   );
@@ -495,6 +498,231 @@ function ClientUsagePanel({ contractorId }) {
         }, String(count))
       );
     })
+  );
+}
+
+// ── External enrichment panel (Cowork research → operator acceptance) ─────
+// Transport via PzApi only (Lesson F); acceptance authority lives in
+// routes_customer_enrichment.py. The panel hides itself while the feature
+// flag is off (the backend answers 503).
+function EnrichmentPanel({ contractorId }) {
+  const [state, setState] = React.useState({ loading: true, error: null, status: 0, task: null });
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const [selected, setSelected] = React.useState({});
+  const [refresh, setRefresh] = React.useState(0);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, error: null, status: 0, task: null });
+    const run = (PzApi && PzApi.getCustomerEnrichment)
+      ? PzApi.getCustomerEnrichment(contractorId)
+      : Promise.reject(new Error('getCustomerEnrichment missing'));
+    run.then((res) => {
+      if (cancelled) return;
+      if (res && res.ok === false) {
+        setState({ loading: false, error: String(res.error || res.status || 'fetch failed'), status: res.status || 0, task: null });
+        return;
+      }
+      const data = (res && res.data !== undefined) ? res.data : res;
+      setState({ loading: false, error: null, status: 200, task: (data && data.task) || null });
+    }).catch((err) => {
+      if (!cancelled) setState({ loading: false, error: String((err && err.message) || err), status: 0, task: null });
+    });
+    return () => { cancelled = true; };
+  }, [contractorId, refresh]);
+
+  if (state.status === 503) return null; // feature flag off — panel hidden
+
+  const reload = () => { setSelected({}); setRefresh((k) => k + 1); };
+
+  const describeError = (res) => {
+    const text = String(res.error || ('HTTP ' + res.status));
+    return text.indexOf('ENRICHMENT_PROPOSAL_STALE') !== -1
+      ? 'Customer changed since research — re-run research.'
+      : text;
+  };
+
+  const runResearch = () => {
+    setBusy(true); setMsg(null);
+    PzApi.runCustomerEnrichmentResearch(contractorId).then((res) => {
+      setBusy(false);
+      if (res && res.ok === false) { setMsg({ kind: 'error', text: describeError(res) }); return; }
+      const data = (res && res.data !== undefined) ? res.data : res;
+      setMsg((data && data.result === 'no_missing_fields')
+        ? { kind: 'ok', text: 'No missing fields — nothing to research.' }
+        : { kind: 'ok', text: 'Research task created.' });
+      reload();
+    });
+  };
+
+  const decide = (proposalId, action) => {
+    const call = action === 'accept' ? PzApi.acceptEnrichmentProposal : PzApi.rejectEnrichmentProposal;
+    setBusy(true); setMsg(null);
+    call(proposalId).then((res) => {
+      setBusy(false);
+      if (res && res.ok === false) { setMsg({ kind: 'error', text: describeError(res) }); }
+      reload();
+    });
+  };
+
+  const bulkAccept = () => {
+    const ids = Object.keys(selected).filter((k) => selected[k]);
+    if (!ids.length) return;
+    setBusy(true); setMsg(null);
+    const failures = [];
+    let chain = Promise.resolve();
+    ids.forEach((id) => {
+      chain = chain.then(() => PzApi.acceptEnrichmentProposal(id).then((res) => {
+        if (res && res.ok === false) failures.push(describeError(res));
+      }));
+    });
+    chain.then(() => {
+      setBusy(false);
+      setMsg(failures.length
+        ? { kind: 'error', text: failures[0] }
+        : { kind: 'ok', text: ids.length + ' proposal' + (ids.length === 1 ? '' : 's') + ' accepted.' });
+      reload();
+    });
+  };
+
+  const task = state.task;
+  const proposals = (task && task.proposals) || [];
+  const taskOpen = !!task && (task.status === 'pending' || task.status === 'researching');
+  const badgeColors = (status) => {
+    if (status === 'accepted' || status === 'partially_accepted') {
+      return { bg: 'var(--badge-green-bg)', text: 'var(--badge-green-text)', border: 'var(--badge-green-border)' };
+    }
+    if (status === 'failed' || status === 'stale' || status === 'rejected') {
+      return { bg: 'var(--badge-red-bg)', text: 'var(--badge-red-text)', border: 'var(--badge-red-border)' };
+    }
+    return { bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)', border: 'var(--badge-amber-border)' };
+  };
+  const selectedCount = Object.keys(selected).filter((k) => selected[k]).length;
+
+  return React.createElement('div', {
+    'data-testid': 'enrichment-panel',
+    style: {
+      margin: '0 18px 16px', padding: 12,
+      background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6,
+    },
+  },
+    React.createElement('div', {
+      style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 },
+    },
+      React.createElement('div', {
+        style: { fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-3)', flex: 1 },
+      }, 'External enrichment (Cowork research)'),
+      task && (() => {
+        const c = badgeColors(task.status);
+        return React.createElement('span', {
+          'data-testid': 'enrichment-status-badge',
+          style: {
+            display: 'inline-flex', alignItems: 'center', padding: '2px 7px',
+            borderRadius: 20, fontSize: 10, fontWeight: 600, border: '1px solid',
+            background: c.bg, color: c.text, borderColor: c.border,
+          },
+        }, task.status);
+      })(),
+      React.createElement(Btn, {
+        small: true, variant: 'outline',
+        disabled: busy || taskOpen,
+        onClick: runResearch,
+        'data-testid': 'btn-run-enrichment',
+      }, '🔍 Run Research')
+    ),
+    state.loading && React.createElement('div', { style: { fontSize: 11, color: 'var(--text-3)' } }, 'Loading enrichment…'),
+    state.error && React.createElement('div', {
+      'data-testid': 'enrichment-error',
+      style: { fontSize: 11, color: 'var(--badge-red-text)' },
+    }, 'Enrichment unavailable: ', state.error),
+    msg && React.createElement('div', {
+      'data-testid': 'enrichment-message',
+      style: {
+        fontSize: 11, marginBottom: 6,
+        color: msg.kind === 'error' ? 'var(--badge-red-text)' : 'var(--badge-green-text)',
+      },
+    }, msg.text),
+    !state.loading && !state.error && !task && React.createElement('div', {
+      style: { fontSize: 11, color: 'var(--text-3)' },
+    }, 'No research yet. Run Research creates a task for the missing public fields.'),
+    task && taskOpen && React.createElement('div', {
+      style: { fontSize: 11, color: 'var(--text-3)' },
+    }, 'Waiting for research on: ' + ((task.missing_fields || []).join(', ') || '—')),
+    proposals.length > 0 && React.createElement('div', null,
+      proposals.map((p) => {
+        const decided = p.field_status !== 'pending';
+        const notVerified = p.proposed_value == null;
+        const selectable = !decided && !notVerified;
+        return React.createElement('div', {
+          key: p.id,
+          'data-testid': 'proposal-row-' + p.field,
+          style: {
+            display: 'flex', alignItems: 'center', gap: 8,
+            fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border-subtle)',
+          },
+        },
+          React.createElement('input', {
+            type: 'checkbox',
+            checked: !!selected[p.id],
+            disabled: !selectable || busy,
+            onChange: (e) => {
+              const checked = e.target.checked;
+              setSelected((prev) => Object.assign({}, prev, (() => { const o = {}; o[p.id] = checked; return o; })()));
+            },
+            'data-testid': 'chk-select-' + p.field,
+          }),
+          React.createElement('div', { style: { width: 140, fontWeight: 600, color: 'var(--text-2)' } }, p.field),
+          React.createElement('div', {
+            style: { flex: 1, color: notVerified ? 'var(--text-3)' : 'var(--text)', fontStyle: notVerified ? 'italic' : 'normal', wordBreak: 'break-word' },
+          }, notVerified ? 'not verified' : String(p.proposed_value)),
+          React.createElement('div', { style: { width: 60, fontSize: 10.5, color: 'var(--text-3)' } }, p.confidence || '—'),
+          React.createElement('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+            (p.evidence || []).map((ev, i) =>
+              React.createElement('a', {
+                key: i,
+                href: ev.source_url,
+                target: '_blank',
+                rel: 'noopener noreferrer',
+                style: { fontSize: 10.5, color: 'var(--accent)' },
+                'data-testid': 'evidence-link-' + p.field + '-' + i,
+              }, ev.source_type || 'source')
+            )
+          ),
+          decided
+            ? React.createElement('span', {
+              style: {
+                fontSize: 10, fontWeight: 600,
+                color: p.field_status === 'accepted'
+                  ? (p.conflict_flag ? 'var(--badge-amber-text)' : 'var(--badge-green-text)')
+                  : 'var(--badge-red-text)',
+              },
+            }, p.field_status + (p.conflict_flag ? ' (conflict — not written)' : ''))
+            : React.createElement('div', { style: { display: 'flex', gap: 6 } },
+              React.createElement(Btn, {
+                small: true,
+                disabled: busy || notVerified,
+                onClick: () => decide(p.id, 'accept'),
+                'data-testid': 'btn-accept-' + p.field,
+              }, 'Accept'),
+              React.createElement(Btn, {
+                small: true, variant: 'outline',
+                disabled: busy,
+                onClick: () => decide(p.id, 'reject'),
+                'data-testid': 'btn-reject-' + p.field,
+              }, 'Reject')
+            )
+        );
+      }),
+      React.createElement('div', { style: { marginTop: 8 } },
+        React.createElement(Btn, {
+          small: true,
+          disabled: busy || selectedCount === 0,
+          onClick: bulkAccept,
+          'data-testid': 'btn-bulk-accept-selected',
+        }, 'Accept selected (' + selectedCount + ')')
+      )
+    )
   );
 }
 
@@ -2740,4 +2968,4 @@ function MasterPage() {
   );
 }
 
-Object.assign(window, { MasterPage, RecordDetailModal, ClientUsagePanel, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel, ProductOverlayEditModal, ProductDescriptionModal, ProductAdoptModal });
+Object.assign(window, { MasterPage, RecordDetailModal, ClientUsagePanel, EnrichmentPanel, ScanStatusPanel, ENTITY_TYPES, ROLE_MATRIX, ENTITY_COLUMNS, MAPPING_INFO, MappingInfoBanner, ProductMasterSyncPanel, ProductOverlayEditModal, ProductDescriptionModal, ProductAdoptModal });

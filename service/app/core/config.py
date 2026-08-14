@@ -396,6 +396,14 @@ class Settings(BaseSettings):
     # Outbound tracking registration — records outbound shipment events to tracking_db
     outbound_tracking_registration_enabled: bool = Field(default=False)
 
+    # Client Master external enrichment (Cowork research → operator acceptance).
+    # All fail closed. Never reuse the deprecated ai_cowork_enabled flag (ADR-020).
+    customer_external_enrichment_enabled: bool = Field(default=False)   # internal API + UI gate
+    customer_enrichment_mcp_enabled: bool = Field(default=False)        # MCP surface gate
+    # Bearer secret for the MCP endpoint — set via env/.env only, never committed.
+    # None = MCP endpoint returns 503 (never silently open).
+    customer_enrichment_mcp_token: Optional[str] = Field(default=None)
+
     # AWB address authority repair (Campaign 02.5) — gate the Customer Master authority
     # derivation behind this flag. Default False = raw recipient_address behavior unchanged.
     awb_address_authority_enabled: bool = Field(default=False)
