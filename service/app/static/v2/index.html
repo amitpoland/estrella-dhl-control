@@ -713,7 +713,8 @@ function App() {
   React.useEffect(() => {
     if (page !== 'proforma_detail' || proformaDraft) return;
     const sp      = new URLSearchParams(window.location.search);
-    const rawId   = sp.get('draft');
+    // Canonical param is ?draft=; accept ?draft_id= as Documents-hub / legacy alias (B-014).
+    const rawId   = sp.get('draft') || sp.get('draft_id');
     const batchId = sp.get('batch_id');
     if (!rawId && !batchId) {
       setProformaHydrating(false);

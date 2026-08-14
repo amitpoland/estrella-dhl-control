@@ -2267,6 +2267,8 @@ function ProformaActionBar({
   canPurge, setShowPurgeModal, purgeDisabledReason,
   handleDuplicate, cloning,
   handleApprove, canApprove, approving, approveDisabledReason, approveError,
+  canReopen, handleReopen, reopening, reopenError,
+  handleResetLines, handleResetAll, resetting,
   canPost, setShowPostModal, postDisabledReason,
   canConvert, setShowConvertModal, convertDisabledReason,
   invoiceProjection, onViewInvoice,
@@ -2348,6 +2350,31 @@ function ProformaActionBar({
                 ✎ Edit
               </Btn>
             )}
+            {/* B-014 — V1 parity: reload lines / Reset ALL (editable states only).
+                Same POST /reset-from-sales-packing authority; confirmation matches V1. */}
+            {canEdit && (
+              <Btn
+                variant="outline" small
+                onClick={handleResetLines}
+                disabled={resetting || reopening}
+                title="Replace editable lines from latest sales packing — buyer/ship-to/payment/remarks preserved"
+                data-testid="tb-reset-lines"
+              >
+                {resetting ? '⏳ Resetting…' : 'Reload items'}
+              </Btn>
+            )}
+            {canEdit && (
+              <Btn
+                variant="outline" small
+                onClick={handleResetAll}
+                disabled={resetting || reopening}
+                title="RESET ALL: replace lines AND wipe buyer / ship-to / payment-terms / remarks / service-charges"
+                style={{ color: 'var(--badge-red-text)', borderColor: 'var(--badge-red-border)' }}
+                data-testid="tb-reset-all"
+              >
+                {resetting ? '⏳ Resetting…' : 'Reset ALL'}
+              </Btn>
+            )}
             <Btn
               variant="outline" small
               onClick={() => setShowPreview(true)}
@@ -2416,6 +2443,27 @@ function ProformaActionBar({
             </Btn>
             {approveError && (
               <span style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180, alignSelf: 'center' }}>{approveError}</span>
+            )}
+            {/* B-014 — V1 parity: re-open from approved / post_failed.
+                Token prompt + YES_REOPEN_LOCAL_PROFORMA_DRAFT via PzApi.reopenDraft. */}
+            {canReopen && (
+              <Btn
+                variant="outline" small
+                onClick={handleReopen}
+                disabled={reopening || resetting}
+                title="Re-open this draft for edit — requires confirm token (same as V1)"
+                data-testid="tb-reopen"
+              >
+                {reopening ? '⏳ Re-opening…' : 'Re-open for edit'}
+              </Btn>
+            )}
+            {reopenError && (
+              <span data-testid="tb-reopen-error" style={{ color: 'var(--badge-red-text)', fontSize: 11, maxWidth: 180, alignSelf: 'center' }}>{reopenError}</span>
+            )}
+            {draftState === 'post_failed' && (
+              <span data-testid="tb-post-failed-note" style={{ fontSize: 11, color: 'var(--badge-red-text)', alignSelf: 'center' }}>
+                Post failed — re-open to fix, then re-approve and re-post.
+              </span>
             )}
             <Btn
               variant="gold" small
@@ -4904,6 +4952,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   // Approval state
   const [approving,        setApproving]         = React.useState(false);
   const [approveError,     setApproveError]      = React.useState(null);
+  // B-014 — re-open / reset (same backend as V1 draft panel)
+  const [reopening,        setReopening]         = React.useState(false);
+  const [reopenError,      setReopenError]       = React.useState(null);
+  const [resetting,        setResetting]         = React.useState(false);
 
   // PR B — Customer address + service-charge authority
   const [buyerEditOpen,    setBuyerEditOpen]     = React.useState(false);
@@ -6180,6 +6232,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   // M5 — Edit mode: enabled when draft is in an editable state
   const canEdit       = ['draft', 'editing', 'post_failed'].includes(draftState);
+  // B-014 — Re-open: backend REOPENABLE_STATES = ('approved',). post_failed is
+  // already editable (canEdit) — V1 also shows a reopen control after fail, but
+  // pildb.reopen_draft rejects non-approved; keep note + edit, reopen only when
+  // the API will accept it (no fake affordance).
+  const canReopen     = draftState === 'approved';
   // M1a — Cancel: enabled when draft is in a cancellable state and not already cancelled
   const canCancel     = ['draft', 'editing', 'approved', 'post_failed'].includes(draftState);
   // Purge: only cancelled local-only drafts (no wFirma ID, no PROF number)
@@ -6301,6 +6358,76 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       })
       .catch(e => setApproveError(e.message || 'Network error'))
       .finally(() => setApproving(false));
+  };
+
+  // B-014 — Re-open (V1 token prompt + same POST /re-open authority)
+  const REOPEN_TOKEN = 'YES_REOPEN_LOCAL_PROFORMA_DRAFT';
+  const handleReopen = () => {
+    if (reopening || !canReopen) return;
+    const typed = window.prompt(
+      'Type the re-open token to unlock this draft:\n\n  ' + REOPEN_TOKEN,
+      ''
+    );
+    if (typed !== REOPEN_TOKEN) {
+      setReopenError('Re-open cancelled — token mismatch');
+      return;
+    }
+    setReopening(true);
+    setReopenError(null);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.reopenDraft(id, updatedAt)
+      .then(r => {
+        if (r && r.ok) {
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setReopenError((r && r.error) || 'Re-open failed — check backend logs.');
+        }
+      })
+      .catch(e => setReopenError(e.message || 'Network error'))
+      .finally(() => setReopening(false));
+  };
+
+  // B-014 — Reset lines / Reset ALL (V1 confirm text + same reset-from-sales-packing)
+  const handleResetLines = () => {
+    if (resetting || !canEdit) return;
+    if (!window.confirm(
+      'Reset this draft from the latest sales packing? '
+      + 'CURRENT EDITABLE LINES WILL BE REPLACED. Buyer/ship-to/payment-terms/remarks are preserved.'
+    )) return;
+    setResetting(true);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.resetDraftFromSalesPacking(id, updatedAt, false)
+      .then(r => {
+        if (r && r.ok) {
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setPrintError((r && r.error) || 'Reset failed — check backend logs.');
+        }
+      })
+      .catch(e => setPrintError(e.message || 'Network error'))
+      .finally(() => setResetting(false));
+  };
+
+  const handleResetAll = () => {
+    if (resetting || !canEdit) return;
+    if (!window.confirm(
+      'RESET ALL: replace lines AND wipe buyer / ship-to / payment-terms / remarks / service-charges. Continue?'
+    )) return;
+    setResetting(true);
+    const id = liveDraft.id || (draft && draft.id);
+    const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
+    window.PzApi.resetDraftFromSalesPacking(id, updatedAt, true)
+      .then(r => {
+        if (r && r.ok) {
+          draftHook && draftHook.reload && draftHook.reload();
+        } else {
+          setPrintError((r && r.error) || 'Reset ALL failed — check backend logs.');
+        }
+      })
+      .catch(e => setPrintError(e.message || 'Network error'))
+      .finally(() => setResetting(false));
   };
 
   const handleDuplicate = () => {
@@ -6650,6 +6777,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         handleDuplicate={handleDuplicate} cloning={cloning}
         handleApprove={handleApprove} canApprove={canApprove} approving={approving}
         approveDisabledReason={approveDisabledReason} approveError={approveError}
+        canReopen={canReopen} handleReopen={handleReopen} reopening={reopening} reopenError={reopenError}
+        handleResetLines={handleResetLines} handleResetAll={handleResetAll} resetting={resetting}
         canPost={canPost} setShowPostModal={setShowPostModal} postDisabledReason={postDisabledReason}
         canConvert={canConvert} setShowConvertModal={setShowConvertModal} convertDisabledReason={convertDisabledReason}
         invoiceProjection={invoiceProjection} onViewInvoice={handleViewInvoice}

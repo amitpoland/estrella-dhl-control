@@ -553,6 +553,65 @@ def test_endpoint_reopen(client, tmp_path, monkeypatch):
     assert body["locked_at"]   is None
 
 
+def test_endpoint_reopen_wrong_token_denied(client, tmp_path, monkeypatch):
+    """Denied path: wrong confirm_token must not unlock an approved draft."""
+    _stub_readiness_ready(monkeypatch)
+    db = tmp_path / "proforma_links.db"
+    d = _seed_draft(db)
+    r1 = client.post(
+        f"/api/v1/proforma/draft/{d.id}/approve",
+        json={"expected_updated_at": d.updated_at,
+              "confirm_token": pildb.APPROVE_CONFIRM_TOKEN},
+        headers=_auth_headers(),
+    )
+    ts = r1.json()["draft"]["updated_at"]
+    r2 = client.post(
+        f"/api/v1/proforma/draft/{d.id}/re-open",
+        json={"expected_updated_at": ts, "confirm_token": "NOPE"},
+        headers=_auth_headers("bob"),
+    )
+    assert r2.status_code in (400, 409, 422), r2.text
+    fresh = pildb.get_draft_by_id(db, d.id)
+    assert fresh.draft_state == "approved"
+
+
+def test_endpoint_reopen_rejects_non_approved(client, tmp_path):
+    """Denied path: editing/draft/post_failed cannot re-open (REOPENABLE=approved)."""
+    db = tmp_path / "proforma_links.db"
+    d = _seed_draft(db)
+    r = client.post(
+        f"/api/v1/proforma/draft/{d.id}/re-open",
+        json={"expected_updated_at": d.updated_at,
+              "confirm_token": pildb.REOPEN_CONFIRM_TOKEN},
+        headers=_auth_headers(),
+    )
+    assert r.status_code in (400, 409), r.text
+    assert pildb.get_draft_by_id(db, d.id).draft_state == "draft"
+
+
+def test_endpoint_reset_rejects_approved(client, tmp_path, monkeypatch):
+    """Denied path: reset-from-sales-packing only in EDITABLE_STATES."""
+    _stub_readiness_ready(monkeypatch)
+    db = tmp_path / "proforma_links.db"
+    d = _seed_draft(db)
+    r1 = client.post(
+        f"/api/v1/proforma/draft/{d.id}/approve",
+        json={"expected_updated_at": d.updated_at,
+              "confirm_token": pildb.APPROVE_CONFIRM_TOKEN},
+        headers=_auth_headers(),
+    )
+    ts = r1.json()["draft"]["updated_at"]
+    from app.api import routes_proforma as rp
+    monkeypatch.setattr(rp.ddb, "get_sales_packing_lines", lambda batch_id: [])
+    r2 = client.post(
+        f"/api/v1/proforma/draft/{d.id}/reset-from-sales-packing",
+        json={"expected_updated_at": ts, "reset_all": True},
+        headers=_auth_headers(),
+    )
+    assert r2.status_code in (400, 409), r2.text
+    assert pildb.get_draft_by_id(db, d.id).draft_state == "approved"
+
+
 # ── HTTP — cancel ───────────────────────────────────────────────────────────
 
 def test_endpoint_cancel(client, tmp_path):

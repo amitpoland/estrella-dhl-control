@@ -449,10 +449,12 @@
       }),
 
     // POST /api/v1/proforma/draft/{draft_id}/reset-from-sales-packing
-    resetDraftFromSalesPacking: (draftId, updatedAt) =>
+    // resetAll=false → replace editable lines only (buyer/ship-to/payment/remarks preserved)
+    // resetAll=true  → full wipe (V1 Reset ALL) — same backend authority, no second path
+    resetDraftFromSalesPacking: (draftId, updatedAt, resetAll) =>
       _postM(`${BASE}/proforma/draft/${draftId}/reset-from-sales-packing`, {
         expected_updated_at: updatedAt || '',
-        reset_all:           false,
+        reset_all:           !!resetAll,
       }),
 
     // POST /api/v1/proforma/draft/{draft_id}/post

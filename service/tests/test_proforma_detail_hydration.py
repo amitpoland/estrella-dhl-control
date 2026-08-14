@@ -113,6 +113,13 @@ class TestHydrationEffect:
             "Hydration effect must read ?draft= URL param"
         )
 
+    def test_reads_draft_id_alias(self):
+        """B-014 — Documents hub / legacy ?draft_id= must hydrate the same way."""
+        block = self._effect_block()
+        assert "draft_id" in block and "sp.get('draft_id')" in block, (
+            "Hydration effect must accept ?draft_id= as alias for ?draft="
+        )
+
     def test_reads_batch_id_url_param(self):
         """Effect must read ?batch_id= as fallback."""
         block = self._effect_block()
