@@ -1296,6 +1296,30 @@ function PriorInvoiceHistoryModal({ contractorId, contractorName, onClose }) {
   );
 }
 
+// Customer Master carrier-account helpers for the AWB modal.
+// Authority: GET /api/v1/customer-master/{contractor_id}/carrier-accounts
+// (client_carrier_accounts). Display/filter only — never a second store.
+const _AWB_CM_CARRIER = { DHL: 'dhl', FEDEX: 'fedex', UPS: 'ups' };
+const _AWB_PAYER_LABEL = {
+  shipper: 'Shipper pays',
+  receiver: 'Receiver pays',
+  third_party: 'Third party pays',
+};
+function _awbFilterCmAccounts(accounts, selectedCarrier) {
+  const key = _AWB_CM_CARRIER[selectedCarrier] || '';
+  return (accounts || []).filter(a => (a.carrier || '').toLowerCase() === key);
+}
+function _awbPreselectCmAccount(accounts) {
+  const list = accounts || [];
+  const defaults = list.filter(a => a.is_default);
+  if (defaults.length === 1) return defaults[0];
+  if (list.length === 1) return list[0];
+  return null;
+}
+function _awbPayerLabel(paymentType) {
+  return _AWB_PAYER_LABEL[paymentType] || '';
+}
+
 // ── AWB Generate Modal ────────────────────────────────────────────────────────
 // WIRED: POST /api/v1/carrier/{batch_id}/shipment
 // Requires CARRIER_API_STATUS=live + DHL credentials in environment.
@@ -1349,6 +1373,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [externalTracking, setExternalTracking] = React.useState('');
   const [awbFile, setAwbFile] = React.useState(null);
   const isExternal = selectedCarrier === 'FEDEX' || selectedCarrier === 'UPS';
+  const [cmAccounts, setCmAccounts] = React.useState([]);
+  const [cmAccountsStatus, setCmAccountsStatus] = React.useState('idle');
+  const [selectedCmAccountId, setSelectedCmAccountId] = React.useState(null);
 
   // ── DHL account authority (operator ruling 2026-07-20) ──────────────────
   // The modal keeps NO account state of its own: the hook holds the server's
@@ -1424,6 +1451,23 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     } else {
       setMasterState('missing-id');
     }
+    // Customer Master carrier accounts for the current draft contractor only.
+    // listCarrierAccounts defaults to active-only (inactive/soft-deleted excluded).
+    const cid = prefill.client_contractor_id;
+    if (cid && window.PzApi.listCarrierAccounts) {
+      setCmAccountsStatus('loading');
+      window.PzApi.listCarrierAccounts(cid)
+        .then(r => {
+          const list = (r && r.ok && r.data && Array.isArray(r.data.accounts))
+            ? r.data.accounts : [];
+          setCmAccounts(list);
+          setCmAccountsStatus('loaded');
+        })
+        .catch(() => { setCmAccounts([]); setCmAccountsStatus('failed'); });
+    } else {
+      setCmAccounts([]);
+      setCmAccountsStatus(cid ? 'failed' : 'idle');
+    }
     // Legacy-rebook probe — only relevant when this booking will send a
     // client_ref (a no-client_ref booking recomputes the SAME legacy key and
     // replays safely). A missing wrapper or failed probe arms the fail-visible
@@ -1470,6 +1514,19 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   React.useEffect(() => {
     if (legacyConfirm && legacyProbe === 'clear') setLegacyConfirm(false);
   }, [legacyProbe]);
+
+  React.useEffect(() => {
+    const filtered = _awbFilterCmAccounts(cmAccounts, selectedCarrier);
+    const pick = _awbPreselectCmAccount(filtered);
+    setSelectedCmAccountId(pick && pick.id != null ? pick.id : null);
+  }, [selectedCarrier, cmAccounts]);
+
+  const cmAccountsForCarrier = _awbFilterCmAccounts(cmAccounts, selectedCarrier);
+  const selectedCmAccount = cmAccountsForCarrier.find(a => a.id === selectedCmAccountId) || null;
+  const cmContractorId = prefill.client_contractor_id || '';
+  const cmMasterHref = cmContractorId
+    ? ('/v2/master?entity=clients&contractor_id=' + encodeURIComponent(cmContractorId))
+    : '/v2/master?entity=clients';
 
   // Modal field → Customer Master ship_to_* field. This is the complete set
   // compared before booking; saves write ONLY these ship_to_* fields —
@@ -1968,6 +2025,70 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               <option value="FEDEX">FedEx</option>
               <option value="UPS">UPS</option>
             </select>
+          </div>
+
+          <div data-testid="awb-cm-account-section" style={{
+            border: '1px solid var(--border)', borderRadius: 8,
+            padding: '12px 14px', marginBottom: 16, background: 'var(--bg-subtle)',
+          }}>
+            <div style={sectionHead}>Carrier Account / Billing</div>
+            {!cmContractorId && (
+              <div data-testid="awb-cm-account-empty" style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                No Customer Master contractor on this draft — carrier accounts cannot be resolved.
+              </div>
+            )}
+            {cmContractorId && cmAccountsStatus === 'loading' && (
+              <div data-testid="awb-cm-account-loading" style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                Loading customer carrier accounts…
+              </div>
+            )}
+            {cmContractorId && cmAccountsStatus !== 'loading' && cmAccountsForCarrier.length === 0 && (
+              <div data-testid="awb-cm-account-empty" style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                No customer carrier account configured
+              </div>
+            )}
+            {cmContractorId && cmAccountsForCarrier.length > 0 && (
+              <div>
+                <div style={fieldStyle}>
+                  <label htmlFor="awb-cm-account" style={labelStyle}>Account</label>
+                  <select id="awb-cm-account" value={selectedCmAccountId == null ? '' : String(selectedCmAccountId)}
+                    onChange={e => setSelectedCmAccountId(e.target.value ? parseInt(e.target.value, 10) : null)}
+                    style={selStyle} data-testid="awb-cm-account-select">
+                    {cmAccountsForCarrier.length > 1 && !selectedCmAccountId && (
+                      <option value="">— select an account —</option>
+                    )}
+                    {cmAccountsForCarrier.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {[a.account_name, a.account_number].filter(Boolean).join(' · ')}
+                        {a.is_default ? ' (default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {selectedCmAccount && (
+                  <div data-testid="awb-cm-account-detail" style={{ fontSize: 12, marginBottom: 10 }}>
+                    <div><span style={{ color: 'var(--text-3)' }}>Account Name: </span>{selectedCmAccount.account_name || '—'}</div>
+                    <div><span style={{ color: 'var(--text-3)' }}>Account Number: </span>
+                      <span style={{ fontFamily: 'monospace' }}>{selectedCmAccount.account_number || '—'}</span>
+                    </div>
+                    <div data-testid="awb-cm-account-payer">
+                      <span style={{ color: 'var(--text-3)' }}>Payer: </span>
+                      {_awbPayerLabel(selectedCmAccount.payment_type) || '—'}
+                    </div>
+                    {selectedCmAccount.service_level ? (
+                      <div><span style={{ color: 'var(--text-3)' }}>Service Level: </span>{selectedCmAccount.service_level}</div>
+                    ) : null}
+                    {selectedCmAccount.is_default ? (
+                      <div data-testid="awb-cm-account-default" style={{ color: 'var(--badge-green-text)', marginTop: 4 }}>Default</div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            )}
+            <a href={cmMasterHref} data-testid="awb-cm-account-manage"
+              style={{ fontSize: 12, color: 'var(--accent)' }}>
+              Manage carrier accounts in Customer Master
+            </a>
           </div>
 
           {isExternal && (
