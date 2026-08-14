@@ -80,12 +80,13 @@ function MockBanner({ page }) {
     <div
       data-testid="mock-banner"
       style={{
+        // Stay below mobile nav drawer (z-index 1100) — sticky only within page scroll
         position: 'sticky',
         top: 0,
-        zIndex: 900,
-        background: '#7c3aed',
-        color: '#fff',
-        padding: '10px 20px',
+        zIndex: 30,
+        background: 'var(--badge-purple-bg, #7c3aed)',
+        color: 'var(--badge-purple-text, #fff)',
+        padding: '10px 16px',
         display: 'flex',
         alignItems: 'center',
         gap: 10,

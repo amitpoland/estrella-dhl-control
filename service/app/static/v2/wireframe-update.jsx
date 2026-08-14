@@ -129,24 +129,38 @@ function OperationalStatusStrip() {
   const fmtTs = new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   return (
-    <div data-testid="operational-status-strip" style={{
-      display:'flex', alignItems:'center', gap:18, flexWrap:'wrap',
-      padding:'5px 24px', background:'var(--bg-subtle)',
-      borderBottom:'1px solid var(--border)', fontSize:11,
-      color:'var(--text-2)',
-    }}>
-      <span style={{ fontWeight:700, color:'var(--text)', letterSpacing:'0.04em' }}>System</span>
-      {items.map(i => (
-        <span key={i.name} style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
-          <span style={{ width:7, height:7, borderRadius:'50%', background:_dot(i.status) }}/>
-          <span style={{ fontWeight:600, color:'var(--text)' }}>{i.name}</span>
-          <span style={{ color:'var(--text-3)' }}>· {i.meta}</span>
-        </span>
-      ))}
-      <span style={{ flex:1 }}/>
-      <span style={{ fontSize:9.5, color:'var(--text-3)', fontFamily:'monospace' }}>polled {fmtTs}</span>
-      <a href="#" onClick={e => { e.preventDefault(); window.location.hash = '#api_status'; }}
-        style={{ color:'var(--accent-text)', textDecoration:'underline', fontWeight:600 }}>System health →</a>
+    <div
+      data-testid="operational-status-strip"
+      className="ops-status-strip"
+      style={{
+        display: 'flex', alignItems: 'center',
+        padding: '6px 16px', background: 'var(--bg-subtle)',
+        borderBottom: '1px solid var(--border)', fontSize: 11,
+        color: 'var(--text-2)', flexShrink: 0, minWidth: 0,
+        position: 'relative', zIndex: 10,
+      }}
+    >
+      <div className="ops-status-items" style={{
+        display: 'flex', alignItems: 'center', gap: 12, width: '100%', minWidth: 0,
+        overflowX: 'auto', WebkitOverflowScrolling: 'touch', flexWrap: 'nowrap',
+        scrollbarWidth: 'none',
+      }}>
+        <span style={{ fontWeight: 700, color: 'var(--text)', letterSpacing: '0.04em', flexShrink: 0 }}>System</span>
+        {items.map(i => (
+          <span key={i.name} className="ops-status-item" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: _dot(i.status), flexShrink: 0 }}/>
+            <span style={{ fontWeight: 600, color: 'var(--text)' }}>{i.name}</span>
+            <span className="ops-status-meta" style={{ color: 'var(--text-3)' }}>· {i.meta}</span>
+          </span>
+        ))}
+        <span className="ops-status-polled" style={{ fontSize: 9.5, color: 'var(--text-3)', fontFamily: 'monospace', flexShrink: 0, whiteSpace: 'nowrap' }}>polled {fmtTs}</span>
+        <a
+          href="#api_status"
+          className="ops-status-health"
+          onClick={e => { e.preventDefault(); window.location.hash = '#api_status'; }}
+          style={{ color: 'var(--accent-text)', textDecoration: 'underline', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap', marginLeft: 'auto' }}
+        >System health →</a>
+      </div>
     </div>
   );
 }
