@@ -326,11 +326,11 @@ function DashboardKanban({ onNav, onOpenNewShipment, onOpenSearch, onViewShipmen
   };
 
   return (
-    <div data-testid="dashboard-kanban" style={{ flex: 1, overflowY: 'auto', padding: '20px 32px 40px' }}>
+    <div data-testid="dashboard-kanban" className="atlas-content-pad" style={{ flex: 1, overflowY: 'auto' }}>
       {/* Quick-start CTA strip */}
       <div style={{ marginBottom: 18 }}>
         <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Start a workflow</div>
-        <div className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        <div className="quick-flow-grid responsive-grid-4">
           {QUICK_FLOWS.map(f => (
             <button key={f.id} data-testid={'quick-flow-' + f.id} onClick={() => {
                 if (f.id === 'outbound') onOpenNewShipment && onOpenNewShipment();
@@ -365,7 +365,7 @@ function DashboardKanban({ onNav, onOpenNewShipment, onOpenSearch, onViewShipmen
       {!loading && !error && (
         <>
           {/* Compact KPI strip — derived from live batches */}
-          <div data-testid="dashboard-kpi-strip" className="responsive-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 18 }}>
+          <div data-testid="dashboard-kpi-strip" className="kpi-strip-grid" style={{ marginBottom: 18 }}>
             <CompactKpi label="Active" value={active.length} hint="in pipeline" />
             <CompactKpi label="Urgent" value={urgentCount} hint="needs attention now" accent="var(--badge-red-text)" />
             <CompactKpi label="Awaiting DHL" value={awaitingDhl} hint="email not received" accent="var(--badge-amber-text)" />
@@ -402,7 +402,7 @@ function DashboardKanban({ onNav, onOpenNewShipment, onOpenSearch, onViewShipmen
               </div>
 
               {/* Kanban board */}
-              <div data-testid="kanban-board" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(220px, 1fr))', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
+              <div data-testid="kanban-board" className="kanban-board">
                 {KANBAN_LANES.map(lane => (
                   <KanbanLane key={lane.id} lane={lane} cards={byLane[lane.id]} onCardClick={handleCardClick} />
                 ))}

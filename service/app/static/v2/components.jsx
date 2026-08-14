@@ -335,22 +335,26 @@ function SubTabStrip({ active, onNav, allowedPages }) {
   );
 }
 
-function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch, onOpenMobileNav }) {
+function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch, onOpenMobileNav, onOpenMenu }) {
+  // Prefer explicit mobile-nav opener; AppShell may pass onOpenMenu.
+  const openNav = onOpenMobileNav || onOpenMenu;
   return (
-    <header className="topbar-header" style={{
-      height: 56, background: 'var(--card)',
+    <header className="topbar-header atlas-topbar" data-testid="topbar" style={{
+      height: 56, maxHeight: 56, background: 'var(--card)',
       borderBottom: '1px solid var(--border)',
       display: 'flex', alignItems: 'center',
       padding: '0 24px', gap: 12, flexShrink: 0,
+      overflow: 'hidden', position: 'relative', zIndex: 20,
+      boxSizing: 'border-box',
     }}>
       {/* Mobile nav — flex sibling of search (not absolute over TopBar+status strip) */}
-      {onOpenMobileNav && (
+      {openNav && (
         <button
           type="button"
           className="mobile-hamburger"
-          onClick={onOpenMobileNav}
+          onClick={openNav}
           aria-label="Open navigation menu"
-          data-testid="mobile-nav-open"
+          data-testid="mobile-menu-btn"
           style={{
             display: 'none', flexShrink: 0, alignItems: 'center', justifyContent: 'center',
             width: 44, height: 44, marginLeft: -8, background: 'none', border: 'none',
@@ -363,10 +367,11 @@ function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch, onOpenMobil
         background: 'var(--bg-subtle)', border: '1px solid var(--border)',
         borderRadius: 6, padding: '7px 12px', cursor: 'pointer',
         color: 'var(--text-3)', fontSize: 12, fontFamily: 'inherit', minWidth: 0,
+        overflow: 'hidden',
       }}>
         <span style={{ fontSize: 13 }} aria-hidden="true">⌕</span>
-        <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Search AWB, PI, INV, client…</span>
-        <span style={{
+        <span className="topbar-search-label" style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Search AWB, PI, INV, client…</span>
+        <span className="topbar-search-kbd" style={{
           fontFamily: 'monospace', fontSize: 9.5, padding: '1px 5px',
           background: 'var(--card)', border: '1px solid var(--border)',
           borderRadius: 3, fontWeight: 600, flexShrink: 0,
@@ -374,53 +379,57 @@ function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch, onOpenMobil
       </button>
       <div style={{ flex: 1 }} />
 
-      {/* Dark mode toggle */}
-      <button type="button" onClick={onToggleDark} title={isDark ? 'Switch to Light' : 'Switch to Dark'}
-        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-        data-testid="topbar-theme-toggle"
-        style={{
-          background: 'var(--bg-subtle)', border: '1px solid var(--border)',
-          borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
-          fontSize: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 4,
-          minWidth: 36, minHeight: 36, justifyContent: 'center',
+      <div className="topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' }}>
+        {/* Dark mode toggle */}
+        <button type="button" onClick={onToggleDark} title={isDark ? 'Switch to Light' : 'Switch to Dark'}
+          aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          data-testid="topbar-theme-toggle"
+          className="topbar-theme"
+          style={{
+            background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+            borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
+            fontSize: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 4,
+            minWidth: 36, minHeight: 36, justifyContent: 'center',
+          }}>
+          <span aria-hidden="true">{isDark ? '☀' : '☾'}</span>
+        </button>
+
+        <button type="button" onClick={onNewShipment} aria-label="New shipment" data-testid="topbar-new-shipment" className="topbar-new-shipment" style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          background: 'var(--accent)', color: 'var(--accent-text)',
+          border: 'none', borderRadius: 6,
+          padding: '7px 14px', fontSize: 12, fontWeight: 700,
+          cursor: 'pointer', letterSpacing: '0.02em', minHeight: 36,
         }}>
-        <span aria-hidden="true">{isDark ? '☀' : '☾'}</span>
-      </button>
+          <span style={{ fontSize: 16, lineHeight: 1 }} aria-hidden="true">+</span>
+          <span className="topbar-new-shipment-label">New Shipment</span>
+        </button>
 
-      <button type="button" onClick={onNewShipment} aria-label="New shipment" data-testid="topbar-new-shipment" style={{
-        display: 'flex', alignItems: 'center', gap: 6,
-        background: 'var(--accent)', color: 'var(--accent-text)',
-        border: 'none', borderRadius: 6,
-        padding: '7px 14px', fontSize: 12, fontWeight: 700,
-        cursor: 'pointer', letterSpacing: '0.02em', minHeight: 36,
-      }}>
-        <span style={{ fontSize: 16, lineHeight: 1 }} aria-hidden="true">+</span> New Shipment
-      </button>
+        <button type="button" aria-label="Notifications" data-testid="topbar-notifications" className="topbar-notify" style={{
+          background: 'none', border: 'none', cursor: 'pointer', position: 'relative',
+          padding: 4, minWidth: 36, minHeight: 36, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-2)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+            <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+          </svg>
+          <span style={{
+            position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: '50%',
+            background: 'var(--badge-red-text)', border: '1.5px solid var(--card)',
+          }} aria-hidden="true"></span>
+        </button>
 
-      <button type="button" aria-label="Notifications" data-testid="topbar-notifications" style={{
-        background: 'none', border: 'none', cursor: 'pointer', position: 'relative',
-        padding: 4, minWidth: 36, minHeight: 36, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-2)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-          <path d="M13.7 21a2 2 0 0 1-3.4 0" />
-        </svg>
-        <span style={{
-          position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: '50%',
-          background: 'var(--badge-red-text)', border: '1.5px solid var(--card)',
-        }} aria-hidden="true"></span>
-      </button>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} role="group" aria-label="Signed-in user">
-        <div style={{
-          width: 30, height: 30, borderRadius: '50%',
-          background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 12, fontWeight: 700, color: 'var(--accent-text)',
-        }} aria-hidden="true">A</div>
-        <div className="topbar-user-meta">
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>Admin</div>
-          <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Super User</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} role="group" aria-label="Signed-in user">
+          <div style={{
+            width: 30, height: 30, borderRadius: '50%',
+            background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 12, fontWeight: 700, color: 'var(--accent-text)',
+          }} aria-hidden="true">A</div>
+          <div className="topbar-user-meta">
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>Admin</div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Super User</div>
+          </div>
         </div>
       </div>
     </header>

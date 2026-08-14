@@ -233,7 +233,7 @@
     });
 
     return (
-      <aside data-testid="sidebar" className="sidebar-desktop" style={{
+      <aside data-testid="sidebar" style={{
         width: collapsed ? 52 : SIDEBAR_W, minWidth: collapsed ? 52 : SIDEBAR_W,
         background: 'var(--sidebar-bg)', display: 'flex', flexDirection: 'column',
         transition: 'width 0.2s, min-width 0.2s', overflow: 'hidden', zIndex: 10,
@@ -365,42 +365,61 @@
     );
   }
 
-  function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch, title }) {
+  function TopBar({ onNewShipment, onToggleDark, isDark, onOpenSearch, onOpenMenu, title }) {
     return (
-      <header data-testid="topbar" style={{
-        height: 56, background: 'var(--card)',
+      <header className="atlas-topbar" data-testid="topbar" style={{
+        height: 56, maxHeight: 56, background: 'var(--card)',
         borderBottom: '1px solid var(--border)',
         display: 'flex', alignItems: 'center',
         padding: '0 24px', gap: 16, flexShrink: 0,
+        overflow: 'hidden', position: 'relative', zIndex: 20,
+        boxSizing: 'border-box',
       }}>
+        {onOpenMenu && (
+          <button
+            type="button"
+            className="mobile-hamburger"
+            data-testid="mobile-menu-btn"
+            onClick={onOpenMenu}
+            aria-label="Open navigation menu"
+            style={{
+              display: 'none', flexShrink: 0, alignItems: 'center', justifyContent: 'center',
+              width: 44, height: 44, marginLeft: -8, background: 'none', border: 'none',
+              cursor: 'pointer', fontSize: 20, color: 'var(--text)',
+            }}
+          >☰</button>
+        )}
         <button onClick={onOpenSearch || undefined} style={{
           flex: 1, maxWidth: 360, display: 'flex', alignItems: 'center', gap: 10,
           background: 'var(--bg-subtle)', border: '1px solid var(--border)',
           borderRadius: 6, padding: '7px 12px', cursor: 'pointer',
           color: 'var(--text-3)', fontSize: 12, fontFamily: 'inherit',
+          overflow: 'hidden', minWidth: 0,
         }} data-testid="topbar-search">
           <span style={{ fontSize: 13 }}>⌕</span>
-          <span style={{ flex: 1, textAlign: 'left' }}>Search AWB, PI, INV, client…</span>
-          <span style={{ fontFamily: 'monospace', fontSize: 9.5, padding: '1px 5px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 3, fontWeight: 600 }}>⌘K</span>
+          <span className="topbar-search-label" style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Search AWB, PI, INV, client…</span>
+          <span className="topbar-search-kbd" style={{ fontFamily: 'monospace', fontSize: 9.5, padding: '1px 5px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 3, fontWeight: 600 }}>⌘K</span>
         </button>
-        <div style={{ flex: 1 }} />
-        <button onClick={onToggleDark || undefined} title={isDark ? 'Light mode' : 'Dark mode'} style={{
-          background: 'var(--bg-subtle)', border: '1px solid var(--border)',
-          borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
-          fontSize: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 4,
-        }} data-testid="topbar-theme-toggle">{isDark ? '☀' : '🌿'}</button>
-        {onNewShipment && (
-          <button onClick={onNewShipment} style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: 'var(--accent)', color: 'var(--accent-text)',
-            border: 'none', borderRadius: 6, padding: '7px 14px',
-            fontSize: 12, fontWeight: 700, cursor: 'pointer',
-          }} data-testid="topbar-new-shipment">
-            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span> New Shipment
-          </button>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent), var(--accent-light))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: 'var(--accent-text)' }}>A</div>
+        <div className="topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' }}>
+          <button className="topbar-theme" onClick={onToggleDark || undefined} title={isDark ? 'Light mode' : 'Dark mode'} style={{
+            background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+            borderRadius: 6, padding: '5px 10px', cursor: 'pointer',
+            fontSize: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 4,
+          }} data-testid="topbar-theme-toggle">{isDark ? '☀' : '☾'}</button>
+          {onNewShipment && (
+            <button className="topbar-new-shipment" onClick={onNewShipment} style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: 'var(--accent)', color: 'var(--accent-text)',
+              border: 'none', borderRadius: 6, padding: '7px 14px',
+              fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }} data-testid="topbar-new-shipment">
+              <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+              <span className="topbar-new-shipment-label">New Shipment</span>
+            </button>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent), var(--accent-light))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: 'var(--accent-text)' }}>A</div>
+          </div>
         </div>
       </header>
     );
@@ -607,9 +626,64 @@
   //     { page content }
   //   </AppShell>
 
-  function AppShell({ children, activeNav, isDark, onToggleDark, onNewShipment }) {
+  // Inject once — pages that omit shell media queries still get a usable mobile nav.
+  function ensureAppShellResponsiveCss() {
+    if (typeof document === 'undefined') return;
+    if (document.getElementById('pz-appshell-responsive')) return;
+    const tag = document.createElement('style');
+    tag.id = 'pz-appshell-responsive';
+    tag.textContent = `
+      .mobile-hamburger { display: none !important; }
+      @media (max-width: 900px) {
+        .sidebar-desktop { display: none !important; }
+        .mobile-hamburger { display: flex !important; }
+        .atlas-topbar { padding: 0 10px !important; gap: 8px !important; }
+        .atlas-page-header { padding: 16px 16px 0 !important; }
+        .topbar-search-kbd, .topbar-new-shipment-label, .topbar-notify { display: none !important; }
+        .topbar-new-shipment { padding: 0 !important; width: 36px !important; }
+      }
+      @media (max-width: 600px) {
+        .topbar-theme { display: none !important; }
+      }
+    `;
+    document.head.appendChild(tag);
+  }
+
+  function AppShell({ children, activeNav, isDark, onToggleDark, onNewShipment, onNav }) {
+    ensureAppShellResponsiveCss();
     const [collapsed, setCollapsed] = React.useState(false);
     const [dark, setDark] = React.useState(isDark || false);
+    const [mobileOpen, setMobileOpen] = React.useState(false);
+    const [isNarrow, setIsNarrow] = React.useState(() =>
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches
+    );
+
+    React.useEffect(() => {
+      const mql = window.matchMedia('(max-width: 900px)');
+      const onChange = (e) => {
+        setIsNarrow(e.matches);
+        if (!e.matches) setMobileOpen(false);
+      };
+      setIsNarrow(mql.matches);
+      if (mql.addEventListener) mql.addEventListener('change', onChange);
+      else mql.addListener(onChange);
+      return () => {
+        if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+        else mql.removeListener(onChange);
+      };
+    }, []);
+
+    React.useEffect(() => {
+      if (!mobileOpen) return undefined;
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      const onKey = (e) => { if (e.key === 'Escape') setMobileOpen(false); };
+      window.addEventListener('keydown', onKey);
+      return () => {
+        document.body.style.overflow = prev;
+        window.removeEventListener('keydown', onKey);
+      };
+    }, [mobileOpen]);
 
     const toggleDark = () => {
       const next = !dark;
@@ -618,13 +692,38 @@
       if (onToggleDark) onToggleDark(next);
     };
 
+    const handleNav = (id) => {
+      setMobileOpen(false);
+      if (onNav) onNav(id);
+    };
+
     return (
       <div data-testid="app-shell" style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
-        <Sidebar active={activeNav} collapsed={collapsed} onToggle={() => setCollapsed(c => !c)} />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <TopBar isDark={dark} onToggleDark={toggleDark} onNewShipment={onNewShipment} />
+        {!isNarrow && (
+          <div className="sidebar-desktop" data-testid="sidebar-desktop">
+            <Sidebar active={activeNav} collapsed={collapsed} onToggle={() => setCollapsed(c => !c)} onNav={onNav} />
+          </div>
+        )}
+        {isNarrow && mobileOpen && (
+          <div data-testid="mobile-nav-drawer" style={{ position: 'fixed', inset: 0, zIndex: 1100, display: 'flex' }}>
+            <div style={{
+              width: 'min(280px, 86vw)', height: '100%', overflowY: 'auto', flexShrink: 0,
+              background: 'var(--sidebar-bg)', boxShadow: '8px 0 24px var(--shadow-heavy)',
+            }}>
+              <Sidebar active={activeNav} collapsed={false} onToggle={() => setMobileOpen(false)} onNav={handleNav} />
+            </div>
+            <div data-testid="mobile-nav-backdrop" style={{ flex: 1, minWidth: 0, background: 'var(--overlay)' }} onClick={() => setMobileOpen(false)} />
+          </div>
+        )}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+          <TopBar
+            isDark={dark}
+            onToggleDark={toggleDark}
+            onNewShipment={onNewShipment}
+            onOpenMenu={isNarrow ? (() => setMobileOpen(true)) : undefined}
+          />
           {activeNav && NAV_INDEX[activeNav]?.group && (
-            <SubTabStrip active={activeNav} />
+            <SubTabStrip active={activeNav} onNav={onNav} />
           )}
           <main style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)' }}>
             {children}

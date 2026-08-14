@@ -143,9 +143,13 @@ window.EstrellaShared = {
   /* ── Tablet & narrower (≤900px) */
   @media (max-width: 900px) {
     .sidebar-desktop { display: none !important; }
-    .mobile-hamburger { display: inline-flex !important; }
+    .mobile-hamburger { display: flex !important; }
     .topbar-user-meta { display: none !important; }
-    .topbar-header { padding-left: 8px !important; padding-right: 12px !important; gap: 8px !important; }
+    .topbar-header, .atlas-topbar { padding-left: 8px !important; padding-right: 12px !important; gap: 8px !important; }
+    .atlas-content-pad { padding: 14px 16px 32px !important; }
+    .quick-flow-grid { grid-template-columns: repeat(2, 1fr) !important; }
+    .kpi-strip-grid { grid-template-columns: repeat(2, 1fr) !important; }
+    .ops-status-strip { padding: 6px 12px !important; }
     /* Page-level padding everywhere */
     [style*="padding: '24px 32px'"], [style*="padding:'24px 32px'"] { padding: 14px 16px !important; }
     /* Sub-header & workflow strip */
@@ -168,6 +172,10 @@ window.EstrellaShared = {
   /* ── Phone (≤600px) */
   @media (max-width: 600px) {
     .docs-grid { grid-template-columns: 1fr !important; }
+    .quick-flow-grid { grid-template-columns: 1fr !important; }
+    .kpi-strip-grid { grid-template-columns: 1fr 1fr !important; }
+    .ops-status-meta { display: none !important; }
+    .topbar-theme { display: none !important; }
     /* All multi-col grids collapse to 1 col */
     [style*="grid-template-columns: repeat(4, 1fr)"],
     [style*="grid-template-columns: repeat(3, 1fr)"],
@@ -195,8 +203,26 @@ window.EstrellaShared = {
     [data-screen-label="Shipment Detail"] > div:first-of-type > div { min-width: 0 !important; }
   }
 
+  /* Responsive dashboard grids (kanban / quick-flow) */
+  .atlas-content-pad { padding: 20px 32px 40px; }
+  .quick-flow-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .kpi-strip-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .kanban-board {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(220px, 1fr));
+    gap: 12px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
+  }
+  @media (max-width: 1100px) {
+    .quick-flow-grid { grid-template-columns: repeat(2, 1fr) !important; }
+    .kpi-strip-grid { grid-template-columns: repeat(3, 1fr) !important; }
+  }
+
   /* ── Estrella Brand Theme — Ink Navy / Bone / Champagne (refined) */
   :root {
+    --z-drawer: 1100;
     --bg:          #F4F1EA;
     --bg-subtle:   #FAF8F2;
     --card:        #FFFFFF;
@@ -482,6 +508,9 @@ function App() {
   const [showNewShipment, setShowNewShipment] = React.useState(false);
   const [showApiChecklist, setShowApiChecklist] = React.useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
+  const [isNarrow, setIsNarrow] = React.useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches
+  );
   const [viewerDoc, setViewerDoc] = React.useState(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [proformaDraft, setProformaDraft] = React.useState(null);
@@ -494,6 +523,33 @@ function App() {
 
   const openViewer = (doc) => setViewerDoc(doc);
   const closeViewer = () => setViewerDoc(null);
+
+  React.useEffect(() => {
+    const mql = window.matchMedia('(max-width: 900px)');
+    const onChange = (e) => {
+      setIsNarrow(e.matches);
+      if (!e.matches) setMobileSidebarOpen(false);
+    };
+    setIsNarrow(mql.matches);
+    if (mql.addEventListener) mql.addEventListener('change', onChange);
+    else mql.addListener(onChange);
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+      else mql.removeListener(onChange);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!mobileSidebarOpen) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e) => { if (e.key === 'Escape') setMobileSidebarOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [mobileSidebarOpen]);
 
   // Only ever called with AC_READY true — the canonical consumer is the authority.
   function applyAuthorityGate(me) {
@@ -778,24 +834,35 @@ function App() {
         }}>Loading authority…</div>
       )}
 
-      {/* Desktop Sidebar */}
-      <div className="sidebar-desktop" style={{ display: 'flex', flexShrink: 0 }}>
-        <Sidebar
-          active={activeNav}
-          onNav={handleNav}
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(v => !v)}
-          allowedPages={allowedPagesProp}
-        />
-      </div>
+      {/* Desktop Sidebar — unmount on narrow so it cannot crush content */}
+      {!isNarrow && (
+        <div className="sidebar-desktop" data-testid="sidebar-desktop" style={{ display: 'flex', flexShrink: 0 }}>
+          <Sidebar
+            active={activeNav}
+            onNav={handleNav}
+            collapsed={sidebarCollapsed}
+            onToggle={() => setSidebarCollapsed(v => !v)}
+            allowedPages={allowedPagesProp}
+          />
+        </div>
+      )}
 
-      {/* Mobile drawer — tokenized surface (not absolute hamburger over TopBar) */}
-      {mobileSidebarOpen && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex' }} role="dialog" aria-modal="true" aria-label="Navigation menu">
-          <div style={{ flex: 1, background: 'var(--overlay)' }} onClick={() => setMobileSidebarOpen(false)} />
-          <div style={{ width: 220, background: 'var(--sidebar-bg)', height: '100%', overflowY: 'auto', flexShrink: 0 }}>
+      {/* Mobile drawer — left panel; z-index above MOCK banner */}
+      {isNarrow && mobileSidebarOpen && (
+        <div
+          data-testid="mobile-nav-drawer"
+          style={{ position: 'fixed', inset: 0, zIndex: 1100, display: 'flex' }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation menu"
+        >
+          <div style={{
+            width: 'min(280px, 86vw)', background: 'var(--sidebar-bg)', height: '100%',
+            overflowY: 'auto', flexShrink: 0, boxShadow: '8px 0 24px var(--shadow-heavy)',
+          }}>
             <Sidebar active={activeNav} onNav={handleNav} collapsed={false} onToggle={() => setMobileSidebarOpen(false)} allowedPages={allowedPagesProp} />
           </div>
+          <div data-testid="mobile-nav-backdrop" style={{ flex: 1, minWidth: 0, background: 'var(--overlay)' }} onClick={() => setMobileSidebarOpen(false)} />
         </div>
       )}
 
@@ -807,7 +874,8 @@ function App() {
             onToggleDark={() => setIsDark(d => !d)}
             isDark={isDark}
             onOpenSearch={() => setSearchOpen(true)}
-            onOpenMobileNav={() => setMobileSidebarOpen(true)}
+            onOpenMobileNav={isNarrow ? (() => setMobileSidebarOpen(true)) : undefined}
+            onOpenMenu={isNarrow ? (() => setMobileSidebarOpen(true)) : undefined}
           />
           <OperationalStatusStrip />
         </div>
