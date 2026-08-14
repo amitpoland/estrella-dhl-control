@@ -40,7 +40,7 @@ class ShipmentRequest:
     special_instructions: Optional[str] = None
     # Upgraded AWB modal fields
     product_code: str = "P"                      # DHL productCode (P=Express Worldwide)
-    description: str = "Jewellery"               # content.description
+    description: str = ""                            # content.description; route projects from canonical authority
     customer_reference: Optional[str] = None     # proforma/order ref → customerReferences CU
     shipment_reference: Optional[str] = None     # batch/internal ref  → customerReferences AAO
     receiver_vat_id: Optional[str] = None        # DHL registrationNumbers EUV

@@ -1342,8 +1342,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     // Value
     declared_value: (prefill.declared_value || '').toString(),
     currency:       prefill.currency || 'EUR',
-    // Description & references
-    description:         prefill.description || 'Jewellery',
+    // Description & references — description starts empty; filled ONLY from
+    // backend GET .../shipment-description (description_engine projection).
+    // Frontend never maps item_type → DHL text.
+    description:         '',
     customer_reference:  prefill.customer_reference || '',
     shipment_reference:  prefill.shipment_reference || '',
     // Recipient
@@ -1376,6 +1378,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [cmAccounts, setCmAccounts] = React.useState([]);
   const [cmAccountsStatus, setCmAccountsStatus] = React.useState('idle');
   const [selectedCmAccountId, setSelectedCmAccountId] = React.useState(null);
+  // Shipment description authority is backend-only. Modal displays the
+  // canonical projection; descriptionDirty becomes true only when the
+  // operator edits the field — then description_override is sent.
+  const [descriptionCanonical, setDescriptionCanonical] = React.useState('');
+  const [descriptionDirty, setDescriptionDirty] = React.useState(false);
+  const [descriptionLoad, setDescriptionLoad] = React.useState('loading');
 
   // ── DHL account authority (operator ruling 2026-07-20) ──────────────────
   // The modal keeps NO account state of its own: the hook holds the server's
@@ -1437,6 +1445,27 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     window.PzApi.getCarrierStatus && window.PzApi.getCarrierStatus()
       .then(r => setCarrierStatus(r && r.ok ? r.data : null))
       .catch(() => setCarrierStatus(null));
+    // Canonical shipment description — sole automatic mapper is backend
+    // description_engine.project_shipment_content_description. Display only;
+    // never treat this value as an operator override on submit.
+    if (window.PzApi.getCarrierShipmentDescription) {
+      setDescriptionLoad('loading');
+      window.PzApi.getCarrierShipmentDescription(batchId, prefill.client_name || null)
+        .then(r => {
+          const text = (r && r.ok && r.data && r.data.shipment_description)
+            ? String(r.data.shipment_description).trim()
+            : '';
+          setDescriptionCanonical(text);
+          setDescriptionLoad(text ? 'loaded' : 'empty');
+          setForm(prev => {
+            if (descriptionDirty) return prev;
+            return { ...prev, description: text };
+          });
+        })
+        .catch(() => setDescriptionLoad('failed'));
+    } else {
+      setDescriptionLoad('failed');
+    }
     // Customer Master baseline for the save-confirmation comparison.
     // Missing contractor id or a failed fetch does NOT skip the gate — it
     // arms the fail-visible baseline panel instead (never fail open).
@@ -1444,7 +1473,18 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       setMasterState('loading');
       window.PzApi.getCustomerMaster(prefill.client_contractor_id)
         .then(r => {
-          if (r && r.ok && r.data) { setMaster(r.data); setMasterState('loaded'); }
+          if (r && r.ok && r.data) {
+            setMaster(r.data);
+            setMasterState('loaded');
+            // Contact Full Name authority = Customer Master ship_to_person
+            // (same field the save-confirm map uses). Never invent from company.
+            const person = (r.data.ship_to_person || '').trim();
+            if (person) {
+              setForm(prev => (prev.name && String(prev.name).trim())
+                ? prev
+                : { ...prev, name: person });
+            }
+          }
           else setMasterState('failed');
         })
         .catch(() => setMasterState('failed'));
@@ -1683,7 +1723,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     if (!form.street)         missing.push('Street');
     if (!form.city)           missing.push('City');
     if (!form.country_code)   missing.push('Country code');
-    if (!form.description)    missing.push('Description');
+    // Description: when operator edited, require non-empty override. When still
+    // on canonical display (or empty canonical), backend projects / last-resorts.
+    if (descriptionDirty && !(form.description || '').trim()) {
+      missing.push('Description');
+    }
     if (missing.length) { setApiError(`Missing required fields: ${missing.join(', ')}`); return; }
     // DHL rejects receiver contact without a phone (minLength 1) — block
     // locally with the exact reason instead of a DHL 422 round-trip.
@@ -1748,7 +1792,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         height_cm: parseFloat(form.height_cm),
       },
       recipient_address: {
-        name:         form.name || form.company_name,
+        // Contact full name and company stay separate — never copy company into name.
+        name:         form.name || undefined,
+        person:       form.name || undefined,
         company:      form.company_name || undefined,
         street:       form.street,
         city:         form.city,
@@ -1758,7 +1804,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         email:        form.email || undefined,
       },
       product_code:       form.product_code || 'P',
-      description:        form.description || 'Jewellery',
+      // Automatic description is backend-only. Send override ONLY when the
+      // operator edited the field — never re-post the canonical display value
+      // as though it were a manual description.
+      ...(descriptionDirty
+        ? { description_override: (form.description || '').trim() || null }
+        : {}),
       customer_reference: form.customer_reference || null,
       shipment_reference: form.shipment_reference || null,
       receiver_vat_id:    form.receiver_vat_id || null,
@@ -2204,8 +2255,29 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           <div style={fieldStyle}>
             <label htmlFor="awb-description" style={labelStyle}>Shipment Description * (appears on customs label)</label>
             <input id="awb-description" value={form.description}
-              onChange={e => set('description', e.target.value)} style={inputStyle}
+              onChange={e => {
+                setDescriptionDirty(true);
+                set('description', e.target.value);
+              }} style={inputStyle}
               data-testid="awb-field-description" />
+            {!descriptionDirty && descriptionLoad === 'loading' && (
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}
+                data-testid="awb-description-loading">
+                Loading description from product lines…
+              </div>
+            )}
+            {!descriptionDirty && descriptionLoad === 'empty' && (
+              <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 3 }}
+                data-testid="awb-description-empty-hint">
+                No product-line description yet — booking will use the backend last-resort if still empty.
+              </div>
+            )}
+            {!descriptionDirty && descriptionLoad === 'loaded' && descriptionCanonical && (
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}
+                data-testid="awb-description-canonical-hint">
+                From product lines (backend). Edit only to override.
+              </div>
+            )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
@@ -6790,6 +6862,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
     const updatedAt = liveDraft.updated_at || (draft && draft.updated_at) || '';
     const shipTo = {
       name: sel.ship_to_name || sel.bill_to_name || '',
+      person: sel.ship_to_person || '',
       street: sel.ship_to_street || sel.bill_to_street || '',
       city: sel.ship_to_city || sel.bill_to_city || '',
       zip: sel.ship_to_zip || sel.bill_to_postal_code || '',
@@ -7748,7 +7821,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             currency:           draftCurrency || 'EUR',
             // Recipient identity — Customer Master via ship_to / buyer_override
             company_name:       (sto && sto.name)    || (bo && bo.name)    || customer.name || '',
-            name:               '',
+            // Contact Full Name — Customer Master ship_to_person (via ship_to
+            // override person when present). Empty until CM baseline loads;
+            // AwbGenerateModal fills from getCustomerMaster.ship_to_person.
+            // Never invent from company name.
+            name:               (sto && sto.person)  || '',
             street:             (sto && sto.street)  || (bo && bo.street)  || '',
             city:               (sto && sto.city)    || (bo && bo.city)    || '',
             postal_code:        (sto && sto.zip)     || (bo && bo.zip)     || '',
@@ -7764,8 +7841,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             shipment_reference: batchId || '',
             // Proforma number for the result summary card (display only)
             proforma_number:    _awbProformaNo,
-            // Description — default; operator overrides in modal
-            description:        'Jewellery',
+            // Description is loaded by AwbGenerateModal from
+            // GET /api/v1/carrier/{batch}/shipment-description — never mapped
+            // from item_type in the browser.
             // Client identity — Customer Master baseline for the shipping
             // save-confirmation workflow (compare + explicit-save target).
             client_contractor_id: (liveDraft && liveDraft.client_contractor_id)
