@@ -1514,3 +1514,196 @@ def test_reconcile_refuses_ambiguous_or_unproven_invocations():
         "supplying a direction to an ordinary deploy must throw; ignoring it would let an "
         "operator believe a proof ran when it did not"
     )
+
+
+# --------------------------------------------------------------- privilege / UAC
+def _elevation_segment(body: str) -> str:
+    start = body.index("function Request-AdministratorElevationIfNeeded")
+    rest = body[start + 1 :]
+    end = rest.index("\nfunction ") if "\nfunction " in rest else len(rest)
+    return body[start : start + 1 + end]
+
+
+def _arglist_segment(body: str) -> str:
+    start = body.index("function Get-DeployElevationArgumentList")
+    rest = body[start + 1 :]
+    end = rest.index("\nfunction ") if "\nfunction " in rest else len(rest)
+    return body[start : start + 1 + end]
+
+
+def test_administrator_predicate_uses_windows_token_authority():
+    """Privilege must come from the Windows principal token, not username heuristics."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "function Test-IsAdministrator" in body
+    seg = body[body.index("function Test-IsAdministrator") :]
+    seg = seg[: seg.index("\nfunction ")]
+    assert "WindowsIdentity]::GetCurrent()" in seg
+    assert "WindowsPrincipal" in seg
+    assert "WindowsBuiltInRole]::Administrator" in seg
+    assert "whoami" not in seg.lower()
+    assert "$env:USERNAME" not in seg
+    assert "Environment]::UserName" not in seg
+    assert "IsInRole" in seg
+
+
+def test_elevation_runs_before_any_authorization_mint_or_consume():
+    """Core invariant: privilege proof/self-elevation precedes mint/consume on every write path.
+
+    Control-flow pin (not whole-file index): Invoke-Deploy elevates before dispatching into
+    Release/Rollback/Reconcile/DeployMain. Match `function Invoke-Deploy {` exactly so
+    Invoke-DeployMain cannot steal the index.
+    """
+    body = _read(DEPLOY_SCRIPT)
+    i_elev_fn = body.index("function Request-AdministratorElevationIfNeeded")
+    i_mint_fn = body.index("function Invoke-ReleaseMint")
+    assert i_elev_fn < i_mint_fn, "elevation helpers must be defined before mint"
+
+    i_deploy = body.index("function Invoke-Deploy {")
+    deploy_seg = body[i_deploy:]
+    # Truncate before any trailing content is irrelevant; segment is the function body.
+    i_elev_call = deploy_seg.index("Request-AdministratorElevationIfNeeded")
+    i_cfg = deploy_seg.index("Get-DeployConfig")
+    i_release = deploy_seg.index("Invoke-ReleaseFlow")
+    i_rollback = deploy_seg.index("Invoke-Rollback")
+    i_reconcile = deploy_seg.index("Invoke-Reconcile")
+    i_main = deploy_seg.index("Invoke-DeployMain")
+    assert i_elev_call < i_cfg < i_release, (
+        "Invoke-Deploy must elevate BEFORE loading config / entering ReleaseFlow"
+    )
+    assert i_elev_call < i_rollback and i_elev_call < i_reconcile and i_elev_call < i_main
+
+    elev = _elevation_segment(body)
+    # Comments may name mint/auth as forbidden; executable calls must be absent.
+    assert "Invoke-ReleaseMint -Cfg" not in elev
+    assert "Assert-Authorization -Cfg" not in elev
+    assert "exit [int]$proc.ExitCode" in elev
+
+
+def test_non_admin_release_does_not_mint_or_stop_in_unelevated_parent():
+    """Unelevated path must exit after UAC child; it must not call mint/stop itself."""
+    seg = _elevation_segment(_read(DEPLOY_SCRIPT))
+    assert "Start-Process" in seg and "-Verb RunAs" in seg
+    assert "exit [int]$proc.ExitCode" in seg
+    assert "Invoke-ReleaseMint -Cfg" not in seg
+    assert "Assert-Authorization -Cfg" not in seg
+    assert "Set-ServiceState -Cfg" not in seg
+    assert "sc.exe" not in seg
+    assert "FAILED SAFE: Administrator elevation was declined" in seg
+    assert "Authorization not minted" in seg
+    assert "Production untouched" in seg
+
+
+def test_whatif_skips_elevation():
+    body = _read(DEPLOY_SCRIPT)
+    elev = _elevation_segment(body)
+    assert "if ($script:PlanOnly) { return }" in elev
+    deploy = body[body.index("function Invoke-Deploy {") :]
+    assert "Request-AdministratorElevationIfNeeded" in deploy
+    assert "-WhatIf: PLAN ONLY" in deploy
+    assert re.search(
+        r"if \(\$script:PlanOnly\) \{[\s\S]*?-WhatIf: PLAN ONLY[\s\S]*?\}\s*else \{\s*"
+        r"# Privilege BEFORE mint[\s\S]*?Request-AdministratorElevationIfNeeded",
+        deploy,
+    ), "elevation must run only in the non-WhatIf else branch"
+
+
+def test_elevated_process_does_not_relaunch():
+    """Already-Administrator returns; one UAC transition maximum."""
+    seg = _elevation_segment(_read(DEPLOY_SCRIPT))
+    assert "if (Test-IsAdministrator)" in seg
+    assert "Administrator proven" in seg
+    i_admin = seg.index("if (Test-IsAdministrator)")
+    i_start = seg.index("Start-Process")
+    assert i_admin < i_start
+    assert "return" in seg[i_admin:i_start]
+
+
+def test_elevation_preserves_scope_and_mode_switches():
+    """App|Engine|Both and canonical modes survive elevation; no arbitrary injection."""
+    seg = _arglist_segment(_read(DEPLOY_SCRIPT))
+    for flag in (
+        "-Release",
+        "-Rollback",
+        "-Reconcile",
+        "-Scope",
+        "-ReviewedSHA",
+        "-Unit",
+        "-FromSha",
+        "-ToSha",
+        "-Bootstrap",
+        "-DeployLog",
+    ):
+        assert f"tokens.Add('{flag}')" in seg, flag
+    assert "tokens.Add($Scope)" in seg
+    assert "$ReviewedSHA -notmatch $script:SHA_RX" in seg
+    assert "$Unit -notmatch $script:UNIT_RX" in seg
+    assert "$FromSha -notmatch $script:SHA_RX" in seg
+    assert "$ToSha -notmatch $script:SHA_RX" in seg
+    assert "Deploy-PZ.ps1" in seg
+    assert "tokens.Add('-WhatIf')" not in seg
+    assert "tokens.Add('-NoRun')" not in seg
+    assert "schtasks" not in seg.lower()
+    assert "sdset" not in seg.lower()
+    assert "Assert-CanonicalDeployLogPath" in seg
+
+
+def test_elevation_requires_user_scoped_auth_env_before_uac():
+    """Process-only $env:PZ_DEPLOY_AUTH_* must not reach UAC/mint (RunAs drops it)."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "function Assert-DeployAuthEnvSurvivesElevation" in body
+    elev = _elevation_segment(body)
+    assert "Assert-DeployAuthEnvSurvivesElevation" in elev
+    assert "PZ_DEPLOY_AUTH_KEY_FILE" in body
+    assert "PZ_DEPLOY_AUTH_DIR" in body
+    assert "process-scoped" in body.lower() or "Process" in body
+    i_assert = elev.index("Assert-DeployAuthEnvSurvivesElevation")
+    i_start = elev.index("Start-Process")
+    assert i_assert < i_start
+
+
+def test_uac_decline_message_distinguishes_cancel_from_launch_failure():
+    elev = _elevation_segment(_read(DEPLOY_SCRIPT))
+    assert "elevation was declined" in elev
+    assert "elevation failed" in elev
+    assert "(?i)cancel" in elev or "-match '(?i)cancel'" in elev
+
+
+def test_elevated_transcript_is_canonical_under_localappdata():
+    body = _read(DEPLOY_SCRIPT)
+    assert "function Assert-CanonicalDeployLogPath" in body
+    assert r"PZ-deploy\logs" in body or "PZ-deploy\\logs" in body
+    elev = _elevation_segment(body)
+    assert "elevated Deploy-PZ transcript" in elev
+    assert "Start-Transcript" in body
+    assert "Stop-Transcript" in body
+
+
+def test_elevation_argument_builder_refuses_injection_via_path_or_blob():
+    """Argument list is structural tokens + quoting helper; no unvalidated command blob."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "function ConvertTo-ProcessArgumentString" in body
+    elev = _elevation_segment(body)
+    assert "ConvertTo-ProcessArgumentString" in elev
+    assert "Get-DeployElevationArgumentList" in elev
+    assert "cmd.exe" not in elev.lower()
+    assert "Invoke-Expression" not in elev
+    assert re.search(r"(?i)(?<![A-Za-z])iex(?![A-Za-z])", elev) is None
+
+
+def test_no_second_deploy_authority_or_bat_as_architecture():
+    """Self-elevation stays inside Deploy-PZ.ps1; no Deploy-PZ-v2 / permanent BAT launcher."""
+    body = _read(DEPLOY_SCRIPT)
+    assert "Deploy-PZ-v2" not in body
+    elev = _elevation_segment(body)
+    assert ".bat" not in elev.lower()
+    assert "schtasks" not in elev.lower()
+    guard = _read(GUARD)
+    assert "Deploy-PZ.ps1" in guard
+
+
+def test_deploy_md_documents_uac_one_command_contract():
+    md = _read(REPO / ".claude" / "commands" / "deploy.md")
+    assert "Deploy-PZ.ps1 -Release" in md
+    assert "UAC" in md
+    assert "per-PR BAT" in md
+    assert "never elevates" in md

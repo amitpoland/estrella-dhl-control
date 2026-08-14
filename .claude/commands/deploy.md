@@ -24,13 +24,24 @@ Nothing is hardcoded anywhere else.
 .\.claude\deploy\Deploy-PZ.ps1 -Release
 ```
 
+From a normal (non-elevated) PowerShell, Windows shows **one UAC prompt**. Approving
+it re-launches the **same** `Deploy-PZ.ps1` elevated; declining is `FAILED SAFE`
+(production untouched, authorization not minted). No per-PR BAT, scheduled task, or
+second deploy script. `-WhatIf` never elevates.
+
+Signing-key environment must be **User- or Machine-scoped** (`setx` as documented by
+`sign_deploy_authorization.py`). Process-only `$env:PZ_DEPLOY_AUTH_*` does not survive
+UAC and is refused before the prompt. The elevated run writes one transcript under
+`%LOCALAPPDATA%\PZ-deploy\logs\deploy-*.log`; the parent console replays it after UAC.
+
 `-Release` resolves the current `origin/main` SHA, validates the seven-agent gate
 evidence at the standard path (`gate_evidence_file` in the configuration:
 `C:\PZ-secrets\deploy-gate\latest.json`), proves what production actually runs (the
 version marker is evidence, never authority), automatically chooses
 **no-op / deploy / reconcile**, mints and consumes the signed single-use
-authorization internally *after* the read-only identity checks pass, deploys,
-restarts, runs the closure validation, and prints exactly one final status:
+authorization internally *after* Administrator privilege is proven and the read-only
+identity checks pass, deploys, restarts, runs the closure validation, and prints
+exactly one final status:
 `ALREADY CURRENT`, `DEPLOYED`, `ROLLED BACK`, or `FAILED SAFE`.
 
 Only four conditions block a release; each is enforced, not advisory:
