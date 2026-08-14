@@ -15,11 +15,19 @@ PENDING anchor row carries no AWB; the ref arrives only via update_state().
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
-from typing import List, Optional
+from typing import FrozenSet, List, Optional, Sequence
 
 from ..models.shipment import ShipmentMode, ShipmentResult, ShipmentState
+
+TABLE = "carrier_shipments"
+PRE_EXT_TABLE = "carrier_shipments__pre_ext"
+
+
+class CarrierShipmentsSchemaError(RuntimeError):
+    """Ambiguous or unsafe carrier_shipments schema state. Fail closed."""
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS carrier_shipments (
@@ -106,8 +114,15 @@ _ADDITIVE_COLUMNS = [
 PROVIDER_DHL = "DHL"
 PROVIDERS = ("DHL", "FEDEX", "UPS")
 EXTERNAL_PROVIDERS = ("FEDEX", "UPS")
-_MODE_CHECK_LEGACY = "CHECK(mode IN ('shadow', 'live'))"
 _MODE_CHECK_CURRENT = "CHECK(mode IN ('shadow', 'live', 'external'))"
+_MODE_IN_RE = re.compile(
+    r"CHECK\s*\(\s*mode\s+IN\s*\(([^)]*)\)\s*\)",
+    re.IGNORECASE,
+)
+_MODE_CHECK_RE = re.compile(
+    r"CHECK\s*\(\s*mode\s+IN\s*\(\s*[^)]+?\s*\)\s*\)",
+    re.IGNORECASE,
+)
 
 
 def resolve_provider(stored: Optional[str]) -> str:
@@ -148,64 +163,220 @@ def _row(row) -> Optional[dict]:
 
 
 def init_db(db_path: Path) -> None:
-    """Create the carrier_shipments table if it does not exist.
+    """Create or migrate carrier_shipments.
 
-    Idempotent: additive ALTER TABLE for Phase-5 columns so existing DBs
-    are migrated transparently. Existing DBs whose CHECK still forbids
-    ``external`` are rebuilt in place (same table, same rows).
+    Recovery of an interrupted CHECK rebuild runs BEFORE CREATE TABLE IF NOT
+    EXISTS, so a leftover ``carrier_shipments__pre_ext`` cannot be masked by
+    an empty new table. The CHECK rebuild itself runs in BEGIN IMMEDIATE.
     """
-    with _connect(db_path) as conn:
-        conn.executescript(_DDL)
-        for col, ddl in _ADDITIVE_COLUMNS:
-            try:
-                conn.execute(
-                    f"ALTER TABLE carrier_shipments ADD COLUMN {col} {ddl}"
-                )
-            except sqlite3.OperationalError as _exc:
-                if "duplicate column" not in str(_exc).lower():
-                    raise
+    conn = _connect(db_path)
+    try:
+        _recover_interrupted_mode_migration(conn)
+        conn.execute(_DDL)
+        _ensure_additive_columns(conn)
         _ensure_external_mode_allowed(conn)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _row_count(conn: sqlite3.Connection, name: str) -> int:
+    return int(conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
+
+
+def _create_sql(conn: sqlite3.Connection, name: str) -> str:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return (row[0] if row else "") or ""
+
+
+def _mode_in_tokens(sql: str) -> Optional[FrozenSet[str]]:
+    if not sql:
+        return None
+    matches = list(_MODE_IN_RE.finditer(sql))
+    if len(matches) != 1:
+        return None
+    tokens = [t.lower() for t in re.findall(r"'([^']*)'", matches[0].group(1))]
+    if not tokens:
+        return None
+    return frozenset(tokens)
+
+
+def _mode_check_kind(sql: str) -> str:
+    tokens = _mode_in_tokens(sql)
+    if tokens is None:
+        return "unknown"
+    if tokens == frozenset({"shadow", "live", "external"}):
+        return "current"
+    if tokens == frozenset({"shadow", "live"}):
+        return "legacy"
+    return "unknown"
+
+
+def _widen_mode_check_sql(sql: str) -> str:
+    kind = _mode_check_kind(sql)
+    if kind == "current":
+        return sql
+    if kind != "legacy":
+        raise CarrierShipmentsSchemaError(
+            "cannot widen mode CHECK: unrecognized constraint"
+        )
+    new_sql, n = _MODE_CHECK_RE.subn(_MODE_CHECK_CURRENT, sql, count=1)
+    if n != 1:
+        raise CarrierShipmentsSchemaError("cannot widen mode CHECK: replace failed")
+    return new_sql
+
+
+def _attached_schema_sqls(conn: sqlite3.Connection, table: str) -> Sequence[str]:
+    """CREATE INDEX / CREATE TRIGGER statements attached to ``table``.
+
+    Autoindexes (PRIMARY KEY) have sql IS NULL and are recreated by the
+    replacement CREATE TABLE. Extra indexes/triggers must be replayed.
+    """
+    rows = conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE tbl_name=? AND type IN ('index', 'trigger') "
+        "AND sql IS NOT NULL "
+        "ORDER BY type, name",
+        (table,),
+    ).fetchall()
+    return [r[0] for r in rows if r[0]]
+
+
+def _ensure_additive_columns(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, TABLE):
+        return
+    for col, ddl in _ADDITIVE_COLUMNS:
+        try:
+            conn.execute(f'ALTER TABLE "{TABLE}" ADD COLUMN {col} {ddl}')
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+
+
+def _end_implicit_transaction(conn: sqlite3.Connection) -> None:
+    try:
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
+
+def _recover_interrupted_mode_migration(conn: sqlite3.Connection) -> None:
+    """Restore a single carrier_shipments table before CREATE TABLE IF NOT EXISTS.
+
+    Fail closed when both tables are populated. An empty current table beside
+    a populated temp is interrupted-migration residue, not a second authority.
+    """
+    has_cur = _table_exists(conn, TABLE)
+    has_tmp = _table_exists(conn, PRE_EXT_TABLE)
+    if not has_tmp:
+        return
+
+    cur_n = _row_count(conn, TABLE) if has_cur else 0
+    tmp_n = _row_count(conn, PRE_EXT_TABLE)
+
+    if has_cur and cur_n > 0 and tmp_n > 0:
+        raise CarrierShipmentsSchemaError(
+            f"ambiguous carrier_shipments recovery: both {TABLE!r} ({cur_n} rows) "
+            f"and {PRE_EXT_TABLE!r} ({tmp_n} rows) are populated"
+        )
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    _end_implicit_transaction(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if has_cur and cur_n == 0 and tmp_n > 0:
+            conn.execute(f'DROP TABLE "{TABLE}"')
+            conn.execute(f'ALTER TABLE "{PRE_EXT_TABLE}" RENAME TO "{TABLE}"')
+        elif (not has_cur) and has_tmp:
+            conn.execute(f'ALTER TABLE "{PRE_EXT_TABLE}" RENAME TO "{TABLE}"')
+        elif has_cur and tmp_n == 0:
+            conn.execute(f'DROP TABLE "{PRE_EXT_TABLE}"')
+        else:
+            raise CarrierShipmentsSchemaError(
+                f"unhandled carrier_shipments recovery "
+                f"current={has_cur}/{cur_n} temp={has_tmp}/{tmp_n}"
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def _ensure_external_mode_allowed(conn: sqlite3.Connection) -> None:
     """Widen the mode CHECK so customer-arranged rows can persist honestly.
 
-    SQLite cannot ALTER a CHECK. New databases get the expanded constraint
-    from ``_DDL``. Older databases still have ``('shadow', 'live')`` baked
-    into sqlite_master — those are rebuilt, copying every existing column.
+    SQLite cannot ALTER a CHECK. The rebuild is one BEGIN IMMEDIATE
+    transaction: rename, recreate, copy, restore indexes/triggers, drop temp.
+    Row-count mismatch aborts the transaction.
     """
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master "
-        "WHERE type='table' AND name='carrier_shipments'"
-    ).fetchone()
-    sql = (row[0] if row else "") or ""
-    if "'external'" in sql:
+    if not _table_exists(conn, TABLE):
         return
-    if _MODE_CHECK_LEGACY not in sql:
+    sql = _create_sql(conn, TABLE)
+    kind = _mode_check_kind(sql)
+    if kind == "current":
         return
-    old_cols = [r[1] for r in conn.execute("PRAGMA table_info(carrier_shipments)")]
+    if kind != "legacy":
+        raise CarrierShipmentsSchemaError(
+            "carrier_shipments mode CHECK is unrecognized; refusing to migrate or skip"
+        )
+
+    old_count = _row_count(conn, TABLE)
+    old_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{TABLE}")')]
+    extra_sqls = _attached_schema_sqls(conn, TABLE)
+    widened = _widen_mode_check_sql(sql)
+
     conn.execute("PRAGMA foreign_keys=OFF")
-    conn.execute("ALTER TABLE carrier_shipments RENAME TO carrier_shipments__pre_ext")
-    conn.execute(sql.replace(_MODE_CHECK_LEGACY, _MODE_CHECK_CURRENT, 1))
-    for col, ddl in _ADDITIVE_COLUMNS:
-        try:
-            conn.execute(
-                f"ALTER TABLE carrier_shipments ADD COLUMN {col} {ddl}"
+    _end_implicit_transaction(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(f'ALTER TABLE "{TABLE}" RENAME TO "{PRE_EXT_TABLE}"')
+        conn.execute(widened)
+        for col, ddl in _ADDITIVE_COLUMNS:
+            try:
+                conn.execute(f'ALTER TABLE "{TABLE}" ADD COLUMN {col} {ddl}')
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        new_cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{TABLE}")')}
+        copy_cols = [c for c in old_cols if c in new_cols]
+        col_sql = ", ".join(f'"{c}"' for c in copy_cols)
+        conn.execute(
+            f'INSERT INTO "{TABLE}" ({col_sql}) '
+            f'SELECT {col_sql} FROM "{PRE_EXT_TABLE}"'
+        )
+        new_count = _row_count(conn, TABLE)
+        if new_count != old_count:
+            raise CarrierShipmentsSchemaError(
+                f"carrier_shipments rebuild lost rows: before={old_count} after={new_count}"
             )
-        except sqlite3.OperationalError as _exc:
-            if "duplicate column" not in str(_exc).lower():
-                raise
-    new_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(carrier_shipments)")
-    }
-    copy_cols = [c for c in old_cols if c in new_cols]
-    col_sql = ", ".join(copy_cols)
-    conn.execute(
-        f"INSERT INTO carrier_shipments ({col_sql}) "
-        f"SELECT {col_sql} FROM carrier_shipments__pre_ext"
-    )
-    conn.execute("DROP TABLE carrier_shipments__pre_ext")
-    conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute(f'DROP TABLE "{PRE_EXT_TABLE}"')
+        for stmt in extra_sqls:
+            conn.execute(stmt)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def insert_shipment(
