@@ -1022,26 +1022,25 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
   const [opts,       setOpts]       = React.useState(null);
   const [optsError,  setOptsError]  = React.useState(null);
   const [apiError,   setApiError]   = React.useState(null);
-  const [recipientOverride, setRecipientOverride] = React.useState('');
-  const [subjectOverride,   setSubjectOverride]   = React.useState('');
+  const [toList,     setToList]     = React.useState([]);
+  const [ccList,     setCcList]     = React.useState([]);
+  const [toDraft,    setToDraft]    = React.useState('');
+  const [ccDraft,    setCcDraft]    = React.useState('');
+  const [subjectOverride, setSubjectOverride] = React.useState('');
   const [selected,   setSelected]   = React.useState({});
   const [result,     setResult]     = React.useState(null);
 
   const docNo = liveDraft.wfirma_proforma_fullnumber || `Draft #${draft.id}`;
   const customerName = liveDraft.client_name || draft.client_name || '—';
-  const effectiveRecipient = recipientOverride.trim() || recipientEmail || '';
+  const contractorId = (opts && opts.recipients && opts.recipients.contractor_id)
+    || liveDraft.client_contractor_id || draft.client_contractor_id || '';
   const FALLBACK_DOCS = [
     { type: 'official_proforma', label: 'Proforma', available: false },
     { type: 'invoice', label: 'Invoice', available: false },
     { type: 'packing_list', label: 'Packing List', available: false },
     { type: 'air_waybill', label: 'Air Waybill', available: false },
+    { type: 'shipping_information', label: 'Shipping Information', available: false },
   ];
-  const DOC_ICONS = {
-    official_proforma: '📄',
-    invoice: '🧾',
-    packing_list: '📦',
-    air_waybill: '✈',
-  };
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1064,10 +1063,15 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
         setOpts(payload);
         const init = {};
         (payload.documents || []).forEach(d => {
-          // Default: select available Proforma (legacy behaviour).
           init[d.type] = !!(d.available && d.type === 'official_proforma');
         });
         setSelected(init);
+        const rec = payload.recipients || {};
+        const resolvedTo = Array.isArray(rec.to) ? rec.to.slice() : [];
+        const resolvedCc = Array.isArray(rec.cc) ? rec.cc.slice() : [];
+        if (!resolvedTo.length && recipientEmail) resolvedTo.push(recipientEmail);
+        setToList(resolvedTo);
+        setCcList(resolvedCc);
         setLoadingOpts(false);
       })
       .catch(e => {
@@ -1076,7 +1080,7 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
         setLoadingOpts(false);
       });
     return () => { cancelled = true; };
-  }, [draft.id]);
+  }, [draft.id, recipientEmail]);
 
   const docs = (opts && opts.documents) || FALLBACK_DOCS;
   const selectedTypes = docs
@@ -1088,16 +1092,42 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
     setSelected(prev => Object.assign({}, prev, { [type]: !prev[type] }));
   };
 
+  const addAddr = (kind) => {
+    const raw = (kind === 'to' ? toDraft : ccDraft).trim();
+    if (!raw || loading) return;
+    const list = kind === 'to' ? toList : ccList;
+    const other = kind === 'to' ? ccList : toList;
+    if (list.some(a => a.toLowerCase() === raw.toLowerCase())) {
+      if (kind === 'to') setToDraft(''); else setCcDraft('');
+      return;
+    }
+    if (other.some(a => a.toLowerCase() === raw.toLowerCase())) {
+      setApiError('Address already present in the other recipient list.');
+      return;
+    }
+    if (kind === 'to') { setToList(list.concat([raw])); setToDraft(''); }
+    else { setCcList(list.concat([raw])); setCcDraft(''); }
+  };
+
+  const removeAddr = (kind, addr) => {
+    if (loading) return;
+    if (kind === 'to') setToList(toList.filter(a => a !== addr));
+    else setCcList(ccList.filter(a => a !== addr));
+  };
+
   const runAction = (action) => {
-    if (loading || (!effectiveRecipient && action === 'send_documents')) return;
-    if (action === 'send_documents' && selectedTypes.length === 0) return;
+    if (loading) return;
+    if (action === 'send_documents' && (toList.length === 0 || selectedTypes.length === 0)) return;
     setLoading(true);
     setApiError(null);
     const payload = {
       confirm_token: 'YES_SEND_PROFORMA_EMAIL',
       action: action,
-      recipient_override: recipientOverride.trim() || '',
       subject_override: subjectOverride.trim() || '',
+      recipients_to: toList.slice(),
+      recipients_cc: ccList.slice(),
+      recipient_override: toList[0] || '',
+      cc: ccList.slice(),
     };
     if (action === 'send_documents') {
       payload.document_types = selectedTypes;
@@ -1123,14 +1153,28 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
       });
   };
 
-  const deliveryStatusLabel = (() => {
-    const op = opts && opts.delivery && opts.delivery.operator_status;
-    if (op === 'awaiting_customer') return 'Awaiting customer reply';
-    if (op === 'confirmed_good') return 'Confirmed — good condition';
-    if (op === 'issue_reported') return 'Issue reported';
-    if (op === 'token_issued') return 'Confirmation link issued';
-    if (opts && opts.delivery && opts.delivery.awb) return 'Delivered';
-    return 'No delivery record';
+  const fu = (opts && opts.delivery_followup) || {};
+  const carrier = fu.carrier || {};
+  const conf = fu.confirmation || {};
+  const carrierStatusLabel = (() => {
+    if (carrier.delivered) {
+      const bits = ['Delivered'];
+      if (carrier.delivered_at) bits.push(String(carrier.delivered_at).replace('T', ' ').slice(0, 16));
+      if (carrier.location) bits.push(carrier.location);
+      return bits.join(' · ');
+    }
+    if (carrier.status === 'in_transit') return 'In transit';
+    if (carrier.awb) return 'Outbound AWB on file';
+    return 'No outbound delivery yet';
+  })();
+  const confirmationStatusLabel = (() => {
+    const st = conf.state || '';
+    if (st === 'awaiting_customer') return 'Awaiting Customer Reply';
+    if (st === 'confirmed_good') return 'Customer confirmed goods received in good condition';
+    if (st === 'issue_reported') return 'Customer reported an issue';
+    if (carrier.delivered && (st === 'not_sent' || !st)) return 'Not sent';
+    if (carrier.status === 'in_transit') return 'Confirmation unavailable';
+    return 'Not sent';
   })();
 
   const shell = (title, children) => (
@@ -1139,18 +1183,19 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 20px',
     }} onClick={onClose} data-testid="send-proforma-modal">
       <div onClick={e => e.stopPropagation()} style={{
-        background: 'var(--card)', borderRadius: 12, width: 640, maxWidth: '94vw',
+        background: 'var(--card)', borderRadius: 12, width: 680, maxWidth: '94vw',
         maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px var(--shadow-heavy)',
       }}>
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }} data-testid="send-modal-title">{title}</div>
             <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4, lineHeight: 1.5 }}>
-              <strong>{docNo}</strong>
+              <strong data-testid="send-modal-docno">{docNo}</strong>
               <span style={{ margin: '0 6px', color: 'var(--text-3)' }}>·</span>
-              Customer: {customerName}
-              <span style={{ margin: '0 6px', color: 'var(--text-3)' }}>·</span>
-              Recipient: {effectiveRecipient || '—'}
+              <span data-testid="send-modal-customer">{customerName}</span>
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>
+              Customer documents and delivery follow-up
             </div>
           </div>
           <button type="button" onClick={onClose} aria-label="Close"
@@ -1186,13 +1231,23 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
     border: '1px solid var(--border)', borderRadius: 8,
     background: 'var(--bg)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 13,
   };
+  const chip = (addr, kind) => (
+    <span key={kind + addr} data-testid={`send-recipient-chip-${kind}`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '4px 8px', borderRadius: 8, fontSize: 12,
+        background: 'var(--bg-subtle)', border: '1px solid var(--border)', color: 'var(--text)',
+      }}>
+      {addr}
+      <button type="button" aria-label={`Remove ${addr}`}
+        onClick={() => removeAddr(kind, addr)}
+        disabled={loading}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: 14, lineHeight: 1 }}>×</button>
+    </span>
+  );
 
   return shell('Send to Customer', (
     <div>
-      <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 18, lineHeight: 1.55 }}>
-        Customer documents and delivery actions are validated by Atlas before sending.
-      </div>
-
       {loadingOpts ? (
         <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }} data-testid="send-options-loading">Loading send options…</div>
       ) : null}
@@ -1201,6 +1256,52 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
           {optsError}
         </div>
       ) : null}
+
+      <div style={{ marginBottom: 20 }} data-testid="send-recipients-group">
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 10 }}>
+          Recipients
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>To</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }} data-testid="send-recipients-to">
+          {toList.length ? toList.map(a => chip(a, 'to')) : (
+            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No To recipient</span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <input type="email" value={toDraft} onChange={e => setToDraft(e.target.value)}
+            placeholder="Add To address for this send"
+            data-testid="send-add-to-input" style={Object.assign({}, inputStyle, { flex: 1 })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addAddr('to'); } }} />
+          <Btn variant="outline" onClick={() => addAddr('to')} disabled={loading || !toDraft.trim()} data-testid="send-add-to-btn">Add</Btn>
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>CC</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }} data-testid="send-recipients-cc">
+          {ccList.length ? ccList.map(a => chip(a, 'cc')) : (
+            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No CC</span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <input type="email" value={ccDraft} onChange={e => setCcDraft(e.target.value)}
+            placeholder="Add CC address for this send"
+            data-testid="send-add-cc-input" style={Object.assign({}, inputStyle, { flex: 1 })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addAddr('cc'); } }} />
+          <Btn variant="outline" onClick={() => addAddr('cc')} disabled={loading || !ccDraft.trim()} data-testid="send-add-cc-btn">Add</Btn>
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.45 }}>
+          One-off edits apply to this send only — they do not update Customer Master.
+          {contractorId ? (
+            <button type="button"
+              data-testid="send-manage-recipients-link"
+              onClick={() => {
+                if (window.AtlasNavigate) window.AtlasNavigate(`/v2/clients/${encodeURIComponent(contractorId)}`);
+                else window.location.hash = `#/clients/${encodeURIComponent(contractorId)}`;
+              }}
+              style={{ display: 'inline', marginLeft: 6, background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 11.5, textDecoration: 'underline', padding: 0 }}>
+              Manage in Customer Master
+            </button>
+          ) : null}
+        </div>
+      </div>
 
       <div style={{ marginBottom: 20 }} data-testid="send-documents-group">
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 10 }}>
@@ -1227,7 +1328,6 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
               />
               <span style={{ flex: 1, minWidth: 0 }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span aria-hidden="true">{DOC_ICONS[d.type] || '📎'}</span>
                   <strong style={{ fontSize: 13, color: 'var(--text)' }}>{d.label}</strong>
                   <span data-testid={`send-doc-badge-${d.type}`} style={{
                     fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
@@ -1240,9 +1340,9 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
                 <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-3)', marginTop: 4, lineHeight: 1.4 }}>
                   {d.available
                     ? (
-                      d.type === 'air_waybill' && d.reference
+                      (d.type === 'air_waybill' || d.type === 'shipping_information') && d.reference
                         ? `${d.source || 'Carrier'} · AWB ${d.reference}`
-                        : (d.reference || (d.type === 'packing_list' ? 'Commercial packing list' : 'Ready to send'))
+                        : (d.reference || (d.type === 'packing_list' ? 'Commercial Packing List' : (d.type === 'official_proforma' ? docNo : 'Ready to send')))
                     )
                     : (d.reason || 'Not available')}
                 </span>
@@ -1260,18 +1360,17 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
           border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px',
           marginBottom: 10, background: 'var(--bg-subtle)',
         }} data-testid="send-confirmation-card">
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Delivery Confirmation</div>
-          <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 8 }}>
-            Ask the customer to confirm that the shipment arrived in good condition or report damage / missing goods.
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6 }}>
+            <strong style={{ color: 'var(--text)' }}>Carrier status:</strong>{' '}
+            <span data-testid="send-carrier-status">{carrierStatusLabel}</span>
           </div>
-          <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }} data-testid="send-delivery-status">
-            Status: {deliveryStatusLabel}
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 10 }}>
+            <strong style={{ color: 'var(--text)' }}>Confirmation status:</strong>{' '}
+            <span data-testid="send-delivery-status">{confirmationStatusLabel}</span>
           </div>
-          {opts && opts.cmr_will_attach ? (
-            <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginBottom: 10 }} data-testid="send-cmr-note">
-              CMR will be included with the confirmation.
-            </div>
-          ) : null}
+          <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }} data-testid="send-cmr-note">
+            CMR will be attached automatically when available.
+          </div>
           <Btn
             variant="outline"
             disabled={loading || loadingOpts || !(opts && opts.actions && opts.actions.send_confirmation)}
@@ -1281,52 +1380,28 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
           >
             Send Confirmation
           </Btn>
+          {(opts && opts.actions && opts.actions.send_reminder) ? (
+            <span style={{ marginLeft: 8 }}>
+              <Btn
+                variant="outline"
+                disabled={loading || loadingOpts}
+                onClick={() => runAction('send_reminder')}
+                data-testid="send-reminder-submit"
+              >
+                Send Reminder
+              </Btn>
+            </span>
+          ) : (
+            <button type="button" disabled style={{ display: 'none' }} data-testid="send-reminder-submit" aria-hidden="true" />
+          )}
         </div>
-
-        {(opts && opts.awaiting_customer) ? (
-          <div style={{
-            border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px',
-            background: 'var(--bg-subtle)',
-          }} data-testid="send-reminder-card">
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Awaiting Customer Reply</div>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 10 }}>
-              Send a reminder with the same secure receipt link. Reply state is not changed.
-            </div>
-            <Btn
-              variant="outline"
-              disabled={loading || loadingOpts || !(opts && opts.actions && opts.actions.send_reminder)}
-              onClick={() => runAction('send_reminder')}
-              data-testid="send-reminder-submit"
-            >
-              Send Reminder
-            </Btn>
-          </div>
-        ) : (
-          <button type="button" disabled style={{ display: 'none' }} data-testid="send-reminder-submit" aria-hidden="true" />
-        )}
       </div>
 
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: 10 }}>
           Message
         </div>
-        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
-          Recipient {recipientEmail ? '' : '(no email on file — enter manually)'}
-        </label>
-        {recipientEmail ? (
-          <div style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderRadius: 8, fontSize: 13, marginBottom: 8 }} data-testid="send-proforma-default-recipient">
-            {recipientEmail}
-          </div>
-        ) : null}
-        <input
-          type="email"
-          value={recipientOverride}
-          onChange={e => setRecipientOverride(e.target.value)}
-          placeholder={recipientEmail ? 'Override recipient (optional)' : 'Enter recipient email address'}
-          data-testid="send-proforma-recipient-override"
-          style={inputStyle}
-        />
-        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', margin: '12px 0 6px' }}>Subject</label>
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>Subject</label>
         <input
           type="text"
           value={subjectOverride}
@@ -1347,7 +1422,7 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
         <Btn variant="outline" onClick={onClose} disabled={loading}>Cancel</Btn>
         <Btn
           variant="primary"
-          disabled={!effectiveRecipient || loading || selectedTypes.length === 0 || loadingOpts}
+          disabled={toList.length === 0 || loading || selectedTypes.length === 0 || loadingOpts}
           onClick={() => runAction('send_documents')}
           data-testid="send-documents-submit"
         >

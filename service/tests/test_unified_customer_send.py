@@ -61,8 +61,8 @@ def test_customer_sendable_requires_generated_and_download():
 
 def test_normalize_dedupes_and_orders():
     assert cs.normalize_document_types(
-        ["packing_list", "air_waybill", "official_proforma", "packing_list", "invoice"]
-    ) == ["official_proforma", "invoice", "packing_list", "air_waybill"]
+        ["packing_list", "air_waybill", "official_proforma", "packing_list", "invoice", "shipping_information"]
+    ) == ["official_proforma", "invoice", "packing_list", "air_waybill", "shipping_information"]
 
 
 def test_assert_types_rejects_unknown_and_unavailable():

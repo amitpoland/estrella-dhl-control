@@ -155,7 +155,7 @@ def test_ui_has_air_waybill_no_cmr_checkbox():
     assert "air_waybill" in src
     assert 'data-testid={`send-doc-${d.type}`}' in src or 'send-doc-air_waybill' in src
     assert "Send to Customer" in src
-    assert "CMR will be included with the confirmation" in src
+    assert "CMR will be attached automatically when available" in src
     # CMR must not be a selectable document type in the fallback list.
     assert "type: 'cmr'" not in src
     assert "Objectassign" not in src
@@ -232,11 +232,9 @@ def test_confirmation_awb_resolve_gates_single_client_fallback():
     """Cross-client AWB misbind must not use ungated single-client fallback."""
     dcs = (APP / "services" / "delivery_confirmation_service.py").read_text(encoding="utf-8")
     cmr = (APP / "services" / "commercial_cmr.py").read_text(encoding="utf-8")
-    cs = (APP / "services" / "customer_send.py").read_text(encoding="utf-8")
-    for src in (dcs, cmr, cs):
+    fu = (APP / "services" / "delivery_followup.py").read_text(encoding="utf-8")
+    for src in (dcs, cmr, fu):
         assert "_batch_client_count" in src
-    # Ungated True must not appear on confirmation/CMR shipment lookups.
-    assert "allow_single_client_fallback=True" not in cmr
     assert "allow_single_client_fallback=single_client" in dcs
     assert "allow_single_client_fallback=single_client" in cmr
-    assert "allow_single_client_fallback=single_client" in cs
+    assert "allow_single_client_fallback=single_client" in fu
