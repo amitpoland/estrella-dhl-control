@@ -1678,6 +1678,34 @@ def test_elevated_transcript_is_canonical_under_localappdata():
     assert "Stop-Transcript" in body
 
 
+def test_canonical_deploy_log_path_avoids_ps51_splitpath_literalpath_leaf():
+    """PR #1237: Windows PowerShell 5.1 raises AmbiguousParameterSet for
+    `Split-Path -LiteralPath <x> -Leaf`, which blocked UAC self-elevation before mint.
+
+    Assert-CanonicalDeployLogPath (and the Deploy-PZ.ps1 leaf identity check used for
+    elevation) must use [System.IO.Path]::GetFileName — never Split-Path -LiteralPath -Leaf.
+    """
+    body = _read(DEPLOY_SCRIPT)
+    start = body.index("function Assert-CanonicalDeployLogPath")
+    rest = body[start + 1 :]
+    end = rest.index("\nfunction ") if "\nfunction " in rest else len(rest)
+    seg = body[start : start + 1 + end]
+    assert "[System.IO.Path]::GetFileName($LogFilePath)" in seg, (
+        "canonical log leaf must use IO.Path::GetFileName (PS 5.1-safe)"
+    )
+    assert not re.search(r"Split-Path\s+-LiteralPath\s+\$LogFilePath\s+-Leaf", seg), (
+        "Split-Path -LiteralPath -Leaf is AmbiguousParameterSet on Windows PowerShell 5.1"
+    )
+    # Elevation script-identity leaf check (same defect class).
+    arg = _arglist_segment(body)
+    assert "[System.IO.Path]::GetFileName($scriptPath)" in arg
+    assert not re.search(r"Split-Path\s+-LiteralPath\s+\$scriptPath\s+-Leaf", arg)
+    # Whole deploy authority: no remaining LiteralPath+Leaf combo.
+    assert not re.search(r"Split-Path\s+-LiteralPath\s+[^\n]+-Leaf", body), (
+        "no Split-Path -LiteralPath … -Leaf may remain in Deploy-PZ.ps1 on PS 5.1 hosts"
+    )
+
+
 def test_elevation_argument_builder_refuses_injection_via_path_or_blob():
     """Argument list is structural tokens + quoting helper; no unvalidated command blob."""
     body = _read(DEPLOY_SCRIPT)
