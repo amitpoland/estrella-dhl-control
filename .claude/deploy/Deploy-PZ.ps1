@@ -138,8 +138,8 @@ function Get-DeployElevationArgumentList {
     if (-not $scriptPath -or -not (Test-Path -LiteralPath $scriptPath)) {
         throw "BLOCKED: cannot resolve Deploy-PZ.ps1 path for Administrator elevation."
     }
-    if ((Split-Path -LiteralPath $scriptPath -Leaf) -ne 'Deploy-PZ.ps1') {
-        throw "BLOCKED: elevation refused - resolved script '$(Split-Path -LiteralPath $scriptPath -Leaf)' is not Deploy-PZ.ps1 (sole execution authority)."
+    if ([System.IO.Path]::GetFileName($scriptPath) -ne 'Deploy-PZ.ps1') {
+        throw "BLOCKED: elevation refused - resolved script '$([System.IO.Path]::GetFileName($scriptPath))' is not Deploy-PZ.ps1 (sole execution authority)."
     }
 
     $tokens = [System.Collections.Generic.List[string]]::new()
@@ -208,7 +208,7 @@ function Assert-CanonicalDeployLogPath {
     if ($LogFilePath -match '\.\.') {
         throw "BLOCKED: -DeployLog refuses path traversal."
     }
-    $leaf = Split-Path -LiteralPath $LogFilePath -Leaf
+    $leaf = [System.IO.Path]::GetFileName($LogFilePath)
     if ($leaf -notmatch '^deploy-\d{8}-\d{6}-\d{3}\.log$') {
         throw "BLOCKED: -DeployLog leaf must match deploy-yyyyMMdd-HHmmss-fff.log."
     }
@@ -1928,7 +1928,7 @@ function Invoke-Deploy {
     if ($DeployLog) {
         # Elevated child only: path was minted by the unelevated parent under LOCALAPPDATA.
         Assert-CanonicalDeployLogPath -LogFilePath $DeployLog
-        $logDir = Split-Path -LiteralPath $DeployLog -Parent
+        $logDir = [System.IO.Path]::GetDirectoryName($DeployLog)
         if (-not (Test-Path -LiteralPath $logDir)) {
             New-Item -ItemType Directory -Path $logDir -Force | Out-Null
         }
