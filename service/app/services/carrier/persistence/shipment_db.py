@@ -15,17 +15,25 @@ PENDING anchor row carries no AWB; the ref arrives only via update_state().
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
-from typing import List, Optional
+from typing import FrozenSet, List, Optional, Sequence
 
 from ..models.shipment import ShipmentMode, ShipmentResult, ShipmentState
+
+TABLE = "carrier_shipments"
+PRE_EXT_TABLE = "carrier_shipments__pre_ext"
+
+
+class CarrierShipmentsSchemaError(RuntimeError):
+    """Ambiguous or unsafe carrier_shipments schema state. Fail closed."""
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS carrier_shipments (
     idempotency_key TEXT PRIMARY KEY,
     batch_id        TEXT NOT NULL,
-    mode            TEXT NOT NULL CHECK(mode IN ('shadow', 'live')),
+    mode            TEXT NOT NULL CHECK(mode IN ('shadow', 'live', 'external')),
     state           TEXT NOT NULL CHECK(state IN ('pending', 'submitted', 'complete', 'failed')),
     error           TEXT,
     simulated       INTEGER NOT NULL DEFAULT 0 CHECK(simulated IN (0, 1)),
@@ -93,7 +101,38 @@ _ADDITIVE_COLUMNS = [
     ("contact_needs_review", "INTEGER NOT NULL DEFAULT 0"),
     ("dhl_return_capability", "TEXT"),        # pending until account confirmed
     ("create_return_available", "INTEGER NOT NULL DEFAULT 0"),
+    # Carrier/provider owning this shipment — DHL | FEDEX | UPS.
+    # Nullable: rows booked before this column existed carry NULL. Every such
+    # row was created through the DHL-only live adapter (adapters/live.py has
+    # no other carrier), so NULL resolves to DHL at read time via
+    # resolve_provider(). Legacy rows are NOT rewritten on disk.
+    ("provider", "TEXT"),
 ]
+
+# Provider vocabulary. DHL is booked through the live adapter; FEDEX/UPS are
+# customer-arranged (operator registers provider + tracking + external AWB).
+PROVIDER_DHL = "DHL"
+PROVIDERS = ("DHL", "FEDEX", "UPS")
+EXTERNAL_PROVIDERS = ("FEDEX", "UPS")
+_MODE_CHECK_CURRENT = "CHECK(mode IN ('shadow', 'live', 'external'))"
+_MODE_IN_RE = re.compile(
+    r"CHECK\s*\(\s*mode\s+IN\s*\(([^)]*)\)\s*\)",
+    re.IGNORECASE,
+)
+_MODE_CHECK_RE = re.compile(
+    r"CHECK\s*\(\s*mode\s+IN\s*\(\s*[^)]+?\s*\)\s*\)",
+    re.IGNORECASE,
+)
+
+
+def resolve_provider(stored: Optional[str]) -> str:
+    """Provider for a shipment row — the ONE place NULL is interpreted.
+
+    NULL means the row predates the provider column. Only the DHL adapter
+    existed then, so DHL is evidence-backed, not a guess. Callers must use
+    this instead of defaulting a blank carrier in a projection or a UI.
+    """
+    return (stored or "").strip().upper() or PROVIDER_DHL
 
 # Outbound-only filter — return drafts must never leak into AWB attribution.
 _OUTBOUND_ONLY = (
@@ -109,22 +148,235 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def init_db(db_path: Path) -> None:
-    """Create the carrier_shipments table if it does not exist.
+def _row(row) -> Optional[dict]:
+    """Normalize a carrier_shipments row — the single read boundary.
 
-    Idempotent: additive ALTER TABLE for Phase-5 columns so existing DBs
-    are migrated transparently.
+    Every reader goes through here so ``provider`` is interpreted in exactly
+    one place and no consumer (CMR, Logistics, Packing List, UI) has to invent
+    a carrier for a legacy NULL.
     """
-    with _connect(db_path) as conn:
-        conn.executescript(_DDL)
+    if row is None:
+        return None
+    d = dict(row)
+    d["provider"] = resolve_provider(d.get("provider"))
+    return d
+
+
+def init_db(db_path: Path) -> None:
+    """Create or migrate carrier_shipments.
+
+    Recovery of an interrupted CHECK rebuild runs BEFORE CREATE TABLE IF NOT
+    EXISTS, so a leftover ``carrier_shipments__pre_ext`` cannot be masked by
+    an empty new table. The CHECK rebuild itself runs in BEGIN IMMEDIATE.
+    """
+    conn = _connect(db_path)
+    try:
+        _recover_interrupted_mode_migration(conn)
+        conn.execute(_DDL)
+        _ensure_additive_columns(conn)
+        _ensure_external_mode_allowed(conn)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _row_count(conn: sqlite3.Connection, name: str) -> int:
+    return int(conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
+
+
+def _create_sql(conn: sqlite3.Connection, name: str) -> str:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return (row[0] if row else "") or ""
+
+
+def _mode_in_tokens(sql: str) -> Optional[FrozenSet[str]]:
+    if not sql:
+        return None
+    matches = list(_MODE_IN_RE.finditer(sql))
+    if len(matches) != 1:
+        return None
+    tokens = [t.lower() for t in re.findall(r"'([^']*)'", matches[0].group(1))]
+    if not tokens:
+        return None
+    return frozenset(tokens)
+
+
+def _mode_check_kind(sql: str) -> str:
+    tokens = _mode_in_tokens(sql)
+    if tokens is None:
+        return "unknown"
+    if tokens == frozenset({"shadow", "live", "external"}):
+        return "current"
+    if tokens == frozenset({"shadow", "live"}):
+        return "legacy"
+    return "unknown"
+
+
+def _widen_mode_check_sql(sql: str) -> str:
+    kind = _mode_check_kind(sql)
+    if kind == "current":
+        return sql
+    if kind != "legacy":
+        raise CarrierShipmentsSchemaError(
+            "cannot widen mode CHECK: unrecognized constraint"
+        )
+    new_sql, n = _MODE_CHECK_RE.subn(_MODE_CHECK_CURRENT, sql, count=1)
+    if n != 1:
+        raise CarrierShipmentsSchemaError("cannot widen mode CHECK: replace failed")
+    return new_sql
+
+
+def _attached_schema_sqls(conn: sqlite3.Connection, table: str) -> Sequence[str]:
+    """CREATE INDEX / CREATE TRIGGER statements attached to ``table``.
+
+    Autoindexes (PRIMARY KEY) have sql IS NULL and are recreated by the
+    replacement CREATE TABLE. Extra indexes/triggers must be replayed.
+    """
+    rows = conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE tbl_name=? AND type IN ('index', 'trigger') "
+        "AND sql IS NOT NULL "
+        "ORDER BY type, name",
+        (table,),
+    ).fetchall()
+    return [r[0] for r in rows if r[0]]
+
+
+def _ensure_additive_columns(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, TABLE):
+        return
+    for col, ddl in _ADDITIVE_COLUMNS:
+        try:
+            conn.execute(f'ALTER TABLE "{TABLE}" ADD COLUMN {col} {ddl}')
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+
+
+def _end_implicit_transaction(conn: sqlite3.Connection) -> None:
+    try:
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
+
+def _recover_interrupted_mode_migration(conn: sqlite3.Connection) -> None:
+    """Restore a single carrier_shipments table before CREATE TABLE IF NOT EXISTS.
+
+    Fail closed when both tables are populated. An empty current table beside
+    a populated temp is interrupted-migration residue, not a second authority.
+    """
+    has_cur = _table_exists(conn, TABLE)
+    has_tmp = _table_exists(conn, PRE_EXT_TABLE)
+    if not has_tmp:
+        return
+
+    cur_n = _row_count(conn, TABLE) if has_cur else 0
+    tmp_n = _row_count(conn, PRE_EXT_TABLE)
+
+    if has_cur and cur_n > 0 and tmp_n > 0:
+        raise CarrierShipmentsSchemaError(
+            f"ambiguous carrier_shipments recovery: both {TABLE!r} ({cur_n} rows) "
+            f"and {PRE_EXT_TABLE!r} ({tmp_n} rows) are populated"
+        )
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    _end_implicit_transaction(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if has_cur and cur_n == 0 and tmp_n > 0:
+            conn.execute(f'DROP TABLE "{TABLE}"')
+            conn.execute(f'ALTER TABLE "{PRE_EXT_TABLE}" RENAME TO "{TABLE}"')
+        elif (not has_cur) and has_tmp:
+            conn.execute(f'ALTER TABLE "{PRE_EXT_TABLE}" RENAME TO "{TABLE}"')
+        elif has_cur and tmp_n == 0:
+            conn.execute(f'DROP TABLE "{PRE_EXT_TABLE}"')
+        else:
+            raise CarrierShipmentsSchemaError(
+                f"unhandled carrier_shipments recovery "
+                f"current={has_cur}/{cur_n} temp={has_tmp}/{tmp_n}"
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _ensure_external_mode_allowed(conn: sqlite3.Connection) -> None:
+    """Widen the mode CHECK so customer-arranged rows can persist honestly.
+
+    SQLite cannot ALTER a CHECK. The rebuild is one BEGIN IMMEDIATE
+    transaction: rename, recreate, copy, restore indexes/triggers, drop temp.
+    Row-count mismatch aborts the transaction.
+    """
+    if not _table_exists(conn, TABLE):
+        return
+    sql = _create_sql(conn, TABLE)
+    kind = _mode_check_kind(sql)
+    if kind == "current":
+        return
+    if kind != "legacy":
+        raise CarrierShipmentsSchemaError(
+            "carrier_shipments mode CHECK is unrecognized; refusing to migrate or skip"
+        )
+
+    old_count = _row_count(conn, TABLE)
+    old_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{TABLE}")')]
+    extra_sqls = _attached_schema_sqls(conn, TABLE)
+    widened = _widen_mode_check_sql(sql)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    _end_implicit_transaction(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(f'ALTER TABLE "{TABLE}" RENAME TO "{PRE_EXT_TABLE}"')
+        conn.execute(widened)
         for col, ddl in _ADDITIVE_COLUMNS:
             try:
-                conn.execute(
-                    f"ALTER TABLE carrier_shipments ADD COLUMN {col} {ddl}"
-                )
-            except sqlite3.OperationalError as _exc:
-                if "duplicate column" not in str(_exc).lower():
+                conn.execute(f'ALTER TABLE "{TABLE}" ADD COLUMN {col} {ddl}')
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
                     raise
+        new_cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{TABLE}")')}
+        copy_cols = [c for c in old_cols if c in new_cols]
+        col_sql = ", ".join(f'"{c}"' for c in copy_cols)
+        conn.execute(
+            f'INSERT INTO "{TABLE}" ({col_sql}) '
+            f'SELECT {col_sql} FROM "{PRE_EXT_TABLE}"'
+        )
+        new_count = _row_count(conn, TABLE)
+        if new_count != old_count:
+            raise CarrierShipmentsSchemaError(
+                f"carrier_shipments rebuild lost rows: before={old_count} after={new_count}"
+            )
+        conn.execute(f'DROP TABLE "{PRE_EXT_TABLE}"')
+        for stmt in extra_sqls:
+            conn.execute(stmt)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def insert_shipment(
@@ -134,6 +386,7 @@ def insert_shipment(
     client_ref: Optional[str] = None,
     *,
     operator: Optional[str] = None,
+    provider: str = PROVIDER_DHL,
 ) -> None:
     """
     Record a new shipment idempotency entry.
@@ -149,7 +402,15 @@ def insert_shipment(
     insert — state transitions never touch it — so the audit trail always names
     the operator who initiated the real booking, never a later replayer. None
     stores NULL (legacy/unattributed callers behave exactly as before).
+
+    provider (keyword-only) is the carrier owning this shipment. Defaults to
+    DHL — the only carrier with a booking adapter — so existing callers are
+    unchanged. Customer-arranged FEDEX/UPS registrations pass their own.
     """
+    if provider not in PROVIDERS:
+        raise ValueError(
+            f"Unknown carrier provider {provider!r}; expected one of {PROVIDERS}"
+        )
     if result.mode == ShipmentMode.LIVE:
         raise ValueError(
             "Live shipment results must not be inserted into carrier_shipments DB. "
@@ -160,8 +421,8 @@ def insert_shipment(
             """
             INSERT INTO carrier_shipments
                 (idempotency_key, batch_id, client_ref, mode, state, error, simulated,
-                 service_product, dimensions_json, booked_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 service_product, dimensions_json, booked_by, provider)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.idempotency_key,
@@ -174,6 +435,7 @@ def insert_shipment(
                 result.service_product,
                 result.dimensions_json,
                 operator,
+                provider,
             ),
         )
 
@@ -195,7 +457,7 @@ def get_shipment(db_path: Path, idempotency_key: str) -> Optional[dict]:
             "SELECT * FROM carrier_shipments WHERE idempotency_key = ?",
             (idempotency_key,),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def get_shipment_by_batch_id(db_path: Path, batch_id: str) -> Optional[dict]:
@@ -212,7 +474,7 @@ def get_shipment_by_batch_id(db_path: Path, batch_id: str) -> Optional[dict]:
             f"AND {_OUTBOUND_ONLY} ORDER BY created_at DESC LIMIT 1",
             (batch_id,),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def get_legacy_shipment(db_path: Path, batch_id: str) -> Optional[dict]:
@@ -238,7 +500,7 @@ def get_legacy_shipment(db_path: Path, batch_id: str) -> Optional[dict]:
             "ORDER BY created_at DESC LIMIT 1",
             (batch_id,),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def get_client_shipment(
@@ -273,7 +535,7 @@ def get_client_shipment(
             "ORDER BY created_at DESC LIMIT 1",
             (batch_id, client_ref),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def get_shipment_for_draft(
@@ -312,7 +574,7 @@ def get_shipment_for_draft(
                 (batch_id, client_ref),
             ).fetchone()
             if row:
-                return dict(row)
+                return _row(row)
 
         if allow_single_client_fallback:
             rows = conn.execute(
@@ -335,7 +597,7 @@ def get_shipment_for_draft(
                     and row["client_ref"] != client_ref
                 ):
                     return None
-                return row
+                return _row(row)
 
     return None
 
@@ -499,7 +761,7 @@ def get_do_not_use(db_path: Path, batch_id: str, tracking_ref: str) -> Optional[
             """,
             (batch_id, tracking_ref),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def update_shipment_fields(
@@ -569,7 +831,7 @@ def get_shipment_by_tracking_ref(db_path: Path, tracking_ref: str) -> Optional[d
             ).fetchone()
     except sqlite3.OperationalError:
         return None
-    return dict(row) if row else None
+    return _row(row)
 
 
 def list_tracked_shipments(
@@ -699,7 +961,7 @@ def get_return_draft(
                 "AND LOWER(COALESCE(shipment_direction, '')) = 'return'",
                 (idempotency_key,),
             ).fetchone()
-            return dict(row) if row else None
+            return _row(row)
 
         clauses = [
             "LOWER(COALESCE(shipment_direction, '')) = 'return'",
@@ -717,7 +979,7 @@ def get_return_draft(
             "ORDER BY created_at DESC LIMIT 1",
             tuple(args),
         ).fetchone()
-    return dict(row) if row else None
+    return _row(row)
 
 
 def update_return_draft(
