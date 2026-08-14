@@ -591,6 +591,55 @@ def test_whatif_requires_no_authorization_and_writes_nothing():
         assert "$script:PlanOnly" in seg, f"{fn} must be a no-op under -WhatIf"
 
 
+def test_set_service_state_surfaces_sc_exit_code():
+    """sc Access Denied must not collapse into a generic service_wait timeout.
+
+    Authority model (Deploy-PZ.ps1::Set-ServiceState):
+      ALREADY_TARGET → no sc.exe
+      SC_ACCEPTED → wait for target state
+      SC_REJECTED → fail immediately with native exit
+      ACCESS_DENIED (exit 5) → elevated Administrator guidance; never widen ACLs
+      SC_ACCEPTED_BUT_STATE_TIMEOUT → post-accept transition stall (not Access Denied)
+
+    Capture model prefers $LASTEXITCODE via `| Out-String` (not `2>&1`) under
+    ErrorActionPreference=Stop so NativeCommandError cannot swallow the exit code.
+    """
+    body = _read(DEPLOY_SCRIPT)
+    start = body.index("function Set-ServiceState")
+    seg = body[start:]
+    seg = seg[: seg.index("\nfunction ") if "\nfunction " in seg else len(seg)]
+
+    # No discarded sc authority (the main-branch defect).
+    assert not re.search(r"& sc\.exe[^`\n]*\|\s*Out-Null", seg), (
+        "sc.exe must not be piped to Out-Null inside Set-ServiceState"
+    )
+    # Already-at-target short-circuit.
+    assert "already $Target" in seg
+    # Native exit captured without forcing stderr merge on the live sc call
+    # (PS 5.1 + ErrorActionPreference=Stop: stderr-merge wraps NativeCommandError).
+    assert "$LASTEXITCODE" in seg
+    assert re.search(r"& sc\.exe \$verb \$svc\s*\|\s*Out-String", seg), (
+        "sc.exe must pipe stdout to Out-String so $LASTEXITCODE remains readable"
+    )
+    assert not re.search(r"& sc\.exe[^`\n]*2>&1", seg), (
+        "Do not capture the live sc.exe call with stderr-merge under ErrorActionPreference=Stop"
+    )
+    # ACCESS_DENIED guidance — elevation, never ACL widening.
+    assert "exit 5" in seg or "$scCode -eq 5" in seg
+    assert "elevated Administrator" in seg
+    assert "do not widen service ACLs" in seg.lower() or "do not widen service ACLs" in seg
+    assert "sc.exe" in seg and "sdset" not in seg.lower()
+    assert "Set-ServiceAcl" not in seg and "AccessControl" not in seg
+    # Reject path is immediate and distinct from post-accept timeout.
+    assert "failed (exit $scCode)" in seg or "failed (exit" in seg
+    assert "service remained $after" in seg or "service remained" in seg
+    # Accepted command still waits for actual target; timeout names transition stall.
+    assert "service_wait_seconds" in seg
+    assert "did not reach $Target" in seg
+    assert "returned success" in seg or "STOP_PENDING" in seg
+    assert "not a discarded sc.exe failure" in seg
+
+
 def test_rollback_survives_missing_engine_metadata():
     body = _read(DEPLOY_SCRIPT)
     assert "-Optional" in body, "component manifests must be optional so app-only units restore"

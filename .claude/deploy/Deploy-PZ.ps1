@@ -232,11 +232,43 @@ function Set-ServiceState {
     param($Cfg, [ValidateSet("Stopped", "Running")][string]$Target)
     $svc = $Cfg.service
     if ($script:PlanOnly) { Write-Host "  would drive $svc to $Target"; return }
-    if ($Target -eq "Stopped") { & sc.exe stop $svc | Out-Null } else { & sc.exe start $svc | Out-Null }
+    # ALREADY_TARGET: do not call sc.exe.
+    $current = (Get-Service $svc).Status
+    if ($current -eq $Target) {
+        Write-Host "  $svc is already $Target"
+        return
+    }
+    $verb = if ($Target -eq "Stopped") { "stop" } else { "start" }
+    # Preserve native exit authority. Do NOT redirect sc.exe stderr with 2>&1 under
+    # ErrorActionPreference=Stop — that wraps NativeCommandError and throws before
+    # $LASTEXITCODE is readable (same pattern as the git identity-gate cat-file call).
+    # Exit code is authority; OpenService/ControlService text usually lands on host stderr.
+    $scOut = & sc.exe $verb $svc | Out-String
+    $scCode = $LASTEXITCODE
+    if ($scCode -ne 0) {
+        $after = (Get-Service $svc).Status
+        if ($after -ne $Target) {
+            # SC_REJECTED / ACCESS_DENIED: fail immediately; never wait out service_wait_seconds.
+            $trimmed = "$scOut".Trim()
+            if (-not $trimmed) {
+                $trimmed = "(sc.exe produced no stdout; see host stderr for OpenService/ControlService text)"
+            }
+            $hint = ""
+            if ($scCode -eq 5) {
+                # ACCESS_DENIED: elevated Administrator required. Never widen service ACLs.
+                $hint = " Access Denied (exit 5): re-run Deploy-PZ from an elevated Administrator shell; do not widen service ACLs."
+            }
+            throw "BLOCKED: sc.exe $verb $svc failed (exit $scCode); service remained $after. $trimmed.$hint"
+        }
+        # Rare: non-zero exit but service already at target — treat as accepted.
+    }
+    # SC_ACCEPTED: wait for actual target state.
     $deadline = (Get-Date).AddSeconds($Cfg.service_wait_seconds)
     while ((Get-Service $svc).Status -ne $Target -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
-    if ((Get-Service $svc).Status -ne $Target) {
-        throw "BLOCKED: $svc did not reach $Target within $($Cfg.service_wait_seconds)s"
+    $final = (Get-Service $svc).Status
+    if ($final -ne $Target) {
+        # SC_ACCEPTED_BUT_STATE_TIMEOUT: genuine transition/shutdown stall, not Access Denied.
+        throw "BLOCKED: $svc did not reach $Target within $($Cfg.service_wait_seconds)s (sc.exe $verb returned success; service remained $final -- STOP_PENDING hang or application shutdown stall, not a discarded sc.exe failure)"
     }
     Write-Host "  $svc is $Target"
 }
