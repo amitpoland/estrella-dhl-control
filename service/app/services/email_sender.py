@@ -669,7 +669,10 @@ def send_queued_email(
         # shipment was delivered (the guard targets inbound customs follow-ups).
         _etype = (entry.get("email_type") or "").strip().lower()
         _g   = _ssa_check_send_allowed(_bid)
-        if not _g["allowed"] and _etype != "customer_delivery_confirmation":
+        if not _g["allowed"] and _etype not in (
+            "customer_delivery_confirmation",
+            "customer_delivery_reminder",
+        ):
             _mark_queue_terminal(
                 queue_id,
                 terminal_status="suppressed_delivered",

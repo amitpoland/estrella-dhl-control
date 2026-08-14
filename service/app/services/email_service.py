@@ -164,7 +164,13 @@ def queue_email(
     # follow-up, which is what shipment_delivered_guard suppresses. Skipping the
     # delivered guard for this one email_type lets the "confirm receipt" link
     # reach the customer AFTER delivery; every other email_type stays guarded.
-    if batch_id and email_type != "customer_delivery_confirmation":
+    # Customer delivery confirmation/reminder fire BECAUSE outbound delivered.
+    _etype_l = (email_type or "").strip().lower()
+    _skip_delivered_guard = _etype_l in (
+        "customer_delivery_confirmation",
+        "customer_delivery_reminder",
+    )
+    if batch_id and not _skip_delivered_guard:
         try:
             from .shipment_delivered_guard import check_send_allowed as _ssa
             _g = _ssa(batch_id)

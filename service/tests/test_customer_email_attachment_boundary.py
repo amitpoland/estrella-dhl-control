@@ -256,7 +256,10 @@ def test_customer_facing_type_registry():
     )
 
     assert "customer_delivery_confirmation" in CUSTOMER_FACING_EMAIL_TYPES
+    assert "proforma_send" in CUSTOMER_FACING_EMAIL_TYPES
+    assert "customer_delivery_reminder" in CUSTOMER_FACING_EMAIL_TYPES
     assert is_customer_facing_email_type("customer_delivery_confirmation")
+    assert is_customer_facing_email_type("proforma_send")
     assert is_customer_facing_email_type("Customer_Delivery_Confirmation")
     assert not is_customer_facing_email_type("agency")
     assert not is_customer_facing_email_type("dhl_reply")

@@ -322,6 +322,169 @@ def maybe_notify_outbound_delivered(
     }
 
 
+def retry_failed_confirmation_for_draft(draft_id: int) -> Dict[str, Any]:
+    """Operator manual confirmation send for a *failed* notification only.
+
+    Clears the failed row via ``reset_failed_notification_for_retry``, then
+    re-enters :func:`maybe_notify_outbound_delivered` with ``delivered=True``.
+    Does not invent delivery — requires an existing failed notification row.
+    """
+    db = _db_path()
+    notification = dcdb.get_notification_for_draft(db, int(draft_id))
+    if notification is None:
+        return {"notified": False, "reason": "no_notification"}
+    if (notification.get("status") or "") != "failed":
+        return {
+            "notified": False,
+            "reason": "not_failed",
+            "status": notification.get("status"),
+        }
+    awb = (notification.get("awb") or "").strip()
+    if not awb:
+        return {"notified": False, "reason": "no_awb"}
+    if not dcdb.reset_failed_notification_for_retry(db, awb):
+        return {"notified": False, "reason": "reset_failed"}
+    return maybe_notify_outbound_delivered(
+        awb,
+        draft_id=int(draft_id),
+        origin_batch_id=notification.get("origin_batch_id"),
+        client_name=notification.get("client_name"),
+        delivered=True,
+        customer_email=notification.get("email_to"),
+        customer_name=notification.get("client_name"),
+    )
+
+
+def send_awaiting_customer_reminder(draft_id: int) -> Dict[str, Any]:
+    """Manual reminder while ``operator_status == awaiting_customer``.
+
+    Mints a fresh receipt token (plaintext is never stored) and queues
+    ``customer_delivery_reminder``. Does NOT mutate customer reply fields
+    (confirmed_good / issue_reported stay untouched; awaiting remains awaiting).
+    """
+    from ..core.config import settings
+    from ..config.email_routing import resolve_customer_delivery_confirmation_cc
+
+    if not settings.customer_delivery_confirmation_enabled:
+        return {"reminded": False, "reason": "feature_disabled"}
+
+    db = _db_path()
+    summary = dcdb.get_delivery_summary_for_draft(db, int(draft_id))
+    if summary is None:
+        return {"reminded": False, "reason": "no_delivery_record"}
+    if summary.get("operator_status") != "awaiting_customer":
+        return {
+            "reminded": False,
+            "reason": "not_awaiting_customer",
+            "operator_status": summary.get("operator_status"),
+        }
+
+    notification = dcdb.get_notification_for_draft(db, int(draft_id))
+    receipt = dcdb.get_receipt_for_draft(db, int(draft_id))
+    awb = (summary.get("awb") or (notification or {}).get("awb") or "").strip()
+    if not awb:
+        return {"reminded": False, "reason": "no_awb"}
+
+    email_to = ((notification or {}).get("email_to") or "").strip()
+    if not email_to:
+        try:
+            from . import proforma_invoice_link_db as pildb
+            draft = pildb.get_draft_by_id(
+                _storage_root() / "proforma_links.db", int(draft_id),
+            )
+        except Exception:
+            draft = None
+        if draft is not None:
+            email_to = resolve_customer_email(draft, _storage_root())
+    if not email_to:
+        return {"reminded": False, "reason": "no_customer_email", "awb": awb}
+
+    customer_name = (
+        summary.get("customer_name")
+        or (notification or {}).get("client_name")
+        or (receipt or {}).get("customer_name")
+    )
+    origin = (notification or {}).get("origin_batch_id") or (receipt or {}).get(
+        "origin_batch_id"
+    )
+
+    token = secrets.token_urlsafe(32)
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(days=RECEIPT_TOKEN_TTL_DAYS)
+    ).strftime("%Y-%m-%dT%H:%M:%fZ")
+    dcdb.create_receipt_token_row(
+        db,
+        token_hash=_hash_token(token),
+        awb=awb,
+        draft_id=int(draft_id),
+        batch_id=None,
+        origin_batch_id=origin,
+        client_name=customer_name,
+        customer_name=customer_name,
+        expires_at=expires_at,
+        carrier_delivered_at=(receipt or {}).get("carrier_delivered_at"),
+    )
+    link = build_receipt_link(token)
+    subject = "Reminder: please confirm your Estrella shipment arrived safely"
+    html_body, text_body = _delivery_email_bodies(
+        customer_name,
+        awb,
+        link,
+        carrier_delivered_at=(receipt or {}).get("carrier_delivered_at"),
+    )
+    # Soft reminder preface — same confirmation link semantics.
+    preface_html = (
+        "<p><strong>Reminder:</strong> we have not yet received your "
+        "delivery confirmation. Please use the button below.</p>"
+    )
+    html_body = preface_html + html_body
+    text_body = (
+        "Reminder: we have not yet received your delivery confirmation.\n\n"
+        + text_body
+    )
+    email_cc = resolve_customer_delivery_confirmation_cc(email_to)
+
+    try:
+        from . import email_service
+        email_id = email_service.queue_email(
+            to=email_to,
+            cc=email_cc,
+            subject=subject,
+            body_html=html_body,
+            body_text=text_body,
+            batch_id="",
+            email_type="customer_delivery_reminder",
+            attachments=[],
+        )
+    except Exception as exc:
+        log.warning("delivery reminder queue failed draft=%s awb=%s: %s", draft_id, awb, exc)
+        return {"reminded": False, "reason": "email_queue_failed", "detail": str(exc)}
+
+    # Touch queued_at when a notification row exists — do not change reply state.
+    if notification is not None:
+        try:
+            dcdb.mark_notification_queued(
+                db,
+                awb,
+                email_id=email_id,
+                email_to=email_to,
+                email_cc=email_cc,
+                queued_at=_now_utc_iso(),
+            )
+        except Exception as exc:
+            log.debug("reminder mark_notification_queued: %s", exc)
+
+    # Reply-state invariant: still awaiting_customer after reminder.
+    after = dcdb.get_delivery_summary_for_draft(db, int(draft_id))
+    return {
+        "reminded": True,
+        "awb": awb,
+        "email_id": email_id,
+        "email_to": email_to,
+        "operator_status": (after or {}).get("operator_status"),
+    }
+
+
 def _format_delivered_at(carrier_delivered_at: Optional[str]) -> Optional[str]:
     """One display string for the carrier delivery time — HTML and text share it.
 
