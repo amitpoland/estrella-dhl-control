@@ -432,20 +432,28 @@
         reason:              reason || '',
       }),
 
+    // GET /api/v1/proforma/draft/{draft_id}/send-options — customer Send projection
+    getProformaSendOptions: (draftId) =>
+      _get(`${BASE}/proforma/draft/${encodeURIComponent(draftId)}/send-options`),
+
     // POST /api/v1/proforma/draft/{draft_id}/send-email
-    // M2 — Send proforma PDF to customer via email queue.
+    // Unified customer Send: documents / confirmation / reminder.
     // confirm_token: "YES_SEND_PROFORMA_EMAIL" (required)
-    // recipient_override: optional override for bill_to_email
-    // subject_override: optional custom subject
-    // message_body: optional HTML body (default: standard template)
-    // cc: optional array of CC addresses
-    sendProformaEmail: (draftId, { confirm_token, recipient_override, subject_override, message_body, cc } = {}) =>
+    // action: send_documents | send_confirmation | send_reminder
+    // document_types: optional list (official_proforma, invoice, packing_list)
+    // Never pass attachment paths — backend resolves via manifest.
+    sendProformaEmail: (draftId, {
+      confirm_token, recipient_override, subject_override, message_body, cc,
+      action, document_types,
+    } = {}) =>
       _postM(`${BASE}/proforma/draft/${draftId}/send-email`, {
         confirm_token:      confirm_token || '',
         recipient_override: recipient_override || '',
         subject_override:   subject_override || '',
         message_body:       message_body || '',
         cc:                 cc || [],
+        action:             action || 'send_documents',
+        document_types:     Array.isArray(document_types) ? document_types : undefined,
       }),
 
     // POST /api/v1/proforma/draft/{draft_id}/reset-from-sales-packing
