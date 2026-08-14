@@ -1164,11 +1164,11 @@ function SendProformaModal({ draft, liveDraft, recipientEmail, onClose, onSucces
       {/* Documents */}
       <div style={{ marginBottom: 18 }} data-testid="send-documents-group">
         <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 8 }}>Documents</div>
-        {(!loadingOpts ? (opts && opts.documents || [
+        {(opts && opts.documents || [
           { type: 'official_proforma', label: 'Proforma', available: false },
           { type: 'invoice', label: 'Invoice', available: false },
           { type: 'packing_list', label: 'Packing List', available: false },
-        ] : []).map(d => (
+        ]).map(d => (
           <label key={d.type} data-testid={`send-doc-${d.type}`}
             style={{
               display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8,
