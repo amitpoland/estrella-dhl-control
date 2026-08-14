@@ -136,6 +136,8 @@ def test_ui_has_unified_send_surface():
     assert "send-reminder-submit" in src
     assert "getProformaSendOptions" in src
     assert "r.data" in src or "payload = r.data" in src
+    assert "Objectassign" not in src
+    assert "Object.assign" in src
     assert 'data-testid="tb-generate"' not in src
     assert "➤ Send Proforma Email" not in src
     api = Path("app/static/v2/pz-api.js").read_text(encoding="utf-8")
