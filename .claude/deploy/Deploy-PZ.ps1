@@ -201,10 +201,10 @@ function Get-DeployElevationArgumentList {
 }
 
 function Assert-CanonicalDeployLogPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$LogFilePath
-    )
+    param([string]$LogFilePath)
+    if ([string]::IsNullOrWhiteSpace($LogFilePath)) {
+        throw "BLOCKED: -DeployLog path is required."
+    }
     if ($LogFilePath -match '\.\.') {
         throw "BLOCKED: -DeployLog refuses path traversal."
     }
