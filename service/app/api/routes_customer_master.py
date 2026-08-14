@@ -113,7 +113,7 @@ def _dec_or_none(v) -> Optional[str]:
 
 
 def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
-    return {
+    d = {
         "id":                            c.id,
         "bill_to_contractor_id":         c.bill_to_contractor_id,
         "bill_to_name":                  c.bill_to_name,
@@ -213,6 +213,32 @@ def _customer_to_dict(c: CustomerMaster) -> Dict[str, Any]:
         "active":                        c.active,
         "deleted_at":                    c.deleted_at,
     }
+    # Customer Communication Recipients (multi To/CC) — Customer Master child.
+    try:
+        from ..services.customer_master_db import list_communication_recipients as _list_ccr
+        rows = _list_ccr(_DB_PATH, c.bill_to_contractor_id)
+        d["communication_recipients"] = {
+            "to": [
+                {
+                    "email": r["email"],
+                    "label": r.get("label"),
+                    "is_primary": r.get("is_primary"),
+                    "is_active": r.get("is_active"),
+                }
+                for r in rows if (r.get("role") or "") == "to"
+            ],
+            "cc": [
+                {
+                    "email": r["email"],
+                    "label": r.get("label"),
+                    "is_active": r.get("is_active"),
+                }
+                for r in rows if (r.get("role") or "") == "cc"
+            ],
+        }
+    except Exception:
+        d["communication_recipients"] = {"to": [], "cc": []}
+    return d
 
 
 # ── Deserialisation helpers ───────────────────────────────────────────────────
@@ -1064,6 +1090,96 @@ def get_customer_endpoint(contractor_id: str) -> JSONResponse:
             detail=f"Customer not found: contractor_id={contractor_id!r}",
         )
     return JSONResponse(_customer_to_dict(record))
+
+
+@router.get(
+    "/{contractor_id}/communication-recipients",
+    dependencies=[_auth],
+    summary="List Customer Communication Recipients",
+)
+def get_communication_recipients(contractor_id: str) -> JSONResponse:
+    """Read-only To/CC defaults owned by Customer Master."""
+    from ..services import customer_communication_recipients as ccr
+
+    init_db(_DB_PATH)
+    if get_customer(_DB_PATH, contractor_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Customer not found: contractor_id={contractor_id!r}",
+        )
+    resolved = ccr.resolve_customer_communication_recipients(
+        db_path=_DB_PATH, contractor_id=contractor_id,
+    )
+    from ..services.customer_master_db import list_communication_recipients as _list_ccr
+    return JSONResponse({
+        "contractor_id": contractor_id,
+        "resolved": resolved,
+        "rows": _list_ccr(_DB_PATH, contractor_id),
+    })
+
+
+@router.put(
+    "/{contractor_id}/communication-recipients",
+    dependencies=[_write_auth],
+    summary="Replace Customer Communication Recipients",
+)
+async def put_communication_recipients(
+    contractor_id: str, request: Request,
+) -> JSONResponse:
+    """Replace multi To/CC defaults. Does not mutate bill_to_email unless absent."""
+    from ..services import customer_communication_recipients as ccr
+    from ..services.customer_communication_recipients import RecipientValidationError
+
+    try:
+        body: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+
+    to_raw = body.get("to") or []
+    cc_raw = body.get("cc") or []
+    if not isinstance(to_raw, list) or not isinstance(cc_raw, list):
+        raise HTTPException(status_code=422, detail="to and cc must be lists")
+
+    before = get_customer(_DB_PATH, contractor_id)
+    if before is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Customer not found: contractor_id={contractor_id!r}",
+        )
+    try:
+        resolved = ccr.replace_communication_recipients(
+            db_path=_DB_PATH,
+            contractor_id=contractor_id,
+            to=to_raw,
+            cc=cc_raw,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RecipientValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Keep bill_to_email aligned with primary To when billing email is blank.
+    primary = resolved.get("primary")
+    if primary and not (before.bill_to_email or "").strip():
+        from dataclasses import replace
+        try:
+            upsert_customer(_DB_PATH, replace(before, bill_to_email=primary))
+        except Exception as exc:
+            log.warning("bill_to_email align skipped: %s", exc)
+
+    after = get_customer(_DB_PATH, contractor_id)
+    audit_safe(
+        "customers", "update_communication_recipients", contractor_id,
+        request=request, before=before, after=after,
+    )
+    return JSONResponse({
+        "ok": True,
+        "contractor_id": contractor_id,
+        "resolved": resolved,
+        "customer": _customer_to_dict(after) if after else None,
+    })
 
 
 @router.put("/{contractor_id}", dependencies=[_write_auth], summary="Create or update customer")

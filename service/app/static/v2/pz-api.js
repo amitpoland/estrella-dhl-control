@@ -444,7 +444,7 @@
     // Never pass attachment paths — backend resolves via manifest.
     sendProformaEmail: (draftId, {
       confirm_token, recipient_override, subject_override, message_body, cc,
-      action, document_types,
+      action, document_types, recipients_to, recipients_cc,
     } = {}) =>
       _postM(`${BASE}/proforma/draft/${draftId}/send-email`, {
         confirm_token:      confirm_token || '',
@@ -452,6 +452,8 @@
         subject_override:   subject_override || '',
         message_body:       message_body || '',
         cc:                 cc || [],
+        recipients_to:      Array.isArray(recipients_to) ? recipients_to : undefined,
+        recipients_cc:      Array.isArray(recipients_cc) ? recipients_cc : undefined,
         action:             action || 'send_documents',
         document_types:     Array.isArray(document_types) ? document_types : undefined,
       }),
@@ -609,6 +611,12 @@
     // GET /api/v1/customer-master/{client_key}
     getCustomerMaster: (clientKey) =>
       _get(`${BASE}/customer-master/${encodeURIComponent(clientKey)}`),
+
+    // GET/PUT Customer Communication Recipients (multi To/CC)
+    getCustomerCommunicationRecipients: (clientKey) =>
+      _get(`${BASE}/customer-master/${encodeURIComponent(clientKey)}/communication-recipients`),
+    saveCustomerCommunicationRecipients: (clientKey, body) =>
+      _put(`${BASE}/customer-master/${encodeURIComponent(clientKey)}/communication-recipients`, body),
 
     // GET /api/v1/customer-master/{client_key}/usage — read-only packing/proforma/shipment projection
     getCustomerUsage: (clientKey) =>

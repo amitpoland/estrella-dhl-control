@@ -188,6 +188,12 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
 
   const [carrierAccts, setCarrierAccts]   = React.useState([]);
   const [carrierLoading, setCarrierLoading] = React.useState(false);
+  const [commTo, setCommTo] = React.useState([]);
+  const [commCc, setCommCc] = React.useState([]);
+  const [commToDraft, setCommToDraft] = React.useState('');
+  const [commCcDraft, setCommCcDraft] = React.useState('');
+  const [commSaving, setCommSaving] = React.useState(false);
+  const [commError, setCommError] = React.useState(null);
   const [carrierError, setCarrierError]     = React.useState(null);
   const [carrierForm, setCarrierForm]       = React.useState(null);
   const [carrierSaving, setCarrierSaving]   = React.useState(false);
@@ -221,6 +227,13 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
       if (res.ok) {
         setOriginal(res.data);
         setForm({ ...res.data });
+        const cr = (res.data && res.data.communication_recipients) || {};
+        setCommTo((cr.to || []).filter(r => r && r.is_active !== false).map(r => ({
+          email: r.email, label: r.label || '', is_primary: !!r.is_primary,
+        })));
+        setCommCc((cr.cc || []).filter(r => r && r.is_active !== false).map(r => ({
+          email: r.email, label: r.label || '',
+        })));
       } else {
         setError(res.error || 'Failed to load customer');
       }
@@ -283,7 +296,37 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
       .finally(() => setCarrierLoading(false));
   }, [contractorId]);
 
+  
+  const saveCommunicationRecipients = () => {
+    if (!contractorId || !PzApi.saveCustomerCommunicationRecipients) return;
+    setCommSaving(true);
+    setCommError(null);
+    const body = {
+      to: commTo.map((r, i) => ({
+        email: r.email,
+        label: r.label || '',
+        is_primary: i === 0 || !!r.is_primary,
+      })),
+      cc: commCc.map(r => ({ email: r.email, label: r.label || '' })),
+    };
+    PzApi.saveCustomerCommunicationRecipients(contractorId, body).then(res => {
+      if (!res.ok) {
+        setCommError(res.error || res.detail || 'Failed to save recipients');
+        setCommSaving(false);
+        return;
+      }
+      const resolved = (res.data && res.data.resolved) || {};
+      setCommTo((resolved.to || []).map((e, i) => ({ email: e, label: '', is_primary: i === 0 })));
+      setCommCc((resolved.cc || []).map(e => ({ email: e, label: '' })));
+      setCommSaving(false);
+    }).catch(e => {
+      setCommError(String(e));
+      setCommSaving(false);
+    });
+  };
+
   if (!clientKey) return null;
+
 
   // ── Field setter ────────────────────────────────────────────────────
   const set = (field, value) => {
@@ -585,6 +628,69 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                 {fld('Phone',  inp('bill_to_phone',  { type: 'tel' }))}
                 {fld('Mobile', inp('bill_to_mobile', { type: 'tel' }))}
               </div>
+
+              <div style={_cdSectionHeadStyle} data-testid="cd-comms-section">Customer Communications</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10, lineHeight: 1.45 }}>
+                These addresses are used as defaults for customer document and delivery-confirmation emails.
+              </div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', marginBottom: 6 }}>PRIMARY / ADDITIONAL TO</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }} data-testid="cd-comms-to-list">
+                {commTo.map((r, idx) => (
+                  <div key={'to-' + r.email} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ flex: 1, fontSize: 12 }}>{r.email}{idx === 0 ? ' (primary)' : ''}</span>
+                    <button type="button" style={_cdRowBtnStyle} data-testid="cd-comms-remove-to"
+                      onClick={() => setCommTo(commTo.filter((_, i) => i !== idx))}>Remove</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <input type="email" value={commToDraft} data-testid="cd-comms-to-input"
+                  onChange={e => setCommToDraft(e.target.value)}
+                  placeholder="Add To email"
+                  style={{ ..._cdInputStyle, flex: 1 }} />
+                <button type="button" style={_cdAddBtnStyle} data-testid="cd-comms-add-to"
+                  onClick={() => {
+                    const e = (commToDraft || '').trim();
+                    if (!e) return;
+                    if (commTo.some(x => x.email.toLowerCase() === e.toLowerCase()) ||
+                        commCc.some(x => x.email.toLowerCase() === e.toLowerCase())) return;
+                    setCommTo(commTo.concat([{ email: e, label: '', is_primary: commTo.length === 0 }]));
+                    setCommToDraft('');
+                  }}>Add</button>
+              </div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', marginBottom: 6 }}>CC RECIPIENTS</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }} data-testid="cd-comms-cc-list">
+                {commCc.map((r, idx) => (
+                  <div key={'cc-' + r.email} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ flex: 1, fontSize: 12 }}>{r.email}</span>
+                    <button type="button" style={_cdRowBtnStyle} data-testid="cd-comms-remove-cc"
+                      onClick={() => setCommCc(commCc.filter((_, i) => i !== idx))}>Remove</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                <input type="email" value={commCcDraft} data-testid="cd-comms-cc-input"
+                  onChange={e => setCommCcDraft(e.target.value)}
+                  placeholder="Add CC email"
+                  style={{ ..._cdInputStyle, flex: 1 }} />
+                <button type="button" style={_cdAddBtnStyle} data-testid="cd-comms-add-cc"
+                  onClick={() => {
+                    const e = (commCcDraft || '').trim();
+                    if (!e) return;
+                    if (commTo.some(x => x.email.toLowerCase() === e.toLowerCase()) ||
+                        commCc.some(x => x.email.toLowerCase() === e.toLowerCase())) return;
+                    setCommCc(commCc.concat([{ email: e, label: '' }]));
+                    setCommCcDraft('');
+                  }}>Add</button>
+              </div>
+              {commError ? (
+                <div style={{ ..._cdErrorBoxStyle, marginBottom: 8 }} data-testid="cd-comms-error">{commError}</div>
+              ) : null}
+              <button type="button" style={_cdAddBtnStyle} data-testid="cd-comms-save"
+                disabled={commSaving}
+                onClick={saveCommunicationRecipients}>
+                {commSaving ? 'Saving…' : 'Save communication recipients'}
+              </button>
 
               <div style={_cdSectionHeadStyle}>VAT / Tax numbers</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>

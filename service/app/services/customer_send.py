@@ -29,6 +29,7 @@ CUSTOMER_SENDABLE_DOCUMENT_TYPES: Tuple[str, ...] = (
     "invoice",
     "packing_list",
     "air_waybill",
+    "shipping_information",
 )
 
 CUSTOMER_SENDABLE_LABELS: Dict[str, str] = {
@@ -36,6 +37,7 @@ CUSTOMER_SENDABLE_LABELS: Dict[str, str] = {
     "invoice": "Invoice",
     "packing_list": "Packing List",
     "air_waybill": "Air Waybill",
+    "shipping_information": "Shipping Information",
 }
 
 _CUSTOMER_SENDABLE_SET = frozenset(CUSTOMER_SENDABLE_DOCUMENT_TYPES)
@@ -90,8 +92,11 @@ def _entry_by_type(manifest: Dict[str, Any], document_type: str) -> Optional[Dic
 def _resolve_air_waybill_entry(manifest: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Customer-facing Air Waybill projection over carrier document store.
 
-    Prefer real waybillDoc (``dhl_waybill``). For FEDEX/UPS external bookings the
-    uploaded AWB PDF lives in the label store — use that only when waybill is absent.
+    Prefer dedicated waybillDoc (``dhl_waybill``). When absent, the Transport Label
+    (``dhl_label``) is the customer-safe Air Waybill for DHL modern bookings —
+    MyDHL often embeds the courier Waybill Doc page inside the label PDF (PROF 179
+    evidence). FEDEX/UPS external uploads also live in the label store.
+    Never promotes Shipment Receipt (billing/account data).
     """
     waybill = None
     label = None
@@ -104,10 +109,7 @@ def _resolve_air_waybill_entry(manifest: Dict[str, Any]) -> Optional[Dict[str, A
     if waybill and (waybill.get("status") or "") == GENERATED and waybill.get("download_available"):
         return {**waybill, "document_type": "air_waybill", "_store_kind": "waybill-doc"}
     if label and (label.get("status") or "") == GENERATED and label.get("download_available"):
-        source = (label.get("source") or "").strip().upper()
-        # Promote label→Air Waybill for external carrier uploads (not DHL default).
-        if source in ("FEDEX", "UPS", "EXTERNAL") or source.startswith("FEDEX") or source.startswith("UPS"):
-            return {**label, "document_type": "air_waybill", "_store_kind": "label"}
+        return {**label, "document_type": "air_waybill", "_store_kind": "label"}
     return None
 
 
@@ -137,6 +139,8 @@ def _doc_reason_unavailable(doc_type: str, entry: Optional[Dict[str, Any]]) -> s
         return "Convert the Proforma to an Invoice first."
     if doc_type == "air_waybill":
         return "Air Waybill PDF is not on file yet."
+    if doc_type == "shipping_information":
+        return "Shipping Information is available after an outbound AWB is booked."
     if doc_type == "packing_list":
         return "Packing List is not available (no commercial lines)."
     if doc_type == "official_proforma":
@@ -155,8 +159,9 @@ def project_customer_send_options(
 
     No filesystem paths. Eligibility is computed here; React must not re-decide.
     """
-    from . import delivery_confirmation_db as dcdb
     from . import commercial_cmr as ccmr
+    from . import commercial_shipping_information as csi
+    from . import delivery_followup as dfu
 
     manifest = build_manifest(
         int(draft_id),
@@ -164,10 +169,14 @@ def project_customer_send_options(
         proforma_db=Path(proforma_db),
         carrier_db=Path(carrier_db),
     )
-    delivery = dcdb.get_delivery_summary_for_draft(
-        Path(storage_root) / "delivery_confirmations.db", int(draft_id),
+    followup = dfu.compose_delivery_followup(
+        draft_id=int(draft_id),
+        storage_root=Path(storage_root),
+        proforma_db=Path(proforma_db),
+        carrier_db=Path(carrier_db),
     )
-    awaiting = bool(delivery and delivery.get("operator_status") == "awaiting_customer")
+    carrier = followup.get("carrier") or {}
+    confirmation = followup.get("confirmation") or {}
 
     documents: List[Dict[str, Any]] = []
     any_doc_available = False
@@ -180,9 +189,32 @@ def project_customer_send_options(
                 and entry.get("download_available")
                 and (entry.get("download_url") or "").strip()
             )
+            reference = (entry or {}).get("reference") or carrier.get("awb")
+            source = (entry or {}).get("source") or carrier.get("provider")
+        elif doc_type == "shipping_information":
+            entry = None
+            available = False
+            try:
+                available = bool(csi.shipping_information_available_for_draft(
+                    draft_id=int(draft_id),
+                    storage_root=Path(storage_root),
+                    proforma_db=Path(proforma_db),
+                    carrier_db=Path(carrier_db),
+                ))
+            except Exception as exc:
+                log.debug("shipping information availability failed: %s", exc)
+            reference = carrier.get("awb")
+            source = carrier.get("provider")
+            entry = {
+                "status": GENERATED if available else None,
+                "reference": reference,
+                "source": source,
+            }
         else:
             entry = _entry_by_type(manifest, doc_type)
             available = is_customer_sendable_document(entry)
+            reference = (entry or {}).get("reference")
+            source = (entry or {}).get("source")
         if available:
             any_doc_available = True
         documents.append({
@@ -191,58 +223,14 @@ def project_customer_send_options(
             "available": available,
             "reason": None if available else _doc_reason_unavailable(doc_type, entry),
             "status": (entry or {}).get("status"),
-            "reference": (entry or {}).get("reference"),
-            "source": (entry or {}).get("source"),
+            "reference": reference,
+            "source": source,
         })
 
-    notif_status = (delivery or {}).get("notification_status") if delivery else None
-    op_status = (delivery or {}).get("operator_status") if delivery else None
-    send_confirmation = False
-    confirmation_reason = "No delivery-confirmation record for this draft."
-    if delivery is None:
-        # First-time confirmation only when outbound AWB is proven delivered.
-        try:
-            from .carrier.persistence import shipment_db
-            from . import proforma_invoice_link_db as pildb
-            from . import delivery_confirmation_service as dcs
-            from .shipment_document_manifest import _batch_client_count
-
-            draft = pildb.get_draft_by_id(Path(proforma_db), int(draft_id))
-            awb_probe = ""
-            if draft is not None:
-                batch_id = (draft.batch_id or "").strip()
-                client_name = (draft.client_name or "").strip() or None
-                single_client = _batch_client_count(Path(proforma_db), batch_id) <= 1
-                row = shipment_db.get_shipment_for_draft(
-                    Path(carrier_db),
-                    batch_id,
-                    client_name,
-                    allow_single_client_fallback=single_client,
-                )
-                if row:
-                    awb_probe = (row.get("tracking_ref") or "").strip()
-            if awb_probe and dcs._prove_outbound_delivered(awb_probe).get("ok"):
-                send_confirmation = True
-                confirmation_reason = None
-                op_status = op_status or "delivered"
-            else:
-                confirmation_reason = (
-                    "Delivery Confirmation becomes available after the shipment is delivered."
-                )
-        except Exception as exc:
-            log.debug("confirmation eligibility probe failed: %s", exc)
-            confirmation_reason = (
-                "Delivery Confirmation becomes available after the shipment is delivered."
-            )
-    elif op_status in ("confirmed_good", "issue_reported"):
-        confirmation_reason = f"Customer already responded ({op_status})."
-    elif awaiting:
-        confirmation_reason = "Already awaiting customer — use reminder."
-    elif notif_status == "failed":
-        send_confirmation = True
-        confirmation_reason = None
-    else:
-        confirmation_reason = "Confirmation already in progress or not operator-sendable."
+    send_confirmation = bool(confirmation.get("can_send"))
+    awaiting = bool(confirmation.get("can_remind")) or (
+        (confirmation.get("state") or "") == "awaiting_customer"
+    )
 
     cmr_available = False
     try:
@@ -261,19 +249,55 @@ def project_customer_send_options(
         "actions": {
             "send_documents": any_doc_available,
             "send_confirmation": send_confirmation,
-            "send_reminder": awaiting,
+            "send_reminder": bool(confirmation.get("can_remind")),
         },
         "awaiting_customer": awaiting,
+        "delivery_followup": followup,
+        # Back-compat projection for older UI readers.
         "delivery": {
-            "operator_status": op_status,
-            "notification_status": notif_status,
-            "awb": (delivery or {}).get("awb") if delivery else None,
-            "customer_name": (delivery or {}).get("customer_name") if delivery else None,
-        } if delivery else None,
-        "confirmation_reason": confirmation_reason,
+            "operator_status": confirmation.get("operator_status")
+            or (
+                "delivered"
+                if carrier.get("delivered") and confirmation.get("state") == "not_sent"
+                else confirmation.get("state")
+            ),
+            "notification_status": confirmation.get("notification_status"),
+            "awb": carrier.get("awb"),
+            "customer_name": confirmation.get("customer_name"),
+            "carrier_status": carrier.get("status"),
+            "delivered": carrier.get("delivered"),
+            "delivered_at": carrier.get("delivered_at"),
+            "location": carrier.get("location"),
+            "provider": carrier.get("provider"),
+        },
+        "confirmation_reason": confirmation.get("reason"),
         "cmr_will_attach": bool(send_confirmation and cmr_available),
         "cmr_available": cmr_available,
+        "recipients": _project_send_recipients(draft_id=int(draft_id), proforma_db=Path(proforma_db)),
     }
+
+
+def _project_send_recipients(*, draft_id: int, proforma_db: Path) -> Dict[str, Any]:
+    """Resolve Customer Master communication recipients for Send UI (read-only)."""
+    empty = {"to": [], "cc": [], "source": "none", "primary": None, "contractor_id": None}
+    try:
+        from . import customer_communication_recipients as ccr
+        from . import proforma_invoice_link_db as pildb
+        from ..core.config import settings
+
+        draft = pildb.get_draft_by_id(Path(proforma_db), int(draft_id))
+        if draft is None:
+            return empty
+        cid = (getattr(draft, "client_contractor_id", None) or "").strip()
+        if not cid:
+            return empty
+        db_path = Path(settings.storage_root) / "customer_master.sqlite"
+        return ccr.resolve_customer_communication_recipients(
+            db_path=db_path, contractor_id=cid,
+        )
+    except Exception as exc:
+        log.debug("send recipients projection failed: %s", exc)
+        return empty
 
 
 def assert_types_customer_sendable(
@@ -299,6 +323,17 @@ def assert_types_customer_sendable(
                 and entry.get("download_available")
                 and (entry.get("download_url") or "").strip()
             )
+        elif doc_type == "shipping_information":
+            # Available when an outbound AWB is bound on the carrier manifest.
+            entry = None
+            ok = False
+            for e in _iter_manifest_docs(manifest):
+                if (e.get("document_type") or "") in (
+                    "dhl_label", "dhl_waybill", "air_waybill",
+                ) and (e.get("reference") or "").strip():
+                    ok = True
+                    entry = e
+                    break
         else:
             entry = _entry_by_type(manifest, doc_type)
             ok = is_customer_sendable_document(entry)
@@ -416,6 +451,22 @@ def materialize_customer_attachments(
                 pdf, fname = _materialize_air_waybill_bytes(
                     draft=draft, manifest=manifest,
                 )
+                attachments.append(_write(fname, pdf))
+            elif doc_type == "shipping_information":
+                from . import commercial_shipping_information as csi
+                from ..core.config import settings
+                exported = csi.export_shipping_information_pdf_for_draft(
+                    draft_id=draft_id,
+                    storage_root=storage_root,
+                    proforma_db=Path(settings.storage_root) / "proforma_links.db",
+                    carrier_db=Path(
+                        settings.carrier_storage_root
+                        or (Path(settings.storage_root) / "carrier")
+                    ) / "carrier_shipments.db",
+                )
+                if not exported:
+                    raise ValueError("Shipping Information is not available.")
+                pdf, fname = exported
                 attachments.append(_write(fname, pdf))
             else:
                 raise ValueError(
