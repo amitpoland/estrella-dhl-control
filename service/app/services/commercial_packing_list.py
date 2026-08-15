@@ -12,13 +12,12 @@ Canonical document model matches the Proforma Documents tab Preview
     product_descriptions fill-in used by GET /proforma/draft/{id}
   * Missing values stay honestly blank ("—") — never invented
 
-The PDF renderer is a presentation/export adapter over that model for
-server-side ZIP / Path-DOC package assembly. It must NOT invent a second
-field mapping or a simplified packing sheet.
+The PDF exporter renders the SAME HTML presentation definition as
+``EJPackingList`` (estrella-doc-packing.jsx) via Chrome headless print.
+ReportLab visual layout is retired — do not reintroduce a second renderer.
 """
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
@@ -377,256 +376,18 @@ def build_commercial_packing_document(
     }
 
 
-def _register_fonts() -> tuple:
-    try:
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        import reportlab as _rl
-
-        reg_name, bold_name = "EJCommercialPack", "EJCommercialPack-Bold"
-        if reg_name in pdfmetrics.getRegisteredFontNames():
-            return reg_name, bold_name
-        _rl_font_dir = os.path.join(os.path.dirname(_rl.__file__), "fonts")
-        candidates = [
-            (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
-            (r"C:\Windows\Fonts\DejaVuSans.ttf", r"C:\Windows\Fonts\DejaVuSans-Bold.ttf"),
-            (
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            ),
-            (
-                os.path.join(_rl_font_dir, "Vera.ttf"),
-                os.path.join(_rl_font_dir, "VeraBd.ttf"),
-            ),
-        ]
-        for reg, bold in candidates:
-            if os.path.exists(reg) and os.path.exists(bold):
-                try:
-                    pdfmetrics.registerFont(TTFont(reg_name, reg))
-                    pdfmetrics.registerFont(TTFont(bold_name, bold))
-                    return reg_name, bold_name
-                except Exception:
-                    continue
-        return "Helvetica", "Helvetica-Bold"
-    except ImportError:
-        return "Helvetica", "Helvetica-Bold"
-
-
-def _fmt_money(v: Any) -> str:
-    if v is None:
-        return "—"
-    try:
-        return f"{float(v):,.2f}"
-    except (TypeError, ValueError):
-        return "—"
-
-
-def _fmt_wt(v: Any) -> str:
-    try:
-        n = float(v)
-    except (TypeError, ValueError):
-        return "—"
-    if n <= 0:
-        return "—"
-    return f"{n:.4f}"
-
-
 def render_commercial_packing_list_pdf(document: Dict[str, Any]) -> bytes:
-    """Presentation adapter: Commercial Packing List model → landscape PDF bytes.
+    """ONE Packing List PDF presentation — HTML (EJPackingList equivalent) + Chrome print.
 
-    Column set matches ``EJPackingList`` — not the retired simplified sheet.
+    ReportLab visual path is retired. Preview Download, Documents Hub, ZIP, and
+    customer-email attachment must all call this exporter.
     """
-    try:
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-        from reportlab.lib.units import mm
-        from reportlab.platypus import (
-            Paragraph,
-            SimpleDocTemplate,
-            Spacer,
-            Table,
-            TableStyle,
-        )
-    except ImportError as exc:
-        raise RuntimeError(f"ReportLab unavailable: {exc}") from exc
+    from .commercial_packing_list_html import render_commercial_packing_list_html
+    from .chrome_html_pdf import html_to_pdf_bytes
 
-    font, font_bold = _register_fonts()
-    styles = getSampleStyleSheet()
-    H1 = ParagraphStyle(
-        "CPL_H1", parent=styles["Normal"], fontName=font_bold, fontSize=14, leading=17,
-    )
-    H2 = ParagraphStyle(
-        "CPL_H2", parent=styles["Normal"], fontName=font_bold, fontSize=8, leading=10,
-        textColor=colors.HexColor("#0B3D2E"),
-    )
-    TXT = ParagraphStyle(
-        "CPL_TXT", parent=styles["Normal"], fontName=font, fontSize=7, leading=9,
-    )
-    SML = ParagraphStyle(
-        "CPL_SML", parent=styles["Normal"], fontName=font, fontSize=6.5, leading=8,
-        textColor=colors.HexColor("#64748B"),
-    )
-    CELL = ParagraphStyle(
-        "CPL_CELL", parent=styles["Normal"], fontName=font, fontSize=6, leading=7.5,
-    )
-    CELL_B = ParagraphStyle(
-        "CPL_CELL_B", parent=styles["Normal"], fontName=font_bold, fontSize=6, leading=7.5,
-    )
+    html = render_commercial_packing_list_html(document or {})
+    return html_to_pdf_bytes(html)
 
-    buf = io.BytesIO()
-    page = landscape(A4)
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=page,
-        leftMargin=8 * mm,
-        rightMargin=8 * mm,
-        topMargin=8 * mm,
-        bottomMargin=8 * mm,
-    )
-    story: List[Any] = []
-
-    d = document or {}
-    cur = d.get("currency") or "EUR"
-    rows = d.get("rows") or []
-
-    story.append(Paragraph("Commercial Packing List", H2))
-    story.append(Paragraph("Packing List", H1))
-    story.append(Paragraph(str(d.get("doc_ref") or "—"), TXT))
-    if d.get("invoice_ref"):
-        story.append(Paragraph(f"Invoice · {d['invoice_ref']}", SML))
-    story.append(Spacer(1, 3 * mm))
-
-    seller = d.get("seller") or {}
-    shipto = d.get("shipto") or {}
-
-    def _party_block(title: str, p: Dict[str, str]) -> List[Any]:
-        lines = [Paragraph(f"<b>{title}</b>", CELL_B)]
-        if p.get("name"):
-            lines.append(Paragraph(p["name"], CELL_B))
-        if p.get("addr"):
-            lines.append(Paragraph(p["addr"], CELL))
-        loc = " ".join(x for x in (p.get("zip"), p.get("city")) if x)
-        if loc or p.get("country"):
-            lines.append(Paragraph(
-                f"{loc}{', ' + p['country'] if p.get('country') else ''}", CELL,
-            ))
-        if p.get("vat"):
-            lines.append(Paragraph(f"VAT EU · {p['vat']}", SML))
-        return lines
-
-    party_tbl = Table(
-        [[_party_block("1  Seller · Exporter", seller),
-          _party_block("2  Consignee · Ship-To", shipto)]],
-        colWidths=[140 * mm, 140 * mm],
-    )
-    party_tbl.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#0B3D2E")),
-        ("LINEBEFORE", (1, 0), (1, -1), 0.5, colors.HexColor("#CBD5E1")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    story.append(party_tbl)
-    story.append(Spacer(1, 3 * mm))
-
-    meta = (
-        f"Date: {d.get('issued_date') or '—'}   "
-        f"Proforma: {d.get('doc_ref') or '—'}   "
-        f"Invoice: {d.get('invoice_ref') or 'Pending conversion'}   "
-        f"Currency: {cur}   "
-        f"Lines: {len(rows)}   "
-        f"Total Qty: {d.get('total_qty') if d.get('total_qty') is not None else sum(float(r.get('qty') or 0) for r in rows)}   "
-        f"Grand Total: {cur} {_fmt_money(d.get('grand_total'))}"
-    )
-    story.append(Paragraph(meta, SML))
-    story.append(Spacer(1, 2 * mm))
-
-    headers = [
-        "Sr", "Category", "Client PO", "Product Code", "Design",
-        "Product Description (EN / PL)", "Kt", "Col", "Quality",
-        "Dia Wt (ct)", "Col Wt (ct)", "Gross Wt (g)", "Net Wt (g)",
-        "Qty", f"Value ({cur})", "Total Value", "Size", "Origin",
-    ]
-    data: List[List[Any]] = [[Paragraph(h, CELL_B) for h in headers]]
-
-    for r in rows:
-        desc_parts = []
-        if r.get("description_en"):
-            desc_parts.append(str(r["description_en"]))
-        if r.get("description_pl"):
-            desc_parts.append(f"<i>{r['description_pl']}</i>")
-        desc = "<br/>".join(desc_parts) if desc_parts else "—"
-        data.append([
-            Paragraph(str(r.get("sr") or ""), CELL),
-            Paragraph(str(r.get("ctg") or "—"), CELL),
-            Paragraph(str(r.get("client_po") or "—"), CELL),
-            Paragraph(str(r.get("product_code") or "—"), CELL),
-            Paragraph(str(r.get("design") or "—"), CELL_B),
-            Paragraph(desc, CELL),
-            Paragraph(str(r.get("kt") or "—"), CELL),
-            Paragraph(str(r.get("col") or "—"), CELL),
-            Paragraph(str(r.get("quality") or "—"), CELL),
-            Paragraph(_fmt_wt(r.get("dia_wt")), CELL),
-            Paragraph(_fmt_wt(r.get("col_wt")), CELL),
-            Paragraph(_fmt_wt(r.get("gross_wt")), CELL),
-            Paragraph(_fmt_wt(r.get("net_wt")), CELL),
-            Paragraph(str(r.get("qty") if r.get("qty") is not None else "—"), CELL_B),
-            Paragraph(_fmt_money(r.get("unit_price")), CELL),
-            Paragraph(_fmt_money(r.get("total_value")), CELL_B),
-            Paragraph(str(r.get("size") or "—"), CELL),
-            Paragraph(str(r.get("origin") or "—"), CELL),
-        ])
-
-    # Footer totals row
-    total_qty = d.get("total_qty")
-    if total_qty is None:
-        total_qty = sum(float(r.get("qty") or 0) for r in rows)
-    data.append([
-        Paragraph(f"{len(rows)} design(s)", CELL_B),
-        "", "", "", "", "", "", "", "", "", "", "", "",
-        Paragraph(str(total_qty), CELL_B),
-        "",
-        Paragraph(f"{cur} {_fmt_money(d.get('grand_total'))}", CELL_B),
-        "", "",
-    ])
-
-    # Approximate landscape column widths (sum ≈ 280mm usable)
-    col_ws = [
-        8*mm, 16*mm, 18*mm, 22*mm, 24*mm, 42*mm, 10*mm, 8*mm, 14*mm,
-        14*mm, 14*mm, 14*mm, 14*mm, 10*mm, 16*mm, 18*mm, 12*mm, 12*mm,
-    ]
-    tbl = Table(data, colWidths=col_ws, repeatRows=1)
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0B3D2E")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), font_bold),
-        ("FONTSIZE", (0, 0), (-1, -1), 6),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -2),
-         [colors.white, colors.HexColor("#FAFBFC")]),
-        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FBF8F1")),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E2E8F0")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("LEFTPADDING", (0, 0), (-1, -1), 1.5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 1.5),
-        ("SPAN", (0, -1), (2, -1)),
-    ]))
-    story.append(tbl)
-    story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph(
-        f"Issued under the authority of Proforma {d.get('doc_ref') or '—'}. "
-        "Value authority: commercial sales price. Not for customs valuation. "
-        f"Currency: {cur} · {d.get('issued_date') or '—'} · "
-        f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC",
-        SML,
-    ))
-
-    doc.build(story)
-    return buf.getvalue()
 
 
 def render_packing_list_pdf_from_authorities(

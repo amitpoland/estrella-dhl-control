@@ -9025,9 +9025,13 @@ def send_proforma_email(
         from ..services import delivery_confirmation_service as dcs
         result = dcs.send_confirmation_for_draft(int(draft_id))
         if not result.get("notified"):
+            reason = result.get("reason") or "unknown"
+            # Never surface automation-only feature_disabled for this manual path.
+            if reason == "feature_disabled":
+                reason = "confirmation_unavailable"
             raise HTTPException(
                 status_code=422,
-                detail=f"Confirmation send refused: {result.get('reason')}",
+                detail=f"Confirmation send refused: {reason}",
             )
         return JSONResponse({"ok": True, "action": action, **result})
 

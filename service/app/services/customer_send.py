@@ -488,37 +488,27 @@ def customer_documents_email_bodies(
     draft: Any,
     document_types: Sequence[str],
 ) -> Tuple[str, str]:
-    """(subject, html_body) for a customer document send."""
-    from html import escape as esc
+    """(subject, html_body) for a customer document send.
+
+    Semantics only here — brand HTML lives in ``customer_email_template``.
+    """
+    from .customer_email_template import customer_documents_email
 
     labels = [CUSTOMER_SENDABLE_LABELS.get(t, t) for t in document_types]
-    joined = ", ".join(labels)
-    client = esc(getattr(draft, "client_name", None) or "Customer")
-    doc_no = esc(
-        getattr(draft, "wfirma_proforma_fullnumber", None)
-        or f"Draft #{getattr(draft, 'id', '')}"
-    )
     draft_label = (
         getattr(draft, "wfirma_proforma_fullnumber", None)
         or f"Draft #{getattr(draft, 'id', '')}"
     )
+    client = getattr(draft, "client_name", None) or "Customer"
     if list(document_types) == ["official_proforma"]:
         subject = f"Proforma {draft_label}"
-        html = (
-            f"<p>Dear {client},</p>"
-            f"<p>Please find attached the proforma invoice: <strong>{doc_no}</strong>.</p>"
-            "<p>If you have any questions, please do not hesitate to contact us.</p>"
-            "<p>Best regards,<br>Estrella Jewels</p>"
-        )
-        return subject, html
-    subject = f"Documents for {draft_label}: {joined}"
-    items = "".join(f"<li>{esc(x)}</li>" for x in labels)
-    html = (
-        f"<p>Dear {client},</p>"
-        f"<p>Please find attached the following document(s) for "
-        f"<strong>{doc_no}</strong>:</p>"
-        f"<ul>{items}</ul>"
-        "<p>If you have any questions, please do not hesitate to contact us.</p>"
-        "<p>Best regards,<br>Estrella Jewels</p>"
+    else:
+        subject = f"Documents for {draft_label}: {', '.join(labels)}"
+    _html, _text = customer_documents_email(
+        customer_name=str(client),
+        doc_ref=str(draft_label),
+        document_labels=labels,
     )
-    return subject, html
+    # Route historically returned (subject, html); plain text is built by
+    # email_service from html when body_text omitted — keep subject + branded html.
+    return subject, _html

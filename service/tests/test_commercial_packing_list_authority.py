@@ -128,18 +128,19 @@ def test_pdf_has_commercial_columns_not_simplified_sheet(
     pdf = render_commercial_packing_list_pdf(doc)
     assert pdf[:4] == b"%PDF"
     text = _extract_pdf_text(pdf)
-    # Canonical commercial markers
-    assert "Commercial Packing List" in text
-    assert "Client PO" in text
-    assert "Product Description" in text
-    assert "Diamond Ring" in text
-    assert "PO-9" in text
-    assert "EJL/TEST-001" in text
-    assert "JR001" in text
+    text_l = text.casefold()
+    # Canonical commercial markers (Chrome may upper-case CSS text-transform)
+    assert "commercial packing list" in text_l
+    assert "client po" in text_l
+    assert "product description" in text_l
+    assert "diamond ring" in text_l
+    assert "po-9" in text_l
+    assert "ejl/test-001" in text_l
+    assert "jr001" in text_l
     # Retired simplified sheet must NOT be the document
-    assert "Product Code / Design" not in text
+    assert "product code / design" not in text_l
     # Batch id as consignee meta of old sheet should not dominate
-    assert "BATCH_CPL_AUTH" not in text or "Proforma" in text
+    assert "batch_cpl_auth" not in text_l or "proforma" in text_l
 
 
 def test_doc_package_render_packing_list_pdf_delegates_to_commercial(
@@ -209,9 +210,9 @@ def test_render_packing_list_pdf_from_authorities_end_to_end(
         draft=draft_with_commercial_lines,
     )
     assert pdf[:4] == b"%PDF"
-    text = _extract_pdf_text(pdf)
-    assert "Commercial Packing List" in text
-    assert "Client PO" in text
-    assert "PO-9" in text
-    assert "Diamond Ring" in text
-    assert "Product Code / Design" not in text
+    text = _extract_pdf_text(pdf).casefold()
+    assert "commercial packing list" in text
+    assert "client po" in text
+    assert "po-9" in text
+    assert "diamond ring" in text
+    assert "product code / design" not in text

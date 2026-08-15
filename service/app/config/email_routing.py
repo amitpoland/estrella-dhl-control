@@ -11,7 +11,7 @@ Usage:
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from ..core.config import settings
 
@@ -123,13 +123,73 @@ def resolve_dhl_cc() -> str:
 CUSTOMER_FACING_EMAIL_TYPES: frozenset = frozenset({
     "customer_delivery_confirmation",
     "customer_delivery_reminder",
-    "proforma_send",
+    "proforma_send",            # legacy alias — same as customer_document_send
+    "customer_document_send",
 })
 
 
 def is_customer_facing_email_type(email_type: str) -> bool:
     """True when ``email_type`` is a customer shipment/status notification."""
     return (email_type or "").strip().lower() in CUSTOMER_FACING_EMAIL_TYPES
+
+
+# ── Email intent / post-delivery guard policy (ONE authority) ─────────────────
+# queue_email must NOT hardcode business whitelist tuples. Classify intent here.
+
+class EmailDeliveryGuardAction:
+    """What the delivered-shipment guard should do for an email_type."""
+    BLOCK = "block"       # automated operational follow-up — refuse after delivered
+    ALLOW = "allow"       # customer transactional / confirmation — allow after delivered
+    FAIL_SAFE = "block"   # unknown types fail closed (same as block)
+
+
+# Explicit policy enum — unknown types are NOT allowed post-delivery.
+_EMAIL_DELIVERY_GUARD_POLICY: Dict[str, str] = {
+    # A. AUTOMATED OPERATIONAL FOLLOW-UP — lifecycle closes at delivery
+    "agency": "block",
+    "agency_followup": "block",
+    "dhl_reply": "block",
+    "dhl_followup": "block",
+    "customs_followup": "block",
+    "broker_followup": "block",
+    # B. EXPLICIT CUSTOMER DOCUMENT TRANSACTION — operator Send
+    "proforma_send": "allow",            # legacy name (unified document package)
+    "customer_document_send": "allow",   # preferred truthful name
+    # C / D. DELIVERY CONFIRMATION + REMINDER — exist because delivered
+    "customer_delivery_confirmation": "allow",
+    "customer_delivery_reminder": "allow",
+}
+
+
+def normalize_email_type(email_type: str) -> str:
+    return (email_type or "").strip().lower()
+
+
+def email_intent(email_type: str) -> str:
+    """Return coarse intent label for audits / tests."""
+    et = normalize_email_type(email_type)
+    if et in ("proforma_send", "customer_document_send"):
+        return "customer_transactional"
+    if et == "customer_delivery_confirmation":
+        return "delivery_confirmation"
+    if et == "customer_delivery_reminder":
+        return "delivery_reminder"
+    if et in _EMAIL_DELIVERY_GUARD_POLICY and _EMAIL_DELIVERY_GUARD_POLICY[et] == "block":
+        return "automated_operational_followup"
+    if not et:
+        return "unspecified"
+    return "unknown"
+
+
+def delivery_guard_allows_when_delivered(email_type: str) -> bool:
+    """True when queue_email may enqueue even if the shipment is delivered.
+
+    Unknown / empty types → False (fail closed). Never broaden via prefix match.
+    """
+    et = normalize_email_type(email_type)
+    if not et:
+        return False
+    return _EMAIL_DELIVERY_GUARD_POLICY.get(et) == "allow"
 
 
 def resolve_customer_delivery_confirmation_cc(to: str = "") -> str:
