@@ -372,6 +372,14 @@ and fail honestly if any requested deliverable is not produced.
 
 ## Cursor Cloud specific instructions
 
+> **Default environment = Windows Local.** Treat Windows Local as the default execution
+> environment for this repository — the established working flow: `C:\PZ-main` → local
+> Cursor / Claude Code → normal repo work → canonical `Deploy-PZ.ps1 -Release -Scope App`.
+> The Cursor Cloud instructions below are **optional fallback guidance only**. They must
+> NOT override the normal Windows workflow or the production deployment path, and future
+> campaigns tied to Windows production/deploy authority must not be pushed into Linux Cloud.
+> Use this section only when a task is deliberately being run inside a Cursor Cloud (Linux) VM.
+
 The VM startup update script already installs all dependencies (`service/requirements.txt`
 plus the test-only `pytest`/`pytest-timeout`, which are NOT in `requirements.txt`). No system
 packages or external services are needed — Python 3.12 is preinstalled and every external
