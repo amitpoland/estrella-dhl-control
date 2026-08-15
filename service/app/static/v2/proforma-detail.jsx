@@ -6448,7 +6448,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
 
   const _cmrTotalPcs = ((canonicalCmr && canonicalCmr.lines) || []).reduce(
     (s, l) => s + (Number(l.qty) || 0), 0
-  ) || lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+  );
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
   // SINGLE READINESS AUTHORITY — backend-derived blockers. State gating says

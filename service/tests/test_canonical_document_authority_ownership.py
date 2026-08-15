@@ -38,6 +38,12 @@ def test_api_exposes_html_json_pdf_for_both_docs():
         "getCmrHtml", "getCmrDocument", "downloadCmrPdf",
     ):
         assert needle in api
+    # JSON document helpers must unwrap {ok,data} — callers consume the document, not the envelope
+    pack_fn = api.split("getPackingListDocument:")[1].split("getPackingListHtml:")[0]
+    cmr_fn = api.split("getCmrDocument:")[1].split("getCmrHtml:")[0]
+    assert "return r.data" in pack_fn
+    assert "return r.data" in cmr_fn
+    assert "throw new Error" in pack_fn and "throw new Error" in cmr_fn
 
 
 def test_single_presentation_modules_are_authority():

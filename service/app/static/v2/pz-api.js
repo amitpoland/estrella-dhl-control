@@ -2253,8 +2253,15 @@
         `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/packing-list.pdf`,
         `packing-list-draft-${draftId}.pdf`,
       ),
-    getPackingListDocument: (draftId) =>
-      _get(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/packing-list.json`),
+    getPackingListDocument: async (draftId) => {
+      const r = await _get(
+        `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/packing-list.json`,
+      );
+      if (!r || !r.ok) {
+        throw new Error((r && r.error) || 'Packing list document failed');
+      }
+      return r.data;
+    },
     getPackingListHtml: (draftId) =>
       _getText(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/packing-list.html`),
     // GET cmr.pdf — SAME exporter as Delivery Confirmation attachment.
@@ -2263,8 +2270,15 @@
         `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/cmr.pdf`,
         `cmr-draft-${draftId}.pdf`,
       ),
-    getCmrDocument: (draftId) =>
-      _get(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/cmr.json`),
+    getCmrDocument: async (draftId) => {
+      const r = await _get(
+        `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/cmr.json`,
+      );
+      if (!r || !r.ok) {
+        throw new Error((r && r.error) || 'CMR document failed');
+      }
+      return r.data;
+    },
     getCmrHtml: (draftId) =>
       _getText(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/cmr.html`),
 

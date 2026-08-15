@@ -215,7 +215,7 @@ def build_cmr_document(
     pickup = None
     if shipment_row:
         awb = (shipment_row.get("tracking_ref") or "").strip() or None
-        carrier_name = (shipment_row.get("provider") or shipment_row.get("carrier") or "DHL")
+        carrier_name = (shipment_row.get("provider") or shipment_row.get("carrier") or "").strip() or None
         service = shipment_row.get("service_product") or shipment_row.get("service")
         pickup = shipment_row.get("pickup_date") or shipment_row.get("booked_at")
         try:
@@ -244,7 +244,7 @@ def build_cmr_document(
     carrier = None
     if awb or shipment_row:
         carrier = {
-            "name": str(carrier_name or "DHL"),
+            "name": str(carrier_name) if carrier_name else "—",
             "awb": awb,
             "service": service or "—",
             "incoterm": incoterm or "—",
