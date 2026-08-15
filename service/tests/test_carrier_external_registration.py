@@ -435,16 +435,21 @@ def test_ui_carrier_selector_and_forms():
 
 
 def test_transport_and_cmr_consume_provider_without_dhl_fallback():
-    root = Path(__file__).resolve().parents[1] / "app" / "static" / "v2"
-    detail = (root / "proforma-detail.jsx").read_text(encoding="utf-8")
-    cmr = (root / "estrella-doc-cmr.jsx").read_text(encoding="utf-8")
+    """CMR carrier comes from commercial_cmr + cmr.json; no invented DHL in JSX/Python."""
+    root = Path(__file__).resolve().parents[1] / "app"
+    detail = (root / "static" / "v2" / "proforma-detail.jsx").read_text(encoding="utf-8")
+    cmr_jsx = (root / "static" / "v2" / "estrella-doc-cmr.jsx").read_text(encoding="utf-8")
+    cmr_py = (root / "services" / "commercial_cmr.py").read_text(encoding="utf-8")
     assert "outbound_awb:      ship ? (ship.tracking_ref || null) : null" in detail
-    assert "name:        _transport.carrier" in detail
-    assert "carrier:  _transport.linked" in detail
-    assert "|| 'DHL'" not in cmr
-    assert '|| "DHL"' not in cmr
-    assert "if (carrier === 'FEDEX')" not in cmr
-    assert "if (carrier === 'UPS')" not in cmr
+    assert "getCmrDocument" in detail
+    assert "canonicalCmr" in detail
+    assert "const cmrPreviewData" not in detail
+    assert 'shipment_row.get("provider")' in cmr_py
+    assert 'or "DHL"' not in cmr_py
+    assert "|| 'DHL'" not in cmr_jsx
+    assert '|| "DHL"' not in cmr_jsx
+    assert "if (carrier === 'FEDEX')" not in cmr_jsx
+    assert "if (carrier === 'UPS')" not in cmr_jsx
 
 
 def test_no_duplicate_authority_introduced():
