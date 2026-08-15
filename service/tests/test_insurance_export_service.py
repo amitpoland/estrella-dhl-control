@@ -21,13 +21,16 @@ import pytest
 
 import app.services.insurance_export_statement as ies
 from app.services.insurance_export_statement import (
+    CorrectionReason,
+    InsuranceEffect,
     InsuranceExportFetchError,
     InsuranceRecommendation,
     InsuranceStatus,
     UnknownSelectionError,
     assemble_insurance_export_report,
+    classify_correction,
 )
-from app.services.nbp_rate_service import NbpRateError
+from app.services.insurance_fx_provider import InsuranceFxError
 
 DB = Path("unused-proforma.db")
 CDB = Path("unused-carrier.db")
@@ -86,7 +89,7 @@ class Harness:
         self.facts = []
         self.drafts = {}       # invoice_id (str) -> draft namespace
         self.shipments = {}    # batch_id -> shipment dict
-        self.rates = {"INR": 0.05}   # ccy -> PLN-per-unit float | Exception
+        self.rates = {}   # ccy -> operator-approved INR-per-unit str/float | Exception
         self.correction_xml = {}     # invoice_id (str) -> xml text | Exception
         monkeypatch.setattr(
             ies,
@@ -106,8 +109,8 @@ class Harness:
         )
         monkeypatch.setattr(
             ies,
-            "nbp_rate_service",
-            SimpleNamespace(fetch_rate=self._fetch_rate),
+            "insurance_fx_provider",
+            SimpleNamespace(get_rate=self._get_rate),
         )
         monkeypatch.setattr(
             ies,
@@ -118,21 +121,18 @@ class Harness:
     def _get_shipment(self, cdb, batch, client, allow_single_client_fallback=False):
         return self.shipments.get(batch)
 
-    def _fetch_rate(self, currency, date):
+    def _get_rate(self, currency, invoice_date):
         val = self.rates.get(currency)
         if val is None:
-            raise NbpRateError(
-                "unsupported_currency", "no NBP Table A rate for %s" % currency
-            )
+            raise InsuranceFxError("no operator-approved rate for %s" % currency)
         if isinstance(val, Exception):
             raise val
         return {
-            "rate": val,
-            "source": "stub",
-            "table_number": "090/A/NBP/2026",
-            "table_date": "2026-05-09",
-            "accounting_date": date,
+            "requested_date": invoice_date,
+            "effective_date": invoice_date,
             "currency": currency,
+            "rate": val,
+            "source": "operator_fixed",
         }
 
     def _fetch_xml(self, invoice_id):
@@ -184,7 +184,7 @@ def test_row_math_quantization(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = AWB_SHIPMENT
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     assert row["inv_cif"] == "2600.00"
@@ -198,30 +198,53 @@ def test_row_math_quantization(h):
     assert row["awb"] == "1234567890"
 
 
+def test_wdt89_precision_never_double_rounds(h):
+    """Blocker 2: CIF x 1.10 must never be quantized before the FX multiply.
+
+    WDT 89/2026, CIF 723.55 USD: raw chain 723.55 x 1.10 x 92.50 =
+    73621.2125 -> quantized once, at serialization, to 73621.21. Rounding
+    the +10% leg to 2dp FIRST (795.91) and then multiplying by FX gives
+    795.91 x 92.50 = 73621.675 -> 73621.68 — the wrong, double-rounded
+    value this test pins against. The display-only plus_10_pct/sum_insured
+    strings are still shown rounded (72.36 / 795.91); only the INR leg must
+    carry the raw, unrounded intermediate value forward.
+    """
+    h.facts = [_fact("89", brutto="723.55")]
+    h.drafts["89"] = _draft(charges=[INSURANCE_45_67])
+    h.shipments["BATCH-1"] = AWB_SHIPMENT
+    h.rates["USD"] = "92.500000"
+
+    row = _only_row(_assemble())
+    assert row["inv_cif"] == "723.55"
+    assert row["plus_10_pct"] == "72.36"
+    assert row["sum_insured"] == "795.91"
+    assert row["sum_insured_inr"] == "73621.21"
+    assert row["sum_insured_inr"] != "73621.68"
+
+
 def test_fx_provenance_fields(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = AWB_SHIPMENT
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     prov = row["fx_provenance"]
-    assert prov["nbp_table_ccy"] == "090/A/NBP/2026"
-    assert prov["nbp_table_inr"] == "090/A/NBP/2026"
-    assert prov["nbp_date_used"] == "2026-05-09"
+    assert prov["source"] == "operator_fixed"
+    assert prov["requested_date"] == "2026-05-10"
+    assert prov["effective_date"] == "2026-05-10"
     assert row["fx_error"] is None
 
 
-def test_pln_identity_leg_and_blank_currency(h):
-    # Blank currency defaults to PLN; PLN leg is the NBP identity 1.0.
+def test_blank_currency_defaults_to_pln(h):
     h.facts = [_fact("101", currency="", brutto="100.00")]
     h.drafts["101"] = _draft(currency="PLN", charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = AWB_SHIPMENT
-    h.rates["PLN"] = 1.0
+    h.rates["PLN"] = "20.000000"
 
     row = _only_row(_assemble())
     assert row["currency"] == "PLN"
-    assert row["fx_rate"] == "20.000000"      # 1.0 / 0.05
+    assert row["fx_rate"] == "20.000000"
     assert row["sum_insured"] == "110.00"
     assert row["sum_insured_inr"] == "2200.00"
 
@@ -230,7 +253,7 @@ def test_fx_missing_degrades_row_never_raises(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = AWB_SHIPMENT
-    h.rates["USD"] = NbpRateError("upstream", "NBP api.nbp.pl unreachable")
+    h.rates["USD"] = InsuranceFxError("upstream: insurance FX provider unreachable")
 
     report = _assemble()
     row = _only_row(report)
@@ -262,12 +285,12 @@ def test_recommendation_no_country_based_pickup(h):
     h.drafts["101"] = _draft(client_name="Polski Klient Sp. z o.o.",
                              charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = AWB_SHIPMENT
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     assert row["recommendation"] == InsuranceRecommendation.INCLUDE
     assert row["status"] == InsuranceStatus.INCLUDED
-    assert row["status"] != InsuranceStatus.PERSONAL_PICKUP
+    assert row["status"] != InsuranceStatus.CUSTOMER_TRANSPORT
 
 
 def test_pickup_excluded_on_customer_courier_freight(h):
@@ -277,10 +300,10 @@ def test_pickup_excluded_on_customer_courier_freight(h):
             {"charge_type": "freight", "resolution": "customer_courier", "amount": 0}
         ]
     )
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
-    assert row["status"] == InsuranceStatus.PERSONAL_PICKUP
+    assert row["status"] == InsuranceStatus.CUSTOMER_TRANSPORT
     assert row["recommendation"] == InsuranceRecommendation.EXCLUDE
     assert "customer courier" in row["recommendation_reason"]
     # Excluded-by-recommendation rows still carry their INR value — the
@@ -295,7 +318,7 @@ def test_zero_value_document_is_cancellation(h):
             {"charge_type": "freight", "resolution": "customer_courier", "amount": 0}
         ]
     )
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     # Cancellation wins even over pickup evidence.
@@ -305,7 +328,7 @@ def test_zero_value_document_is_cancellation(h):
 
 def test_no_draft_needs_review(h):
     h.facts = [_fact("101")]
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     assert row["status"] == InsuranceStatus.NEEDS_REVIEW
@@ -317,7 +340,7 @@ def test_no_draft_needs_review(h):
 def test_draft_without_shipment_needs_review(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     assert row["shipment_found"] is False
@@ -329,7 +352,7 @@ def test_shipment_without_awb_needs_review(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = {"tracking_ref": "", "mode": "dhl"}
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     assert row["shipment_found"] is True
@@ -342,7 +365,7 @@ def test_external_shipment_mode_recommends_include(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = {"tracking_ref": "", "mode": "external"}
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     assert row["recommendation"] == InsuranceRecommendation.INCLUDE
@@ -357,7 +380,7 @@ def test_recovered_verbatim_manual_amount(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = AWB_SHIPMENT
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     assert row["insurance_recovered"] == {
@@ -374,7 +397,7 @@ def test_waived_insurance_is_no_premium_advisory(h):
         charges=[{"charge_type": "insurance", "resolution": "waived", "amount": 0}]
     )
     h.shipments["BATCH-1"] = AWB_SHIPMENT
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     rec = row["insurance_recovered"]
@@ -393,7 +416,7 @@ def test_unresolved_insurance_is_no_premium(h):
         ]
     )
     h.shipments["BATCH-1"] = AWB_SHIPMENT
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
     assert row["insurance_recovered"]["resolution"] == "unresolved"
@@ -429,8 +452,8 @@ def test_recovered_totals_are_per_currency_never_summed(h):
     )
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.shipments["BATCH-2"] = {"tracking_ref": "999", "mode": "dhl"}
-    h.rates["USD"] = 4.423373
-    h.rates["EUR"] = 4.9691
+    h.rates["USD"] = "88.467460"
+    h.rates["EUR"] = "99.382000"
 
     report = _assemble()
     assert report["report_totals"]["insurance_recovered"] == {
@@ -457,12 +480,18 @@ def _correction_fixture(h, *, xml=None, corr_fullnumber="KOR 1/2026"):
     h.drafts["201"] = _draft(draft_id=9, batch_id="BATCH-9", charges=[])
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.shipments["BATCH-9"] = {"tracking_ref": "222", "mode": "dhl"}
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
     if xml is not None:
         h.correction_xml["201"] = xml
 
 
 def test_correction_parent_tag_confirmed_nests_as_return(h):
+    # Blocker 4: parent-tag CORRELATION (which invoice this correction
+    # belongs to) is independent of REASON classification (why it was
+    # issued). A confirmed parent link does not, by itself, justify an
+    # automatic reduction of the insured total — the repository has no
+    # evidence source for the reason, so it stays unknown/BLOCKED and the
+    # row surfaces as needs_review until an operator supplies the reason.
     _correction_fixture(
         h,
         xml=(
@@ -481,10 +510,16 @@ def test_correction_parent_tag_confirmed_nests_as_return(h):
     assert adj["parent_invoice_id"] == "101"
     assert adj["parent_confirmed"] is True
     assert adj["correlation_method"] == "parent_tag"
-    assert adj["status"] == InsuranceStatus.RETURN
+    assert adj["status"] == InsuranceStatus.NEEDS_REVIEW
+    assert adj["recommendation"] == InsuranceRecommendation.REVIEW
+    assert adj["correction_reason"] == CorrectionReason.UNKNOWN
+    assert adj["insurance_effect"] == InsuranceEffect.BLOCKED
     assert adj["sum_insured_inr"] == "-48657.10"
     assert groups[0]["unattached_adjustments"] == []
     assert report["report_totals"]["adjustments"] == 1
+    # Fail-closed: an unresolved-reason correction never reduces the
+    # automatic FACTUAL REPORT total.
+    assert report["report_totals"]["sum_insured_inr_adjustments"] == "0.00"
 
 
 def test_correction_number_pattern_is_needs_review_unattached(h):
@@ -530,7 +565,7 @@ def test_groups_sorted_by_contractor_name(h):
         _fact("102", contractor_id="C-2", contractor_name="Zeta Ltd"),
         _fact("101", contractor_id="C-1", contractor_name="Alpha Exports Ltd"),
     ]
-    h.rates["USD"] = 4.423373
+    h.rates["USD"] = "88.467460"
 
     report = _assemble()
     names = [g["contractor_name"] for g in report["contractors"]]
@@ -575,3 +610,68 @@ def test_unknown_selection_error_dedupes_and_sorts():
     exc = UnknownSelectionError(["b", "a", "b"])
     assert exc.unknown == ["a", "b"]
     assert "unknown selection ids" in str(exc)
+
+
+# ── Blocker 4: classify_correction() pinned reason -> effect mapping ───────
+#
+# The repository has no evidence source for WHY a correction was issued, so
+# assembly always calls classify_correction(None, ...) today and every row
+# lands on UNKNOWN/BLOCKED (see test_correction_parent_tag_confirmed_nests_as_return
+# above). These five tests pin the classifier itself — the mapping an
+# operator-supplied reason resolves to once a reason evidence source exists —
+# so the vocabulary in CorrectionReason/InsuranceEffect stays load-bearing
+# and never silently drifts back to "any correction -> RETURN".
+
+
+def test_genuine_partial_return_is_a_negative_adjustment():
+    reason, effect = classify_correction(
+        CorrectionReason.PHYSICAL_RETURN_PARTIAL, Decimal("-500.00")
+    )
+    assert reason == CorrectionReason.PHYSICAL_RETURN_PARTIAL
+    assert effect == InsuranceEffect.PARTIAL_REVERSE
+
+
+def test_commercial_discount_never_reduces_insurance():
+    reason, effect = classify_correction(
+        CorrectionReason.COMMERCIAL_DISCOUNT, Decimal("-200.00")
+    )
+    assert reason == CorrectionReason.COMMERCIAL_DISCOUNT
+    assert effect == InsuranceEffect.NO_EFFECT
+
+
+def test_damage_claim_credit_never_reduces_insurance():
+    reason, effect = classify_correction(
+        CorrectionReason.CLAIM_DAMAGE, Decimal("-150.00")
+    )
+    assert reason == CorrectionReason.CLAIM_DAMAGE
+    assert effect == InsuranceEffect.NO_EFFECT
+
+    reason, effect = classify_correction(
+        CorrectionReason.CLAIM_SHORTAGE, Decimal("-90.00")
+    )
+    assert reason == CorrectionReason.CLAIM_SHORTAGE
+    assert effect == InsuranceEffect.NO_EFFECT
+
+
+def test_cancelled_before_dispatch_is_a_full_reversal():
+    reason, effect = classify_correction(
+        CorrectionReason.CANCELLED_BEFORE_DISPATCH, Decimal("-2600.00")
+    )
+    assert reason == CorrectionReason.CANCELLED_BEFORE_DISPATCH
+    assert effect == InsuranceEffect.FULL_REVERSE
+
+
+def test_unknown_reason_is_blocked_and_needs_review():
+    # No reason supplied at all — today's real assembly-layer call shape.
+    reason, effect = classify_correction(None, Decimal("-500.00"))
+    assert reason == CorrectionReason.UNKNOWN
+    assert effect == InsuranceEffect.BLOCKED
+
+    # Explicit "unknown" and unrecognized vocabulary both fail closed too.
+    reason, effect = classify_correction("unknown", Decimal("-500.00"))
+    assert reason == CorrectionReason.UNKNOWN
+    assert effect == InsuranceEffect.BLOCKED
+
+    reason, effect = classify_correction("some_future_reason_code", Decimal("-500.00"))
+    assert reason == CorrectionReason.UNKNOWN
+    assert effect == InsuranceEffect.BLOCKED

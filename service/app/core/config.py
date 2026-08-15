@@ -53,6 +53,17 @@ class Settings(BaseSettings):
     # Default True (live refresh on stale cache) — set False to skip live fetch.
     series_bootstrap_enabled: bool = True
 
+    # ── Insurance Export Statement FX (fail-closed) ──────────────────────────
+    # The insurer CCY→INR benchmark is not yet established. Until an approved
+    # provider is configured the insurance export statement CANNOT resolve INR
+    # columns (rows degrade to NEEDS REVIEW) — NBP is deliberately not a valid
+    # value and is never substituted. Providers live in
+    # services/insurance_fx_provider.py; today only "operator_fixed" exists:
+    #   INSURANCE_FX_PROVIDER=operator_fixed
+    #   INSURANCE_FX_OPERATOR_RATES_JSON={"USD":"92.50","EUR":"99.10"}
+    insurance_fx_provider: str = ""
+    insurance_fx_operator_rates_json: str = ""
+
     # ── Audit hardening (feature-flagged) ─────────────────────────────────────
     # When True (env: AUDIT_HARDENING_ENABLED=1), audit_scoring.score_batch
     # emits the categorical `status` taxonomy (VERIFIED / PARTIAL /

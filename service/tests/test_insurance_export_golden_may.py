@@ -5,9 +5,10 @@ via a stubbed ``_http_request``) end-to-end through
 ``assemble_insurance_export_report`` and pins the four contractor-group INR
 subtotals plus the 646,849.80 grand total.
 
-FX legs are stubbed NBP Table A mids with PLN_per_INR = 0.05, chosen so
-every cross-rate terminates and each group total lands exactly after
-0.01-quantization.
+FX legs are stubbed operator-approved insurance rates (the ONLY FX authority
+per the fail-closed ``insurance_fx_provider`` boundary — Blocker 1). Rates are
+chosen to match the terminating cross-rates the old NBP-hub fixture used, so
+each group total still lands exactly after 0.01-quantization.
 """
 from __future__ import annotations
 
@@ -21,19 +22,18 @@ import app.services.wfirma_client as wfirma_client
 from app.services.insurance_export_statement import (
     assemble_insurance_export_report,
 )
+from app.services.insurance_fx_provider import InsuranceFxError
 from app.services.ledger_fact_universe import clear_fact_universe_cache
-from app.services.nbp_rate_service import NbpRateError
 
 DB = Path("unused-proforma.db")
 CDB = Path("unused-carrier.db")
 
-# PLN-per-unit stub NBP mids (Table A); INR is the cross-rate hub leg.
+# Operator-approved insurance INR rates (INR per 1 unit of currency).
 RATES = {
-    "USD": 4.423373,   # fx 88.467460
-    "EUR": 4.9691,     # fx 99.382000
-    "GBP": 4.26465,    # fx 85.293000
-    "CHF": 4.1830233,  # fx 83.660466
-    "INR": 0.05,
+    "USD": "88.467460",
+    "EUR": "99.382000",
+    "GBP": "85.293000",
+    "CHF": "83.660466",
 }
 
 EXPECTED_SUBTOTALS = {
@@ -110,21 +110,20 @@ def golden(monkeypatch):
     # full INR math (the golden check is the arithmetic, not the linkage).
     monkeypatch.setattr(ies, "get_draft_by_wfirma_invoice_id", lambda db, i: None)
 
-    def _fetch_rate(currency, date):
+    def _get_rate(currency, invoice_date):
         val = RATES.get(currency)
         if val is None:
-            raise NbpRateError("unsupported_currency", "no rate for %s" % currency)
+            raise InsuranceFxError("no operator-approved rate for %s" % currency)
         return {
-            "rate": val,
-            "source": "stub",
-            "table_number": "090/A/NBP/2026",
-            "table_date": "2026-05-11",
-            "accounting_date": date,
+            "requested_date": invoice_date,
+            "effective_date": invoice_date,
             "currency": currency,
+            "rate": val,
+            "source": "operator_fixed",
         }
 
     monkeypatch.setattr(
-        ies, "nbp_rate_service", SimpleNamespace(fetch_rate=_fetch_rate)
+        ies, "insurance_fx_provider", SimpleNamespace(get_rate=_get_rate)
     )
     return None
 
@@ -187,4 +186,4 @@ def test_golden_row_math_sample(golden):
     assert row["sum_insured"] == "2860.00"
     assert row["fx_rate"] == "88.467460"
     assert row["sum_insured_inr"] == "253016.94"
-    assert row["fx_provenance"]["nbp_table_ccy"] == "090/A/NBP/2026"
+    assert row["fx_provenance"]["source"] == "operator_fixed"

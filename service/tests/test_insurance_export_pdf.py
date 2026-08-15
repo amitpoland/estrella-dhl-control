@@ -2,8 +2,9 @@
 
 Calls ``render_insurance_export_statement_pdf`` directly with a stub
 selection and asserts on extracted text: masthead, Polish headers,
-nested adjustment rows, TOTAL/GRAND TOTAL, recovered footnote, signature
-block, landscape orientation, and the two column/adjustment toggles.
+nested adjustment rows, ORIGINAL SHIPMENTS/ADJUSTMENTS/PERIOD TOTAL,
+recovered footnote, signature block, landscape orientation, and the two
+column/adjustment toggles.
 """
 from __future__ import annotations
 
@@ -149,10 +150,11 @@ def test_pdf_adjustment_row_nested_with_em_dash():
     assert "-48657.10" in text
 
 
-def test_pdf_total_and_grand_total_rows():
+def test_pdf_original_adjustments_period_total_rows():
     text = _text(_render())
-    assert "TOTAL" in text
-    assert "GRAND TOTAL" in text
+    assert "ORIGINAL SHIPMENTS" in text
+    assert "ADJUSTMENTS" in text
+    assert "PERIOD TOTAL" in text
     assert "568971.55" in text
     assert "520314.45" in text
 
@@ -179,17 +181,19 @@ def test_pdf_recovered_column_omitted_when_disabled():
     assert "Sum Insured INR" in text
 
 
-def test_pdf_include_adjustments_false_drops_grand_total():
+def test_pdf_include_adjustments_false_drops_period_total():
     text = _text(_render(include_adjustments=False))
     assert "KOR 201/2026" not in text
-    assert "GRAND TOTAL" not in text
-    assert "TOTAL" in text
+    assert "ADJUSTMENTS" not in text
+    assert "PERIOD TOTAL" not in text
+    assert "ORIGINAL SHIPMENTS" in text
 
 
-def test_pdf_no_adjustments_means_no_grand_total():
+def test_pdf_no_adjustments_means_no_period_total():
     text = _text(_render(selected_adjustments=[]))
-    assert "GRAND TOTAL" not in text
-    assert "TOTAL" in text
+    assert "ADJUSTMENTS" not in text
+    assert "PERIOD TOTAL" not in text
+    assert "ORIGINAL SHIPMENTS" in text
 
 
 def test_pdf_page_footer():

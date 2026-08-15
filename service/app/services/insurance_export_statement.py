@@ -7,7 +7,7 @@ Two-layer model:
        - proforma_invoice_link_db.get_draft_by_wfirma_invoice_id
        - commercial_charge_authority.resolve_commercial_charges
        - carrier.persistence.shipment_db.get_shipment_for_draft
-       - nbp_rate_service.fetch_rate                  (NBP Table A, PLN hub)
+       - insurance_fx_provider.get_rate               (approved insurer FX only)
   2. DECLARATION SELECTION — ephemeral, IDs only. The server re-resolves every
      monetary value from the same authorities; the browser never sends amounts.
 
@@ -16,13 +16,25 @@ charge authority. It is NEVER recomputed here (no premium formula of any
 kind on the read side) —
 the freight/insurance ADR forbids read-side recomputation.
 
-Personal-pickup exclusion is evidence-based only: a freight charge resolved as
-``customer_courier``. Never country- or nationality-based.
+Customer-arranged-transport exclusion is evidence-based only: a freight charge
+resolved as ``customer_courier``. Never country- or nationality-based.
 
-FX benchmark (declared, provenance-stamped): NBP PLN-hub cross-rate
-``PLN_per_CCY / PLN_per_INR``, both legs from NBP Table A for the business day
-preceding the invoice date. A missing rate degrades the row (``fx_error`` +
-NEEDS REVIEW), never the report.
+FX (fail-closed — operator ruling 2026-08-15, PR #1249 repair): INR conversion
+comes exclusively from the ``insurance_fx_provider`` boundary. Until the
+approved insurer benchmark is configured, every row degrades (``fx_error`` +
+NEEDS REVIEW, null INR columns) — NBP is NOT an insurance FX authority and is
+never consulted or silently substituted here.
+
+Precision (operator ruling — Blocker 2): the calculation chain is UN-rounded
+Decimals end to end (``cif_raw × 1.10 × fx_rate``); rounding happens only at
+serialization (``_money``, ROUND_HALF_UP). Quantizing CIF×1.10 before the FX
+multiply is a release blocker (73,621.21 vs the wrong 73,621.68).
+
+Corrections (operator ruling — Blocker 4): a correction NEVER reduces the
+insured total automatically. Each correction carries ``correction_reason`` +
+``insurance_effect``; with no evidence source for the reason it defaults to
+``unknown`` → ``BLOCKED`` (Needs review). Only an explicit operator selection
+brings a correction into the declaration.
 """
 from __future__ import annotations
 
@@ -30,13 +42,13 @@ import json
 import logging
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import wfirma_client
-from . import nbp_rate_service
-from .nbp_rate_service import NbpRateError
+from . import insurance_fx_provider
+from .insurance_fx_provider import InsuranceFxError
 from .commercial_charge_authority import (
     RESOLUTION_CUSTOMER_COURIER,
     RESOLUTION_UNRESOLVED,
@@ -53,7 +65,6 @@ from .shipment_document_manifest import _batch_client_count
 log = logging.getLogger("pz.insurance_export")
 
 CENT = Decimal("0.01")
-FX_QUANT = Decimal("0.000001")
 SUM_INSURED_FACTOR = Decimal("1.10")
 TEN_PCT = Decimal("0.10")
 
@@ -64,7 +75,7 @@ TEN_PCT = Decimal("0.10")
 class InsuranceStatus:
     INCLUDED = "included"
     EXCLUDED = "excluded"
-    PERSONAL_PICKUP = "personal_pickup"
+    CUSTOMER_TRANSPORT = "customer_transport"
     NO_INSURANCE_CHARGED = "no_insurance_charged"
     NEEDS_REVIEW = "needs_review"
     RETURN = "return"
@@ -74,7 +85,7 @@ class InsuranceStatus:
 STATUS_LABELS: Dict[str, str] = {
     InsuranceStatus.INCLUDED: "Included",
     InsuranceStatus.EXCLUDED: "Excluded",
-    InsuranceStatus.PERSONAL_PICKUP: "Personal pickup",
+    InsuranceStatus.CUSTOMER_TRANSPORT: "Customer-arranged transport",
     InsuranceStatus.NO_INSURANCE_CHARGED: "No insurance charged",
     InsuranceStatus.NEEDS_REVIEW: "Needs review",
     InsuranceStatus.RETURN: "Return",
@@ -93,6 +104,100 @@ RECOMMENDATION_LABELS: Dict[str, str] = {
     InsuranceRecommendation.EXCLUDE: "Exclude",
     InsuranceRecommendation.REVIEW: "Review",
 }
+
+
+class CorrectionReason:
+    """WHY a correction document was issued (operator vocabulary, Blocker 4).
+
+    No repository evidence source records this today, so assembly defaults to
+    UNKNOWN; the values exist so the operator (or a future evidence source)
+    can classify each correction explicitly.
+    """
+
+    PHYSICAL_RETURN_PARTIAL = "physical_return_partial"
+    PHYSICAL_RETURN_FULL = "physical_return_full"
+    CANCELLED_BEFORE_DISPATCH = "cancelled_before_dispatch"
+    DUPLICATE_DOCUMENT = "duplicate_document"
+    COMMERCIAL_DISCOUNT = "commercial_discount"
+    CLAIM_DAMAGE = "claim_damage"
+    CLAIM_SHORTAGE = "claim_shortage"
+    PRICE_CORRECTION = "price_correction"
+    UNKNOWN = "unknown"
+
+
+CORRECTION_REASON_LABELS: Dict[str, str] = {
+    CorrectionReason.PHYSICAL_RETURN_PARTIAL: "Physical return (partial)",
+    CorrectionReason.PHYSICAL_RETURN_FULL: "Physical return (full)",
+    CorrectionReason.CANCELLED_BEFORE_DISPATCH: "Cancelled before dispatch",
+    CorrectionReason.DUPLICATE_DOCUMENT: "Duplicate document",
+    CorrectionReason.COMMERCIAL_DISCOUNT: "Commercial discount",
+    CorrectionReason.CLAIM_DAMAGE: "Claim / damage credit",
+    CorrectionReason.CLAIM_SHORTAGE: "Claim / shortage credit",
+    CorrectionReason.PRICE_CORRECTION: "Price correction",
+    CorrectionReason.UNKNOWN: "Unknown — operator review required",
+}
+
+
+class InsuranceEffect:
+    """What a correction is allowed to do to the insured total (Blocker 4)."""
+
+    PARTIAL_REVERSE = "PARTIAL_REVERSE"
+    FULL_REVERSE = "FULL_REVERSE"
+    NO_EFFECT = "NO_EFFECT"
+    POSITIVE_ADJUSTMENT = "POSITIVE_ADJUSTMENT"
+    BLOCKED = "BLOCKED"
+
+
+INSURANCE_EFFECT_LABELS: Dict[str, str] = {
+    InsuranceEffect.PARTIAL_REVERSE: "Partial reversal",
+    InsuranceEffect.FULL_REVERSE: "Full reversal",
+    InsuranceEffect.NO_EFFECT: "No insurance effect",
+    InsuranceEffect.POSITIVE_ADJUSTMENT: "Positive adjustment",
+    InsuranceEffect.BLOCKED: "Blocked — needs review",
+}
+
+# Effects that may move a total AUTOMATICALLY. NO_EFFECT (commercial
+# discounts, claim/damage credits) and BLOCKED (unknown reason) never
+# reduce the insured total without an explicit operator selection.
+_AUTOMATIC_EFFECTS = frozenset(
+    {
+        InsuranceEffect.PARTIAL_REVERSE,
+        InsuranceEffect.FULL_REVERSE,
+        InsuranceEffect.POSITIVE_ADJUSTMENT,
+    }
+)
+
+
+def classify_correction(
+    reason: Optional[str], amount: Optional[Decimal] = None
+) -> Tuple[str, str]:
+    """Map a correction reason to its permitted insurance effect.
+
+    Pure classifier — the assembly layer supplies the reason (today: always
+    ``None`` → UNKNOWN, because no evidence source records why a correction
+    was issued). Unknown or unrecognized reasons are BLOCKED: a correction
+    can never reduce the insured total automatically.
+    """
+    normalized = (reason or "").strip().lower()
+    if not normalized or normalized == CorrectionReason.UNKNOWN:
+        return CorrectionReason.UNKNOWN, InsuranceEffect.BLOCKED
+    mapping = {
+        CorrectionReason.PHYSICAL_RETURN_PARTIAL: InsuranceEffect.PARTIAL_REVERSE,
+        CorrectionReason.PHYSICAL_RETURN_FULL: InsuranceEffect.FULL_REVERSE,
+        CorrectionReason.CANCELLED_BEFORE_DISPATCH: InsuranceEffect.FULL_REVERSE,
+        CorrectionReason.DUPLICATE_DOCUMENT: InsuranceEffect.FULL_REVERSE,
+        CorrectionReason.COMMERCIAL_DISCOUNT: InsuranceEffect.NO_EFFECT,
+        CorrectionReason.CLAIM_DAMAGE: InsuranceEffect.NO_EFFECT,
+        CorrectionReason.CLAIM_SHORTAGE: InsuranceEffect.NO_EFFECT,
+    }
+    if normalized in mapping:
+        return normalized, mapping[normalized]
+    if normalized == CorrectionReason.PRICE_CORRECTION:
+        if amount is not None and amount > 0:
+            return normalized, InsuranceEffect.POSITIVE_ADJUSTMENT
+        return normalized, InsuranceEffect.BLOCKED
+    # Unrecognized vocabulary — fail closed.
+    return CorrectionReason.UNKNOWN, InsuranceEffect.BLOCKED
 
 
 # ---------------------------------------------------------------------------
@@ -131,32 +236,21 @@ def _dec(value: Any) -> Optional[Decimal]:
 
 
 def _money(value: Optional[Decimal]) -> Optional[str]:
+    """Serialize to a 2dp string with commercial rounding (ROUND_HALF_UP).
+
+    The insurer statement rounds half-cents up (72.355 → 72.36,
+    795.905 → 795.91); Decimal's default banker's rounding would show
+    795.90. Rounding happens ONLY here — never inside the calculation chain
+    (Blocker 2)."""
     if value is None:
         return None
-    return str(value.quantize(CENT))
+    return str(value.quantize(CENT, rounding=ROUND_HALF_UP))
 
 
 # ---------------------------------------------------------------------------
-# FX — NBP PLN-hub cross-rate, deduped per (currency, date)
-
-
-def _fetch_rate_cached(
-    currency: str, date: str, cache: Dict[Tuple[str, str], Any]
-) -> Dict[str, Any]:
-    key = (currency, date)
-    hit = cache.get(key)
-    if hit is not None:
-        kind, payload = hit
-        if kind == "err":
-            raise payload
-        return payload
-    try:
-        info = nbp_rate_service.fetch_rate(currency, date)
-    except NbpRateError as exc:
-        cache[key] = ("err", exc)
-        raise
-    cache[key] = ("ok", info)
-    return info
+# FX — approved insurance benchmark only, via the fail-closed
+# insurance_fx_provider boundary. NBP is NOT an insurance FX authority and is
+# never consulted here (operator ruling 2026-08-15 — Blocker 1).
 
 
 def _fx_to_inr(
@@ -164,26 +258,39 @@ def _fx_to_inr(
     invoice_date: str,
     cache: Dict[Tuple[str, str], Any],
 ) -> Tuple[Optional[Decimal], Optional[Dict[str, Any]], Optional[str]]:
-    """Return (fx_rate, fx_provenance, fx_error) — errors degrade, never raise."""
+    """Return (fx_rate, fx_provenance, fx_error) — errors degrade, never raise.
+
+    The rate is passed through UN-quantized (raw Decimal); rounding happens
+    only at serialization (Blocker 2).
+    """
     ccy = (currency or "").strip().upper() or "PLN"
+    key = (ccy, invoice_date)
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
     try:
-        info_ccy = _fetch_rate_cached(ccy, invoice_date, cache)
-        info_inr = _fetch_rate_cached("INR", invoice_date, cache)
-    except NbpRateError as exc:
-        return None, None, "%s: %s" % (exc.kind, str(exc))
-    except Exception as exc:  # engine subprocess trouble — degrade the row
-        return None, None, "fx_unavailable: %s" % exc
-    pln_per_ccy = _dec(info_ccy.get("rate"))
-    pln_per_inr = _dec(info_inr.get("rate"))
-    if not pln_per_ccy or not pln_per_inr or pln_per_inr == 0:
-        return None, None, "missing_rate: NBP returned no usable mid"
-    fx = (pln_per_ccy / pln_per_inr).quantize(FX_QUANT)
+        quote = insurance_fx_provider.get_rate(ccy, invoice_date)
+    except InsuranceFxError as exc:
+        result = (None, None, str(exc))
+        cache[key] = result
+        return result
+    except Exception as exc:  # provider defect — degrade the row
+        result = (None, None, "fx_unavailable: %s" % exc)
+        cache[key] = result
+        return result
+    rate = _dec(quote.get("rate"))
+    if rate is None or rate <= 0:
+        result = (None, None, "missing_rate: provider returned no usable rate")
+        cache[key] = result
+        return result
     provenance = {
-        "nbp_table_ccy": info_ccy.get("table_number"),
-        "nbp_table_inr": info_inr.get("table_number"),
-        "nbp_date_used": info_inr.get("table_date") or info_ccy.get("table_date"),
+        "source": quote.get("source"),
+        "requested_date": quote.get("requested_date"),
+        "effective_date": quote.get("effective_date"),
     }
-    return fx, provenance, None
+    result = (rate, provenance, None)
+    cache[key] = result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -281,8 +388,8 @@ def _recommend(
     if pickup:
         return (
             InsuranceRecommendation.EXCLUDE,
-            InsuranceStatus.PERSONAL_PICKUP,
-            "Freight resolved as customer courier — customer arranged pickup",
+            InsuranceStatus.CUSTOMER_TRANSPORT,
+            "Freight resolved as customer courier — customer-arranged transport",
         )
     if not has_draft:
         return (
@@ -375,9 +482,18 @@ def _build_row(
     invoice_id = str(fact.get("id") or "")
     currency = (fact.get("currency") or "").strip().upper() or "PLN"
     invoice_date = (fact.get("date") or "").strip()
+    # Inv CIF — document-currency gross, UN-rounded (Blockers 2 + 3).
+    #
+    # CIF authority (proven, not assumed): verified read-only against the
+    # four May-2026 WDT documents named in the operator's repair directive.
+    # On real WDT invoices wFirma omits <brutto>, puts the PLN conversion in
+    # <netto>, and carries the document-currency gross in <total>
+    # (== <total_composed> == sum of line nettos == sum of line bruttos; all
+    # four reconciled exactly against the historical statement CIF). The
+    # fact universe's "brutto" key is ledger_aggregator._invoice_gross_raw,
+    # which resolves brutto → total → total_brutto — i.e. exactly that
+    # proven document-currency gross on both domestic and WDT documents.
     cif = _dec(fact.get("brutto"))
-    if cif is not None:
-        cif = cif.quantize(CENT)
 
     draft = _link_draft(invoice_id, db_path)
     resolved = None
@@ -398,22 +514,29 @@ def _build_row(
     else:
         fx_error = "missing_invoice_date"
 
+    # Raw Decimal chain — NEVER quantize CIF × 1.10 before the FX multiply
+    # (Blocker 2: 723.55 × 1.10 × 92.50 must serialize 73621.21, not the
+    # pre-rounded 73621.68). Rounding happens only in _money().
     plus_10 = None
     sum_insured = None
     sum_insured_inr = None
     if cif is not None:
-        plus_10 = (cif * TEN_PCT).quantize(CENT)
-        sum_insured = (cif * SUM_INSURED_FACTOR).quantize(CENT)
+        plus_10 = cif * TEN_PCT
+        sum_insured = cif * SUM_INSURED_FACTOR
         if fx_rate is not None:
-            sum_insured_inr = (sum_insured * fx_rate).quantize(CENT)
+            sum_insured_inr = sum_insured * fx_rate
 
     recommendation, forced_status, reason = _recommend(
         cif=cif, pickup=pickup, has_draft=draft is not None, shipment=shipment
     )
 
-    # Status precedence: cancellation / pickup (forced by evidence) →
-    # degraded facts (missing CIF or FX) → review → advisory no-premium → included.
-    if forced_status in (InsuranceStatus.CANCELLED, InsuranceStatus.PERSONAL_PICKUP):
+    # Status precedence: cancellation / customer transport (forced by
+    # evidence) → degraded facts (missing CIF or FX) → review → advisory
+    # no-premium → included.
+    if forced_status in (
+        InsuranceStatus.CANCELLED,
+        InsuranceStatus.CUSTOMER_TRANSPORT,
+    ):
         status = forced_status
     elif cif is None:
         status = InsuranceStatus.NEEDS_REVIEW
@@ -422,7 +545,7 @@ def _build_row(
     elif fx_error is not None:
         status = InsuranceStatus.NEEDS_REVIEW
         recommendation = InsuranceRecommendation.REVIEW
-        reason = "NBP FX unavailable — INR columns cannot be resolved"
+        reason = "Insurance FX unavailable — INR columns cannot be resolved"
     elif forced_status is not None:
         status = forced_status
     elif recovered is None or recovered.get("resolution") in (
@@ -435,11 +558,25 @@ def _build_row(
     else:
         status = InsuranceStatus.INCLUDED
 
-    if doc_type == "correction" and status not in (
-        InsuranceStatus.NEEDS_REVIEW,
-        InsuranceStatus.CANCELLED,
-    ):
-        status = InsuranceStatus.RETURN
+    # Corrections (Blocker 4): a correction is NEVER auto-classified as a
+    # return. No repository evidence source records WHY a correction was
+    # issued, so every correction defaults to reason=unknown → BLOCKED —
+    # it can never reduce the insured total automatically. The operator may
+    # still explicitly select a genuine return into the declaration.
+    correction_reason = None
+    insurance_effect = None
+    if doc_type == "correction":
+        correction_reason, insurance_effect = classify_correction(None, cif)
+        if (
+            insurance_effect == InsuranceEffect.BLOCKED
+            and status != InsuranceStatus.CANCELLED
+        ):
+            status = InsuranceStatus.NEEDS_REVIEW
+            recommendation = InsuranceRecommendation.REVIEW
+            reason = (
+                "Correction reason unknown — cannot reduce the insured "
+                "total automatically; operator review required"
+            )
 
     awb = ""
     shipment_mode = None
@@ -468,6 +605,16 @@ def _build_row(
         "recommendation_reason": reason,
         "status": status,
         "status_label": STATUS_LABELS[status],
+        "correction_reason": correction_reason,
+        "correction_reason_label": (
+            CORRECTION_REASON_LABELS[correction_reason]
+            if correction_reason
+            else None
+        ),
+        "insurance_effect": insurance_effect,
+        "insurance_effect_label": (
+            INSURANCE_EFFECT_LABELS[insurance_effect] if insurance_effect else None
+        ),
         "awb": awb,
         "shipment_found": shipment is not None,
         "shipment_mode": shipment_mode,
@@ -506,10 +653,28 @@ def _sum_recovered(rows: List[Dict[str, Any]]) -> Dict[str, str]:
 
 
 def _totals_for(
-    document_rows: List[Dict[str, Any]], adjustment_rows: List[Dict[str, Any]]
+    document_rows: List[Dict[str, Any]],
+    adjustment_rows: List[Dict[str, Any]],
+    *,
+    automatic: bool = True,
 ) -> Dict[str, Any]:
+    """Roll up INR totals.
+
+    Blocker 4: when ``automatic`` is True (the factual-report default), only
+    adjustments whose ``insurance_effect`` is in ``_AUTOMATIC_EFFECTS`` may
+    move the INR total — an unknown-reason correction (BLOCKED) or a
+    commercial discount / claim credit (NO_EFFECT) never reduces it
+    automatically. The declaration selection passes ``automatic=False``
+    because it is built from the operator's explicit row-by-row selection,
+    which already satisfies "never automatically".
+    """
     docs_total, docs_missing = _sum_inr(document_rows)
-    adj_total, adj_missing = _sum_inr(adjustment_rows)
+    countable_adjustments = (
+        [a for a in adjustment_rows if a.get("insurance_effect") in _AUTOMATIC_EFFECTS]
+        if automatic
+        else adjustment_rows
+    )
+    adj_total, adj_missing = _sum_inr(countable_adjustments)
     return {
         "sum_insured_inr_documents": str(docs_total),
         "sum_insured_inr_adjustments": str(adj_total),
@@ -622,7 +787,10 @@ def assemble_insurance_export_report(
             a for r in grp["rows"] for a in r["adjustments"]
         ] + grp["unattached_adjustments"]
         docs_total, _ = _sum_inr(grp["rows"])
-        adj_total, _ = _sum_inr(grp_adjustments)
+        automatic_grp_adjustments = [
+            a for a in grp_adjustments if a.get("insurance_effect") in _AUTOMATIC_EFFECTS
+        ]
+        adj_total, _ = _sum_inr(automatic_grp_adjustments)
         grp["subtotals"] = {
             "sum_insured_inr_documents": str(docs_total),
             "sum_insured_inr_adjustments": str(adj_total),
@@ -714,15 +882,24 @@ def resolve_declaration_selection(
         "generated_at": report["generated_at"],
         "selected_rows": selected_rows,
         "selected_adjustments": selected_adjustments,
-        "declaration_totals": _totals_for(selected_rows, selected_adjustments),
+        # automatic=False: this is the operator's explicit selection, not an
+        # automatic reduction — Blocker 4 constrains automatic totals only.
+        "declaration_totals": _totals_for(
+            selected_rows, selected_adjustments, automatic=False
+        ),
     }
 
 
 __all__ = [
     "InsuranceStatus",
     "InsuranceRecommendation",
+    "CorrectionReason",
+    "InsuranceEffect",
     "STATUS_LABELS",
     "RECOMMENDATION_LABELS",
+    "CORRECTION_REASON_LABELS",
+    "INSURANCE_EFFECT_LABELS",
+    "classify_correction",
     "InsuranceExportError",
     "InsuranceExportFetchError",
     "UnknownSelectionError",

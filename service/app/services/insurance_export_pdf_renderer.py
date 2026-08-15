@@ -299,11 +299,14 @@ def render_insurance_export_statement_pdf(
             ("BACKGROUND", (0, len(data) - 1), (-1, len(data) - 1), _EJ_BRAND)
         )
 
-    _totals_row("TOTAL", declaration_totals.get("sum_insured_inr_documents"))
+    _totals_row(
+        "ORIGINAL SHIPMENTS", declaration_totals.get("sum_insured_inr_documents")
+    )
     if selected_adjustments:
         _totals_row(
-            "GRAND TOTAL", declaration_totals.get("sum_insured_inr_grand")
+            "ADJUSTMENTS", declaration_totals.get("sum_insured_inr_adjustments")
         )
+        _totals_row("PERIOD TOTAL", declaration_totals.get("sum_insured_inr_grand"))
 
     table = Table(data, colWidths=_col_widths(show_recovered), repeatRows=1)
     table.setStyle(

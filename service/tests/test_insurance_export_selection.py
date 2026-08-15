@@ -18,13 +18,17 @@ from app.services.insurance_export_statement import (
     assemble_insurance_export_report,
     resolve_declaration_selection,
 )
-from app.services.nbp_rate_service import NbpRateError
+from app.services.insurance_fx_provider import InsuranceFxError
 
 DB = Path("unused-proforma.db")
 CDB = Path("unused-carrier.db")
 PERIOD = ("2026-05-01", "2026-05-31")
 
-RATES = {"USD": 4.423373, "EUR": 4.9691, "GBP": 4.26465, "INR": 0.05}
+# Operator-approved insurance INR rates (INR per 1 unit of currency) — the
+# ONLY FX authority per the fail-closed insurance_fx_provider boundary
+# (Blocker 1). Same canonical values used across the other insurance-export
+# test files.
+RATES = {"USD": "88.467460", "EUR": "99.382000", "GBP": "85.293000"}
 
 PARENT_TAG_XML = (
     "<api><invoices><invoice>"
@@ -109,14 +113,16 @@ def fx(monkeypatch):
         "BATCH-9": {"tracking_ref": "999", "mode": "dhl"},
     }
 
-    def _fetch_rate(currency, date):
+    def _get_rate(currency, invoice_date):
         val = RATES.get(currency)
         if val is None:
-            raise NbpRateError("unsupported_currency", "no rate for %s" % currency)
+            raise InsuranceFxError("no operator-approved rate for %s" % currency)
         return {
-            "rate": val, "source": "stub",
-            "table_number": "090/A/NBP/2026", "table_date": "2026-05-09",
-            "accounting_date": date, "currency": currency,
+            "requested_date": invoice_date,
+            "effective_date": invoice_date,
+            "currency": currency,
+            "rate": val,
+            "source": "operator_fixed",
         }
 
     def _fetch_xml(invoice_id):
@@ -133,8 +139,8 @@ def fx(monkeypatch):
             allow_single_client_fallback=False: shipments.get(b)
         ),
     )
-    monkeypatch.setattr(ies, "nbp_rate_service",
-                        SimpleNamespace(fetch_rate=_fetch_rate))
+    monkeypatch.setattr(ies, "insurance_fx_provider",
+                        SimpleNamespace(get_rate=_get_rate))
     monkeypatch.setattr(ies, "wfirma_client",
                         SimpleNamespace(fetch_invoice_xml=_fetch_xml))
     return state
@@ -215,7 +221,13 @@ def test_report_totals_never_change_with_selection(fx):
         PERIOD[0], PERIOD[1], db_path=DB, carrier_db_path=CDB
     )["report_totals"]
     assert before == after
-    assert after["sum_insured_inr_grand"] == "567225.60"
+    # Blocker 4: correction "201" carries no evidenced correction_reason, so
+    # it classifies as unknown/BLOCKED and is never counted in the FACTUAL
+    # REPORT total automatically — regardless of what the operator later
+    # selects into the declaration (that is a separate, explicit total; see
+    # test_all_selected_with_adjustment). 615882.70 = documents only.
+    assert after["sum_insured_inr_grand"] == "615882.70"
+    assert after["sum_insured_inr_adjustments"] == "0.00"
 
 
 def test_unknown_document_id_raises(fx):
