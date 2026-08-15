@@ -730,6 +730,13 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
                         .finally(finish);
                       return;
                     }
+                    // CMR: ONE server exporter (same bytes as Delivery Confirmation).
+                    if (activeType === 'cmr' && draftId && window.PzApi && window.PzApi.downloadCmrPdf) {
+                      window.PzApi.downloadCmrPdf(draftId)
+                        .catch(e => setPdfErr((e && e.message) || 'PDF download failed'))
+                        .finally(finish);
+                      return;
+                    }
                     const base = (activeType === 'cmr'
                       ? ((cmrData && cmrData.cmr_no) || 'cmr')
                       : ((docData && docData.doc_no) || 'proforma-preview'));
