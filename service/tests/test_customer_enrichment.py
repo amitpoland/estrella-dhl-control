@@ -394,6 +394,108 @@ def test_mcp_get_task_claims_pending_task(tmp_path, client, monkeypatch):
     assert "bank_account" not in json.dumps(payload)
 
 
+# ── 25-34: closure-campaign drift pins ───────────────────────────────────────
+# Behaviors from the campaign directive's coverage list that the original 24
+# tests exercised only indirectly. Each pin targets a fail-open drift risk.
+
+def test_submit_makes_no_customer_master_mutation(tmp_path):
+    _pipeline(tmp_path, field="bill_to_city", value="Berlin")
+    # Research submission alone must never touch the Customer Master.
+    assert not get_customer(_cm(tmp_path), "C001").bill_to_city
+
+
+def test_reject_makes_no_customer_master_mutation(tmp_path):
+    task_id, pid = _pipeline(tmp_path, field="bill_to_city", value="Berlin")
+    result = enrich.reject_enrichment_proposal(
+        _en(tmp_path), pid, actor="tester")
+    assert result["field_status"] == "rejected"
+    assert not get_customer(_cm(tmp_path), "C001").bill_to_city
+
+
+def test_double_decide_returns_409(tmp_path, client, monkeypatch):
+    task_id, pid = _pipeline(tmp_path, field="bill_to_city", value="Berlin")
+    enrich.accept_enrichment_proposal(
+        _en(tmp_path), _cm(tmp_path), pid, actor="tester")
+    with pytest.raises(ProposalStateError):
+        enrich.accept_enrichment_proposal(
+            _en(tmp_path), _cm(tmp_path), pid, actor="tester")
+    monkeypatch.setattr(settings, "customer_external_enrichment_enabled", True)
+    r = client.post(
+        f"/api/v1/customer-enrichment/proposals/{pid}/reject", headers=HEADERS)
+    assert r.status_code == 409
+
+
+def test_mcp_enabled_but_token_unset_returns_503(client, monkeypatch):
+    monkeypatch.setattr(settings, "customer_enrichment_mcp_enabled", True)
+    monkeypatch.setattr(settings, "customer_enrichment_mcp_token", None)
+    r = _rpc(client, "initialize")
+    assert r.status_code == 503
+
+
+def test_mcp_missing_auth_header_returns_401(client, monkeypatch):
+    _enable_mcp(monkeypatch)
+    r = _rpc(client, "initialize", headers={})
+    assert r.status_code == 401
+
+
+def test_mcp_initialize_pins_protocol_version(client, monkeypatch):
+    # A 2025-06-18 client sends its own version (body) and, on later requests,
+    # an MCP-Protocol-Version header; the server must tolerate both and answer
+    # with the version it supports (spec: version negotiation).
+    _enable_mcp(monkeypatch)
+    r = client.post(MCP_URL, json={
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18",
+                   "capabilities": {}, "clientInfo": {"name": "t"}},
+    }, headers={**MCP_HEADERS, "MCP-Protocol-Version": "2025-06-18"})
+    assert r.status_code == 200
+    result = r.json()["result"]
+    assert result["protocolVersion"] == "2024-11-05"
+    assert result["serverInfo"]["name"] == "estrella-atlas-client-enrichment"
+
+
+def test_mcp_unknown_method_returns_32601(client, monkeypatch):
+    _enable_mcp(monkeypatch)
+    r = _rpc(client, "resources/list")
+    assert r.status_code == 200
+    assert r.json()["error"]["code"] == -32601
+
+
+def test_mcp_submit_unknown_field_rejected(tmp_path, client, monkeypatch):
+    _enable_mcp(monkeypatch)
+    cm = _seed_customer(tmp_path)
+    task = enrich.build_customer_enrichment_task("C001", cm, _en(tmp_path))
+    enrich.claim_enrichment_task(_en(tmp_path), task["id"])
+    r = _rpc(client, "tools/call", params={
+        "name": "submit_customer_enrichment_result",
+        "arguments": {"task_id": task["id"], "proposals": [
+            {"field": "bank_account", "proposed_value": "PL61...",
+             "confidence": "high", "evidence": _EVIDENCE}]}})
+    assert r.status_code == 200
+    assert r.json()["error"]["code"] == -32602
+    conn = sqlite3.connect(_en(tmp_path))
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM customer_enrichment_proposals").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0
+
+
+def test_mcp_get_method_not_allowed(client, monkeypatch):
+    _enable_mcp(monkeypatch)
+    r = client.get(MCP_URL, headers=MCP_HEADERS)
+    assert r.status_code == 405
+
+
+def test_enrichment_modules_never_touch_wfirma():
+    import app.api.routes_customer_enrichment as r1
+    import app.api.routes_customer_enrichment_mcp as r2
+    for mod in (enrich, r1, r2):
+        source = Path(mod.__file__).read_text(encoding="utf-8")
+        assert "wfirma" not in source.lower(), mod.__name__
+
+
 # ── 23-24: contracts ─────────────────────────────────────────────────────────
 
 def test_status_endpoint_has_canonical_shape(client, monkeypatch):
