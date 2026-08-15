@@ -917,7 +917,7 @@ def test_commercial_package_generate_meta(tmp_path):
 
 
 def test_cmr_never_required_for_complete_package(tmp_path):
-    """CMR authority remains browser JSX — no server PDF, never a package blocker."""
+    """CMR may have server PDF when generated, but never blocks Complete Package."""
     with patch.object(settings, "storage_root", tmp_path), \
          patch.object(settings, "carrier_storage_root", None):
         d = _seed_draft(tmp_path, proforma_id="WF-PROF-1")
@@ -925,4 +925,9 @@ def test_cmr_never_required_for_complete_package(tmp_path):
         m = _build(tmp_path, d.id)
     cmr = _find(m["groups"]["transport"], "cmr")
     assert cmr["required_for_complete_package"] is False
-    assert cmr["download_available"] is False
+    if cmr["status"] == "Generated":
+        assert cmr["download_available"] is True
+        assert cmr["download_url"] and cmr["download_url"].endswith("/cmr.pdf")
+        assert cmr["reason"] == "canonical_cmr"
+    else:
+        assert cmr["download_available"] is False

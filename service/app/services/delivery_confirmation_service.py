@@ -382,27 +382,29 @@ def _cmr_attachment_for_draft(draft_id: Optional[int]) -> list:
 
     Fail closed: returns [] when CMR unavailable. Never omits the attachments
     argument (None would allow audit-package fallback).
+
+    Bytes come from the ONE canonical CMR exporter (same as Logistics Download).
     """
     if draft_id is None:
         return []
     try:
-        from . import commercial_cmr as ccmr
+        from .canonical_customer_documents import resolve_canonical_document_bytes
         from ..core.config import settings
-        exported = ccmr.export_cmr_pdf_for_draft(
-            draft_id=int(draft_id),
-            storage_root=Path(settings.storage_root),
-            proforma_db=Path(settings.storage_root) / "proforma_links.db",
+
+        storage_root = Path(settings.storage_root)
+        pdf_bytes, filename = resolve_canonical_document_bytes(
+            "cmr",
+            int(draft_id),
+            storage_root=storage_root,
+            proforma_db=storage_root / "proforma_links.db",
             carrier_db=(
-                Path(settings.carrier_storage_root or (Path(settings.storage_root) / "carrier"))
+                Path(settings.carrier_storage_root or (storage_root / "carrier"))
                 / "carrier_shipments.db"
             ),
         )
     except Exception as exc:
         log.warning("CMR export for confirmation failed draft=%s: %s", draft_id, exc)
         return []
-    if not exported:
-        return []
-    pdf_bytes, filename = exported
     out_dir = _storage_root() / "delivery_confirmation_pdfs"
     out_dir.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in filename)

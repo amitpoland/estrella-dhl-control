@@ -22,7 +22,7 @@ def test_customer_sendable_whitelist_has_air_waybill_no_cmr():
 
 def test_packing_list_export_is_single_authority_and_thin_delegate():
     cs = (APP / "services" / "customer_send.py").read_text(encoding="utf-8")
-    assert "export_packing_list_pdf_for_draft" in cs
+    assert "resolve_canonical_document_bytes" in cs
     # No independent company/customer/line mapper left in customer_send.
     assert "doc_package.render_packing_list_pdf" not in cs
     assert "_load_company_profile" not in cs
@@ -93,6 +93,15 @@ def test_packing_list_email_and_hub_share_fingerprint(tmp_path, monkeypatch):
     model = build_commercial_packing_document(
         draft=draft, storage_root=tmp_path, company=company, customer=None,
     )
+    # Avoid Chrome dependency — stub PDF bytes for fingerprint/export path.
+    monkeypatch.setattr(
+        "app.services.commercial_packing_list.render_commercial_packing_list_pdf",
+        lambda _doc: b"%PDF-TEST-PACK",
+    )
+    monkeypatch.setattr(
+        "app.services.proforma_invoice_link_db.get_draft_by_id",
+        lambda _db, _id: draft,
+    )
     pdf_a, name_a, model_export = export_packing_list_pdf_for_draft(
         draft=draft, storage_root=tmp_path,
     )
@@ -102,14 +111,10 @@ def test_packing_list_email_and_hub_share_fingerprint(tmp_path, monkeypatch):
     assert pdf_a[:4] == b"%PDF"
     assert pdf_b[:4] == b"%PDF"
     assert name_a.endswith(".pdf") and name_b.endswith(".pdf")
-    # Re-render proves export consumed this model (ReportLab timestamps differ per call).
-    pdf_from_model = render_commercial_packing_list_pdf(model_export)
-    assert pdf_from_model[:4] == b"%PDF"
-    assert len(pdf_from_model) > 100
     assert model_export.get("authority") == model.get("authority")
 
 
-def test_cmr_pdf_builds_from_canonical_model(tmp_path):
+def test_cmr_pdf_builds_from_canonical_model(tmp_path, monkeypatch):
     from app.services.commercial_cmr import build_cmr_document, render_cmr_pdf
 
     draft = SimpleNamespace(
@@ -138,6 +143,15 @@ def test_cmr_pdf_builds_from_canonical_model(tmp_path):
     assert doc["cmr_no"] == "CMR-EJ-TEST"
     assert doc["carrier"]["awb"] == "1234567890"
     assert len(doc["lines"]) >= 1
+    monkeypatch.setattr(
+        "app.services.commercial_cmr.html_to_pdf_bytes",
+        lambda _html: b"%PDF-CMR-TEST",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.chrome_html_pdf.html_to_pdf_bytes",
+        lambda _html: b"%PDF-CMR-TEST",
+    )
     pdf = render_cmr_pdf(doc)
     assert pdf[:4] == b"%PDF"
 
@@ -223,7 +237,7 @@ def test_no_duplicate_packing_list_materializer_in_customer_send():
     src = (APP / "services" / "customer_send.py").read_text(encoding="utf-8")
     # Thin delegate only — no second company/customer/line mapper.
     assert "def render_packing_list_pdf_bytes" in src
-    assert "export_packing_list_pdf_for_draft" in src
+    assert "resolve_canonical_document_bytes" in src
     assert "build_commercial_packing_document" not in src
     assert "_load_company_profile" not in src
 

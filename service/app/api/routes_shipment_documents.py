@@ -163,6 +163,115 @@ def get_packing_list_pdf(
     )
 
 
+@router.get("/draft/{draft_id}/packing-list.json")
+def get_packing_list_json(
+    draft_id: int, _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Canonical Packing List document model (same projection as PDF/email)."""
+    from ..services import proforma_invoice_link_db as pildb
+    from ..services.carrier import doc_package
+    from ..services.commercial_packing_list import build_commercial_packing_document
+
+    storage_root = _storage_root()
+    draft = pildb.get_draft_by_id(_proforma_db(), int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    batch_id = (draft.batch_id or "").strip()
+    if not batch_id:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Draft has no batch_id", "code": "PACKING_LIST_NO_BATCH"},
+        )
+    company = doc_package._load_company_profile(storage_root)
+    pdraft = doc_package._load_proforma_draft(
+        batch_id, (draft.client_name or "").strip(), storage_root,
+    )
+    customer = doc_package._resolve_customer_from_batch(
+        batch_id, (draft.client_name or "").strip(), storage_root,
+    )
+    document = build_commercial_packing_document(
+        draft=pdraft or draft,
+        storage_root=storage_root,
+        company=company,
+        customer=customer,
+    )
+    if not (document.get("rows") or []):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Commercial Packing List has no lines.", "code": "PACKING_LIST_EMPTY"},
+        )
+    return JSONResponse(document, headers=dict(_NO_STORE_HEADERS))
+
+
+def _render_commercial_cmr_pdf(draft_id: int) -> tuple[bytes, str]:
+    """Return (pdf_bytes, filename) from the ONE commercial CMR authority."""
+    from ..services.canonical_customer_documents import resolve_canonical_document_bytes
+
+    try:
+        return resolve_canonical_document_bytes(
+            "cmr",
+            int(draft_id),
+            storage_root=_storage_root(),
+            proforma_db=_proforma_db(),
+            carrier_db=_carrier_db(),
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg) from exc
+        raise HTTPException(
+            status_code=422,
+            detail={"error": msg, "code": "CMR_UNAVAILABLE"},
+        ) from exc
+    except Exception as exc:
+        log.warning("cmr.pdf render failed for draft %s: %s", draft_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "Failed to render CMR PDF.",
+                "code": "CMR_RENDER_FAILED",
+                "detail": str(exc),
+            },
+        ) from exc
+
+
+@router.get("/draft/{draft_id}/cmr.pdf")
+def get_cmr_pdf(
+    draft_id: int, _auth: None = Depends(require_api_key),
+) -> Response:
+    """Standalone CMR PDF — same bytes as Delivery Confirmation attachment."""
+    pdf, filename = _render_commercial_cmr_pdf(int(draft_id))
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            **_NO_STORE_HEADERS,
+        },
+    )
+
+
+@router.get("/draft/{draft_id}/cmr.json")
+def get_cmr_json(
+    draft_id: int, _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Canonical CMR document model (same projection as PDF/confirmation)."""
+    from ..services.commercial_cmr import export_cmr_document_for_draft
+
+    document = export_cmr_document_for_draft(
+        draft_id=int(draft_id),
+        storage_root=_storage_root(),
+        proforma_db=_proforma_db(),
+        carrier_db=_carrier_db(),
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": f"CMR not available for draft {draft_id}", "code": "CMR_UNAVAILABLE"},
+        )
+    return JSONResponse(document, headers=dict(_NO_STORE_HEADERS))
+
+
 # ── Operator: complete package ZIP ───────────────────────────────────────────────
 
 

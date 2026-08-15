@@ -239,13 +239,15 @@ def build_manifest(
     # ── TRANSPORT group (CMR) ─────────────────────────────────────────────────
     transport: List[Dict[str, Any]] = []
     if cmr_number:
+        cmr_url = f"/api/v1/shipment-documents/draft/{int(draft_id)}/cmr.pdf"
         transport.append(_entry(
             "cmr", "Estrella", GENERATED,
             reference=cmr_number,
-            preview_available=True, download_available=False,
-            preview_url=None,   # browser preview only; no server CMR PDF authority
-            required_for_complete_package=False,   # honest: no server CMR PDF
-            reason="browser_preview",
+            preview_available=True, download_available=True,
+            preview_url=None,   # browser preview via existing _openPreview('cmr')
+            download_url=cmr_url,
+            required_for_complete_package=False,
+            reason="canonical_cmr",
         ))
     else:
         transport.append(_entry(

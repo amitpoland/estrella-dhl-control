@@ -2230,6 +2230,12 @@
         `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/packing-list.pdf`,
         `packing-list-draft-${draftId}.pdf`,
       ),
+    // GET cmr.pdf — SAME exporter as Delivery Confirmation attachment.
+    downloadCmrPdf: (draftId) =>
+      _download(
+        `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/cmr.pdf`,
+        `cmr-draft-${draftId}.pdf`,
+      ),
 
     // POST /api/v1/carrier/{batch_id}/label-package — Path-DOC commercial package.
     // Streams PDF/ZIP AND persists under doc_packages/. Uses raw fetch (not

@@ -4,7 +4,8 @@ Customer Send — document eligibility + options projection (NO second registry)
 Authority:
   * Availability facts → ``shipment_document_manifest.build_manifest``
   * Reply state       → ``delivery_confirmation_db.get_delivery_summary_for_draft``
-  * Packing List bytes → ``commercial_packing_list.export_packing_list_pdf_for_draft``
+  * Packing List bytes → ``canonical_customer_documents.resolve_canonical_document_bytes``
+    → ``commercial_packing_list.export_packing_list_pdf_for_draft``
     (SAME export Documents Hub / packing-list.pdf uses — no duplicate renderer)
   * Air Waybill bytes → carrier waybill/label store (manifest-backed)
   * Queue/send        → ``email_service`` / ``email_sender`` (callers only)
@@ -347,14 +348,15 @@ def assert_types_customer_sendable(
 
 
 def render_packing_list_pdf_bytes(draft: Any, storage_root: Path) -> Tuple[bytes, str]:
-    """Thin delegate — ONE commercial packing export (Documents Hub + email)."""
-    from .commercial_packing_list import export_packing_list_pdf_for_draft
+    """Thin delegate — ONE packing export via canonical document byte resolver."""
+    from .canonical_customer_documents import resolve_canonical_document_bytes
 
-    pdf, fname, _document = export_packing_list_pdf_for_draft(
-        draft=draft,
+    draft_id = int(getattr(draft, "id"))
+    return resolve_canonical_document_bytes(
+        "packing_list",
+        draft_id,
         storage_root=Path(storage_root),
     )
-    return pdf, fname
 
 
 def _materialize_air_waybill_bytes(

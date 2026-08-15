@@ -54,87 +54,23 @@ def _item_category_label(item_type: str) -> str:
     return (item_type or "").strip()
 
 
-def _party(
-    *,
-    name: str = "",
-    addr: str = "",
-    city: str = "",
-    zip_code: str = "",
-    country: str = "",
-    vat: str = "",
-    email: str = "",
-    phone: str = "",
-) -> Dict[str, str]:
-    return {
-        "name": name or "",
-        "addr": addr or "",
-        "city": city or "",
-        "zip": zip_code or "",
-        "country": country or "",
-        "vat": vat or "",
-        "email": email or "",
-        "phone": phone or "",
-    }
-
-
-def _seller_from_company(company: Any) -> Dict[str, str]:
-    if company is None:
-        return _party()
-    return _party(
-        name=getattr(company, "legal_name", None) or "",
-        addr=getattr(company, "street", None) or "",
-        city=getattr(company, "postal_city", None) or "",
-        country=getattr(company, "country", None) or "",
-        vat=getattr(company, "vat_eu", None) or getattr(company, "nip", None) or "",
-        email=getattr(company, "email", None) or "",
-        phone=getattr(company, "phone", None) or "",
-    )
-
-
 def _buyer_shipto_from_customer(
     customer: Any,
     delivery_addr: Optional[Dict[str, str]] = None,
 ) -> tuple:
-    """Return (buyer, shipto) party dicts from Customer Master helpers."""
-    buyer = _party()
-    shipto = _party()
-    if customer is None and not delivery_addr:
-        return buyer, shipto
-    try:
-        from .customer_master import resolve_billing_address, resolve_delivery_address
-    except Exception:
-        resolve_billing_address = None  # type: ignore
-        resolve_delivery_address = None  # type: ignore
+    """Thin compatibility delegate — parties come from commercial_document_parties.
 
-    if customer is not None and resolve_billing_address is not None:
-        bill = resolve_billing_address(customer)
-        buyer = _party(
-            name=bill.get("name", ""),
-            addr=bill.get("street", ""),
-            city=bill.get("city", ""),
-            zip_code=bill.get("postal_code", ""),
-            country=bill.get("country", ""),
-            email=bill.get("email", ""),
-            phone=bill.get("phone", ""),
-            vat=getattr(customer, "vat_number", None)
-            or getattr(customer, "nip", None)
-            or "",
-        )
-        if delivery_addr is None and resolve_delivery_address is not None:
-            delivery_addr = resolve_delivery_address(customer)
+    Prefer ``resolve_document_parties(draft=..., company=..., customer=...)``.
+    This helper cannot see draft overrides; it only fills CM fallbacks.
+    """
+    from .commercial_document_parties import resolve_document_parties
 
-    if delivery_addr:
-        shipto = _party(
-            name=delivery_addr.get("name", "") or buyer.get("name", ""),
-            addr=delivery_addr.get("street", ""),
-            city=delivery_addr.get("city", ""),
-            zip_code=delivery_addr.get("postal_code", "") or delivery_addr.get("zip", ""),
-            country=delivery_addr.get("country", ""),
-            email=delivery_addr.get("email", ""),
-            phone=delivery_addr.get("phone", ""),
-        )
-    elif buyer.get("name"):
-        shipto = dict(buyer)
+    _seller, buyer, shipto = resolve_document_parties(
+        draft=None,
+        company=None,
+        customer=customer,
+        delivery_addr=delivery_addr,
+    )
     return buyer, shipto
 
 
@@ -298,8 +234,16 @@ def build_commercial_packing_document(
             or ""
         ).strip()
 
-    seller = _seller_from_company(company)
-    buyer, shipto = _buyer_shipto_from_customer(customer, delivery_addr)
+    from .commercial_document_parties import resolve_document_parties
+
+    # ONE party projection — same override cascade as Proforma Preview
+    # (buyer_override / ship_to_override), with Customer Master as fill-in only.
+    seller, buyer, shipto = resolve_document_parties(
+        draft=draft,
+        company=company,
+        customer=customer,
+        delivery_addr=delivery_addr,
+    )
 
     rows: List[Dict[str, Any]] = []
     for i, ln in enumerate(lines, 1):

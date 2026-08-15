@@ -27,8 +27,8 @@
 // Depends on: estrella-doc-tokens.css (loaded in index.html)
 // Exports:    window.EJCMRClassic, window.EJCMRModern
 //
-// NOTE: No backend route generates a CMR PDF in this system.
-// Use the Download PDF button in the preview toolbar (window.print with A4 CSS).
+// NOTE: Server CMR PDF is GET /api/v1/shipment-documents/draft/{id}/cmr.pdf
+// (commercial_cmr HTML + Chrome) — same bytes as Delivery Confirmation.
 
 // ── CMR box (numbered field, like the legal form) ────────────────────────────
 function EJCMRBox({ n, label, children, border }) {
