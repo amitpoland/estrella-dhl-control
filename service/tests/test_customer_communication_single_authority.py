@@ -234,6 +234,8 @@ def test_email_sender_uses_central_delivery_guard_policy():
     assert 'in (\n            "customer_delivery_confirmation"' not in src
     assert "customer_delivery_confirmation\",\n            \"customer_delivery_reminder\"" not in src
 
+
+def test_packing_html_matches_ej_structure():
     html = render_commercial_packing_list_html({
         "doc_ref": "PROF 182/2026",
         "invoice_ref": "FV 1/2026",
