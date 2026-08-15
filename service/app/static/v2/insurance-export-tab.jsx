@@ -22,15 +22,23 @@ function insPad2(n) {
   return n < 10 ? `0${n}` : `${n}`;
 }
 
+function insIsoDate(d) {
+  return `${d.getFullYear()}-${insPad2(d.getMonth() + 1)}-${insPad2(d.getDate())}`;
+}
+
 // Period bounds for a monthly selection. month = 0 means "All year".
+// A completed month runs first→last day; the current month stops at today so
+// the reporting window never extends into the future.
 function insMonthlyPeriod(year, month) {
   if (!month) {
     return { from: `${year}-01-01`, to: `${year}-12-31` };
   }
+  const today = new Date();
+  const isCurrent = year === today.getFullYear() && month === today.getMonth() + 1;
   const lastDay = new Date(year, month, 0).getDate();
   return {
     from: `${year}-${insPad2(month)}-01`,
-    to: `${year}-${insPad2(month)}-${insPad2(lastDay)}`,
+    to: isCurrent ? insIsoDate(today) : `${year}-${insPad2(month)}-${insPad2(lastDay)}`,
   };
 }
 
@@ -90,8 +98,10 @@ function InsuranceExportTab() {
   const [periodMode, setPeriodMode] = React.useState('monthly');
   const [year, setYear]   = React.useState(now.getFullYear());
   const [month, setMonth] = React.useState(now.getMonth() + 1); // 0 = All year
+  // Draft dates are edit-only. Nothing reaches report authority until Apply.
   const [customFrom, setCustomFrom] = React.useState('');
   const [customTo, setCustomTo]     = React.useState('');
+  const [periodError, setPeriodError] = React.useState(null);
   const [period, setPeriod] = React.useState(insMonthlyPeriod(now.getFullYear(), now.getMonth() + 1));
 
   const [report, setReport]   = React.useState(null);
@@ -126,9 +136,11 @@ function InsuranceExportTab() {
   }, []);
 
   // Load on period change; selection is ephemeral and resets with the period.
+  // A composer left open would show a stale period/selection, so it closes too.
   React.useEffect(() => {
     setSelDocs(new Set()); setSelAdjs(new Set());
     setPreview(null); setPreviewError(null);
+    setDrawerOpen(false); setDownloadError(null);
     loadReport(period, false);
   }, [period, loadReport]);
 
@@ -233,7 +245,20 @@ function InsuranceExportTab() {
   // ── Period controls ──────────────────────────────────────────────────────
   const applyMonthly = (y, m) => {
     setYear(y); setMonth(m);
+    setPeriodError(null);
     setPeriod(insMonthlyPeriod(y, m));
+  };
+  // Switching modes must never leave a hidden period: custom seeds its drafts
+  // from the applied period, monthly re-applies the year/month selection.
+  const changeMode = (mode) => {
+    setPeriodMode(mode);
+    setPeriodError(null);
+    if (mode === 'custom') {
+      setCustomFrom(period.from);
+      setCustomTo(period.to);
+    } else {
+      setPeriod(insMonthlyPeriod(year, month));
+    }
   };
   const stepMonth = (dir) => {
     if (!month) { applyMonthly(year + dir, 0); return; }
@@ -248,8 +273,17 @@ function InsuranceExportTab() {
     setPeriodMode('monthly');
     applyMonthly(d.getFullYear(), d.getMonth() + 1);
   };
+  // Apply is the only commit point — editing a date input changes nothing.
   const applyCustom = () => {
-    if (!customFrom || !customTo) return;
+    if (!customFrom || !customTo) {
+      setPeriodError('Enter both a start and an end date.');
+      return;
+    }
+    if (customFrom > customTo) {
+      setPeriodError('Date from must not be after date to.');
+      return;
+    }
+    setPeriodError(null);
     setPeriod({ from: customFrom, to: customTo });
   };
 
@@ -340,10 +374,14 @@ function InsuranceExportTab() {
         padding: '10px 12px', borderRadius: 8, marginBottom: 14,
         background: 'var(--surface-2, var(--surface))', border: '1px solid var(--border)',
       }}>
+        <span style={{
+          fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)',
+          textTransform: 'uppercase', letterSpacing: '0.07em',
+        }}>Period</span>
         <select
           data-testid="ins-export-period-mode"
           value={periodMode}
-          onChange={e => setPeriodMode(e.target.value)}
+          onChange={e => changeMode(e.target.value)}
           style={inputStyle}
         >
           <option value="monthly">Monthly</option>
@@ -375,16 +413,19 @@ function InsuranceExportTab() {
           </React.Fragment>
         ) : (
           <React.Fragment>
+            <label style={{ fontSize: 10.5, color: 'var(--text-3)' }} htmlFor="ins-export-from">Date from</label>
             <input
+              id="ins-export-from"
               data-testid="ins-export-from" type="date" value={customFrom}
               onChange={e => setCustomFrom(e.target.value)} style={inputStyle}
             />
-            <span style={{ color: 'var(--text-3)', fontSize: 11 }}>→</span>
+            <label style={{ fontSize: 10.5, color: 'var(--text-3)' }} htmlFor="ins-export-to">Date to</label>
             <input
+              id="ins-export-to"
               data-testid="ins-export-to" type="date" value={customTo}
               onChange={e => setCustomTo(e.target.value)} style={inputStyle}
             />
-            <button data-testid="ins-export-apply" onClick={applyCustom} style={btnGold}>Apply</button>
+            <button data-testid="ins-export-apply" onClick={applyCustom} style={btnGold}>✓ Apply</button>
           </React.Fragment>
         )}
 
@@ -397,6 +438,12 @@ function InsuranceExportTab() {
           onClick={() => loadReport(period, true)}
           style={btnOutline}
         >↻ Refresh</button>
+
+        {periodError ? (
+          <div data-testid="ins-export-period-error" style={{
+            flexBasis: '100%', fontSize: 10.5, color: 'var(--badge-red-text)',
+          }}>{periodError}</div>
+        ) : null}
       </div>
 
       {loading && (
