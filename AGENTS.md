@@ -367,3 +367,45 @@ Treat A00 as the only duty source, allocate freight and duty proportionally by v
 preserve three-state verification (True / False / None+[VERIFY-GAP]),
 and fail honestly if any requested deliverable is not produced.
 ```
+
+---
+
+## Cursor Cloud specific instructions
+
+The VM startup update script already installs all dependencies (`service/requirements.txt`
+plus the test-only `pytest`/`pytest-timeout`, which are NOT in `requirements.txt`). No system
+packages or external services are needed — Python 3.12 is preinstalled and every external
+integration (wFirma, Zoho Cliq/Mail/WorkDrive, DHL/FedEx, Anthropic) is credential-gated and
+defaults OFF, so the product boots and is testable with zero secrets.
+
+### Two services (both start from source; commands already documented)
+
+| Service | Where | Run command | Notes |
+|---|---|---|---|
+| Root Python engine (calculation authority) | repo root | `make verify` (fast, 160 tests) / `make verify-full` (`--e2e`) / `python3 pz_import_processor.py …` | Only calculation path. See `README.md` + `Makefile`. |
+| FastAPI backend + dashboard UI | `service/` | `make dev` (or `python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`) | Serves the API and the static/Babel-JSX UI on port 8000. See `service/Makefile` + `CLAUDE.md`. |
+
+### Non-obvious startup/run caveats (discovered during setup)
+
+- `~/.local/bin` is NOT on `PATH`, so the `uvicorn` and `pytest` console scripts are not
+  directly callable. Invoke them as modules: `python3 -m uvicorn …`, `python3 -m pytest …`.
+- Session login is silently broken unless `AUTH_SECRET_KEY` is set. In `dev` the app boots fine
+  with an empty key, but `POST /auth/login` then returns **500** (`jwt … HMAC key must not be
+  empty`). Start the dev server with a non-empty key, e.g.
+  `AUTH_SECRET_KEY=$(python3 -c "import secrets;print(secrets.token_hex(32))")`.
+- Set `SERIES_BOOTSTRAP_ENABLED=false` for local/offline runs. Otherwise a stale series cache
+  triggers a live wFirma fetch at startup — it is wrapped in try/except (never fatal) but adds
+  latency and log noise when wFirma is unconfigured.
+- Auth routes are mounted at `/auth/*` (e.g. `/auth/signup`, `/auth/login`, `/auth/me`) — NOT
+  under `/api/v1`. The **first** account created via `POST /auth/signup` auto-becomes an
+  approved `admin`; every later signup waits for admin approval.
+- `/dashboard` 302-redirects to `/v2/dashboard` for an authenticated admin; unauthenticated
+  requests redirect to `/login`. Health check: `GET /api/v1/health`.
+- SQLite DBs auto-create under `service/app/storage/` on first boot — no DB server, no
+  migrations to run for local dev.
+- The dashboard UI compiles JSX in-browser via Babel; the console "in-browser Babel
+  transformer" / "code generator has deoptimised" messages are expected dev warnings, not errors.
+- `make verify-full` (`--e2e`) needs the real shipment 039–044 invoice + ZC429 PDFs in
+  `reference_batch/invoices/`, which are proprietary and NOT committed. Without them it fails —
+  use `make verify` (root regression) for the standard gate. Backend tests:
+  `cd service && python3 -m pytest tests/ -m smoke` (fast) or `python3 -m pytest tests/` (full).
