@@ -404,6 +404,17 @@ class Settings(BaseSettings):
     # Carrier file storage root. None = defaults to storage_root / "carrier" at runtime.
     carrier_storage_root: Optional[Path] = Field(default=None)
 
+    # Carrier Master DPAPI credential store (Release B).
+    # Default production path: C:\PZ-secrets\carriers (outside app/storage).
+    carrier_credential_store_root: Optional[Path] = Field(default=None)
+    # Comma-separated identity keys that use store ONLY (e.g. "dhl/production/ship").
+    # Empty = all capabilities still resolve via legacy Settings (.env).
+    carrier_credential_migrated: str = Field(default="")
+    # Fail closed if store root ACLs allow Users/Everyone read (LOCAL_MACHINE DPAPI).
+    carrier_credential_enforce_acl: bool = Field(default=True)
+    # When True on Windows, break inheritance and grant SYSTEM+Administrators only.
+    carrier_credential_harden_acl_on_start: bool = Field(default=False)
+
     # Outbound tracking registration — records outbound shipment events to tracking_db
     outbound_tracking_registration_enabled: bool = Field(default=False)
 

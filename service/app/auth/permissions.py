@@ -179,6 +179,10 @@ PERMISSION_CATALOGUE: FrozenSet[str] = frozenset({
     "master.clients.edit",
     "carriers.view",
     "carriers.edit",
+    # Credential mutation — admin-only (Carrier Master secret authority).
+    # logistics has carriers.edit for non-secret config; NEVER grant these to logistics.
+    "carriers.credentials.view",
+    "carriers.credentials.write",
 })
 
 # Fiscal finalization verbs — Logistics must never receive these by default (C2).
@@ -499,6 +503,10 @@ assert FISCAL_FINALIZE_PERMISSIONS <= PERMISSION_CATALOGUE
 assert not (_LOGISTICS & FISCAL_FINALIZE_PERMISSIONS), (
     "Logistics must not receive fiscal finalize permissions"
 )
+assert not (_LOGISTICS & frozenset({
+    "carriers.credentials.write",
+    "carriers.credentials.view",
+})), "Logistics must not receive carrier credential permissions"
 assert not (_CRM & FISCAL_FINALIZE_PERMISSIONS), (
     "CRM must not receive fiscal finalize permissions"
 )
