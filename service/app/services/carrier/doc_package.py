@@ -447,13 +447,11 @@ def render_packing_list_pdf(
     """Generate the Commercial Packing List PDF (canonical document authority).
 
     Presentation/export adapter over ``commercial_packing_list`` — the SAME
-    document model the Proforma Documents tab Preview uses
-    (``packingListData`` / ``EJPackingList``).
+    document model Preview / packing-list.html / customer email consume.
 
     Row authority = draft billed editable_lines. packing.db is NOT a packing-list
     document authority (it may still enrich physical weights via
-    commercial_authority). The retired simplified portrait sheet
-    (Product Code/Design · Type · Qty · Gross/Net · Dia/Col) is gone.
+    commercial_authority).
     """
     from ..commercial_packing_list import render_packing_list_pdf_from_authorities
 

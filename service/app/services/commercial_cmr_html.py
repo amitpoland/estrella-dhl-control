@@ -61,7 +61,7 @@ def _carrier_chip(name: Optional[str]) -> str:
 
 
 def render_commercial_cmr_html(document: Dict[str, Any]) -> str:
-    """Return full HTML matching EJCMRClassic visual structure."""
+    """Return the sole CMR HTML presentation (Preview iframe + Chrome PDF)."""
     d = document or {}
     seller = d.get("seller") or {}
     shipto = d.get("shipto") or {}
