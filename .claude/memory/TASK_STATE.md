@@ -24,6 +24,15 @@
 | `persistence` | NONE (no schema/startup migration in App sync) |
 | `NO_REPEATED_RETRIES` | true |
 | `timestamp` | 2026-08-15T13:45:00Z |
+| `resume_attempted_at` | 2026-08-15T13:35:00Z (cloud Linux again — still no `C:\PZ*`) |
+
+**Bounded resume validation (2026-08-15 cloud re-entry — checks 1–4 only):**
+1. `git fetch origin main` → `origin/main` == `d77c16b082c26e1fac0c6637a5a5cc24bc1520c3` — PASS
+2. App payload `7fb187ad..d77c16b0` — only `service/tests/test_carrier_external_registration.py` — EMPTY for `service/app` + engine — PASS
+3. Persistence attributable to target — NONE (unchanged) — PASS
+4. Authority owner unchanged — PASS
+5. External dependency `C:\PZ-main` / `C:\PZ\version.txt` / `Deploy-PZ.ps1` on Windows host — **FAIL** (this pod is Linux `cursor`; paths absent; 0 self-hosted workers; no alternate deploy permitted)
+6. Campaign writer — N/A (deploy not started)
 
 **Preserved facts (do not re-implement):**
 - Duplicate-authority census: CLEAN (canonical / thin-delegate / test / retired-unmounted only)

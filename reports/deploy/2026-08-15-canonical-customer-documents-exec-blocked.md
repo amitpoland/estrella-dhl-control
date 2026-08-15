@@ -2,11 +2,13 @@
 
 ## Verdict
 
-**Not closed.** Cannot claim `DEPLOYED_SINGLE_CANONICAL_DOCUMENT_AUTHORITY`.
+**`BLOCKED_MISSING_WINDOWS_HOST_ACCESS`**
+
+**Not closed.** Cannot claim `DEPLOYED_SINGLE_CANONICAL_DOCUMENT_AUTHORITY` or `ALREADY_AT_TARGET_SINGLE_CANONICAL_DOCUMENT_AUTHORITY`.
 
 **State:** `EXECUTION_BLOCKED` — HOLD #2 (missing Windows production host access).
 
-Cloud agent completed review → PR → merge → seven-agent gate. Production App deploy requires:
+Cloud agent completed review → PR → merge → seven-agent gate. A second cloud resume (2026-08-15) re-validated GitHub target + empty App payload, then stopped at the same host gate. Production App deploy requires:
 
 ```powershell
 cd C:\PZ-main
@@ -82,6 +84,24 @@ Do **not** reuse this evidence if App runtime bytes change after `7fb187ad`. Tes
 
 ---
 
+## Cloud resume attempt (2026-08-15) — what was proved without Windows
+
+| Check | Result |
+|---|---|
+| `origin/main` == `d77c16b082c26e1fac0c6637a5a5cc24bc1520c3` | YES |
+| App/runtime payload `7fb187ad..d77c16b0` | EMPTY (`service/tests/test_carrier_external_registration.py` only) |
+| Engine file delta | EMPTY |
+| `C:\PZ\version.txt` readable | NO — path absent on this host |
+| `C:\PZ-main` present | NO |
+| Self-hosted Cursor workers | 0 |
+| Local `:47213/health` | unreachable |
+| Public `pz.estrellajewels.eu/health` | Cloudflare challenge (not usable as prod census) |
+| Alternate deploy path | **Not attempted** (forbidden) |
+
+Cannot classify `ALREADY_AT_TARGET_*` without an independent `C:\PZ\version.txt` read.
+
+---
+
 ## Resume (Windows) — bounded validation then `next_command`
 
 Per `docs/governance/anti-hold-and-completion.md` §7:
@@ -96,3 +116,23 @@ Per `docs/governance/anti-hold-and-completion.md` §7:
 Then execute only the recorded `next_command` in `TASK_STATE.md`, then RO verify steps 1–7, then close as **`DEPLOYED_SINGLE_CANONICAL_DOCUMENT_AUTHORITY`**.
 
 Off-limits remain: AWB/tracking writes, recipients/CC, Customer Master semantics, carrier booking, wFirma, accounting, B-014.
+
+---
+
+## Closure report skeleton (fill on Windows)
+
+### BASELINE
+- production before SHA: *(from `C:\PZ\version.txt` — unread)*
+- origin/main target: `d77c16b082c26e1fac0c6637a5a5cc24bc1520c3`
+
+### DEPLOYMENT
+- exact target: `d77c16b0` (App bytes = `7fb187ad`)
+- gate verdict: prior CLEAR @ `7fb187ad`; mint fresh SHA-bound evidence for `d77c16b0` if Deploy-PZ requires it
+- deploy result: **not executed**
+- rollback unit: **n/a**
+
+### PRODUCTION / PACKING LIST / CMR / FUTURE-SHIPMENT / DUPLICATE SCAN / BUSINESS WRITES
+- **blocked** — no Windows host
+
+### VERDICT
+**`BLOCKED_MISSING_WINDOWS_HOST_ACCESS`**
