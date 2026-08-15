@@ -66,6 +66,7 @@ from .api.routes_batch_readiness import router as batch_readiness_router
 from .api.routes_tracking_db import router as tracking_db_router
 from .api.routes_correction_registry import router as correction_registry_router
 from .api.routes_ledgers import router as ledgers_router
+from .api.routes_insurance_export import router as insurance_export_router
 from .api.routes_carrier_webhook import router as carrier_webhook_router
 from .api.routes_webhooks_wfirma import router as webhooks_wfirma_router
 from .api.routes_webhooks_wfirma_status import router as webhooks_wfirma_status_router
@@ -526,6 +527,7 @@ app.include_router(batch_readiness_router)
 # static GET /events wins over tracking_router's catch-all GET /{tracking_no}.
 app.include_router(correction_registry_router)
 app.include_router(ledgers_router)
+app.include_router(insurance_export_router)         # Insurance Export Statement: read-only declaration composer
 app.include_router(carrier_webhook_router)
 app.include_router(webhooks_wfirma_router)
 app.include_router(webhooks_wfirma_status_router)
