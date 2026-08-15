@@ -1,7 +1,11 @@
-// estrella-doc-packing.jsx — Estrella Document Suite: Packing List PDF (Landscape A4)
+// RETIRED as operator Preview/Download presentation (2026-08-15).
+// Canonical presentation: commercial_packing_list_html.py via packing-list.html / .pdf.
+// Do not wire Preview to EJPackingList.
+//
+// estrella-doc-packing.jsx — historical Estrella Packing List (Landscape A4)
 // Full commercial packing list — one row per design line (146 rows for a typical shipment).
 //
-// packingData shape (supplied by ProformaDetailPage):
+// packingData shape (historical):
 //   .doc_ref     string         — Proforma number (e.g. "PROF 123/2026")
 //   .invoice_ref string | null  — Invoice number after wFirma conversion; null until then
 //   .issued_date string         — ISO date (e.g. "2026-06-09")

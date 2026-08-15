@@ -1,20 +1,14 @@
 """
 commercial_packing_list.py — ONE Commercial Packing List document authority.
 
-Canonical document model matches the Proforma Documents tab Preview
-(`packingListData` in proforma-detail.jsx → ``EJPackingList``):
+Canonical document model for Preview (packing-list.json / .html), Download PDF,
+Documents Hub, ZIP, and customer email. Presentation is solely
+``commercial_packing_list_html`` + Chrome print.
 
   * Row authority = draft billed ``editable_lines`` (never batch packing.db)
-  * Commercial fields = Sales Packing / draft only
+  * Parties = ``commercial_document_parties.resolve_document_parties``
   * Physical gross/net = draft then purchase packing enrich
-    (``commercial_authority.attach_physical_weights_to_lines``)
-  * Descriptions / origin = draft values, with the same Product Master /
-    product_descriptions fill-in used by GET /proforma/draft/{id}
   * Missing values stay honestly blank ("—") — never invented
-
-The PDF exporter renders the SAME HTML presentation definition as
-``EJPackingList`` (estrella-doc-packing.jsx) via Chrome headless print.
-ReportLab visual layout is retired — do not reintroduce a second renderer.
 """
 from __future__ import annotations
 
@@ -175,7 +169,7 @@ def build_commercial_packing_document(
 ) -> Dict[str, Any]:
     """Build the canonical Commercial Packing List document model.
 
-    Shape mirrors frontend ``packingListData`` / ``EJPackingList`` contract.
+    Sole packing-list business projection for Preview JSON/HTML, PDF, and email.
     """
     storage_root = Path(storage_root)
     raw_lines: List[Dict[str, Any]] = []
@@ -236,8 +230,7 @@ def build_commercial_packing_document(
 
     from .commercial_document_parties import resolve_document_parties
 
-    # ONE party projection — same override cascade as Proforma Preview
-    # (buyer_override / ship_to_override), with Customer Master as fill-in only.
+    # ONE party projection for packing + CMR (Preview consumes the same helper).
     seller, buyer, shipto = resolve_document_parties(
         draft=draft,
         company=company,
@@ -321,7 +314,7 @@ def build_commercial_packing_document(
 
 
 def render_commercial_packing_list_pdf(document: Dict[str, Any]) -> bytes:
-    """ONE Packing List PDF presentation — HTML (EJPackingList equivalent) + Chrome print.
+    """ONE Packing List PDF presentation — commercial_packing_list_html + Chrome print.
 
     ReportLab visual path is retired. Preview Download, Documents Hub, ZIP, and
     customer-email attachment must all call this exporter.

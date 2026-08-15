@@ -14,6 +14,14 @@ _DETAIL = (
     Path(__file__).resolve().parents[1]
     / "app" / "static" / "v2" / "proforma-detail.jsx"
 )
+_PACKING_PY = (
+    Path(__file__).resolve().parents[1]
+    / "app" / "services" / "commercial_packing_list.py"
+)
+_CMR_PY = (
+    Path(__file__).resolve().parents[1]
+    / "app" / "services" / "commercial_cmr.py"
+)
 
 
 def test_normalize_origin_country_iso_and_india():
@@ -28,7 +36,6 @@ def test_normalize_origin_country_iso_and_india():
 
 def test_draft_get_does_not_invent_blank_origin_as_in():
     src = _ROUTES.read_text(encoding="utf-8")
-    # Old inventing patterns must stay gone from the shared enrich index.
     assert '(_r["origin_country"] or "").strip() or "IN"' not in src
     assert 'origin_country = "IN"' not in src
     assert "normalize_origin_country" in src
@@ -36,18 +43,24 @@ def test_draft_get_does_not_invent_blank_origin_as_in():
 
 def test_visibility_does_not_default_every_line_to_in():
     src = _ROUTES.read_text(encoding="utf-8")
-    # Visibility projection used to start every line at IN before lookup.
     assert 'origin_country = "IN"' not in src
     assert "pl_row.origin_country or \"IN\"" not in src
     assert "pl_row.origin_country or 'IN'" not in src
 
 
-def test_frontend_docs_share_ln_origin_only():
+def test_frontend_docs_do_not_rebuild_origin_locally():
     text = _DETAIL.read_text(encoding="utf-8")
     assert "liveDraft.origin_country" not in text
-    # CMR aggregate must not fall back to purchase packing origin
-    cmr = text.split("const _cmrAggPackingLines")[1].split(
-        "const packingListData"
-    )[0]
+    assert "const packingListData" not in text
+    assert "const _cmrAggPackingLines" not in text
+    assert "getPackingListHtml" in text
+    assert "getCmrDocument" in text
+
+
+def test_packing_and_cmr_use_line_origin_not_purchase_fallback():
+    packing = _PACKING_PY.read_text(encoding="utf-8")
+    cmr = _CMR_PY.read_text(encoding="utf-8")
+    assert "normalize_origin_country" in packing
+    assert "pk.origin" not in packing
+    assert "_country_name" in cmr
     assert "pk.origin" not in cmr
-    assert "(ln.origin || '').trim() || null" in cmr

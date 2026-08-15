@@ -1,9 +1,7 @@
-"""Canonical Packing List HTML presentation — mirrors EJPackingList (estrella-doc-packing.jsx).
+"""Canonical Packing List HTML presentation — THE sole Packing List visual definition.
 
-ONE presentational definition for Preview Download, Documents Hub, ZIP, and
-customer-email attachment. PDF bytes come from Chrome headless print of this HTML.
-
-Do NOT maintain a parallel ReportLab visual renderer.
+Preview displays this HTML. Chrome headless prints this same HTML to PDF.
+Do not maintain a parallel JSX Packing List layout for operator Preview.
 """
 from __future__ import annotations
 
@@ -20,10 +18,9 @@ def _fmt_money(v: Any) -> str:
         n = float(v)
     except (TypeError, ValueError):
         return "—"
-    # Match EJPackingList en-IN grouping + 2 dp
+    # Match commercial packing list en-IN grouping + 2 dp
     s = f"{n:,.2f}"
-    # en-IN uses different grouping; for jewellery values en-US is acceptable
-    # and matches most PDF tools. Keep 2 decimal places like the UI.
+    # Keep 2 decimal places like the printed packing list.
     return s
 
 
@@ -90,7 +87,7 @@ def _logo_data_uri() -> str:
 
 
 def render_commercial_packing_list_html(document: Dict[str, Any]) -> str:
-    """Return full HTML document matching EJPackingList visual structure."""
+    """Return the sole Packing List HTML presentation (Preview iframe + Chrome PDF)."""
     d = document or {}
     rows: List[Dict[str, Any]] = list(d.get("rows") or [])
     cur = str(d.get("currency") or "EUR")

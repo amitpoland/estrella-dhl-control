@@ -101,17 +101,16 @@ def test_v2_projection_has_no_dhl_fallback():
 
 
 def test_canonical_cmr_consumes_persisted_provider_from_transport():
-    """One surviving CMR renderer reads carrier from the single _transport projection."""
-    root = Path(__file__).resolve().parents[1] / "app" / "static" / "v2"
-    detail = (root / "proforma-detail.jsx").read_text(encoding="utf-8")
-    cmr = (root / "estrella-doc-cmr.jsx").read_text(encoding="utf-8")
-    index = (root / "index.html").read_text(encoding="utf-8")
+    """Logistics CMR reads carrier from canonical cmr.json (commercial_cmr), not local remap."""
+    root = Path(__file__).resolve().parents[1] / "app"
+    detail = (root / "static" / "v2" / "proforma-detail.jsx").read_text(encoding="utf-8")
+    cmr_py = (root / "services" / "commercial_cmr.py").read_text(encoding="utf-8")
+    cmr_jsx = (root / "static" / "v2" / "estrella-doc-cmr.jsx").read_text(encoding="utf-8")
 
-    assert 'src="estrella-doc-cmr.jsx"' in index
-    assert "name:        _transport.carrier" in detail
-    assert "carrier:  _transport.linked" in detail
-    assert "EJCMRCarrierChip" in cmr
-    assert "|| 'DHL'" not in cmr
-    assert '|| "DHL"' not in cmr
-    assert "function EJCMRClassic" in cmr
-    assert "function EJCMRModern" in cmr
+    assert "getCmrDocument" in detail
+    assert "canonicalCmr" in detail
+    assert "const cmrPreviewData" not in detail
+    assert 'shipment_row.get("provider")' in cmr_py
+    assert 'or "DHL"' not in cmr_py
+    assert "|| 'DHL'" not in cmr_jsx
+    assert '|| "DHL"' not in cmr_jsx

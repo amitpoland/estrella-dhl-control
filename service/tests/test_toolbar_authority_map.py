@@ -526,10 +526,15 @@ def test_cmr_no_mock_data_in_proforma_detail():
 
 
 def test_cmr_preview_uses_live_batch_id():
-    """cmrPreviewData must use liveDraft.batch_id for CMR reference."""
+    """Logistics CMR must consume canonical cmr.json (batch owned by commercial_cmr)."""
     src = _src()
-    assert "cmrPreviewData" in src, "proforma-detail.jsx must define cmrPreviewData"
-    assert "batch_id" in src, "cmrPreviewData must reference liveDraft.batch_id for CMR number"
+    assert "getCmrDocument" in src, "proforma-detail.jsx must load canonical CMR projection"
+    assert "canonicalCmr" in src, "Logistics must bind to canonicalCmr, not local cmrPreviewData"
+    assert "const cmrPreviewData" not in src
+    cmr_py = (
+        Path(__file__).resolve().parents[1] / "app" / "services" / "commercial_cmr.py"
+    ).read_text(encoding="utf-8")
+    assert "batch_id" in cmr_py, "commercial_cmr must carry batch_id into the CMR projection"
 
 
 def test_preview_doctype_selector_present():

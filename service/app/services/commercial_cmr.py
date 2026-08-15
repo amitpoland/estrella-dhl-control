@@ -1,11 +1,10 @@
 """
 commercial_cmr.py — ONE CMR / delivery-note document authority.
 
-Canonical model matches Proforma Logistics ``cmrPreviewData`` → ``EJCMRClassic`` /
-``EJCMRModern``. Preview may display React; Download + Delivery Confirmation PDF
-bytes come from the SAME HTML presentation (``commercial_cmr_html``) via Chrome.
+Canonical model for Logistics Preview (cmr.json), Download PDF, and Delivery
+Confirmation. Presentation is solely ``commercial_cmr_html`` + Chrome print.
 
-ReportLab visual layout is retired — do not reintroduce a second renderer.
+Do not rebuild parties/lines/carrier in React for the CMR document.
 
 CMR is NOT a customer-send whitelist document. Attachments are used only by
 delivery_confirmation when a CMR number exists for the linked outbound shipment.
@@ -28,6 +27,8 @@ _ISO2_COUNTRY = {
     "FI": "Finland", "IE": "Ireland", "PT": "Portugal", "GR": "Greece",
     "IN": "India", "CN": "China", "US": "United States", "GB": "United Kingdom",
     "CH": "Switzerland", "NO": "Norway", "UA": "Ukraine",
+    "SG": "Singapore", "AE": "United Arab Emirates", "AU": "Australia",
+    "KR": "South Korea", "MU": "Mauritius", "JP": "Japan",
 }
 
 _CMR_INSURANCE_TEXT = (
@@ -78,7 +79,7 @@ def _buyer_shipto(customer: Any) -> Tuple[Dict[str, str], Dict[str, str]]:
 
 
 def _aggregate_lines(raw_lines: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], str]:
-    """Transport summary rows + goods_summary (same as cmrPreviewData)."""
+    """Transport summary rows + goods_summary for the canonical CMR projection."""
     buckets: Dict[str, Dict[str, Any]] = {}
     order: List[str] = []
     metals: set = set()
@@ -167,7 +168,7 @@ def build_cmr_document(
     shipment_row: Optional[Dict[str, Any]] = None,
     cmr_number: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build the canonical CMR document model (cmrPreviewData shape)."""
+    """Build the canonical CMR document model (sole CMR business projection)."""
     from .commercial_document_parties import resolve_document_parties
 
     raw_lines: List[Dict[str, Any]] = []
@@ -214,7 +215,7 @@ def build_cmr_document(
     pickup = None
     if shipment_row:
         awb = (shipment_row.get("tracking_ref") or "").strip() or None
-        carrier_name = (shipment_row.get("provider") or shipment_row.get("carrier") or "DHL")
+        carrier_name = (shipment_row.get("provider") or shipment_row.get("carrier") or "").strip() or None
         service = shipment_row.get("service_product") or shipment_row.get("service")
         pickup = shipment_row.get("pickup_date") or shipment_row.get("booked_at")
         try:
@@ -243,7 +244,7 @@ def build_cmr_document(
     carrier = None
     if awb or shipment_row:
         carrier = {
-            "name": str(carrier_name or "DHL"),
+            "name": str(carrier_name) if carrier_name else "—",
             "awb": awb,
             "service": service or "—",
             "incoterm": incoterm or "—",
@@ -278,16 +279,18 @@ def build_cmr_document(
 
 
 def render_cmr_pdf(document: Dict[str, Any]) -> bytes:
-    """ONE CMR PDF presentation — HTML (EJCMRClassic equivalent) + Chrome print.
-
-    ReportLab visual path is retired. Logistics Download and Delivery Confirmation
-    must both call this exporter.
-    """
+    """ONE CMR PDF — Chrome print of ``render_commercial_cmr_html`` (sole presentation)."""
     from .chrome_html_pdf import html_to_pdf_bytes
     from .commercial_cmr_html import render_commercial_cmr_html
 
     html = render_commercial_cmr_html(document or {})
     return html_to_pdf_bytes(html)
+
+
+def render_cmr_html(document: Dict[str, Any]) -> str:
+    """ONE CMR HTML presentation (Preview iframe + Chrome PDF source)."""
+    from .commercial_cmr_html import render_commercial_cmr_html
+    return render_commercial_cmr_html(document or {})
 
 
 def cmr_available_for_draft(
@@ -312,14 +315,20 @@ def cmr_available_for_draft(
     return False
 
 
-def export_cmr_pdf_for_draft(
+def _assemble_cmr_for_draft(
     *,
     draft_id: int,
     storage_root: Path,
     proforma_db: Path,
     carrier_db: Path,
-) -> Optional[Tuple[bytes, str]]:
-    """Return (pdf_bytes, filename) when CMR is available; else None (no fabricate)."""
+    require_cmr_number: bool,
+) -> Optional[Dict[str, Any]]:
+    """ONE CMR projection loader used by Preview JSON/HTML and PDF export.
+
+    When ``require_cmr_number`` is True (PDF / confirmation), returns None if the
+    CMR number is not yet generated. Preview uses ``require_cmr_number=False`` so
+    Logistics can show an honest incomplete document.
+    """
     from . import proforma_invoice_link_db as pildb
     from .carrier import doc_package
     from .carrier.cmr_number import cmr_document_number
@@ -336,16 +345,12 @@ def export_cmr_pdf_for_draft(
         proforma_db=Path(proforma_db),
         carrier_db=Path(carrier_db),
     )
-    cmr_entry = None
+    cmr_number = ""
     for entry in ((manifest.get("groups") or {}).get("transport") or []):
         if (entry or {}).get("document_type") == "cmr":
-            cmr_entry = entry
+            if (entry.get("status") or "") == GENERATED:
+                cmr_number = (entry.get("reference") or "").strip()
             break
-    if not cmr_entry or (cmr_entry.get("status") or "") != GENERATED:
-        return None
-    cmr_number = (cmr_entry.get("reference") or "").strip()
-    if not cmr_number:
-        return None
 
     company = doc_package._load_company_profile(storage_root)
     customer = doc_package._resolve_customer_from_batch(
@@ -375,17 +380,40 @@ def export_cmr_pdf_for_draft(
         idem = (shipment_row.get("idempotency_key") or "").strip()
         cmr_number = cmr_document_number(idem) or cmr_number
 
-    document = build_cmr_document(
+    if require_cmr_number and not cmr_number:
+        return None
+
+    return build_cmr_document(
         draft=draft,
         storage_root=storage_root,
         company=company,
         customer=customer,
         shipment_row=shipment_row,
-        cmr_number=cmr_number,
+        cmr_number=cmr_number or None,
     )
+
+
+def export_cmr_pdf_for_draft(
+    *,
+    draft_id: int,
+    storage_root: Path,
+    proforma_db: Path,
+    carrier_db: Path,
+) -> Optional[Tuple[bytes, str]]:
+    """Return (pdf_bytes, filename) when CMR number exists; else None."""
+    document = _assemble_cmr_for_draft(
+        draft_id=int(draft_id),
+        storage_root=storage_root,
+        proforma_db=proforma_db,
+        carrier_db=carrier_db,
+        require_cmr_number=True,
+    )
+    if document is None:
+        return None
     pdf = render_cmr_pdf(document)
     if not pdf or len(pdf) < 10:
         return None
+    cmr_number = (document.get("cmr_no") or "cmr").strip()
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in cmr_number)
     return pdf, f"cmr-{safe}.pdf"
 
@@ -396,67 +424,13 @@ def export_cmr_document_for_draft(
     storage_root: Path,
     proforma_db: Path,
     carrier_db: Path,
+    require_cmr_number: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """Return the canonical CMR document model (no PDF) when CMR is available."""
-    from . import proforma_invoice_link_db as pildb
-    from .carrier import doc_package
-    from .carrier.cmr_number import cmr_document_number
-    from .shipment_document_manifest import GENERATED, build_manifest
-
-    storage_root = Path(storage_root)
-    draft = pildb.get_draft_by_id(Path(proforma_db), int(draft_id))
-    if draft is None:
-        return None
-
-    manifest = build_manifest(
-        int(draft_id),
+    """Canonical CMR document model for Preview / Logistics (and PDF when numbered)."""
+    return _assemble_cmr_for_draft(
+        draft_id=int(draft_id),
         storage_root=storage_root,
-        proforma_db=Path(proforma_db),
-        carrier_db=Path(carrier_db),
-    )
-    cmr_entry = None
-    for entry in ((manifest.get("groups") or {}).get("transport") or []):
-        if (entry or {}).get("document_type") == "cmr":
-            cmr_entry = entry
-            break
-    if not cmr_entry or (cmr_entry.get("status") or "") != GENERATED:
-        return None
-    cmr_number = (cmr_entry.get("reference") or "").strip()
-    if not cmr_number:
-        return None
-
-    company = doc_package._load_company_profile(storage_root)
-    customer = doc_package._resolve_customer_from_batch(
-        (draft.batch_id or "").strip(),
-        (draft.client_name or "").strip(),
-        storage_root,
-    )
-    shipment_row = None
-    try:
-        from .carrier.persistence import shipment_db
-        from .shipment_document_manifest import _batch_client_count
-
-        batch_id = (draft.batch_id or "").strip()
-        client_name = (draft.client_name or "").strip() or None
-        single_client = _batch_client_count(Path(proforma_db), batch_id) <= 1
-        shipment_row = shipment_db.get_shipment_for_draft(
-            Path(carrier_db),
-            batch_id,
-            client_name,
-            allow_single_client_fallback=single_client,
-        )
-    except Exception as exc:
-        log.debug("cmr shipment lookup failed: %s", exc)
-
-    if shipment_row and not cmr_number:
-        idem = (shipment_row.get("idempotency_key") or "").strip()
-        cmr_number = cmr_document_number(idem) or cmr_number
-
-    return build_cmr_document(
-        draft=draft,
-        storage_root=storage_root,
-        company=company,
-        customer=customer,
-        shipment_row=shipment_row,
-        cmr_number=cmr_number,
+        proforma_db=proforma_db,
+        carrier_db=carrier_db,
+        require_cmr_number=require_cmr_number,
     )

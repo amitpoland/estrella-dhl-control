@@ -1,8 +1,12 @@
 /* global React */
-// estrella-doc-cmr.jsx — Estrella Document Suite: CMR / Delivery Note print variants
+// RETIRED as operator Preview/Download presentation (2026-08-15).
+// Canonical presentation: commercial_cmr_html.py via cmr.html / cmr.pdf.
+// Do not wire Preview to EJCMRClassic / EJCMRModern.
+//
+// estrella-doc-cmr.jsx — historical Estrella CMR / Delivery Note variants
 // Adapted from design-canvas prototype (2026-06-06) for real draft data.
 //
-// cmrData shape (supplied by ProformaDetailPage when carrier data is available):
+// cmrData shape (historical):
 //   .cmr_no      string                 CMR reference number
 //   .doc_ref     string                 linked proforma number
 //   .seller      { name, addr, city, vat, email, phone }

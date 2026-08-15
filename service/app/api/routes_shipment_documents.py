@@ -203,6 +203,52 @@ def get_packing_list_json(
     return JSONResponse(document, headers=dict(_NO_STORE_HEADERS))
 
 
+@router.get("/draft/{draft_id}/packing-list.html")
+def get_packing_list_html(
+    draft_id: int, _auth: None = Depends(require_api_key),
+) -> Response:
+    """Canonical Packing List HTML — same presentation Chrome prints to PDF."""
+    from ..services import proforma_invoice_link_db as pildb
+    from ..services.carrier import doc_package
+    from ..services.commercial_packing_list import build_commercial_packing_document
+    from ..services.commercial_packing_list_html import render_commercial_packing_list_html
+
+    storage_root = _storage_root()
+    draft = pildb.get_draft_by_id(_proforma_db(), int(draft_id))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    batch_id = (draft.batch_id or "").strip()
+    if not batch_id:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Draft has no batch_id", "code": "PACKING_LIST_NO_BATCH"},
+        )
+    company = doc_package._load_company_profile(storage_root)
+    pdraft = doc_package._load_proforma_draft(
+        batch_id, (draft.client_name or "").strip(), storage_root,
+    )
+    customer = doc_package._resolve_customer_from_batch(
+        batch_id, (draft.client_name or "").strip(), storage_root,
+    )
+    document = build_commercial_packing_document(
+        draft=pdraft or draft,
+        storage_root=storage_root,
+        company=company,
+        customer=customer,
+    )
+    if not (document.get("rows") or []):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Commercial Packing List has no lines.", "code": "PACKING_LIST_EMPTY"},
+        )
+    html = render_commercial_packing_list_html(document)
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers=dict(_NO_STORE_HEADERS),
+    )
+
+
 def _render_commercial_cmr_pdf(draft_id: int) -> tuple[bytes, str]:
     """Return (pdf_bytes, filename) from the ONE commercial CMR authority."""
     from ..services.canonical_customer_documents import resolve_canonical_document_bytes
@@ -255,7 +301,7 @@ def get_cmr_pdf(
 def get_cmr_json(
     draft_id: int, _auth: None = Depends(require_api_key),
 ) -> JSONResponse:
-    """Canonical CMR document model (same projection as PDF/confirmation)."""
+    """Canonical CMR document model — Preview / Logistics consume this projection."""
     from ..services.commercial_cmr import export_cmr_document_for_draft
 
     document = export_cmr_document_for_draft(
@@ -263,13 +309,35 @@ def get_cmr_json(
         storage_root=_storage_root(),
         proforma_db=_proforma_db(),
         carrier_db=_carrier_db(),
+        require_cmr_number=False,
     )
     if document is None:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": f"CMR not available for draft {draft_id}", "code": "CMR_UNAVAILABLE"},
-        )
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
     return JSONResponse(document, headers=dict(_NO_STORE_HEADERS))
+
+
+@router.get("/draft/{draft_id}/cmr.html")
+def get_cmr_html(
+    draft_id: int, _auth: None = Depends(require_api_key),
+) -> Response:
+    """Canonical CMR HTML — same presentation Chrome prints to PDF."""
+    from ..services.commercial_cmr import export_cmr_document_for_draft, render_cmr_html
+
+    document = export_cmr_document_for_draft(
+        draft_id=int(draft_id),
+        storage_root=_storage_root(),
+        proforma_db=_proforma_db(),
+        carrier_db=_carrier_db(),
+        require_cmr_number=False,
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
+    html = render_cmr_html(document)
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers=dict(_NO_STORE_HEADERS),
+    )
 
 
 # ── Operator: complete package ZIP ───────────────────────────────────────────────
