@@ -105,8 +105,22 @@ _HDR = ParagraphStyle(
 )
 
 
+def _safe(s: Any) -> str:
+    """Escape ReportLab Paragraph mini-XML metacharacters.
+
+    Contractor names, document numbers, and other wFirma-sourced strings are
+    rendered into ``Paragraph``'s own markup parser; an unescaped ``&``/``<``/
+    ``>`` either breaks parsing or is interpreted as formatting markup. Same
+    pattern as ``statement_pdf_renderer._safe``.
+    """
+    if s is None:
+        return ""
+    text = str(s)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _fmt(value: Optional[str], dash: str = "\u2014") -> str:
-    return value if value not in (None, "") else dash
+    return _safe(value) if value not in (None, "") else dash
 
 
 def _num_cell(value: Optional[str], bold: bool = False) -> Paragraph:
@@ -154,7 +168,7 @@ def _recovered_text(row: Dict[str, Any]) -> str:
     amount = rec.get("amount")
     if not amount or amount == "0.00":
         return "\u2014"
-    return "%s %s" % (amount, rec.get("currency") or "")
+    return "%s %s" % (_safe(amount), _safe(rec.get("currency")))
 
 
 def render_insurance_export_statement_pdf(
@@ -218,7 +232,7 @@ def render_insurance_export_statement_pdf(
 
     def _doc_row(row: Dict[str, Any], first_in_group: bool) -> List[Any]:
         cells = [
-            Paragraph(row.get("contractor_name") or "", _CELL_B)
+            Paragraph(_safe(row.get("contractor_name")), _CELL_B)
             if first_in_group
             else Paragraph("", _CELL),
             Paragraph(_fmt(row.get("fullnumber")), _CELL),
@@ -266,7 +280,7 @@ def render_insurance_export_statement_pdf(
             if v:
                 total += Decimal(v)
         sub = [Paragraph("", _CELL)] * n_cols
-        sub[1] = Paragraph("Razem: %s" % grp["name"], _CELL_B)
+        sub[1] = Paragraph("Razem: %s" % _safe(grp["name"]), _CELL_B)
         sub[8] = _num_cell(str(total.quantize(Decimal("0.01"))), bold=True)
         data.append(sub)
         styles.append(
@@ -329,7 +343,7 @@ def render_insurance_export_statement_pdf(
     seller_name = seller.get("name") or "ESTRELLA JEWELS LLP SP. Z O.O., SP. K."
     masthead = [
         Paragraph(
-            seller_name,
+            _safe(seller_name),
             ParagraphStyle(
                 "ins_mast1",
                 fontName=_FONT_BOLD,
@@ -352,7 +366,7 @@ def render_insurance_export_statement_pdf(
         ),
         Paragraph(
             "Period: %s \u2013 %s"
-            % (period.get("from") or "", period.get("to") or ""),
+            % (_safe(period.get("from")), _safe(period.get("to"))),
             ParagraphStyle(
                 "ins_mast3",
                 fontName=_FONT_REG,
@@ -372,7 +386,7 @@ def render_insurance_export_statement_pdf(
     if show_recovered and recovered:
         story.append(Spacer(1, 3 * mm))
         parts = ", ".join(
-            "%s %s" % (amt, ccy) for ccy, amt in sorted(recovered.items())
+            "%s %s" % (_safe(amt), _safe(ccy)) for ccy, amt in sorted(recovered.items())
         )
         story.append(
             Paragraph(

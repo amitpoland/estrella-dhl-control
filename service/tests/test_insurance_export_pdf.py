@@ -199,3 +199,42 @@ def test_pdf_no_adjustments_means_no_period_total():
 def test_pdf_page_footer():
     text = _text(_render())
     assert "Page 1" in text
+
+
+# --- markup safety -------------------------------------------------------
+# Every dynamic string reaches ReportLab through Paragraph's mini-XML parser.
+# Unescaped &/</> either aborts the render or is interpreted as formatting.
+# These pin literal emission at each dynamic sink.
+
+_MARKUP_ROWS = [
+    _row("301", "FV 301/2026", contractor_id="C-A",
+         contractor_name="Smith & Sons"),
+    _row("302", "FV 302/2026", contractor_id="C-B",
+         contractor_name="A<B Trading"),
+    _row("303", "FV 303/2026", contractor_id="C-C",
+         contractor_name='<font color="red">X</font>'),
+]
+
+
+def test_pdf_markup_sensitive_contractor_names_render_literally():
+    pdf = _render(selected_rows=_MARKUP_ROWS, selected_adjustments=[])
+    assert pdf[:5] == b"%PDF-"
+    text = _text(pdf)
+    assert "Smith & Sons" in text
+    assert "A<B Trading" in text
+    # The tag must survive as text. Were it interpreted, ReportLab would
+    # consume it as formatting and only a red "X" would remain.
+    assert "font" in text and "red" in text
+    assert '<font color="red">X</font>' in text
+
+
+def test_pdf_group_subtotal_escapes_contractor_name():
+    text = _text(_render(selected_rows=_MARKUP_ROWS, selected_adjustments=[]))
+    assert "Razem: Smith & Sons" in text
+    assert 'Razem: <font color="red">X</font>' in text
+
+
+def test_pdf_seller_name_escapes_markup():
+    pdf = _render(seller={"name": "Acme & Co <Ltd>"})
+    assert pdf[:5] == b"%PDF-"
+    assert "Acme & Co <Ltd>" in _text(pdf)
