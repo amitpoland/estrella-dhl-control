@@ -159,17 +159,12 @@ def queue_email(
     # batch_id, file absent, parse error) it allows the enqueue.  This
     # matches the documented semantics of check_send_allowed and avoids
     # blocking legitimate queueing for batches whose metadata is missing.
-    # Allowlist: the customer delivery-confirmation email fires BECAUSE the
-    # OUTBOUND shipment was delivered — it is the opposite of an inbound-customs
-    # follow-up, which is what shipment_delivered_guard suppresses. Skipping the
-    # delivered guard for this one email_type lets the "confirm receipt" link
-    # reach the customer AFTER delivery; every other email_type stays guarded.
-    # Customer delivery confirmation/reminder fire BECAUSE outbound delivered.
+    # Customer delivery confirmation/reminder and explicit customer-document
+    # sends are allowed after delivery via centralized email_routing policy.
+    # Automated operational follow-ups remain blocked. Unknown types fail closed.
+    from ..config.email_routing import delivery_guard_allows_when_delivered
     _etype_l = (email_type or "").strip().lower()
-    _skip_delivered_guard = _etype_l in (
-        "customer_delivery_confirmation",
-        "customer_delivery_reminder",
-    )
+    _skip_delivered_guard = delivery_guard_allows_when_delivered(_etype_l)
     if batch_id and not _skip_delivered_guard:
         try:
             from .shipment_delivered_guard import check_send_allowed as _ssa

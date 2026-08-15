@@ -608,7 +608,7 @@ async function _ejDownloadRenderedSheetPdf(filenameBase, orientation) {
   }
 }
 
-function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, onClose, onEditRequest }) {
+function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, draftId, onClose, onEditRequest }) {
   // Portrait A4 (794px) → 0.88 fits 900px wrap.
   // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
   // activeType MUST be declared before SCALE — SCALE depends on it.
@@ -722,6 +722,14 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
                   onClick={() => {
                     setPdfErr(null);
                     setPdfBusy(true);
+                    const finish = () => setPdfBusy(false);
+                    // Packing List: ONE server exporter (same bytes as email / Hub).
+                    if (activeType === 'packing' && draftId && window.PzApi && window.PzApi.downloadPackingListPdf) {
+                      window.PzApi.downloadPackingListPdf(draftId)
+                        .catch(e => setPdfErr((e && e.message) || 'PDF download failed'))
+                        .finally(finish);
+                      return;
+                    }
                     const base = (activeType === 'cmr'
                       ? ((cmrData && cmrData.cmr_no) || 'cmr')
                       : ((docData && docData.doc_no) || 'proforma-preview'));
@@ -730,7 +738,7 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
                       activeType === 'packing' ? 'landscape' : 'portrait',
                     )
                       .catch(e => setPdfErr((e && e.message) || 'PDF download failed'))
-                      .finally(() => setPdfBusy(false));
+                      .finally(finish);
                   }}
                   style={{
                     padding: '4px 12px', borderRadius: 5, border: '1px solid #2A5A3A',
@@ -7993,6 +8001,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           docData={previewDocData}
           cmrData={cmrPreviewData}
           packingData={packingListData}
+          draftId={(liveDraft && liveDraft.id) || (draft && draft.id) || null}
           variant={previewVariant}
           onVariantChange={setPreviewVariant}
           docType={previewDocType}
