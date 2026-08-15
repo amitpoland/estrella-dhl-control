@@ -1,6 +1,7 @@
 """Customer communication single-authority regressions."""
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -223,7 +224,16 @@ def test_packing_list_pdf_uses_html_chrome_not_reportlab(monkeypatch):
     assert calls["html"] == 1 and calls["chrome"] == 1
 
 
-def test_packing_html_matches_ej_structure():
+def test_email_sender_uses_central_delivery_guard_policy():
+    """Send-time guard must consult email_routing, not a local type tuple."""
+    src = (
+        Path(__file__).resolve().parents[1]
+        / "app" / "services" / "email_sender.py"
+    ).read_text(encoding="utf-8")
+    assert "delivery_guard_allows_when_delivered" in src
+    assert 'in (\n            "customer_delivery_confirmation"' not in src
+    assert "customer_delivery_confirmation\",\n            \"customer_delivery_reminder\"" not in src
+
     html = render_commercial_packing_list_html({
         "doc_ref": "PROF 182/2026",
         "invoice_ref": "FV 1/2026",

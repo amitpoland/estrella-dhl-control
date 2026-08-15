@@ -664,15 +664,13 @@ def send_queued_email(
             STALE_QUEUE_DAYS    as _ssa_stale_days,
         )
         _bid = str(entry.get("batch_id") or "").strip()
-        # Allowlist: the customer delivery-confirmation email must NOT be
-        # suppressed by the delivered guard — it fires BECAUSE the outbound
-        # shipment was delivered (the guard targets inbound customs follow-ups).
+        # Post-delivery policy is owned by email_routing — not a local tuple.
+        # Customer transactional / confirmation / reminder may send after
+        # delivered; automated operational follow-ups remain blocked.
+        from ..config.email_routing import delivery_guard_allows_when_delivered
         _etype = (entry.get("email_type") or "").strip().lower()
         _g   = _ssa_check_send_allowed(_bid)
-        if not _g["allowed"] and _etype not in (
-            "customer_delivery_confirmation",
-            "customer_delivery_reminder",
-        ):
+        if not _g["allowed"] and not delivery_guard_allows_when_delivered(_etype):
             _mark_queue_terminal(
                 queue_id,
                 terminal_status="suppressed_delivered",
