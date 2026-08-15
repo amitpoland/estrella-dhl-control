@@ -2440,5 +2440,55 @@
     // Blob download of a resolved batch file URL (from getBatchFiles). Cookie auth.
     downloadBatchFile: (url, fallbackName) => _download(url, fallbackName || 'download'),
 
+    // ── Insurance Export Statement (read-only Accounting Hub section) ──────
+    // GET /api/v1/accounting/insurance-export — full factual report
+    getInsuranceExport: (from, to, refresh) => {
+      const qs = new URLSearchParams({ from, to });
+      if (refresh) qs.set('refresh', '1');
+      return _get(`${BASE}/accounting/insurance-export?${qs.toString()}`);
+    },
+
+    // POST declaration-preview — server re-resolves selected IDs into totals
+    previewInsuranceDeclaration: (body) =>
+      _post(`${BASE}/accounting/insurance-export/declaration-preview`, body),
+
+    // POST declaration.pdf — blob download. The shared _download helper is
+    // GET-only, so this performs the POST-blob fetch inline (cookie auth).
+    downloadInsuranceExportPdf: async (body, fallbackName) => {
+      let res;
+      try {
+        res = await fetch(`${BASE}/accounting/insurance-export/declaration.pdf`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } catch (_) {
+        return { ok: false, error: 'Service unreachable — check that the backend is running.' };
+      }
+      if (res.status === 401 || res.status === 403) return { ok: false, error: 'Session expired or access denied.' };
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data && data.detail) detail = String(data.detail);
+          else if (data && data.code) detail = String(data.code);
+        } catch (_) { /* non-JSON error body */ }
+        return { ok: false, status: res.status, error: detail };
+      }
+      const blob = await res.blob();
+      let name = fallbackName || 'insurance-export.pdf';
+      const cd = res.headers.get('Content-Disposition') || '';
+      const m = /filename="?([^"]+)"?/.exec(cd);
+      if (m) name = m[1];
+      const objUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl; a.download = name;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(objUrl);
+      return { ok: true, filename: name };
+    },
+
   });
 })();

@@ -47,6 +47,7 @@ const ACC_SECTIONS = [
   // ONE entry: LedgersPage renders its own Client / Management Analysis /
   // Supplier strip. A second rail entry mounted it twice (PR-005 violation).
   { id: 'clientLedger',   label: 'Ledgers',          icon: '☷', group: 'live', code: 'STM', color: 'var(--badge-green-text)', grp: 'ledger' },
+  { id: 'insuranceExport',label: 'Insurance Export', icon: '⛨', group: 'live', code: 'INS', color: 'var(--badge-blue-text)',  grp: 'ledger' },
   // SYSTEM
   { id: 'wfirma',         label: 'wFirma Sync',      icon: '↻', group: 'live', code: null,  color: null,                      grp: 'system' },
   // EJ EXTENSIONS — existing capabilities absent from the HTML; preserved (never deleted), relocated here.
@@ -1331,6 +1332,19 @@ function AccWfirmaSyncInline({ onNav }) {
   );
 }
 
+// ── Insurance Export Statement (read-only; component lives in insurance-export-tab.jsx) ──
+function AccInsuranceExportSection() {
+  const InsuranceExportTab = window.InsuranceExportTab;
+  if (typeof InsuranceExportTab !== 'function') {
+    return (
+      <div style={{ padding: '32px 28px' }} data-testid="ins-export-missing">
+        <AccError msg="InsuranceExportTab component not loaded. Check script load order in index.html." />
+      </div>
+    );
+  }
+  return <InsuranceExportTab />;
+}
+
 function AccountingHub({ onNav }) {
   const [section, setSection] = React.useState('overview');
 
@@ -1346,7 +1360,7 @@ function AccountingHub({ onNav }) {
     { label: null,                  ids: ['overview'] },
     { label: 'Sales Documents',     ids: ['pi', 'inv', 'cn'] },
     { label: 'Warehouse Documents', ids: ['wz', 'pz', 'pw', 'rw', 'mm'] },
-    { label: 'Ledgers',             ids: ['balance', 'clientLedger'] },
+    { label: 'Ledgers',             ids: ['balance', 'clientLedger', 'insuranceExport'] },
     { label: 'System',              ids: ['wfirma'] },
     { label: 'EJ Extensions',       ids: ['master', 'audit'] },
   ];
@@ -1372,6 +1386,7 @@ function AccountingHub({ onNav }) {
         {section === 'overview'       && <AccountingOverview onJump={setSection} />}
         {section === 'pi'             && <SalesProformaTab />}
         {section === 'clientLedger'   && <LedgersTab />}
+        {section === 'insuranceExport' && <AccInsuranceExportSection />}
         {['inv', 'cn', 'wz', 'pz', 'pw', 'rw', 'mm'].includes(section) && <AccDocGrid sectionId={section} onNav={onNav} />}
         {section === 'balance'        && <AccClientBalance onOpenLedger={() => setSection('clientLedger')} />}
         {section === 'wfirma'         && <AccWfirmaSyncInline onNav={onNav} />}
