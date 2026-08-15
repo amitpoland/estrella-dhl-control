@@ -1,9 +1,7 @@
-"""Canonical CMR HTML presentation — mirrors EJCMRClassic (estrella-doc-cmr.jsx).
+"""Canonical CMR HTML presentation — THE sole CMR visual definition.
 
-ONE presentational definition for Logistics Download and Delivery Confirmation
-attachment. PDF bytes come from Chrome headless print of this HTML.
-
-Do NOT maintain a parallel ReportLab visual renderer.
+Preview displays this HTML. Chrome headless prints this same HTML to PDF.
+Do not maintain a parallel JSX CMR layout for operator Preview.
 """
 from __future__ import annotations
 

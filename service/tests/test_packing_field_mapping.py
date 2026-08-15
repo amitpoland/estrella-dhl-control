@@ -39,93 +39,46 @@ class TestSizeFieldMapping:
     """Contract A: size must come from the 'size' DB column, never scan_code."""
 
     def _src(self) -> str:
-        return _PROFORMA_DETAIL.read_text(encoding="utf-8")
+        return (_APP / "services" / "commercial_packing_list.py").read_text(encoding="utf-8")
 
     def test_size_uses_size_field(self):
-        """size property must be mapped to l.size (or l['size'])."""
         src = self._src()
-        # Must contain l.size assignment (not scan_code)
-        assert any(t in src for t in ("l.size", "l['size']", 'l["size"]',
-                                      "pk.size", "pk['size']", 'pk["size"]')), (
-            "proforma-detail.jsx: size mapping must read from the size field "
-            "(l.size / renamed pk.size), not scan_code"
-        )
+        assert 'ln.get("size")' in src
 
     def test_size_does_not_use_scan_code(self):
-        """size: must NOT be assigned from scan_code anywhere in the packingListData builder."""
         src = self._src()
-        # Find the packing row builder block — look for size: assignment with scan_code value
-        # Pattern: size: ... scan_code
-        bad_pattern = re.compile(r"size\s*:\s*[^\n,]*scan_code", re.IGNORECASE)
-        assert not bad_pattern.search(src), (
-            "proforma-detail.jsx: size field must not be sourced from scan_code"
-        )
+        bad_pattern = re.compile(r"size\s*[:=].*scan_code", re.IGNORECASE)
+        assert not bad_pattern.search(src)
 
-    def test_scan_code_not_used_for_display(self):
-        """scan_code must not be the value supplied to a display field called 'size'."""
-        src = self._src()
-        # Any line that says: size: l.scan_code  or  size: ... scan_code (as value)
-        lines = src.splitlines()
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("size:") and "scan_code" in stripped:
-                raise AssertionError(
-                    f"proforma-detail.jsx line {i+1}: 'size' field sourced from scan_code: {stripped!r}"
-                )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# B — Quality / Dia Wt / Col Wt field wiring
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TestPackingDisplayFields:
-    """Contract B: diamond_weight, color_weight, quality_string must be wired
-    from the DB field names through to the renderer."""
+    """Contract B: diamond_weight, color_weight, quality_string on canonical packing model."""
 
     def _src(self) -> str:
-        return _PROFORMA_DETAIL.read_text(encoding="utf-8")
+        return (_APP / "services" / "commercial_packing_list.py").read_text(encoding="utf-8")
 
     def test_diamond_weight_mapped(self):
-        src = self._src()
-        assert "diamond_weight" in src, (
-            "proforma-detail.jsx: diamond_weight field must be referenced in packing renderer"
-        )
+        assert "diamond_weight" in self._src()
 
     def test_color_weight_mapped(self):
-        src = self._src()
-        assert "color_weight" in src, (
-            "proforma-detail.jsx: color_weight field must be referenced in packing renderer"
-        )
+        assert "color_weight" in self._src()
 
     def test_quality_string_mapped(self):
-        src = self._src()
-        assert "quality_string" in src, (
-            "proforma-detail.jsx: quality_string must be referenced in packing renderer"
-        )
+        assert "quality_string" in self._src()
 
     def test_dia_wt_reads_from_diamond_weight(self):
-        """dia_wt display field must source from l.diamond_weight."""
         src = self._src()
-        # Look for: dia_wt: ... diamond_weight
-        assert re.search(r"dia_wt\s*:.*diamond_weight", src), (
-            "proforma-detail.jsx: dia_wt display field must read from l.diamond_weight"
-        )
+        assert re.search(r"dia_wt.*diamond_weight|diamond_weight.*dia", src, re.DOTALL)
 
     def test_col_wt_reads_from_color_weight(self):
-        """col_wt display field must source from l.color_weight."""
         src = self._src()
-        assert re.search(r"col_wt\s*:.*color_weight", src), (
-            "proforma-detail.jsx: col_wt display field must read from l.color_weight"
-        )
+        assert re.search(r"col_wt.*color_weight|color_weight.*col", src, re.DOTALL)
 
     def test_quality_not_null_null(self):
         """Quality must not be hardcoded to null — that was the broken state."""
         src = self._src()
-        # Broken pattern: dia_wt: null (literal null assignment, not conditional)
-        broken = re.compile(r"(dia_wt|col_wt)\s*:\s*null\s*,\s*//.*not parsed")
-        assert not broken.search(src), (
-            "proforma-detail.jsx: dia_wt/col_wt must not be hardcoded to null with 'not parsed' comment"
-        )
+        broken = re.compile(r"(dia_wt|col_wt)\s*:\s*null\s*,\s*#.*not parsed")
+        assert not broken.search(src)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

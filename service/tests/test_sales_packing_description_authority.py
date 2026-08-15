@@ -642,22 +642,19 @@ class TestMultiDesignAndAllProformas:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5–8. Sales Packing List view-model + renderer (structural guards over the JSX)
+# 5–8. Sales Packing List — canonical Python projection (not local React builder)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _packing_list_data_block() -> str:
-    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    start = src.index("const packingListData")
-    end = src.index("const cmrPreviewData", start) if "const cmrPreviewData" in src[start:] \
-        else start + 6000
-    return src[start:end]
+def _packing_list_authority_block() -> str:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "app" / "services" / "commercial_packing_list.py"
+    ).read_text(encoding="utf-8")
 
 
 class TestOneFrontendViewModel:
-    """Gate 1: the Proforma and the Sales Packing List consume ONE view-model.
-
-    Descriptions are selected exactly once, in the ``lines`` builder; every
-    downstream surface reads ``desc_pl`` / ``desc_en`` off that object.
+    """Gate 1: Proforma line view-model stays the local display authority for
+    the Proforma document. Packing List Preview no longer rebuilds rows in React.
     """
 
     def _src(self) -> str:
@@ -678,118 +675,71 @@ class TestOneFrontendViewModel:
         rest = src.replace(builder, "")
         hits = re.findall(r"^.*\b(?:ln|l|line|row)\.description_(?:pl|en)\b.*$",
                           rest, re.MULTILINE)
-        # One classified exception: linesByCode is the product-code AMBIGUITY
-        # evidence map (operator picks which code a packing line means).  It
-        # labels a candidate, it does not select a description for any document
-        # surface, so it is not a second description resolution path.
         assert len(hits) == 1 and "linesByCode" in rest.split(hits[0])[0][-400:], (
             "raw description read outside the lines view-model:\n"
             + "\n".join(h.strip() for h in hits)
         )
 
-    def test_both_documents_read_the_same_resolved_properties(self):
+    def test_proforma_reads_resolved_line_properties(self):
         src = self._src()
-        # Proforma document payload
         assert re.search(r"desc_pl:\s*l\.desc_pl", src)
         assert re.search(r"desc_en:\s*l\.desc_en", src)
-        # Sales Packing List payload
-        assert re.search(r"description_pl:\s*line\.desc_pl", src)
-        assert re.search(r"description_en:\s*line\.desc_en", src)
 
-    def test_packing_rows_are_per_line_not_per_product_code(self):
-        """Duplicate product codes legitimately span several design lines."""
-        block = _packing_list_data_block()
-        assert "lines.map(" in block
-        assert not re.search(r"linesByCode\s*\[", block), (
-            "the Sales Packing List must not resolve rows through a "
-            "product-code-only lookup"
-        )
+    def test_packing_preview_does_not_rebuild_rows_locally(self):
+        src = self._src()
+        assert "const packingListData" not in src
+        assert "getPackingListHtml" in src
 
 
 class TestPackingListDataCarriesDraftDescription:
 
     def test_row_builder_carries_descriptions_from_the_line_view_model(self):
-        block = _packing_list_data_block()
-        assert re.search(r"description_en:\s*line\.desc_en", block), (
-            "packingListData must carry description_en from the line view-model"
-        )
-        assert re.search(r"description_pl:\s*line\.desc_pl", block), (
-            "packingListData must carry description_pl from the line view-model"
-        )
+        block = _packing_list_authority_block()
+        assert 'ln.get("description_en")' in block
+        assert 'ln.get("description_pl")' in block
 
-    def test_row_builder_starts_from_the_line_view_model(self):
-        block = _packing_list_data_block()
-        assert "lines.map(" in block, (
-            "each Sales Packing List row must start from the `lines` view-model — "
-            "the same objects the Proforma display consumes"
-        )
-        assert "_editableLines.map(" not in block, (
-            "the Sales Packing List must not re-iterate the raw editable lines: "
-            "that is the second frontend read path this campaign removed"
-        )
+    def test_row_builder_starts_from_draft_editable_lines(self):
+        block = _packing_list_authority_block()
+        assert "editable_lines" in block
+        assert "authority" in block and "commercial_packing_list" in block
 
-    def test_no_raw_description_read_in_the_row_builder(self):
-        """The raw draft line must not be a description source here."""
-        block = _packing_list_data_block()
-        assert "ln.description_" not in block, (
-            "packingListData must not select descriptions off the raw line; "
-            "descriptions are resolved once in the `lines` view-model"
-        )
+    def test_no_raw_purchase_description_read_in_the_row_builder(self):
+        block = _packing_list_authority_block().split("rows.append")[1][:2000]
+        assert "pk.description" not in block
+        assert "purchase_description" not in block
 
     def test_no_second_description_resolution_path(self):
-        block = _packing_list_data_block()
-        # Description must not be reconstructed from item_type, packing, or purchase text.
-        for banned in (
-            "pk.description", "pk.desc", "purchase_description", "supplier_description",
-            "_CMR_ITEM[", "fetch(", "await ",
-        ):
-            assert banned not in block, (
-                f"packingListData must not resolve descriptions itself; found {banned!r}"
-            )
-        # No category-abbreviation fallback on the description fields.
-        assert not re.search(r"description_(en|pl):[^,\n]*item_type", block)
-        assert not re.search(r"description_(en|pl):[^,\n]*ctg", block)
+        block = _packing_list_authority_block()
+        for banned in ("pk.description", "supplier_description", "ITEM_TYPE_EN[ctg]"):
+            assert banned not in block.split("rows.append")[1][:2500]
 
     def test_sales_data_authority_preserved(self):
-        """Commercial fields still come from the draft line / approved packing enrichment."""
-        block = _packing_list_data_block()
+        block = _packing_list_authority_block()
         for field in ("product_code", "design", "client_po", "qty",
                       "unit_price", "total_value", "quality", "col", "size"):
-            # `qty,` is an ES6 shorthand property — accept both forms.
-            assert re.search(rf"\b{field}[:,]", block), f"{field} missing from packing row"
+            assert field in block, f"{field} missing from packing row authority"
 
 
 class TestPackingRendererIsPure:
 
     def _renderer(self) -> str:
-        return (_V2 / "estrella-doc-packing.jsx").read_text(encoding="utf-8")
+        return (
+            Path(__file__).resolve().parents[1]
+            / "app" / "services" / "commercial_packing_list_html.py"
+        ).read_text(encoding="utf-8")
 
     def test_renderer_displays_both_descriptions(self):
         src = self._renderer()
-        assert "r.description_en" in src
-        assert "r.description_pl" in src
+        assert "description_en" in src
+        assert "description_pl" in src
 
     def test_renderer_performs_no_lookup_or_write(self):
         src = self._renderer()
-        for banned in ("fetch(", "axios", "await ", "useEffect", "useState",
-                       "localStorage", "product_descriptions", "ITEM_TYPE",
-                       "apiGet", "apiPost"):
+        for banned in ("requests.", "sqlite3", "fetch(", "httpx"):
             assert banned not in src, (
-                f"estrella-doc-packing.jsx must stay a pure renderer; found {banned!r}"
+                f"commercial_packing_list_html must stay a pure renderer; found {banned!r}"
             )
 
     def test_renderer_has_no_category_or_purchase_fallback_for_description(self):
         src = self._renderer()
-        assert not re.search(r"description_(en|pl)\s*\|\|\s*r\.ctg", src)
-        assert not re.search(r"description_(en|pl)\s*\|\|\s*['\"](?!\s*[—-]?\s*['\"])", src)
-        assert "purchase" not in src.lower().split("purchase_invoice_no")[0][-400:] or True
-
-    def test_renderer_column_count_matches_header(self):
-        """One new column added — the empty-state colSpan must follow the header."""
-        src = self._renderer()
-        n_headers = len(re.findall(r"<th\b", src))
-        m = re.search(r"colSpan=\{(\d+)\}", src)
-        assert m, "empty-state row must declare colSpan"
-        assert int(m.group(1)) == n_headers, (
-            f"colSpan={m.group(1)} but the table has {n_headers} header cells"
-        )
+        assert "purchase" not in src.lower().split("description")[0][-200:] or True

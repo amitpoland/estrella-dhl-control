@@ -283,12 +283,16 @@ def test_preview_doc_data_carries_vat_totals(detail_jsx):
 
 
 def test_packing_colour_stone_and_weights_and_origin(detail_jsx):
-    pack = detail_jsx.split("const packingListData")[1].split("const draftState")[0]
-    assert "ln.color_weight" in pack
-    assert "Number(ln.gross_weight)" in pack
-    assert "Number(ln.net_weight)" in pack
-    assert "origin:       (ln.origin || '').trim() || '—'," in pack
-    assert "'India'" not in pack
+    assert "const packingListData" not in detail_jsx
+    packing_py = (
+        Path(__file__).resolve().parents[1]
+        / "app" / "services" / "commercial_packing_list.py"
+    ).read_text(encoding="utf-8")
+    assert 'ln.get("color_weight")' in packing_py
+    assert 'ln.get("gross_weight")' in packing_py
+    assert 'ln.get("net_weight")' in packing_py
+    assert 'ln.get("origin")' in packing_py
+    assert "'India'" not in packing_py.split("rows.append")[1][:1500]
 
 
 def test_converge_seeds_vat_step():

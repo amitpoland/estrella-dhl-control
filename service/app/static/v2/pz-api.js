@@ -121,6 +121,29 @@
     return { ok: true, filename: name };
   }
 
+  async function _getText(url) {
+    let res;
+    try {
+      res = await fetch(url, { credentials: 'include' });
+    } catch (_) {
+      throw new Error('Service unreachable — check that the backend is running.');
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('Session expired or access denied.');
+    }
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j && j.detail) {
+          detail = (typeof j.detail === 'object' && j.detail.error) ? j.detail.error : j.detail;
+        }
+      } catch (_) { /* ignore */ }
+      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    }
+    return res.text();
+  }
+
   // Multipart upload reusing _apiFetch auth; returns parsed JSON (preview/commit result).
   async function _uploadCsv(url, file) {
     const fd = new FormData();
@@ -2230,12 +2253,20 @@
         `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/packing-list.pdf`,
         `packing-list-draft-${draftId}.pdf`,
       ),
+    getPackingListDocument: (draftId) =>
+      _get(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/packing-list.json`),
+    getPackingListHtml: (draftId) =>
+      _getText(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/packing-list.html`),
     // GET cmr.pdf — SAME exporter as Delivery Confirmation attachment.
     downloadCmrPdf: (draftId) =>
       _download(
         `${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/cmr.pdf`,
         `cmr-draft-${draftId}.pdf`,
       ),
+    getCmrDocument: (draftId) =>
+      _get(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/cmr.json`),
+    getCmrHtml: (draftId) =>
+      _getText(`${BASE}/shipment-documents/draft/${encodeURIComponent(draftId)}/cmr.html`),
 
     // POST /api/v1/carrier/{batch_id}/label-package — Path-DOC commercial package.
     // Streams PDF/ZIP AND persists under doc_packages/. Uses raw fetch (not

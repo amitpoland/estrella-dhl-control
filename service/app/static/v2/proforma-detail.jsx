@@ -608,7 +608,7 @@ async function _ejDownloadRenderedSheetPdf(filenameBase, orientation) {
   }
 }
 
-function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, cmrData, packingData, draftId, onClose, onEditRequest }) {
+function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDocTypeChange, draftId, onClose, onEditRequest }) {
   // Portrait A4 (794px) → 0.88 fits 900px wrap.
   // Landscape A4 (1123px) → 0.87 fits 1200px wrap.
   // activeType MUST be declared before SCALE — SCALE depends on it.
@@ -616,43 +616,80 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
   const SCALE = activeType === 'packing' ? 0.87 : 0.88;
   const [pdfBusy, setPdfBusy] = React.useState(false);
   const [pdfErr, setPdfErr] = React.useState(null);
+  const [canonHtml, setCanonHtml] = React.useState(null);
+  const [canonBusy, setCanonBusy] = React.useState(false);
+  const [canonErr, setCanonErr] = React.useState(null);
+  const [canonMeta, setCanonMeta] = React.useState(null);
 
-  // Variant selection per document type
-  const variantOptions = activeType === 'cmr'     ? ['classic', 'modern']
-                       : activeType === 'packing'  ? ['classic']
-                       : ['classic', 'modern', 'bold'];
+  // Packing List + CMR: ONE server HTML presentation (same source Chrome prints).
+  // Proforma keeps React EJProforma* variants (out of this campaign's scope).
+  React.useEffect(() => {
+    if (activeType !== 'packing' && activeType !== 'cmr') {
+      setCanonHtml(null);
+      setCanonErr(null);
+      setCanonMeta(null);
+      return undefined;
+    }
+    if (!draftId || !window.PzApi) {
+      setCanonErr('Draft id required for canonical document preview.');
+      setCanonHtml(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setCanonBusy(true);
+    setCanonErr(null);
+    const htmlP = activeType === 'packing'
+      ? window.PzApi.getPackingListHtml(draftId)
+      : window.PzApi.getCmrHtml(draftId);
+    const metaP = activeType === 'packing'
+      ? window.PzApi.getPackingListDocument(draftId)
+      : window.PzApi.getCmrDocument(draftId);
+    Promise.all([htmlP, metaP])
+      .then(([html, meta]) => {
+        if (cancelled) return;
+        setCanonHtml(html);
+        setCanonMeta(meta || null);
+      })
+      .catch(e => {
+        if (cancelled) return;
+        setCanonHtml(null);
+        setCanonMeta(null);
+        setCanonErr((e && e.message) || 'Failed to load canonical document');
+      })
+      .finally(() => { if (!cancelled) setCanonBusy(false); });
+    return () => { cancelled = true; };
+  }, [activeType, draftId]);
 
-  // Component resolution
+  // Packing/CMR have a single canonical presentation — no React layout variants.
+  const variantOptions = (activeType === 'cmr' || activeType === 'packing')
+    ? []
+    : ['classic', 'modern', 'bold'];
+
   let DocVariant = null;
-  if (activeType === 'cmr') {
-    DocVariant = variant === 'modern'
-      ? (window.EJCMRModern  || null)
-      : (window.EJCMRClassic || null);
-  } else if (activeType === 'packing') {
-    DocVariant = window.EJPackingList || null;
-  } else {
+  if (activeType === 'proforma') {
     DocVariant = variant === 'modern' ? (window.EJProformaModern || null)
                : variant === 'bold'   ? (window.EJProformaBold   || null)
                : (window.EJProformaClassic || null);
   }
 
-  // Trap Escape key
   React.useEffect(() => {
     const onKey = e => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // Portal: render directly on <body> so print CSS `body > *:not(.ej-preview-overlay)`
-  // correctly hides the SPA container without hiding the overlay inside it.
+  const canonLabel = activeType === 'cmr'
+    ? ((canonMeta && canonMeta.cmr_no) || 'CMR')
+    : activeType === 'packing'
+    ? ((canonMeta && canonMeta.doc_ref) || 'Packing List')
+    : (docData && docData.doc_no);
+
   return ReactDOM.createPortal(
     <div
       className="ej-preview-overlay"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
       data-testid="proforma-preview-modal"
     >
-      {/* A4 print CSS — hides modal chrome, resets scale, sets page size.
-          Orientation is dynamic: landscape for Packing List, portrait for Proforma/CMR. */}
       <style>{`
         @media print {
           @page { size: A4 ${activeType === 'packing' ? 'landscape' : 'portrait'}; margin: ${activeType === 'packing' ? '0.5cm' : '0.8cm'}; }
@@ -665,17 +702,16 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
           .ej-preview-body { overflow: visible !important; height: auto !important; }
           .ej-preview-sheet { transform: none !important; transform-origin: top left !important; }
           .ej-preview-wrap { box-shadow: none !important; width: auto !important; }
+          .ej-canon-frame { border: none !important; width: 100% !important; height: auto !important; min-height: 1000px !important; }
         }
       `}</style>
       <div className="ej-preview-wrap" style={activeType === 'packing' ? {width: '1200px'} : {}}>
-        {/* Control bar */}
         <div className="ej-preview-bar">
           <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>Print Preview</span>
           <span style={{ color: '#7C89A3', fontSize: 11 }}>
-            Read-only · {activeType === 'cmr' ? (cmrData && cmrData.cmr_no) || '—' : docData.doc_no}
+            Read-only · {canonLabel || '—'}
           </span>
           <div style={{ display: 'flex', gap: 6, marginLeft: 'auto', alignItems: 'center' }}>
-            {/* Document type selector */}
             {[['proforma', 'Proforma'], ['cmr', 'CMR'], ['packing', 'Packing List']].map(([dt, label]) => (
               <button
                 key={dt}
@@ -695,24 +731,27 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
                 {label}
               </button>
             ))}
-            <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 2px' }}/>
-            {/* Variant selector (per doc type) */}
-            {variantOptions.map(v => (
-              <button
-                key={v}
-                onClick={() => onVariantChange(v)}
-                data-testid={`preview-variant-${v}`}
-                style={{
-                  padding: '4px 12px', borderRadius: 5, border: '1px solid',
-                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  borderColor: variant === v ? '#7C89A3' : '#2A3A52',
-                  background:  variant === v ? '#2A3A5240' : 'transparent',
-                  color:        variant === v ? '#C8D4E8'  : '#5A6A82',
-                }}
-              >
-                {v.charAt(0).toUpperCase() + v.slice(1)}
-              </button>
-            ))}
+            {variantOptions.length > 0 && (
+              <>
+                <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 2px' }}/>
+                {variantOptions.map(v => (
+                  <button
+                    key={v}
+                    onClick={() => onVariantChange(v)}
+                    data-testid={`preview-variant-${v}`}
+                    style={{
+                      padding: '4px 12px', borderRadius: 5, border: '1px solid',
+                      fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      borderColor: variant === v ? '#7C89A3' : '#2A3A52',
+                      background:  variant === v ? '#2A3A5240' : 'transparent',
+                      color:        variant === v ? '#C8D4E8'  : '#5A6A82',
+                    }}
+                  >
+                    {v.charAt(0).toUpperCase() + v.slice(1)}
+                  </button>
+                ))}
+              </>
+            )}
             <div style={{ width: 1, height: 20, background: '#2A3A52', margin: '0 4px' }}/>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -723,27 +762,20 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
                     setPdfErr(null);
                     setPdfBusy(true);
                     const finish = () => setPdfBusy(false);
-                    // Packing List: ONE server exporter (same bytes as email / Hub).
                     if (activeType === 'packing' && draftId && window.PzApi && window.PzApi.downloadPackingListPdf) {
                       window.PzApi.downloadPackingListPdf(draftId)
                         .catch(e => setPdfErr((e && e.message) || 'PDF download failed'))
                         .finally(finish);
                       return;
                     }
-                    // CMR: ONE server exporter (same bytes as Delivery Confirmation).
                     if (activeType === 'cmr' && draftId && window.PzApi && window.PzApi.downloadCmrPdf) {
                       window.PzApi.downloadCmrPdf(draftId)
                         .catch(e => setPdfErr((e && e.message) || 'PDF download failed'))
                         .finally(finish);
                       return;
                     }
-                    const base = (activeType === 'cmr'
-                      ? ((cmrData && cmrData.cmr_no) || 'cmr')
-                      : ((docData && docData.doc_no) || 'proforma-preview'));
-                    _ejDownloadRenderedSheetPdf(
-                      String(base),
-                      activeType === 'packing' ? 'landscape' : 'portrait',
-                    )
+                    const base = (docData && docData.doc_no) || 'proforma-preview';
+                    _ejDownloadRenderedSheetPdf(String(base), 'portrait')
                       .catch(e => setPdfErr((e && e.message) || 'PDF download failed'))
                       .finally(finish);
                   }}
@@ -759,7 +791,14 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
                 <button
                   data-testid="preview-print"
                   onClick={() => {
-                    // Temporarily remove scale so print renders at true A4 size
+                    if (activeType === 'packing' || activeType === 'cmr') {
+                      const frame = document.querySelector('.ej-canon-frame');
+                      if (frame && frame.contentWindow) {
+                        frame.contentWindow.focus();
+                        frame.contentWindow.print();
+                        return;
+                      }
+                    }
                     const sheet = document.querySelector('.ej-preview-sheet');
                     const prevT = sheet ? sheet.style.transform : null;
                     const prevO = sheet ? sheet.style.transformOrigin : null;
@@ -796,7 +835,6 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
           </div>
         </div>
 
-        {/* QA warnings — preview only, hidden in print */}
         {activeType === 'proforma' && docData.warnings && docData.warnings.length > 0 && (
           <div className="ej-no-print" style={{
             margin: '8px 16px 0',
@@ -817,54 +855,58 @@ function ProformaPreviewModal({ docData, variant, onVariantChange, docType, onDo
                 {w.code === 'NO_FX_RATE' && onEditRequest && (
                   <button
                     data-testid="warn-fix-fx-rate"
-                    onClick={() => { onClose(); onEditRequest(); }}
-                    style={{ marginLeft: 8, fontSize: 10, color: '#1a1a1a', background: '#F59E0B',
-                             border: 'none', borderRadius: 4, padding: '1px 7px', cursor: 'pointer',
-                             fontWeight: 600, verticalAlign: 'middle' }}
-                  >Set NBP rate in Overview ↗</button>
-                )}
-                {w.code === 'NO_ISSUE_DATE' && onEditRequest && (
-                  <button
-                    data-testid="warn-fix-issue-date"
-                    onClick={() => { onClose(); onEditRequest(); }}
-                    style={{ marginLeft: 8, fontSize: 10, color: '#1a1a1a', background: '#F59E0B',
-                             border: 'none', borderRadius: 4, padding: '1px 7px', cursor: 'pointer',
-                             fontWeight: 600, verticalAlign: 'middle' }}
-                  >Set issue date in Overview ↗</button>
-                )}
-                {w.code === 'MISSING_ORIGIN' && (
-                  <div data-testid="warn-origin-authority"
-                       style={{ fontSize: 10, color: '#D4A600', marginTop: 3, lineHeight: 1.4 }}>
-                    Origin is governed by Product Master (product_local.origin_country) — correct it there, not here.{' '}
-                    <a href="/v2/master?entity=products" style={{ color: '#F59E0B' }} target="_self">Open Product Master ↗</a>
-                  </div>
+                    onClick={onEditRequest}
+                    style={{
+                      marginLeft: 8, padding: '1px 8px', fontSize: 10, fontWeight: 600,
+                      color: '#F59E0B', background: 'transparent', border: '1px solid #7C4A00',
+                      borderRadius: 4, cursor: 'pointer',
+                    }}
+                  >
+                    Fix in Overview
+                  </button>
                 )}
               </div>
             ))}
           </div>
         )}
 
-        {/* Document body */}
-        <div className="ej-preview-body">
-          {DocVariant ? (
+        <div className="ej-preview-body" data-testid="preview-body">
+          {(activeType === 'packing' || activeType === 'cmr') ? (
+            canonBusy ? (
+              <div style={{ padding: 40, color: '#64748B', fontSize: 13 }} data-testid="canonical-doc-loading">
+                Loading canonical {activeType === 'cmr' ? 'CMR' : 'Packing List'}…
+              </div>
+            ) : canonErr ? (
+              <div style={{ padding: 40, color: '#F87171', fontSize: 13 }} data-testid="canonical-doc-error">
+                {canonErr}
+              </div>
+            ) : canonHtml ? (
+              <iframe
+                className="ej-canon-frame"
+                title={activeType === 'cmr' ? 'Canonical CMR' : 'Canonical Packing List'}
+                data-testid={`canonical-${activeType}-frame`}
+                srcDoc={canonHtml}
+                style={{
+                  width: '100%',
+                  minHeight: activeType === 'packing' ? 820 : 1100,
+                  border: '1px solid #2A3A52',
+                  background: '#fff',
+                  borderRadius: 4,
+                }}
+              />
+            ) : (
+              <div style={{ padding: 40, color: '#64748B', fontSize: 13 }}>No document.</div>
+            )
+          ) : DocVariant ? (
             <div
               className="ej-preview-sheet"
               style={{ transform: `scale(${SCALE})`, transformOrigin: 'top center' }}
             >
-              {activeType === 'cmr'
-                ? <DocVariant cmrData={cmrData}/>
-                : activeType === 'packing'
-                ? <DocVariant packingData={packingData}/>
-                : <DocVariant docData={docData}/>
-              }
+              <DocVariant docData={docData}/>
             </div>
           ) : (
             <div style={{ padding: 40, color: '#64748B', fontSize: 13 }}>
-              Print preview requires {
-                activeType === 'cmr'     ? 'estrella-doc-cmr.jsx'
-                : activeType === 'packing' ? 'estrella-doc-packing.jsx'
-                : 'estrella-doc-proforma.jsx'
-              } to be loaded.
+              Print preview requires estrella-doc-proforma.jsx to be loaded.
             </div>
           )}
         </div>
@@ -5468,6 +5510,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   const [showPostModal,    setShowPostModal]     = React.useState(false);
   const [cloning,          setCloning]           = React.useState(false);
   const [showPreview,      setShowPreview]       = React.useState(false);
+
+  // Canonical CMR projection state — effect runs AFTER liveDraft/carrierShipment
+  // are declared (see below). Logistics consumes server cmr.json only.
+  const [canonicalCmr, setCanonicalCmr] = React.useState(null);
+  const [canonicalCmrErr, setCanonicalCmrErr] = React.useState(null);
+
   const [previewVariant,   setPreviewVariant]    = React.useState('classic');
   const [previewDocType,   setPreviewDocType]    = React.useState('proforma');
 
@@ -5566,6 +5614,26 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       .catch(() => setCarrierShipment(null));
   }, [draft && draft.batch_id, draft && draft.client_name]);
   React.useEffect(() => { loadCarrierShipment(); }, [loadCarrierShipment]);
+
+  // Canonical CMR projection — Logistics + Preview consume server cmr.json only.
+  // No local party/line/carrier remapping (single document authority).
+  React.useEffect(() => {
+    const id = (liveDraft && liveDraft.id) || (draft && draft.id);
+    if (!id || !window.PzApi || !window.PzApi.getCmrDocument) {
+      setCanonicalCmr(null);
+      return undefined;
+    }
+    let cancelled = false;
+    window.PzApi.getCmrDocument(id)
+      .then(doc => { if (!cancelled) { setCanonicalCmr(doc); setCanonicalCmrErr(null); } })
+      .catch(e => { if (!cancelled) { setCanonicalCmr(null); setCanonicalCmrErr((e && e.message) || 'CMR load failed'); } });
+    return () => { cancelled = true; };
+  }, [
+    liveDraft && liveDraft.id,
+    liveDraft && liveDraft.updated_at,
+    carrierShipment && carrierShipment.tracking_ref,
+    carrierShipment && carrierShipment.idempotency_key,
+  ]);
 
   // Slice A — linked return DRAFT (prepare only; Live Create = HOLD).
   const [returnDraft, setReturnDraft] = React.useState(null);
@@ -6278,131 +6346,12 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       return w;
     })(),
   };
-  // ── cmrData for CMR preview (EJCMRClassic / EJCMRModern) ─────────────────
-  // No CMR backend route exists — this is client-side preview only.
-
-  // Country code → full name for CMR origin/destination display (ISO 3166-1
-  // alpha-2). Coverage = Estrella's real origin/destination footprint — the
-  // DISTINCT country set pulled from production data (Customer Master
-  // country + ship_to_country, wFirma customer countries, and goods origins
-  // IN/PL), plus the reviewer-flagged common destinations (JP/US/AE). Codes
-  // are data-derived, not guessed. An unlisted code still passes through
-  // honestly as the raw 2-letter code (see _cmrCountryName) — honest, not wrong.
-  const _CMR_COUNTRY_NAMES = {
-    // EU / EEA
-    PL: 'Poland',         LT: 'Lithuania',  DE: 'Germany',      CZ: 'Czech Republic',
-    SK: 'Slovakia',       HU: 'Hungary',    RO: 'Romania',      FR: 'France',
-    IT: 'Italy',          ES: 'Spain',      NL: 'Netherlands',  BE: 'Belgium',
-    AT: 'Austria',        DK: 'Denmark',    SE: 'Sweden',       FI: 'Finland',
-    EE: 'Estonia',        LV: 'Latvia',     IE: 'Ireland',      BG: 'Bulgaria',
-    SI: 'Slovenia',
-    // Rest of Europe
-    GB: 'United Kingdom', CH: 'Switzerland', NO: 'Norway',      UA: 'Ukraine',
-    BY: 'Belarus',
-    // Rest of world
-    IN: 'India',          US: 'United States', AE: 'United Arab Emirates',
-    CN: 'China',          SG: 'Singapore',  KR: 'South Korea',  JP: 'Japan',
-    AU: 'Australia',      MU: 'Mauritius',
-  };
-  const _cmrCountryName = (code) => (code && (_CMR_COUNTRY_NAMES[code] || code)) || '';
-
-  // ── CMR packing-line parsers (human-readable labels, no HS/CN codes) ─────────
-  // Metal code → human label: "14KT/W" → "14 Karat White Gold"
-  const _CMR_KARAT = { '18KT': '18 Karat', '14KT': '14 Karat', '22KT': '22 Karat', '9KT': '9 Karat' };
-  const _CMR_COLOR = {
-    W: 'White Gold',  Y: 'Yellow Gold', P: 'Pink Gold',   RG: 'Rose Gold',
-    WY: 'White & Yellow Gold', WP: 'White & Pink Gold',  YP: 'Yellow & Pink Gold',
-    TRI: 'Tri-Color Gold',
-  };
-  const _parseMetal = (metal) => {
-    if (!metal) return '';
-    const parts = (metal || '').toUpperCase().split('/');
-    const karat = _CMR_KARAT[parts[0]] || parts[0] || '';
-    const color = _CMR_COLOR[parts[1]] || parts[1] || '';
-    return [karat, color].filter(Boolean).join(' ');
-  };
-  // Stone type → human label
-  const _CMR_STONE = {
-    DIA: 'Diamond',     CLS: 'Coloured Stone', CS: 'Coloured Stone',
-    RUBY: 'Ruby',       EMERALD: 'Emerald',    SAPPHIRE: 'Sapphire',
-    PEARL: 'Pearl',     CORAL: 'Coral',
-  };
-  const _parseStone = (s) => {
-    if (!s) return '';
-    return _CMR_STONE[(s || '').toUpperCase()] || s;
-  };
-  // Item type → human label
-  const _CMR_ITEM = {
-    PND: 'Pendant', PENDANT: 'Pendant', RNG: 'Ring', RING: 'Ring',
-    EAR: 'Earrings', EARRINGS: 'Earrings', BRL: 'Bracelet', BRACELET: 'Bracelet',
-    NKL: 'Necklace', NECKLACE: 'Necklace', BRO: 'Brooch', SET: 'Set',
-    CHAIN: 'Chain',  BANGLE: 'Bangle',
-  };
-  const _cmrItemLabel = (t) => _CMR_ITEM[(t || '').toUpperCase()] || t || '';
-
-  // CMR transport summary — aggregated by item_type ONLY (not metal/stone per line)
-  // CMR is a logistics document; carrier needs item totals, not 146 design rows.
-  // Metal and stone types surface as a single goods_summary description, not per-line columns.
-  // Returns { lines: [{item_type, qty, net_weight, origin}], goods_summary, total_qty }
-  const _cmrAggPackingLines = (() => {
-    // CMR totals aggregate ONLY this draft's billed editable_lines (qty authority),
-    // enriched with physical metal/stone/weight from the matched batch packing row.
-    // Never aggregates the full-shipment batch packing (which spans all clients).
-    const _el = liveDraft.editable_lines || [];
-    if (!_el.length) {
-      return { lines: [], goods_summary: '', total_qty: 0 };
-    }
-    const groups = {};
-    const metals  = new Set();
-    const stones  = new Set();
-    let totalQty  = 0;
-    for (const ln of _el) {
-      const pk = _enrichPacking(ln);                       // batch row (enrichment only)
-      const itemType = ln.item_type || pk.item_type || 'other';
-      const key = String(itemType).toUpperCase();
-      if (!groups[key]) {
-        // Origin authority = shared Product Master via per-line ln.origin (GET enrich).
-        // Honest null when the authority has none. Never invent / never purchase-packing /
-        // never seller country. Same ISO code consumed by Proforma + Packing List.
-        groups[key] = { item_type: _cmrItemLabel(itemType), qty: 0, net_weight: null,
-                        origin: (ln.origin || '').trim() || null };
-      }
-      const q = Number(ln.qty) || 0;                       // DRAFT billed qty (authority)
-      groups[key].qty += q;
-      totalQty        += q;
-      const nw = Number(pk.net_weight) || 0;               // physical weight (enrichment)
-      if (nw > 0) groups[key].net_weight = (groups[key].net_weight || 0) + nw;
-      const m = _parseMetal(pk.metal);       if (m) metals.add(m);
-      const s = _parseStone(pk.stone_type);  if (s) stones.add(s);
-    }
-    const metalsStr    = Array.from(metals).join(' & ');
-    const stonesStr    = Array.from(stones).join(' & ');
-    const goods_summary = [metalsStr, stonesStr].filter(Boolean).join(' · ');
-    return {
-      lines:       Object.values(groups).sort((a, b) => (a.item_type > b.item_type ? 1 : -1)),
-      goods_summary,    // e.g. "14 Karat Pink Gold & 14 Karat White Gold · Diamond"
-      total_qty:   totalQty,
-    };
-  })();
-  // ────────────────────────────────────────────────────────────────────────────
-
-  // Insurance: show canonical wording when a non-zero insurance charge exists on the draft
-  const _CMR_INSURANCE_TEXT =
-    'Yes — Insurance covers the Door to Door delivery of this package by Future Generali India Insurance Company Limited';
-  const _cmrHasInsurance = (liveDraft.service_charges || []).some(
-    c => (c.charge_type || '').toLowerCase() === 'insurance' && (Number(c.amount) || 0) > 0
-  );
-
-  // Total pieces: packing list authority when available, otherwise proforma editable lines
-  const _cmrTotalPcs = _cmrAggPackingLines.total_qty > 0
-    ? _cmrAggPackingLines.total_qty
-    : lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
-
-  // ── PR-5 Transport Document Authority — the ONE resolver ────────────────────
+  // ── PR-5 Transport Document Authority — Logistics weight / booking projection ─
   // Draft → shipment resolver → { shipment identity, carrier, service, AWB,
-  // tracking, status, effectiveWeight, cmr_number, audit }. The CMR, Packing List
-  // and Logistics panel consume THIS object only — React never assembles transport
-  // identity from multiple API responses.
+  // tracking, status, effectiveWeight, cmr_number, audit }. Logistics panel
+  // consumes THIS object for weight tiles and booking identity.
+  // CMR *document* (parties/lines/carrier form) comes from commercial_cmr via
+  // getCmrDocument / cmr.html — do not rebuild that projection here.
   //
   // Weight precedence (fixed; never inferred/averaged/divided):
   //   net   : manual → packing extraction → missing
@@ -6496,225 +6445,10 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
   })();
   const _ew = _transport.effectiveWeight;
 
-  const cmrPreviewData = {
-    // Stable transport-document number — the export shipment reference, NOT the AWB.
-    // Honestly null (renderer shows the reason) when the carrier authority has no id.
-    cmr_no:   _transport.cmr_number || null,
-    cmr_number_missing_reason: _transport.cmr_number_reason,
-    // Import batch id kept as internal provenance only — never the AWB.
-    batch_ref: _transport.batch_ref,
-    // Shared effective-weight read model (same object the Packing List uses).
-    effective_net_kg:    _ew.net,
-    effective_net_source:   _ew.net_source,
-    effective_gross_kg:  _ew.gross,
-    effective_gross_source: _ew.gross_source,
-    doc_ref:  _previewLabel,
-    seller:   {
-      name:  exporter.name,
-      addr:  exporter.address,
-      // FIX #2: sender city (not country code)
-      city:  (companyProfile && companyProfile.postal_city) || '—',
-      vat:   exporter.vatEu,
-      email: (companyProfile && companyProfile.email) || '',
-      phone: (companyProfile && companyProfile.phone) || '',
-    },
-    shipto:   {
-      name:    shipTo.name,
-      addr:    shipTo.address,
-      // FIX #1: actual delivery city (not country code)
-      city:    (sto.city || bo.city) || '—',
-      zip:     (sto.zip  || bo.zip)  || '',   // FIX #1: postal code for Box 3 display
-      country: shipTo.country,
-    },
-    buyer:    { vat: customer.vatEu },
-    // PR-5: carrier block sourced from the ONE transport resolver (never assembled
-    // from multiple API responses). null → honest "Carrier AWB not yet assigned"
-    // placeholder in the renderer.
-    carrier:  _transport.linked ? {
-      name:        _transport.carrier,
-      awb:         _transport.outbound_awb,             // the booked OUTBOUND AWB (may change on rebook)
-      service:     _transport.service || '—',
-      tracking_url: _transport.tracking_url,
-      status:      _transport.status,
-      incoterm:    liveDraft.incoterm_resolved || liveDraft.incoterm || null,
-      // FIX #2: origin = sender city + country name (e.g. "Warszawa, Poland")
-      origin:      [
-        (companyProfile && companyProfile.postal_city) || null,
-        _cmrCountryName(exporter.country) || null,
-      ].filter(Boolean).join(', ') || '—',
-      destination: (sto.city || bo.city) || shipTo.country || customer.country || '—',
-      // FIX #3: total pieces from SALES packing list (proforma lines sum)
-      pieces:      _cmrTotalPcs > 0 ? _cmrTotalPcs : null,
-      // PR-5: effective gross weight (manual → carrier booking → packing).
-      weight_kg:   _ew.gross,
-      weight_source: _ew.gross_source,
-      dim_cm:      (_transport.dimensions && _transport.dimensions.length_cm != null)
-                     ? `${_transport.dimensions.length_cm}×${_transport.dimensions.width_cm}×${_transport.dimensions.height_cm}`
-                     : null,
-      // FIX #6: insurance wording when an insurance service charge exists on the proforma
-      insurance:   _cmrHasInsurance ? _CMR_INSURANCE_TEXT : null,
-      // Internal provenance — the import batch id, never shown as the AWB.
-      batch_ref:   _transport.batch_ref,
-    } : null,
-    // Honest missing state for the renderer when no outbound shipment is linked.
-    carrier_missing_reason: _transport.linked ? null : _transport.missing_reason,
-    goods_summary: _cmrAggPackingLines.goods_summary || '',
-    // CMR lines: aggregated by item_type ONLY — transport summary, not commercial detail
-    // Each entry: { item_type, qty, net_weight, origin } — 3-6 rows max
-    // Fallback to proforma lines when packing data not yet loaded.
-    // Origin authority = shared Product Master ISO on ln.origin (GET enrich);
-    // honest null when the authority has none — never a hardcoded country.
-    // Per-line origin is mapped through _cmrCountryName (the single CMR country-name
-    // authority, ISO-2 → full name e.g. "IN" → "India") so the Modern CMR line
-    // renderer (estrella-doc-cmr.jsx <td>{l.origin}</td>) prints the full country,
-    // consistent with goods_origin_country. _cmrCountryName is component-local, so
-    // the map is applied here (the CMR data contract — estrella-doc-cmr.jsx:21 states
-    // origin arrives as the full name) rather than duplicating the ISO table into the
-    // renderer. Honest-null preserved: unknown/blank origin → null (renderer shows
-    // "—"); an unknown ISO code passes through unchanged, never defaulted to India.
-    lines: (_cmrAggPackingLines.lines.length > 0
-      ? _cmrAggPackingLines.lines
-      : lines.map(l => ({ item_type: l.desc, qty: l.qty, net_weight: null,
-                          origin: (l.origin && l.origin !== '—') ? l.origin : null }))
-    ).map(_l => ({ ..._l, origin: _cmrCountryName(_l.origin) || null })),
-    // Typed goods-origin for the CMR goods block — distinct per-line origins from
-    // the SAME lines the document renders (Product Master authority), honest null
-    // when unknown so the renderer omits the label instead of guessing
-    // (2026-07-16 independent-review Condition 1: the renderer previously
-    // hardcoded "Country of Origin: India").
-    goods_origin_country: (() => {
-      const src = _cmrAggPackingLines.lines.length > 0
-        ? _cmrAggPackingLines.lines
-        : lines.map(l => ({ origin: (l.origin && l.origin !== '—') ? l.origin : null }));
-      const s = new Set();
-      for (const l of src) {
-        const o = String(l.origin || '').trim();
-        // Product Master stores ISO-2 codes ("IN"); print the full country name
-        // on the legal document. _cmrCountryName passes unknown/full names
-        // through unchanged, so "India" stays "India".
-        if (o && o !== '—') s.add(_cmrCountryName(o) || o);
-      }
-      return s.size ? Array.from(s).join(' / ') : null;
-    })(),
-  };
-  // ──────────────────────────────────────────────────────────────────────────
 
-  // Packing List PDF data — ONE commercial-document contract with Proforma/CMR.
-  //
-  // Authority split (2026-08-08):
-  //   Sales Packing → draft editable_lines (wireframe slice-1 passthrough):
-  //     client_po, karat/metal_color/quality, size, dia/col weights, qty, unit_price
-  //   Product descriptions → product_descriptions via shared `lines` view-model
-  //   Product Code → purchase-lot / draft product_code (pk fallback identity only)
-  //   Gross/net g → Purchase Packing physical extract (pk)
-  //   Origin → shared Product Master ISO via ln.origin (same as Proforma/CMR)
-  //   HSN → NOT printed on commercial packing list (removed from renderer)
-  //
-  // Never fall back commercial price/quality/PO to Purchase Packing.
-  // Currency: from draft (can vary per client — not hardcoded to EUR)
-  const packingListData = (() => {
-    const currency      = liveDraft.currency || 'EUR';
-    // ONE row per BILLED draft line (never the full-shipment batch packing).
-    // Iterates `lines` — the SAME line view-model the Proforma display and the
-    // Proforma document consume — so descriptions are selected in exactly one
-    // place (line.desc_en / line.desc_pl above). `line._raw` is that row's own
-    // editable line, preserving the existing per-line identity: several billed
-    // lines may share a product_code across designs, so nothing here may key
-    // off product_code alone.
-    const rows = lines.map((line, i) => {
-      const ln        = line._raw;
-      const pk        = _enrichPacking(ln); // purchase packing — physical/identity only
-      const qty       = Number(ln.qty) || 0;
-      // Commercial unit price = draft/Sales Packing only. Missing → 0 (honest),
-      // never supplier purchase packing unit_price_eur.
-      const unitPrice = Number(ln.unit_price) || 0;
-      const _kt = (ln.karat || (ln.metal || '').split('/')[0] || '').trim();
-      const _col = (ln.metal_color || (ln.metal || '').split('/')[1] || '').trim();
-      const _dia = Number(ln.diamond_weight);
-      const _cwt = Number(ln.color_weight);
-      return {
-        // SR is the packing-list's own sequential line number (1..N). Do NOT use
-        // the matched packing row's pack_sr — several billed lines can map to the
-        // same design (mixed lots), so pack_sr collides (e.g. JR04929 → 9 ×3) and
-        // leaves gaps/out-of-order rows. The draft's editable_lines are the row
-        // authority; number them sequentially.
-        sr:           line.seq,
-        ctg:          _cmrItemLabel(ln.item_type || pk.item_type),  // Pendant / Ring / Earrings
-        // Client PO = Sales Packing field on the draft line (slice-1 passthrough).
-        // Never Purchase Packing (no client_po column) and never pk.invoice_no
-        // (supplier purchase invoice — IMPORT_PZ). Missing → '' → renderer '—'.
-        client_po:    (ln.client_po || '').trim(),
-        // Supplier purchase-invoice number — its OWN typed field, kept separate
-        // from client_po above so the two identities never merge. This is a
-        // typed-SEPARATION GUARD, not a display field: it is INTENTIONALLY NOT
-        // RENDERED on any document. The supplier purchase invoice is IMPORT_PZ
-        // authority and must never appear on a customer-facing sales/transport
-        // document — the packing list carries invoice_ref (the wFirma SALES
-        // invoice, #937 authority) as its only invoice identity. The field exists
-        // solely to give pk.invoice_no its own landing so it can never bleed back
-        // into client_po; presence pinned by
-        // test_proforma_detail_client_po_never_bleeds_purchase_invoice. Rendering
-        // decision recorded: PROJECT_STATE.md DECISIONS 2026-07-18. Do not surface
-        // it without a new DECISIONS entry (Lesson M).
-        purchase_invoice_no: pk.invoice_no || '',
-        // Product Code = purchase-lot / draft identity; pk fallback for enrich only.
-        product_code: ln.product_code || pk.product_code || '—',
-        design:       ln.design_no    || pk.design_no    || '—',
-        // PASS-THROUGH of the ONE resolved view-model description (see `lines`
-        // above) — no lookup, no packing fallback, no reconstruction from
-        // item_type: a category abbreviation is not a description. Blank means
-        // the authority has no usable description; the draft carries
-        // ln._warnings for that and the document renders the neutral '—'.
-        description_en: line.desc_en,
-        description_pl: line.desc_pl,
-        // KT / colour / quality / size / stone weights = Sales Packing on ln.
-        kt:           _kt,
-        col:          _col,
-        quality:      (ln.quality_string || '').trim(),
-        dia_wt:       _dia > 0 ? _dia : null,
-        col_wt:       _cwt > 0 ? _cwt : null,
-        // Gross / net grams = draft line (GET attach_physical_weights) first,
-        // then purchase packing enrich. Never invent.
-        gross_wt:     Number(ln.gross_weight) > 0 ? Number(ln.gross_weight)
-                      : (Number(pk.gross_weight) > 0 ? Number(pk.gross_weight) : null),
-        net_wt:       Number(ln.net_weight) > 0 ? Number(ln.net_weight)
-                      : (Number(pk.net_weight) > 0 ? Number(pk.net_weight) : null),
-        qty,
-        unit_price:   unitPrice,
-        total_value:  unitPrice * qty,
-        size:         (ln.size || '').trim(),
-        // Origin = shared Product Master ISO via ln.origin (GET enrich). Honest '—'.
-        origin:       (ln.origin || '').trim() || '—',
-      };
-    });
-    const grand_total = rows.reduce((s, r) => s + r.total_value, 0);
-    const total_qty   = rows.reduce((s, r) => s + r.qty,         0);
-    return {
-      doc_ref:     _previewLabel,
-      // wFirma INVOICE FULL NUMBER (e.g. "FV 5/2026") on the packing-list document —
-      // never the internal numeric shell id (2026-07-16 transport repair). Routed
-      // through the single invoiceProjection authority (#937) instead of reading the
-      // draft mirror directly: invoiceNumber prefers the canonical invoice-link row and
-      // falls back to the draft's wfirma_invoice_number. Honest-null when no issued
-      // invoice number exists yet.
-      invoice_ref: invoiceProjection.invoiceNumber || null,
-      issued_date: commercialIssueDate || '',
-      seller:      cmrPreviewData.seller,
-      shipto:      cmrPreviewData.shipto,
-      buyer:       cmrPreviewData.buyer,
-      currency,
-      rows,
-      grand_total,
-      total_qty,
-      // Shared effective-weight read model — the SAME _transport.effectiveWeight
-      // object the CMR and Logistics panel consume, so the surfaces never disagree.
-      effective_net_kg:    _ew.net,
-      effective_net_source:   _ew.net_source,
-      effective_gross_kg:  _ew.gross,
-      effective_gross_source: _ew.gross_source,
-    };
-  })();
-  // ──────────────────────────────────────────────────────────────────────────
+  const _cmrTotalPcs = ((canonicalCmr && canonicalCmr.lines) || []).reduce(
+    (s, l) => s + (Number(l.qty) || 0), 0
+  ) || lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
 
   const draftState    = liveDraft.draft_state || liveDraft.status || (draft && draft.status) || '';
   // SINGLE READINESS AUTHORITY — backend-derived blockers. State gating says
@@ -7585,12 +7319,11 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         )}
         {activeTab === 'logistics' && (() => {
           // REUSE-ONLY read view (Wave 4 Item 12). Composes ONLY data this component
-          // already computes from existing authorities — the CMR document authority
-          // (cmrPreviewData), the draft's billed editable_lines, and matched batch
+          // already computes from existing authorities — the canonical CMR document (cmr.json), the draft's billed editable_lines, and matched batch
           // packing rows (net/gross weight enrichment). No new fetch, no new endpoint,
           // no new authority. Advisory transport summary — NEVER a fiscal gate.
-          const _car = cmrPreviewData.carrier || {};
-          const _wl  = _cmrAggPackingLines.lines || [];
+          const _car = (canonicalCmr && canonicalCmr.carrier) || {};
+          const _wl  = (canonicalCmr && canonicalCmr.lines) || [];
           const _netTotal = _wl.reduce((s, r) => s + (Number(r.net_weight) || 0), 0);
           // Gross total via the same per-line packing enrichment used for CMR.
           const _grossTotal = (liveDraft.editable_lines || []).reduce((s, ln) => {
@@ -7621,13 +7354,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 Read-only transport summary composed from this draft's billed lines, matched packing rows, and the CMR document authority. Advisory — never a fiscal gate.
               </div>
 
-              {/* Carrier / route — reuses cmrPreviewData.carrier + derived CMR number */}
+              {/* Carrier / route — reuses (canonicalCmr && canonicalCmr.carrier) || {} + derived CMR number */}
               <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 20px', marginBottom: 20, boxShadow: '0 1px 2px var(--shadow)' }} data-testid="pf-logistics-carrier">
                 {_kv('Carrier', _car.name || '—', 'pf-logistics-carrier-name')}
                 {_kv('Service', _car.service || '—', 'pf-logistics-service')}
                 {_kv('Incoterm', _car.incoterm || '—', 'pf-logistics-incoterm')}
                 {_kv('Route', [_car.origin, _car.destination].filter(v => v && v !== '—').join('  →  ') || '—', 'pf-logistics-route')}
-                {_kv('CMR No.', cmrPreviewData.cmr_no || '—', 'pf-logistics-cmr-no')}
+                {_kv('CMR No.', (canonicalCmr && canonicalCmr.cmr_no) || '—', 'pf-logistics-cmr-no')}
                 {_kv('Total pieces', _cmrTotalPcs > 0 ? _cmrTotalPcs : '—', 'pf-logistics-pieces')}
                 {/* HTML-parity: CMR preview/download in Logistics. Reuses the existing Print Preview
                    modal (CMR renderer) — no new endpoint; download = Download PDF inside the preview. */}
@@ -7682,8 +7415,8 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-weights-empty">No packing weight data matched for this draft's lines yet.</div>
               )}
               <div style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }} data-testid="pf-logistics-gross-total">Gross weight (enriched): <strong>{_fmtKgFromG(_grossTotal)}</strong></div>
-              {cmrPreviewData.goods_summary ? (
-                <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-goods-summary">Goods: {cmrPreviewData.goods_summary}</div>
+              {(canonicalCmr && canonicalCmr.goods_summary) ? (
+                <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 12 }} data-testid="pf-logistics-goods-summary">Goods: {(canonicalCmr && canonicalCmr.goods_summary)}</div>
               ) : null}
 
               {/* PR-5 — effective transport-document weights + manual override.
@@ -8006,8 +7739,6 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       {showPreview && (
         <ProformaPreviewModal
           docData={previewDocData}
-          cmrData={cmrPreviewData}
-          packingData={packingListData}
           draftId={(liveDraft && liveDraft.id) || (draft && draft.id) || null}
           variant={previewVariant}
           onVariantChange={setPreviewVariant}

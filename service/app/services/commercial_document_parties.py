@@ -1,12 +1,12 @@
 """ONE customer/ship-to party projection for commercial documents.
 
-Mirrors Proforma Preview rules in ``proforma-detail.jsx``:
+Authority for seller / buyer / ship-to on Packing List and CMR.
 
-  buyer  ← buyer_override (else client_name / Customer Master billing)
-  ship-to ← ship_to_override (else buyer)
+  buyer  ← draft buyer_override (else client_name / Customer Master billing)
+  ship-to ← draft ship_to_override (else buyer / delivery)
 
-Packing List and CMR must both call this — never re-resolve parties
-independently in a second mapper.
+Preview consumes this via packing-list.json / cmr.json. Exporters call the same
+helper. Do not re-implement party cascade in React.
 """
 from __future__ import annotations
 
