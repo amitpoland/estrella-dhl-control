@@ -484,15 +484,14 @@ def _build_row(
     invoice_date = (fact.get("date") or "").strip()
     # Inv CIF — document-currency gross, UN-rounded (Blockers 2 + 3).
     #
-    # CIF authority (proven, not assumed): verified read-only against the
-    # four May-2026 WDT documents named in the operator's repair directive.
-    # On real WDT invoices wFirma omits <brutto>, puts the PLN conversion in
-    # <netto>, and carries the document-currency gross in <total>
-    # (== <total_composed> == sum of line nettos == sum of line bruttos; all
-    # four reconciled exactly against the historical statement CIF). The
-    # fact universe's "brutto" key is ledger_aggregator._invoice_gross_raw,
-    # which resolves brutto → total → total_brutto — i.e. exactly that
-    # proven document-currency gross on both domestic and WDT documents.
+    # CIF field authority is not asserted here; it is evidenced in
+    # reports/inspection/2026-08-15-insurance-cif-authority.md — a read-only
+    # reconciliation of four real May-2026 WDT documents (EUR + USD) against
+    # the historical statement CIF, 4/4 matched, canonical field <total>.
+    # The fact universe's "brutto" key is ledger_aggregator._invoice_gross_raw
+    # (brutto → total → total_brutto), which yields that field on WDT
+    # documents and <brutto> on domestic ones. Re-run the reconciliation in
+    # that artifact before changing this line.
     cif = _dec(fact.get("brutto"))
 
     draft = _link_draft(invoice_id, db_path)
