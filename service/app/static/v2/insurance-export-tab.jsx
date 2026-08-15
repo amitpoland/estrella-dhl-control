@@ -310,11 +310,22 @@ function InsuranceExportTab() {
   const recoveredEntries = Object.keys(recovered).sort().slice(0, 4);
   const reportTotals = (report && report.report_totals) || {};
   const selectedCount = selDocs.size + selAdjs.size;
+  // Row counts only — never a monetary aggregate (the server owns every total).
+  const reportRowCount = (report ? report.contractors || [] : []).reduce((n, grp) => {
+    const rows = grp.rows || [];
+    return n + rows.length
+      + rows.reduce((m, r) => m + (r.adjustments || []).length, 0)
+      + (grp.unattached_adjustments || []).length;
+  }, 0);
 
   const declarationTotal = preview && preview.declaration_totals
     ? preview.declaration_totals.sum_insured_inr_grand
     : null;
 
+  const insLabelStyle = {
+    fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)',
+    textTransform: 'uppercase', letterSpacing: '0.07em',
+  };
   const inputStyle = {
     background: 'var(--surface)', border: '1px solid var(--border)',
     color: 'var(--text)', borderRadius: 4, padding: '4px 8px', fontSize: 11,
@@ -668,75 +679,103 @@ function InsuranceExportTab() {
         </React.Fragment>
       )}
 
-      {/* PDF review drawer */}
+      {/* PDF composer — canonical Modal (backdrop, scrollable body, fixed action row) */}
       {drawerOpen && (
-        <div data-testid="ins-export-drawer" style={{
-          position: 'fixed', top: 0, right: 0, bottom: 0, width: 320, zIndex: 60,
-          background: 'var(--surface)', borderLeft: '1px solid var(--border)',
-          boxShadow: '-8px 0 24px rgba(0,0,0,0.25)', padding: '20px 18px',
-          display: 'flex', flexDirection: 'column', gap: 14,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            <div style={{ fontSize: 14, fontWeight: 800, flex: 1 }}>Declaration PDF</div>
-            <button data-testid="ins-export-drawer-close" onClick={() => setDrawerOpen(false)} style={btnOutline}>✕</button>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-2)' }}>
-            Period {period.from} → {period.to}. The server re-resolves the {selectedCount} selected
-            row{selectedCount === 1 ? '' : 's'} from canonical authority before rendering.
+        <Modal
+          title="Declaration PDF"
+          data-testid="ins-export-drawer"
+          onClose={() => setDrawerOpen(false)}
+          footer={
+            <React.Fragment>
+              <span style={{ marginRight: 'auto', fontSize: 10.5, color: 'var(--text-3)' }}>
+                {selectedCount === 0
+                  ? 'Select at least one row to generate the declaration.'
+                  : `${selectedCount} row${selectedCount === 1 ? '' : 's'} will be declared.`}
+              </span>
+              <button data-testid="ins-export-drawer-close" onClick={() => setDrawerOpen(false)} style={btnOutline}>
+                Cancel
+              </button>
+              <button
+                data-testid="ins-export-download"
+                onClick={downloadPdf}
+                disabled={downloading || selectedCount === 0}
+                style={{
+                  ...btnGold, padding: '9px 14px', fontSize: 12,
+                  opacity: downloading || selectedCount === 0 ? 0.6 : 1,
+                  cursor: downloading || selectedCount === 0 ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {downloading ? 'Rendering…' : 'Download PDF'}
+              </button>
+            </React.Fragment>
+          }
+        >
+          <div data-testid="ins-export-drawer-period" style={{ fontSize: 11.5, color: 'var(--text-2)', marginBottom: 12 }}>
+            Period <strong>{period.from} → {period.to}</strong>. The server re-resolves every selected
+            row from canonical authority before rendering — nothing is totalled in the browser.
           </div>
 
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, cursor: 'pointer' }}>
-            <input
-              type="checkbox" data-testid="ins-export-opt-documents"
-              checked={pdfOptions.includeDocuments}
-              onChange={e => setPdfOptions(o => ({ ...o, includeDocuments: e.target.checked }))}
-            />
-            Include documents
-          </label>
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, cursor: 'pointer' }}>
-            <input
-              type="checkbox" data-testid="ins-export-opt-adjustments"
-              checked={pdfOptions.includeAdjustments}
-              onChange={e => setPdfOptions(o => ({ ...o, includeAdjustments: e.target.checked }))}
-            />
-            Include return adjustments
-          </label>
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, cursor: 'pointer' }}>
-            <input
-              type="checkbox" data-testid="ins-export-opt-recovered"
-              checked={pdfOptions.recoveredColumn}
-              onChange={e => setPdfOptions(o => ({ ...o, recoveredColumn: e.target.checked }))}
-            />
-            Insurance Recovered column
-          </label>
+          <div data-testid="ins-export-drawer-selection" style={{
+            display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center',
+            padding: '10px 12px', borderRadius: 8, marginBottom: 14,
+            background: 'var(--surface-2, var(--surface))', border: '1px solid var(--border)',
+          }}>
+            <div>
+              <div style={insLabelStyle}>Included</div>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{selectedCount}</div>
+            </div>
+            <div>
+              <div style={insLabelStyle}>Excluded</div>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{Math.max(reportRowCount - selectedCount, 0)}</div>
+            </div>
+            <div>
+              <div style={insLabelStyle}>Declaration total</div>
+              <div style={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                {previewLoading
+                  ? <span><span className="spinner" /> …</span>
+                  : (declarationTotal !== null
+                      ? <span><InsMoney value={declarationTotal} /> INR</span>
+                      : '—')}
+              </div>
+            </div>
+          </div>
+
+          <div style={insLabelStyle}>Output options</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox" data-testid="ins-export-opt-documents"
+                checked={pdfOptions.includeDocuments}
+                onChange={e => setPdfOptions(o => ({ ...o, includeDocuments: e.target.checked }))}
+              />
+              Include documents
+            </label>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox" data-testid="ins-export-opt-adjustments"
+                checked={pdfOptions.includeAdjustments}
+                onChange={e => setPdfOptions(o => ({ ...o, includeAdjustments: e.target.checked }))}
+              />
+              Include return adjustments
+            </label>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox" data-testid="ins-export-opt-recovered"
+                checked={pdfOptions.recoveredColumn}
+                onChange={e => setPdfOptions(o => ({ ...o, recoveredColumn: e.target.checked }))}
+              />
+              Insurance Recovered column
+            </label>
+          </div>
 
           {downloadError ? (
             <div data-testid="ins-export-download-error" style={{
-              padding: '10px 12px', borderRadius: 6, fontSize: 11,
+              marginTop: 14, padding: '10px 12px', borderRadius: 6, fontSize: 11,
               background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
               color: 'var(--badge-red-text)',
             }}>{downloadError}</div>
           ) : null}
-
-          <div style={{ flex: 1 }} />
-          <button
-            data-testid="ins-export-download"
-            onClick={downloadPdf}
-            disabled={downloading || selectedCount === 0}
-            style={{
-              ...btnGold, padding: '9px 12px', fontSize: 12,
-              opacity: downloading || selectedCount === 0 ? 0.6 : 1,
-              cursor: downloading || selectedCount === 0 ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {downloading ? 'Rendering…' : 'Download PDF'}
-          </button>
-          {selectedCount === 0 ? (
-            <div style={{ fontSize: 10.5, color: 'var(--text-3)', textAlign: 'center' }}>
-              Select at least one row to generate the declaration.
-            </div>
-          ) : null}
-        </div>
+        </Modal>
       )}
     </div>
   );
