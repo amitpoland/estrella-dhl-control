@@ -2452,6 +2452,16 @@
     previewInsuranceDeclaration: (body) =>
       _post(`${BASE}/accounting/insurance-export/declaration-preview`, body),
 
+    // Charge convergence — reconciles the recovered-premium authority against
+    // the issued wFirma documents. Body: {from, to} or {months}, plus apply.
+    // Without apply it is a dry run: it computes every decision and writes
+    // nothing, and the response carries the full reconciliation artifact.
+    runInsuranceChargeConvergence: (body) =>
+      _post(`${BASE}/accounting/insurance-export/charge-convergence/run`, body || {}),
+
+    getInsuranceChargeConvergenceStatus: () =>
+      _get(`${BASE}/accounting/insurance-export/charge-convergence/status`),
+
     // POST declaration.pdf — blob download. The shared _download helper is
     // GET-only, so this performs the POST-blob fetch inline (cookie auth).
     downloadInsuranceExportPdf: async (body, fallbackName) => {

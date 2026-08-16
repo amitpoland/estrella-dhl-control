@@ -5,7 +5,7 @@ recommendation engine (evidence-based, never country-based), insurance
 recovered read-verbatim semantics, correction correlation, grouping,
 and error mapping.
 
-Strategy: patch the five authority imports on the service module itself
+Strategy: patch the authority imports on the service module itself
 (``insurance_export_statement`` imported them by name), keep
 ``resolve_commercial_charges`` REAL so the persisted-charge semantics are
 exercised end-to-end.
@@ -88,6 +88,7 @@ class Harness:
     def __init__(self, monkeypatch):
         self.facts = []
         self.drafts = {}       # invoice_id (str) -> draft namespace
+        self.invoiced = {}     # invoice_id (str) -> issued-document charge rows
         self.shipments = {}    # batch_id -> shipment dict
         self.rates = {}   # ccy -> operator-approved INR-per-unit str/float | Exception
         self.correction_xml = {}     # invoice_id (str) -> xml text | Exception
@@ -100,6 +101,11 @@ class Harness:
             ies,
             "get_draft_by_wfirma_invoice_id",
             lambda db, inv_id: self.drafts.get(str(inv_id)),
+        )
+        monkeypatch.setattr(
+            ies,
+            "get_document_charges",
+            lambda inv_id, path=None: self.invoiced.get(str(inv_id)),
         )
         monkeypatch.setattr(ies, "_batch_client_count", lambda db, batch: 1)
         monkeypatch.setattr(
@@ -177,12 +183,32 @@ INSURANCE_45_67 = {
 AWB_SHIPMENT = {"tracking_ref": "1234567890", "mode": "dhl"}
 
 
+def _invoiced(amount="45.67", currency="USD", conflict=""):
+    """What the ISSUED document billed — the recovered-premium authority.
+
+    Shaped exactly like ``commercial_charge_record_db.get_document_charges``.
+    A converged document that billed nothing carries an explicit ``0.00`` row;
+    an UNCONVERGED document has no entry at all (``None``), which is an
+    unknown, not a zero.
+    """
+    return [
+        {
+            "charge_type": "insurance",
+            "amount": amount,
+            "currency": currency,
+            "resolution": "invoiced",
+            "conflict_state": conflict,
+        }
+    ]
+
+
 # ── Row math + FX ────────────────────────────────────────────────────────
 
 
 def test_row_math_quantization(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
+    h.invoiced["101"] = _invoiced()
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
 
@@ -286,6 +312,7 @@ def test_recommendation_no_country_based_pickup(h):
     ]
     h.drafts["101"] = _draft(client_name="Polski Klient Sp. z o.o.",
                              charges=[INSURANCE_45_67])
+    h.invoiced["101"] = _invoiced()
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
 
@@ -366,6 +393,7 @@ def test_shipment_without_awb_needs_review(h):
 def test_external_shipment_mode_recommends_include(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
+    h.invoiced["101"] = _invoiced()
     h.shipments["BATCH-1"] = {"tracking_ref": "", "mode": "external"}
     h.rates["USD"] = "88.467460"
 
@@ -378,9 +406,10 @@ def test_external_shipment_mode_recommends_include(h):
 # ── Insurance recovered — verbatim from charge authority ────────────────
 
 
-def test_recovered_verbatim_manual_amount(h):
+def test_recovered_verbatim_from_the_issued_document(h):
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
+    h.invoiced["101"] = _invoiced()
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
 
@@ -388,41 +417,69 @@ def test_recovered_verbatim_manual_amount(h):
     assert row["insurance_recovered"] == {
         "amount": "45.67",
         "currency": "USD",
-        "resolution": "manual_amount",
+        "resolution": "invoiced",
     }
     assert row["status"] == InsuranceStatus.INCLUDED
 
 
-def test_waived_insurance_is_no_premium_advisory(h):
+def test_draft_intent_never_becomes_a_recovery(h):
+    """Census class B2 (WDT 155/2026) in miniature.
+
+    The draft snapshot carries a premium the issued document never billed.
+    The published recovery is what the DOCUMENT billed — 10.00 — and the
+    362.39 of pre-issue intent must not appear anywhere in the row.
+    """
     h.facts = [_fact("101")]
     h.drafts["101"] = _draft(
-        charges=[{"charge_type": "insurance", "resolution": "waived", "amount": 0}]
+        charges=[
+            {
+                "charge_type": "insurance",
+                "resolution": "calculated",
+                "amount": 362.39,
+                "currency": "USD",
+            }
+        ]
     )
+    h.invoiced["101"] = _invoiced(amount="10.00")
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
 
-    row = _only_row(_assemble())
-    rec = row["insurance_recovered"]
-    assert rec["resolution"] == "waived"
-    assert rec["amount"] == "0.00"
+    report = _assemble()
+    row = _only_row(report)
+    assert row["insurance_recovered"]["amount"] == "10.00"
+    assert report["report_totals"]["insurance_recovered"] == {"USD": "10.00"}
+
+
+def test_document_that_billed_nothing_is_a_proven_zero(h):
+    """Converged, insurance line absent: an answered 0.00, not an unknown."""
+    h.facts = [_fact("101")]
+    h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
+    h.invoiced["101"] = _invoiced(amount="0.00")
+    h.shipments["BATCH-1"] = AWB_SHIPMENT
+    h.rates["USD"] = "88.467460"
+
+    report = _assemble()
+    row = _only_row(report)
+    assert row["insurance_recovered"]["amount"] == "0.00"
     assert row["status"] == InsuranceStatus.NO_INSURANCE_CHARGED
+    assert row["charge_authority_on_record"] is True
+    assert report["report_totals"]["insurance_recovered_rows_without_authority"] == 0
     # Advisory only — the recommendation still follows shipment evidence.
     assert row["recommendation"] == InsuranceRecommendation.INCLUDE
 
 
-def test_unresolved_insurance_is_no_premium(h):
+def test_contradicted_record_is_needs_review_never_published(h):
+    """Census classes B1/B2: a conflict is an operator decision, not a total."""
     h.facts = [_fact("101")]
-    h.drafts["101"] = _draft(
-        charges=[
-            {"charge_type": "insurance", "resolution": "unresolved", "amount": 12.0}
-        ]
-    )
+    h.invoiced["101"] = _invoiced(amount="45.67", conflict="needs_manual_review")
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
 
     row = _only_row(_assemble())
-    assert row["insurance_recovered"]["resolution"] == "unresolved"
-    assert row["status"] == InsuranceStatus.NO_INSURANCE_CHARGED
+    assert row["charge_conflict"] is True
+    assert row["status"] == InsuranceStatus.NEEDS_REVIEW
+    assert row["recommendation"] == InsuranceRecommendation.REVIEW
+    assert "manual review" in row["recommendation_reason"]
 
 
 def test_recovered_totals_are_per_currency_never_summed(h):
@@ -443,15 +500,9 @@ def test_recovered_totals_are_per_currency_never_summed(h):
         batch_id="BATCH-2",
         client_name="Beta Trading GmbH",
         currency="EUR",
-        charges=[
-            {
-                "charge_type": "insurance",
-                "resolution": "manual_amount",
-                "amount": 30.0,
-                "currency": "EUR",
-            }
-        ],
     )
+    h.invoiced["101"] = _invoiced()
+    h.invoiced["102"] = _invoiced(amount="30.00", currency="EUR")
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.shipments["BATCH-2"] = {"tracking_ref": "999", "mode": "dhl"}
     h.rates["USD"] = "88.467460"
@@ -480,6 +531,7 @@ def _correction_fixture(h, *, xml=None, corr_fullnumber="KOR 1/2026"):
     ]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
     h.drafts["201"] = _draft(draft_id=9, batch_id="BATCH-9", charges=[])
+    h.invoiced["101"] = _invoiced()
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.shipments["BATCH-9"] = {"tracking_ref": "222", "mode": "dhl"}
     h.rates["USD"] = "88.467460"
@@ -693,8 +745,9 @@ def test_recovered_total_discloses_rows_without_a_charge_record(h):
         _fact("102", fullnumber="FV 2/2026", brutto="1000.00"),
     ]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
-    # 102: issued directly in wFirma — no draft, so no charge authority at
-    # all. Its premium (if any) is outside this report's authority.
+    h.invoiced["101"] = _invoiced()
+    # 102: never converged — the authority holds no record of what it billed
+    # (census class A, 512 of 764 documents). An unknown, never a zero.
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
 
@@ -709,10 +762,10 @@ def test_recovered_total_discloses_rows_without_a_charge_record(h):
     assert by_id["102"]["charge_authority_on_record"] is False
 
 
-def test_empty_charge_set_is_not_evidence_of_no_insurance(h):
-    """A linked draft carrying zero charges is an unknown, not a proven zero."""
+def test_unconverged_document_is_an_unknown_not_a_zero(h):
+    """A linked draft is not a charge record — the premium stays unknown."""
     h.facts = [_fact("101")]
-    h.drafts["101"] = _draft(charges=[])
+    h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
 
@@ -723,19 +776,25 @@ def test_empty_charge_set_is_not_evidence_of_no_insurance(h):
     assert report["report_totals"]["insurance_recovered_rows_without_authority"] == 1
 
 
-def test_charges_on_record_without_insurance_is_a_proven_zero(h):
-    """Freight recorded, no insurance line: the authority answered — no gap."""
+def test_record_without_an_insurance_row_is_a_gap_not_a_proven_zero(h):
+    """Captured freight, insurance unattributed: still an unanswered premium.
+
+    ``capture_document`` records only the charge types the caller could
+    attribute with certainty, so a record can exist while insurance is
+    genuinely unknown. That must read as a gap — asserting a zero here would
+    be the wrong-in-our-favour error (Lesson Q rule 6).
+    """
     h.facts = [_fact("101")]
-    h.drafts["101"] = _draft(
-        charges=[
-            {
-                "charge_type": "freight",
-                "resolution": "manual_amount",
-                "amount": 85.0,
-                "currency": "USD",
-            }
-        ]
-    )
+    h.drafts["101"] = _draft(charges=[])
+    h.invoiced["101"] = [
+        {
+            "charge_type": "freight",
+            "amount": "85.00",
+            "currency": "USD",
+            "resolution": "invoiced",
+            "conflict_state": "",
+        }
+    ]
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
 
@@ -743,8 +802,8 @@ def test_charges_on_record_without_insurance_is_a_proven_zero(h):
     row = _only_row(report)
     assert row["insurance_recovered"] is None
     assert row["status"] == InsuranceStatus.NO_INSURANCE_CHARGED
-    assert row["charge_authority_on_record"] is True
-    assert report["report_totals"]["insurance_recovered_rows_without_authority"] == 0
+    assert row["charge_authority_on_record"] is False
+    assert report["report_totals"]["insurance_recovered_rows_without_authority"] == 1
 
 
 def test_contractor_subtotals_disclose_the_gap_too(h):
@@ -760,6 +819,7 @@ def test_contractor_subtotals_disclose_the_gap_too(h):
         ),
     ]
     h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
+    h.invoiced["101"] = _invoiced()
     h.shipments["BATCH-1"] = AWB_SHIPMENT
     h.rates["USD"] = "88.467460"
     h.rates["EUR"] = "95.000000"

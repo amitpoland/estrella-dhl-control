@@ -97,15 +97,26 @@ def fx(monkeypatch):
         return {"invoice_facts": list(facts) + [corr]}
 
     drafts = {
-        "101": _draft(7, "BATCH-1", "Alpha Exports Ltd", "USD",
-                      [{"charge_type": "insurance",
-                        "resolution": "manual_amount",
-                        "amount": 45.67, "currency": "USD"}]),
+        "101": _draft(7, "BATCH-1", "Alpha Exports Ltd", "USD", []),
         "102": _draft(8, "BATCH-2", "Alpha Exports Ltd", "USD", []),
         "103": _draft(9, "BATCH-3", "Beta Trading GmbH", "EUR",
                       [{"charge_type": "freight",
                         "resolution": "customer_courier", "amount": 0}]),
         "201": _draft(10, "BATCH-9", "Alpha Exports Ltd", "USD", []),
+    }
+    # What each ISSUED document billed — the recovered-premium authority.
+    # 101 billed 45.67 USD; 102/103 converged and billed nothing; 104 has no
+    # entry at all, which is "not converged yet", not a zero.
+    invoiced = {
+        "101": [{"charge_type": "insurance", "amount": "45.67",
+                 "currency": "USD", "resolution": "invoiced",
+                 "conflict_state": ""}],
+        "102": [{"charge_type": "insurance", "amount": "0",
+                 "currency": "USD", "resolution": "invoiced",
+                 "conflict_state": ""}],
+        "103": [{"charge_type": "insurance", "amount": "0",
+                 "currency": "EUR", "resolution": "invoiced",
+                 "conflict_state": ""}],
     }
     shipments = {
         "BATCH-1": {"tracking_ref": "111", "mode": "dhl"},
@@ -131,6 +142,8 @@ def fx(monkeypatch):
     monkeypatch.setattr(ies, "load_ar_fact_universe", _universe)
     monkeypatch.setattr(ies, "get_draft_by_wfirma_invoice_id",
                         lambda db, i: drafts.get(str(i)))
+    monkeypatch.setattr(ies, "get_document_charges",
+                        lambda inv_id, path=None: invoiced.get(str(inv_id)))
     monkeypatch.setattr(ies, "_batch_client_count", lambda db, b: 1)
     monkeypatch.setattr(
         ies, "shipment_db",

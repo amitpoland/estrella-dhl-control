@@ -222,6 +222,9 @@ def _run_processing_tick() -> None:
     # ── Step 7: goods stock-change webhook sync (Wave 4 C-8a) ─────────────────
     _run_stock_sync_tick()
 
+    # ── Step 8: commercial charge convergence (recovered-premium authority) ───
+    _run_charge_convergence_tick()
+
 
 def _run_series_refresh_tick() -> None:
     """
@@ -472,6 +475,41 @@ def _run_stock_sync_tick() -> None:
             "wfirma_scheduler: stock_sync recognized=%d (deferred — BLOCKED BY OI-10)",
             recognized,
         )
+
+
+def _run_charge_convergence_tick() -> None:
+    """
+    Commercial charge convergence step — called at the end of every tick.
+
+    Keeps the CommercialChargeAuthority's record of what ISSUED documents
+    billed converged with wFirma, so a newly issued invoice cannot silently
+    leave the Insurance Export statement's recovered premium unknown — the
+    defect measured across 512 historical documents on 2026-08-16.
+
+    - The ONE shared ``run_charge_convergence`` (also used by the CLI and the
+      operator Run Now endpoint) — no second implementation on this path.
+    - Recent window only (2 months). Historical backfill stays an explicit
+      operator command; a scheduler never re-reads six years of documents.
+    - Cooldown-gated (6 h) on the run-status row, like the contractor poll.
+    - Writes ONLY when COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED is armed;
+      otherwise it still runs a dry pass, which is what keeps a NEW gap
+      visible in the status panel instead of silent.
+    - wFirma is READ-ONLY here (``invoices/find``). Failure-isolated.
+    """
+    try:
+        from .commercial_charge_convergence import run_scheduler_tick
+
+        summary = run_scheduler_tick()
+        if summary is None:
+            return  # cooldown has not elapsed
+        log.info(
+            "wfirma_scheduler: charge_convergence mode=%s processed=%s created=%s "
+            "conflicts=%s errors=%s",
+            summary.get("mode"), summary.get("processed"), summary.get("created"),
+            summary.get("conflicts"), summary.get("errors"),
+        )
+    except Exception as exc:
+        log.warning("wfirma_scheduler: charge convergence failed (non-fatal): %s", exc)
 
 
 def start_wfirma_scheduler(storage_root: Path) -> None:

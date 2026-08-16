@@ -3,11 +3,19 @@
 GET  /api/v1/accounting/insurance-export            — full factual report
 POST /api/v1/accounting/insurance-export/declaration-preview
 POST /api/v1/accounting/insurance-export/declaration.pdf
+POST /api/v1/accounting/insurance-export/charge-convergence/run
+GET  /api/v1/accounting/insurance-export/charge-convergence/status
 
-All three are READ-ONLY against every authority: no wFirma writes, no
-proforma writes, no shipment writes. Selection is ephemeral (IDs only);
-the server re-resolves all monetary values from canonical facts on every
-request — the browser never sends amounts.
+The three report/declaration routes are READ-ONLY against every authority:
+no wFirma writes, no proforma writes, no shipment writes. Selection is
+ephemeral (IDs only); the server re-resolves all monetary values from
+canonical facts on every request — the browser never sends amounts.
+
+The charge-convergence pair is the operator surface for the capability that
+keeps the recovered-premium authority converged with the issued documents
+(services/commercial_charge_convergence.py). wFirma stays READ-ONLY there
+too; only the local charge record is written, only in apply mode, and only
+when the operator has armed COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED.
 
 Auth: reports.financial (same guard as the ledgers/statement family).
 PDF route carries Lesson G no-store headers (regenerable artifact).
@@ -23,6 +31,12 @@ from fastapi.responses import JSONResponse, Response
 from ..auth.dependencies import require_permission
 from ..core.config import settings
 from ..core.logging import get_logger
+from ..services.commercial_charge_convergence import (
+    ChargeConvergenceError,
+    ChargeConvergenceWriteDenied,
+    get_status as get_charge_convergence_status,
+    run_charge_convergence,
+)
 from ..services.insurance_export_statement import (
     InsuranceExportFetchError,
     UnknownSelectionError,
@@ -198,6 +212,68 @@ def post_declaration_pdf(payload: Dict[str, Any] = Body(...)) -> Response:
     headers["Content-Disposition"] = 'attachment; filename="%s"' % filename
     return Response(
         content=pdf_bytes, media_type="application/pdf", headers=headers
+    )
+
+
+@router.post("/insurance-export/charge-convergence/run")
+def post_charge_convergence_run(
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+    user: Optional[Dict[str, Any]] = Depends(require_permission("reports.financial")),
+) -> JSONResponse:
+    """Run Now — reconcile the charge authority against the issued documents.
+
+    Body (all optional): ``{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD",
+    "months": 2, "apply": false}``. Dry run is the default; ``apply`` is
+    refused with 409 unless the operator has armed the write gate. The
+    response carries the full reconciliation artifact so a dry run IS the
+    review document — nothing has to be written to see what would change.
+    """
+    body = payload or {}
+    date_from = str(body.get("from") or "").strip() or None
+    date_to = str(body.get("to") or "").strip() or None
+    if date_from or date_to:
+        if not (date_from and date_to):
+            raise HTTPException(status_code=400, detail="from and to must be given together")
+        date_from, date_to = _validate_period(date_from, date_to)
+
+    months = body.get("months")
+    if months is not None:
+        try:
+            months = int(months)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="months must be an integer")
+        if not 1 <= months <= 120:
+            raise HTTPException(status_code=400, detail="months must be between 1 and 120")
+
+    try:
+        summary = run_charge_convergence(
+            date_from=date_from,
+            date_to=date_to,
+            months=months,
+            apply=bool(body.get("apply")),
+            operator=str((user or {}).get("email") or (user or {}).get("username")
+                         or (user or {}).get("auth") or "operator"),
+        )
+    except ChargeConvergenceWriteDenied as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"code": "CHARGE_CONVERGENCE_WRITE_DISABLED", "detail": str(exc)},
+        )
+    except ChargeConvergenceError as exc:
+        log.warning("charge-convergence run failed: %s", exc)
+        return JSONResponse(
+            status_code=502,
+            content={"code": "CHARGE_CONVERGENCE_FAILED", "detail": str(exc),
+                     "summary": exc.summary},
+        )
+    return JSONResponse(content=summary, headers=dict(_NO_STORE_HEADERS))
+
+
+@router.get("/insurance-export/charge-convergence/status", dependencies=[_auth])
+def get_charge_convergence_run_status() -> JSONResponse:
+    """The four questions: healthy / when / what happened / can I run it now."""
+    return JSONResponse(
+        content=get_charge_convergence_status(), headers=dict(_NO_STORE_HEADERS)
     )
 
 

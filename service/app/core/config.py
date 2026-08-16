@@ -67,6 +67,22 @@ class Settings(BaseSettings):
     insurance_fx_provider: str = ""
     insurance_fx_operator_rates_json: str = ""
 
+    # ── Commercial charge convergence — APPLY gate (default OFF) ─────────────
+    # services/commercial_charge_convergence.py reads every ISSUED wFirma sales
+    # document and records what it billed in the CommercialChargeAuthority's
+    # durable record. The READ is always safe and always permitted: dry runs,
+    # the reconciliation artifact and the census need no flag.
+    # COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED=1 additionally permits the
+    # local WRITE (commercial_charges.db) — and arms the scheduler tick to
+    # apply rather than merely observe.
+    # Default OFF: this is a financial-authority write path, so an unattended
+    # run must not populate the recovered-premium authority before the
+    # operator has approved a dry-run reconciliation. With the flag off,
+    # apply=True is REFUSED (ChargeConvergenceWriteDenied), never silently
+    # downgraded to a dry run. wFirma itself is READ-ONLY on this path in
+    # both modes — no document is ever posted, edited or deleted.
+    commercial_charge_convergence_apply_enabled: bool = Field(default=False)
+
     # ── Audit hardening (feature-flagged) ─────────────────────────────────────
     # When True (env: AUDIT_HARDENING_ENABLED=1), audit_scoring.score_batch
     # emits the categorical `status` taxonomy (VERIFIED / PARTIAL /

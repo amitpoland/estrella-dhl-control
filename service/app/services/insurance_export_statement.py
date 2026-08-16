@@ -52,7 +52,12 @@ from .insurance_fx_provider import InsuranceFxError
 from .commercial_charge_authority import (
     RESOLUTION_CUSTOMER_COURIER,
     RESOLUTION_UNRESOLVED,
+    SOURCE_ISSUED_DOCUMENT,
     resolve_commercial_charges,
+)
+from .commercial_charge_record_db import (
+    CONFLICT_NEEDS_REVIEW,
+    get_document_charges,
 )
 from .carrier.persistence import shipment_db
 from .ledger_fact_universe import (
@@ -343,6 +348,31 @@ def _insurance_recovered(resolved: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _invoiced_charges(invoice_id: str, invoice_currency: str) -> Optional[Dict[str, Any]]:
+    """What the ISSUED document billed, resolved by the charge authority.
+
+    ``None`` means the document has never been converged (``convergence``
+    tool: ``app.tools.converge_commercial_charges``) — the authority holds no
+    record and this report cannot speak for the premium. That is a different
+    fact from a converged document that billed nothing, which is stored as an
+    explicit 0.00 and resolves normally.
+    """
+    try:
+        charges = get_document_charges(str(invoice_id))
+    except Exception:
+        log.warning("insurance-export: charge record lookup failed for invoice %s",
+                    invoice_id)
+        return None
+    if not charges:
+        return None
+    ccy = next((c.get("currency") for c in charges if c.get("currency")), "") or invoice_currency
+    resolved = resolve_commercial_charges(ccy, charges, source=SOURCE_ISSUED_DOCUMENT)
+    resolved["needs_manual_review"] = any(
+        (c.get("conflict_state") or "") == CONFLICT_NEEDS_REVIEW for c in charges
+    )
+    return resolved
+
+
 def _freight_pickup(resolved: Dict[str, Any]) -> bool:
     """The ONLY pickup evidence in the system: freight resolved customer_courier."""
     for ch in resolved.get("charges") or []:
@@ -502,24 +532,30 @@ def _build_row(
     # that artifact before changing this line.
     cif = _dec(fact.get("brutto"))
 
+    # The draft is PRE-ISSUE INTENT. It supplies pickup evidence and shipment
+    # linkage only — never the recovered premium (census classes B1 / B2 prove
+    # the two diverge in both directions).
     draft = _link_draft(invoice_id, db_path)
-    resolved = None
-    recovered = None
     pickup = False
     shipment = None
     if draft is not None:
-        resolved = _resolve_draft_charges(draft, currency)
-        recovered = _insurance_recovered(resolved)
-        pickup = _freight_pickup(resolved)
+        pickup = _freight_pickup(_resolve_draft_charges(draft, currency))
         shipment = _shipment_for_draft(draft, db_path, carrier_db_path)
 
-    # Does the commercial charge authority hold ANY record for this invoice?
-    # Distinguishes "the authority says no insurance" from "the authority was
-    # never asked" — see _rows_without_charge_authority.
-    charge_authority_on_record = bool(
-        resolved
-        and ((resolved.get("charges") or []) or (resolved.get("unresolved_charges") or []))
-    )
+    # Insurance recovered = what the ISSUED document billed, from the charge
+    # authority's issued-document record. Single source: there is deliberately
+    # NO draft fallback here, so an unconverged document reads as "unknown"
+    # rather than silently reporting an intent as a recovery.
+    invoiced = _invoiced_charges(invoice_id, currency)
+    recovered = _insurance_recovered(invoiced) if invoiced is not None else None
+
+    # Does the commercial charge authority hold an INSURANCE record for this
+    # invoice? Distinguishes "the authority says no insurance was billed" (a
+    # converged 0.00) from "the authority was never asked" — and a record that
+    # captured other charge types but could not attribute insurance is the
+    # second case, not the first. See _rows_without_charge_authority.
+    charge_authority_on_record = recovered is not None
+    charge_conflict = bool(invoiced and invoiced.get("needs_manual_review"))
 
     fx_rate = None
     fx_provenance = None
@@ -553,6 +589,15 @@ def _build_row(
         InsuranceStatus.CUSTOMER_TRANSPORT,
     ):
         status = forced_status
+    elif charge_conflict:
+        # A stored premium contradicted by the issued document is never
+        # published as a fact and never auto-overwritten — operator only.
+        status = InsuranceStatus.NEEDS_REVIEW
+        recommendation = InsuranceRecommendation.REVIEW
+        reason = (
+            "Recorded insurance premium contradicts the issued document — "
+            "manual review required"
+        )
     elif cif is None:
         status = InsuranceStatus.NEEDS_REVIEW
         recommendation = InsuranceRecommendation.REVIEW
@@ -616,6 +661,7 @@ def _build_row(
         "sum_insured_inr": _money(sum_insured_inr),
         "insurance_recovered": recovered,
         "charge_authority_on_record": charge_authority_on_record,
+        "charge_conflict": charge_conflict,
         "recommendation": recommendation,
         "recommendation_label": RECOMMENDATION_LABELS[recommendation],
         "recommendation_reason": reason,
@@ -673,17 +719,15 @@ def _rows_without_charge_authority(rows: List[Dict[str, Any]]) -> int:
 
     ``_sum_recovered`` silently skips any row whose premium it cannot read, so
     the total on its own is indistinguishable from a complete one. A row is
-    counted here when the commercial charge authority holds NO record for it —
-    either no proforma draft is linked at all, or the linked draft carries an
-    empty charge set. Neither is evidence of "no insurance charged": such an
-    invoice may still carry an insurance line on the fiscal document (measured
-    2026-08-16 — WDT 153/2026 and WDT 156/2026 were issued directly in wFirma,
-    both carry an insurance line under the canonical insurance service, and
-    neither has a draft, so their premium is outside this report's authority).
+    counted here when the commercial charge authority holds no issued-document
+    record for it — i.e. the document has never been converged by
+    ``app.tools.converge_commercial_charges``. That is NOT evidence of "no
+    insurance charged": the fiscal document may well carry an insurance line
+    nobody has captured yet.
 
-    A row whose draft DOES hold charges is never counted: the authority was
-    consulted and answered, so an absent or zero insurance charge there is a
-    proven fact rather than an unknown.
+    A converged row is never counted, including one recorded as 0.00: the
+    authority was asked and answered from the issued document, so "billed
+    nothing" is a proven fact rather than an unknown.
     """
     return sum(1 for row in rows if not row.get("charge_authority_on_record"))
 
