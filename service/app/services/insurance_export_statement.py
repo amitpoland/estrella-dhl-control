@@ -271,7 +271,10 @@ def _fx_to_inr(
     try:
         quote = insurance_fx_provider.get_rate(ccy, invoice_date)
     except InsuranceFxError as exc:
-        result = (None, None, str(exc))
+        # The taxonomy kind travels with the message so the row discloses WHY
+        # there is no rate (not published / unsupported currency / provider not
+        # configured). A missing rate is never rendered as zero.
+        result = (None, None, "%s: %s" % (getattr(exc, "kind", "fx_error"), exc))
         cache[key] = result
         return result
     except Exception as exc:  # provider defect — degrade the row
@@ -287,6 +290,11 @@ def _fx_to_inr(
         "source": quote.get("source"),
         "requested_date": quote.get("requested_date"),
         "effective_date": quote.get("effective_date"),
+        # How far the applied publication sits before the requested date
+        # (weekend / Mumbai holiday walk-back). Disclosed, never hidden.
+        "staleness_days": quote.get("staleness_days"),
+        "quote_unit": quote.get("quote_unit"),
+        "rate_as_published": quote.get("rate_as_published"),
     }
     result = (rate, provenance, None)
     cache[key] = result

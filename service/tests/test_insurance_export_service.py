@@ -259,7 +259,9 @@ def test_fx_missing_degrades_row_never_raises(h):
     row = _only_row(report)
     assert row["fx_rate"] is None
     assert row["sum_insured_inr"] is None
-    assert row["fx_error"].startswith("upstream:")
+    # The taxonomy kind prefixes the message so the row discloses WHY the
+    # rate is missing; a missing rate is never rendered as zero.
+    assert row["fx_error"] == "provider_error: upstream: insurance FX provider unreachable"
     assert row["status"] == InsuranceStatus.NEEDS_REVIEW
     assert row["recommendation"] == InsuranceRecommendation.REVIEW
     # Degraded row is excluded from INR totals but counted as missing.

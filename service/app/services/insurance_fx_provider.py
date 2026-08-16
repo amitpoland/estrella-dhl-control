@@ -3,11 +3,9 @@ Statement (insurer-facing INR conversion).
 
 Design (operator ruling, 2026-08-15 PR #1249 repair directive):
 
-- The insurer benchmark for CCY→INR has NOT been established yet (candidate:
-  FBIL reference rate — pending business confirmation). Until an approved
-  benchmark feed is configured, this module FAILS CLOSED: ``get_rate`` raises
-  :class:`InsuranceFxUnconfiguredError` and the statement row degrades to
-  NEEDS REVIEW with null INR columns.
+- Until an approved benchmark feed is configured, this module FAILS CLOSED:
+  ``get_rate`` raises :class:`InsuranceFxUnconfiguredError` and the statement
+  row degrades to NEEDS REVIEW with null INR columns.
 - NBP PLN-hub cross-rates are deliberately NOT a registered provider. NBP is
   a Polish-accounting authority, not an insurance benchmark; substituting it
   silently is forbidden. There is intentionally no import of
@@ -44,15 +42,33 @@ from ..core.config import settings
 logger = logging.getLogger("pz.insurance_fx")
 
 PROVIDER_OPERATOR_FIXED = "operator_fixed"
+PROVIDER_INDIA_OFFICIAL = "india_official"
 
 
 class InsuranceFxError(Exception):
     """Base error for the insurance FX boundary. Row-level: the statement
-    maps this to NEEDS REVIEW + null INR columns, never a 500."""
+    maps this to NEEDS REVIEW + null INR columns, never a 500.
+
+    ``kind`` carries the structured taxonomy through the boundary unchanged
+    (``provider_not_configured``, ``official_rate_not_published``,
+    ``historical_rate_unavailable``, ``unsupported_currency``,
+    ``provider_transport_error``, ``provider_payload_invalid``,
+    ``rate_orientation_invalid``, ``official_rate_conflict``) so the statement
+    can distinguish "not published" from "misconfigured" — a missing rate is
+    never rendered as zero.
+    """
+
+    def __init__(self, message: str, kind: str = "provider_error") -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
 
 
 class InsuranceFxUnconfiguredError(InsuranceFxError):
     """No approved insurance FX provider is configured (fail-closed state)."""
+
+    def __init__(self, message: str, kind: str = "provider_not_configured") -> None:
+        super().__init__(message, kind)
 
 
 def _operator_fixed_rates() -> Dict[str, Decimal]:
@@ -106,6 +122,27 @@ def get_rate(currency: str, invoice_date: str) -> Dict[str, object]:
             "(INSURANCE_FX_PROVIDER / INSURANCE_FX_OPERATOR_RATES_JSON)"
         )
 
+    if provider == PROVIDER_INDIA_OFFICIAL:
+        # The India Official Reference FX Authority owns the date rule, the
+        # quotation orientation and its own cache. This boundary only relabels
+        # its quote — it never second-guesses the rate and never falls back.
+        from . import india_official_fx
+
+        try:
+            quote = india_official_fx.resolve_for_invoice_date(ccy, invoice_date)
+        except india_official_fx.OfficialFxError as exc:
+            raise InsuranceFxError(exc.message, kind=exc.kind)
+        return {
+            "requested_date": quote["requested_date"],
+            "effective_date": quote["effective_date"],
+            "currency": ccy,
+            "rate": quote["rate"],
+            "source": quote["source"],
+            "staleness_days": quote["staleness_days"],
+            "quote_unit": quote["quote_unit"],
+            "rate_as_published": quote["rate_as_published"],
+        }
+
     if provider == PROVIDER_OPERATOR_FIXED:
         rates = _operator_fixed_rates()
         rate = rates.get(ccy)
@@ -131,6 +168,7 @@ def get_rate(currency: str, invoice_date: str) -> Dict[str, object]:
 __all__ = [
     "InsuranceFxError",
     "InsuranceFxUnconfiguredError",
+    "PROVIDER_INDIA_OFFICIAL",
     "PROVIDER_OPERATOR_FIXED",
     "get_rate",
 ]

@@ -54,13 +54,16 @@ class Settings(BaseSettings):
     series_bootstrap_enabled: bool = True
 
     # ── Insurance Export Statement FX (fail-closed) ──────────────────────────
-    # The insurer CCY→INR benchmark is not yet established. Until an approved
-    # provider is configured the insurance export statement CANNOT resolve INR
-    # columns (rows degrade to NEEDS REVIEW) — NBP is deliberately not a valid
-    # value and is never substituted. Providers live in
-    # services/insurance_fx_provider.py; today only "operator_fixed" exists:
-    #   INSURANCE_FX_PROVIDER=operator_fixed
-    #   INSURANCE_FX_OPERATOR_RATES_JSON={"USD":"92.50","EUR":"99.10"}
+    # Until an approved provider is configured the insurance export statement
+    # CANNOT resolve INR columns (rows degrade to NEEDS REVIEW) — NBP is
+    # deliberately not a valid value and is never substituted. Providers live
+    # in services/insurance_fx_provider.py:
+    #   INSURANCE_FX_PROVIDER=india_official   ← approved benchmark
+    #       The India Official Reference FX Authority (RBI/FBIL reference rate,
+    #       services/india_official_fx.py). Owns the date rule, the quotation
+    #       orientation and its own cache; needs no further configuration.
+    #   INSURANCE_FX_PROVIDER=operator_fixed   ← manual override
+    #       INSURANCE_FX_OPERATOR_RATES_JSON={"USD":"92.50","EUR":"99.10"}
     insurance_fx_provider: str = ""
     insurance_fx_operator_rates_json: str = ""
 
