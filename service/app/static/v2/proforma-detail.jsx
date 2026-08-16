@@ -1630,6 +1630,14 @@ function _awbPreselectCmAccount(accounts) {
   if (list.length === 1) return list[0];
   return null;
 }
+/** Customer Master is_default → booking carrier. None/ambiguous/other → DHL. */
+const _AWB_CM_CARRIER_REV = { dhl: 'DHL', fedex: 'FEDEX', ups: 'UPS' };
+function _awbPreferredCarrierFromCm(accounts) {
+  const defaults = (accounts || []).filter(a => a.is_default);
+  if (defaults.length !== 1) return 'DHL';
+  const code = String(defaults[0].carrier || '').toLowerCase();
+  return _AWB_CM_CARRIER_REV[code] || 'DHL';
+}
 function _awbPayerLabel(paymentType) {
   return _AWB_PAYER_LABEL[paymentType] || '';
 }
@@ -1686,6 +1694,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
   const [selectedCarrier, setSelectedCarrier] = React.useState('DHL');
+  const [carrierTouched, setCarrierTouched] = React.useState(false);
   const [externalTracking, setExternalTracking] = React.useState('');
   const [awbFile, setAwbFile] = React.useState(null);
   const isExternal = selectedCarrier === 'FEDEX' || selectedCarrier === 'UPS';
@@ -1816,6 +1825,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             ? r.data.accounts : [];
           setCmAccounts(list);
           setCmAccountsStatus('loaded');
+          // Preference → carrier default once; operator explicit selection wins after.
+          if (!carrierTouched) {
+            setSelectedCarrier(_awbPreferredCarrierFromCm(list));
+          }
         })
         .catch(() => { setCmAccounts([]); setCmAccountsStatus('failed'); });
     } else {
@@ -2384,7 +2397,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           <div style={fieldStyle}>
             <label htmlFor="awb-carrier" style={labelStyle}>Carrier *</label>
             <select id="awb-carrier" value={selectedCarrier}
-              onChange={e => { setSelectedCarrier(e.target.value); setApiError(null); setSaveConfirm(null); setLegacyConfirm(false); }}
+              onChange={e => { setCarrierTouched(true); setSelectedCarrier(e.target.value); setApiError(null); setSaveConfirm(null); setLegacyConfirm(false); }}
               style={selStyle} data-testid="awb-carrier-select">
               <option value="DHL">DHL Express</option>
               <option value="FEDEX">FedEx</option>

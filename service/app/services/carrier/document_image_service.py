@@ -82,15 +82,12 @@ def ensure_waybill_persisted(
         )
 
     try:
-        cfg = CarrierConfig(
-            status=settings.carrier_api_status,
-            api_key=settings.dhl_express_api_key,
-            api_secret=settings.dhl_express_api_secret,
-            api_url=settings.dhl_express_api_url,
-            use_sandbox=settings.dhl_express_use_sandbox,
-            account_number=settings.dhl_express_account_number,
-            live_allowlist=settings.carrier_live_allowlist or "*",
-        )
+        from .credentials.consumer_bridge import express_carrier_config_kwargs
+
+        kwargs = express_carrier_config_kwargs("documents")
+        if not (kwargs.get("live_allowlist") or "").strip():
+            kwargs["live_allowlist"] = "*"
+        cfg = CarrierConfig(**kwargs)
         adapter = get_adapter(cfg)
     except Exception as exc:
         return DocumentImageResult("error", detail=f"adapter:{exc}")

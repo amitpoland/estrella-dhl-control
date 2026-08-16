@@ -742,10 +742,16 @@ def _call_dhl_unified(tracking_no: str) -> Dict[str, Any]:
 
     log.debug("[DHL] Unified API call — key=%s", _mask(settings.dhl_tracking_api_key))
 
+    from .carrier.credentials.consumer_bridge import resolve_dhl_secret_fields
+
+    # Capability track → Unified/legacy keys via resolver (unmigrated → Settings).
+    track_fields = resolve_dhl_secret_fields("track")
+    api_key = track_fields.get("api_key") or ""
+
     with httpx.Client(timeout=12) as client:
         track_resp = client.get(
             f"https://api-eu.dhl.com/track/shipments?trackingNumber={tracking_no}",
-            headers={"DHL-API-Key": settings.dhl_tracking_api_key or ""},
+            headers={"DHL-API-Key": api_key},
         )
         if track_resp.status_code == 429:
             retry_after = track_resp.headers.get("Retry-After") or track_resp.headers.get(
@@ -822,11 +828,15 @@ def _call_dhl_mydhl_express(tracking_no: str) -> Dict[str, Any]:
             f"DHL MyDHL tracking blocked: status={settings.dhl_tracking_api_status}"
         )
     from .carrier.adapters.live import fetch_express_tracking
+    from .carrier.credentials.consumer_bridge import resolve_dhl_secret_fields
+
+    # MyDHL Express tracking uses the ship identity (same Express product), not track.
+    ship_fields = resolve_dhl_secret_fields("ship")
 
     data, meta = fetch_express_tracking(
         tracking_no,
-        api_key=str(settings.dhl_express_api_key or ""),
-        api_secret=str(settings.dhl_express_api_secret or ""),
+        api_key=str(ship_fields.get("api_key") or ""),
+        api_secret=str(ship_fields.get("api_secret") or ""),
         api_url=str(settings.dhl_express_api_url or "https://express.api.dhl.com"),
         use_sandbox=bool(settings.dhl_express_use_sandbox),
     )
