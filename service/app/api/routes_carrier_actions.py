@@ -84,6 +84,8 @@ _perm_shipments_edit = Depends(require_permission("shipments.edit"))
 
 def _get_carrier_config() -> CarrierConfig:
     from ..core.config import settings
+    from ..services.carrier.credentials.consumer_bridge import express_carrier_config_kwargs
+
     if settings.carrier_api_status == "pending":
         raise HTTPException(
             status_code=503,
@@ -92,15 +94,8 @@ def _get_carrier_config() -> CarrierConfig:
                 "Set CARRIER_API_STATUS=shadow or CARRIER_API_STATUS=live to enable."
             ),
         )
-    return CarrierConfig(
-        status=settings.carrier_api_status,
-        api_key=settings.dhl_express_api_key,
-        api_secret=settings.dhl_express_api_secret,
-        api_url=settings.dhl_express_api_url,
-        use_sandbox=settings.dhl_express_use_sandbox,
-        account_number=settings.dhl_express_account_number,
-        live_allowlist=settings.carrier_live_allowlist,
-    )
+    # Secrets via resolve_carrier_credentials (unmigrated → Settings only).
+    return CarrierConfig(**express_carrier_config_kwargs("ship"))
 
 
 def _get_coordinator(
