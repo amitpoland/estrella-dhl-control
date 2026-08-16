@@ -310,3 +310,124 @@ def test_pdf_route_unknown_ids_is_422(client, monkeypatch):
     )
     assert r.status_code == 422
     assert r.json()["code"] == "UNKNOWN_IDS"
+
+
+# ── charge-convergence: run + status ─────────────────────────────────────
+#
+# The write gate is the campaign's own safety claim, so it is pinned HERE at
+# the HTTP layer, not only inside the service.
+
+RUN = BASE + "/charge-convergence/run"
+STATUS = BASE + "/charge-convergence/status"
+
+DRY_RUN_SUMMARY = {
+    "mode": "dry_run", "processed": 12, "created": 0, "updated": 0,
+    "skipped": 4, "errors": 0, "last_error": None,
+}
+
+
+def _stub_run(monkeypatch, calls):
+    def _run(**kwargs):
+        calls.update(kwargs)
+        return DRY_RUN_SUMMARY
+
+    monkeypatch.setattr(routes_mod, "run_charge_convergence", _run)
+
+
+def test_convergence_run_defaults_to_dry_run(client, monkeypatch):
+    calls = {}
+    _stub_run(monkeypatch, calls)
+    r = client.post(RUN, headers=_auth_headers())
+
+    assert r.status_code == 200
+    assert r.json() == DRY_RUN_SUMMARY
+    assert calls["apply"] is False          # dry run unless explicitly asked
+    assert calls["date_from"] is None and calls["date_to"] is None
+    # Lesson G — a reconciliation artifact is regenerable, never cached.
+    assert r.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+
+
+def test_convergence_run_passes_the_window_through(client, monkeypatch):
+    calls = {}
+    _stub_run(monkeypatch, calls)
+    r = client.post(RUN, json={"from": "2026-01-01", "to": "2026-08-31"},
+                    headers=_auth_headers())
+
+    assert r.status_code == 200
+    assert (calls["date_from"], calls["date_to"]) == ("2026-01-01", "2026-08-31")
+
+
+def test_convergence_run_write_gate_off_is_409(client, monkeypatch):
+    def _denied(**kwargs):
+        raise routes_mod.ChargeConvergenceWriteDenied(
+            "apply requested but COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED is off")
+
+    monkeypatch.setattr(routes_mod, "run_charge_convergence", _denied)
+    r = client.post(RUN, json={"apply": True}, headers=_auth_headers())
+
+    assert r.status_code == 409
+    assert r.json()["code"] == "CHARGE_CONVERGENCE_WRITE_DISABLED"
+
+
+def test_convergence_run_failure_is_502_and_keeps_what_was_measured(
+    client, monkeypatch
+):
+    partial = dict(DRY_RUN_SUMMARY, errors=1, last_error="wFirma unreachable")
+
+    def _boom(**kwargs):
+        raise routes_mod.ChargeConvergenceError("wFirma unreachable", partial)
+
+    monkeypatch.setattr(routes_mod, "run_charge_convergence", _boom)
+    r = client.post(RUN, json={"months": 2}, headers=_auth_headers())
+
+    assert r.status_code == 502
+    body = r.json()
+    assert body["code"] == "CHARGE_CONVERGENCE_FAILED"
+    assert body["summary"] == partial       # a failure still reports its counts
+
+
+@pytest.mark.parametrize("payload,fragment", [
+    ({"from": "2026-01-01"}, "together"),
+    ({"from": "bad-date", "to": "2026-08-31"}, "YYYY-MM-DD"),
+    ({"from": "2026-08-31", "to": "2026-01-01"}, "is after"),
+    ({"months": "two"}, "integer"),
+    ({"months": 0}, "between"),
+    ({"months": 121}, "between"),
+])
+def test_convergence_run_rejects_bad_input(client, monkeypatch, payload, fragment):
+    def _never(**kwargs):
+        raise AssertionError("validation must reject before the service runs")
+
+    monkeypatch.setattr(routes_mod, "run_charge_convergence", _never)
+    r = client.post(RUN, json=payload, headers=_auth_headers())
+
+    assert r.status_code == 400
+    assert fragment in r.json()["detail"]
+
+
+def test_convergence_run_requires_auth(client):
+    with patch.object(settings, "api_key", "active-key"):
+        r = client.post(RUN, json={})
+    assert r.status_code in (401, 403)
+
+
+def test_convergence_status_answers_the_four_questions(client, monkeypatch):
+    status = {
+        "healthy": True, "running": False,
+        "last_started_at": "2026-08-16T09:00:00Z",
+        "last_completed_at": "2026-08-16T09:00:04Z",
+        "duration_ms": 4000, "processed": 202, "created": 202, "updated": 0,
+        "skipped": 92, "errors": 0, "last_error": None,
+    }
+    monkeypatch.setattr(routes_mod, "get_charge_convergence_status", lambda: status)
+    r = client.get(STATUS, headers=_auth_headers())
+
+    assert r.status_code == 200
+    assert r.json() == status
+    assert r.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+
+
+def test_convergence_status_requires_auth(client):
+    with patch.object(settings, "api_key", "active-key"):
+        r = client.get(STATUS)
+    assert r.status_code in (401, 403)
