@@ -10,11 +10,14 @@ Design (operator ruling, 2026-08-15 PR #1249 repair directive):
   a Polish-accounting authority, not an insurance benchmark; substituting it
   silently is forbidden. There is intentionally no import of
   ``nbp_rate_service`` anywhere in this module.
-- The only provider implemented today is ``operator_fixed``: an explicit,
-  operator-approved per-currency rate table supplied via configuration
-  (``INSURANCE_FX_OPERATOR_RATES_JSON``). When the approved benchmark feed
-  exists it will be added here as a new named provider — the statement
-  service never learns provider internals.
+- Two providers are implemented, selected by ``INSURANCE_FX_PROVIDER``:
+  ``india_official`` — the India Official Reference FX Authority
+  (``india_official_fx``: FBIL benchmark semantics, RBI publication, its own
+  date rule and cache), and ``operator_fixed`` — an explicit operator-approved
+  per-currency rate table (``INSURANCE_FX_OPERATOR_RATES_JSON``) for the
+  currencies the official authority does not publish. This boundary only
+  relabels a provider quote; the statement service never learns provider
+  internals, and an unknown provider name fails closed rather than falling back.
 
 Quote contract — every successful ``get_rate`` returns at least::
 
