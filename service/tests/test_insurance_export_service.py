@@ -675,3 +675,95 @@ def test_unknown_reason_is_blocked_and_needs_review():
     reason, effect = classify_correction("some_future_reason_code", Decimal("-500.00"))
     assert reason == CorrectionReason.UNKNOWN
     assert effect == InsuranceEffect.BLOCKED
+
+
+# ── Recovered-total authority disclosure (Slice 3) ───────────────────────
+#
+# _sum_recovered skips any row whose premium it cannot read, so the total
+# alone is indistinguishable from a complete one. These pin the count that
+# discloses the gap, and — just as important — pin that a row the charge
+# authority DID answer for is never counted as a gap.
+
+
+def test_recovered_total_discloses_rows_without_a_charge_record(h):
+    h.facts = [
+        _fact("101"),
+        _fact("102", fullnumber="FV 2/2026", brutto="1000.00"),
+    ]
+    h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
+    # 102: issued directly in wFirma — no draft, so no charge authority at
+    # all. Its premium (if any) is outside this report's authority.
+    h.shipments["BATCH-1"] = AWB_SHIPMENT
+    h.rates["USD"] = "88.467460"
+
+    report = _assemble()
+    totals = report["report_totals"]
+    assert totals["insurance_recovered"] == {"USD": "45.67"}
+    assert totals["insurance_recovered_rows_without_authority"] == 1
+    # The KPI carries it too — the tile is where the operator reads the total.
+    assert report["kpi"]["insurance_recovered_rows_without_authority"] == 1
+    by_id = {r["invoice_id"]: r for r in _all_rows(report)}
+    assert by_id["101"]["charge_authority_on_record"] is True
+    assert by_id["102"]["charge_authority_on_record"] is False
+
+
+def test_empty_charge_set_is_not_evidence_of_no_insurance(h):
+    """A linked draft carrying zero charges is an unknown, not a proven zero."""
+    h.facts = [_fact("101")]
+    h.drafts["101"] = _draft(charges=[])
+    h.shipments["BATCH-1"] = AWB_SHIPMENT
+    h.rates["USD"] = "88.467460"
+
+    report = _assemble()
+    row = _only_row(report)
+    assert row["insurance_recovered"] is None
+    assert row["charge_authority_on_record"] is False
+    assert report["report_totals"]["insurance_recovered_rows_without_authority"] == 1
+
+
+def test_charges_on_record_without_insurance_is_a_proven_zero(h):
+    """Freight recorded, no insurance line: the authority answered — no gap."""
+    h.facts = [_fact("101")]
+    h.drafts["101"] = _draft(
+        charges=[
+            {
+                "charge_type": "freight",
+                "resolution": "manual_amount",
+                "amount": 85.0,
+                "currency": "USD",
+            }
+        ]
+    )
+    h.shipments["BATCH-1"] = AWB_SHIPMENT
+    h.rates["USD"] = "88.467460"
+
+    report = _assemble()
+    row = _only_row(report)
+    assert row["insurance_recovered"] is None
+    assert row["status"] == InsuranceStatus.NO_INSURANCE_CHARGED
+    assert row["charge_authority_on_record"] is True
+    assert report["report_totals"]["insurance_recovered_rows_without_authority"] == 0
+
+
+def test_contractor_subtotals_disclose_the_gap_too(h):
+    h.facts = [
+        _fact("101"),
+        _fact(
+            "102",
+            fullnumber="FV 2/2026",
+            currency="EUR",
+            brutto="1000.00",
+            contractor_id="C-2",
+            contractor_name="Beta Trading GmbH",
+        ),
+    ]
+    h.drafts["101"] = _draft(charges=[INSURANCE_45_67])
+    h.shipments["BATCH-1"] = AWB_SHIPMENT
+    h.rates["USD"] = "88.467460"
+    h.rates["EUR"] = "95.000000"
+
+    subs = {
+        g["contractor_id"]: g["subtotals"] for g in _assemble()["contractors"]
+    }
+    assert subs["C-1"]["insurance_recovered_rows_without_authority"] == 0
+    assert subs["C-2"]["insurance_recovered_rows_without_authority"] == 1

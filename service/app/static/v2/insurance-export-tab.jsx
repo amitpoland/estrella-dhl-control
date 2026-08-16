@@ -308,6 +308,12 @@ function InsuranceExportTab() {
   const kpi = (report && report.kpi) || {};
   const recovered = kpi.insurance_recovered || {};
   const recoveredEntries = Object.keys(recovered).sort().slice(0, 4);
+  // Server-counted rows the recovered total cannot speak for (no commercial
+  // charge record). Disclosed so a partial total never reads as complete.
+  const recoveredGap = kpi.insurance_recovered_rows_without_authority || 0;
+  const recoveredSub = recoveredGap
+    ? `${recoveredGap} row${recoveredGap === 1 ? '' : 's'} without a charge record`
+    : null;
   const reportTotals = (report && report.report_totals) || {};
   const selectedCount = selDocs.size + selAdjs.size;
   // Row counts only — never a monetary aggregate (the server owns every total).
@@ -482,13 +488,15 @@ function InsuranceExportTab() {
               value={<InsMoney value={kpi.net_insured_inr} />} />
             <InsKpiTile testid="ins-export-kpi-review" label="Needs review" value={kpi.needs_review} />
             {recoveredEntries.length === 0 ? (
-              <InsKpiTile testid="ins-export-kpi-recovered-none" label="Insurance recovered" value="—" />
-            ) : recoveredEntries.map(ccy => (
+              <InsKpiTile testid="ins-export-kpi-recovered-none" label="Insurance recovered"
+                value="—" sub={recoveredSub} />
+            ) : recoveredEntries.map((ccy, i) => (
               <InsKpiTile
                 key={ccy}
                 testid={`ins-export-kpi-recovered-${ccy}`}
                 label={`Recovered ${ccy}`}
                 value={<InsMoney value={recovered[ccy]} />}
+                sub={i === 0 ? recoveredSub : null}
               />
             ))}
           </div>

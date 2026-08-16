@@ -505,6 +505,14 @@ def _build_row(
         pickup = _freight_pickup(resolved)
         shipment = _shipment_for_draft(draft, db_path, carrier_db_path)
 
+    # Does the commercial charge authority hold ANY record for this invoice?
+    # Distinguishes "the authority says no insurance" from "the authority was
+    # never asked" — see _rows_without_charge_authority.
+    charge_authority_on_record = bool(
+        resolved
+        and ((resolved.get("charges") or []) or (resolved.get("unresolved_charges") or []))
+    )
+
     fx_rate = None
     fx_provenance = None
     fx_error = None
@@ -599,6 +607,7 @@ def _build_row(
         "fx_error": fx_error,
         "sum_insured_inr": _money(sum_insured_inr),
         "insurance_recovered": recovered,
+        "charge_authority_on_record": charge_authority_on_record,
         "recommendation": recommendation,
         "recommendation_label": RECOMMENDATION_LABELS[recommendation],
         "recommendation_reason": reason,
@@ -651,6 +660,26 @@ def _sum_recovered(rows: List[Dict[str, Any]]) -> Dict[str, str]:
     return {ccy: str(v.quantize(CENT)) for ccy, v in sorted(by_ccy.items())}
 
 
+def _rows_without_charge_authority(rows: List[Dict[str, Any]]) -> int:
+    """Rows the recovered total cannot speak for.
+
+    ``_sum_recovered`` silently skips any row whose premium it cannot read, so
+    the total on its own is indistinguishable from a complete one. A row is
+    counted here when the commercial charge authority holds NO record for it —
+    either no proforma draft is linked at all, or the linked draft carries an
+    empty charge set. Neither is evidence of "no insurance charged": such an
+    invoice may still carry an insurance line on the fiscal document (measured
+    2026-08-16 — WDT 153/2026 and WDT 156/2026 were issued directly in wFirma,
+    both carry an insurance line under the canonical insurance service, and
+    neither has a draft, so their premium is outside this report's authority).
+
+    A row whose draft DOES hold charges is never counted: the authority was
+    consulted and answered, so an absent or zero insurance charge there is a
+    proven fact rather than an unknown.
+    """
+    return sum(1 for row in rows if not row.get("charge_authority_on_record"))
+
+
 def _totals_for(
     document_rows: List[Dict[str, Any]],
     adjustment_rows: List[Dict[str, Any]],
@@ -679,6 +708,9 @@ def _totals_for(
         "sum_insured_inr_adjustments": str(adj_total),
         "sum_insured_inr_grand": str((docs_total + adj_total).quantize(CENT)),
         "insurance_recovered": _sum_recovered(document_rows + adjustment_rows),
+        "insurance_recovered_rows_without_authority": _rows_without_charge_authority(
+            document_rows + adjustment_rows
+        ),
         "documents": len(document_rows),
         "adjustments": len(adjustment_rows),
         "rows_without_inr": docs_missing + adj_missing,
@@ -797,6 +829,9 @@ def assemble_insurance_export_report(
             "documents": len(grp["rows"]),
             "adjustments": len(grp_adjustments),
             "insurance_recovered": _sum_recovered(grp["rows"] + grp_adjustments),
+            "insurance_recovered_rows_without_authority": (
+                _rows_without_charge_authority(grp["rows"] + grp_adjustments)
+            ),
         }
 
     report_totals = _totals_for(document_rows, adjustment_rows)
@@ -812,6 +847,9 @@ def assemble_insurance_export_report(
         "net_insured_inr": report_totals["sum_insured_inr_grand"],
         "needs_review": needs_review,
         "insurance_recovered": report_totals["insurance_recovered"],
+        "insurance_recovered_rows_without_authority": report_totals[
+            "insurance_recovered_rows_without_authority"
+        ],
     }
 
     return {
