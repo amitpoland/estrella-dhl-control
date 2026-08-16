@@ -78,7 +78,7 @@ It contains no line for the insurance product `13102217`, and the string
 `362.39` does not occur anywhere in the document XML.
 
 The 362.39 USD lives in the **proforma draft** (`proforma_drafts` id 73,
-batch `SHIPMENT_1749271904_2026-07_52887705`, Diamond Point B.V., USD):
+batch `SHIPMENT_1749271904_2026-07_52887705`, contractor withheld, USD):
 
     {"charge_type": "insurance", "amount": 362.39, "currency": "USD",
      "resolution": "calculated", "wfirma_service_id": "13102217",
