@@ -99,3 +99,39 @@ def test_frontend_has_no_monetary_math():
         assert not re.search(re.escape(field) + r"\S*\s*[*+]\s*\d", code), field
     assert "parseFloat" not in code
     assert "toFixed" not in code
+
+
+def test_frontend_never_derives_a_cross_rate():
+    """PLN→USD→INR is resolved server-side inside the FX boundary. The JSX may
+    only display the provenance the backend already computed."""
+    if not JSX.exists():
+        return
+    code = _strip_comments(JSX, JSX.read_text(encoding="utf-8"))
+    # No arithmetic involving either leg of the cross rate.
+    for field in ("fx_rate", "nbp_leg", "india_leg", "pln_per", "inr_per"):
+        assert not re.search(re.escape(field) + r"\S*\s*[*/]\s*\w", code), field
+        # No numeric coercion of a rate either — display strings stay strings.
+        # (``Number()`` on the period selector inputs is not monetary.)
+        assert not re.search(r"Number\([^)]*" + re.escape(field), code), field
+    assert "CROSS_RATE" not in code
+
+
+def test_only_the_fx_boundary_consults_nbp():
+    """NBP is reachable from exactly one module in this surface. The statement
+    service, the routes and the renderer must never reach it directly."""
+    for path in (SERVICE, ROUTES, RENDERER):
+        code = _strip_comments(path, path.read_text(encoding="utf-8"))
+        assert "nbp_rate_service" not in code, path.name
+        assert "get_nbp_rate" not in code, path.name
+
+
+def test_fx_boundary_never_reads_the_nbp_inr_quote():
+    """NBP's own INR mid is a Polish accounting rate, never the insurer's
+    India benchmark. Only the USD bridge leg may be fetched."""
+    provider = APP / "services" / "insurance_fx_provider.py"
+    code = _strip_comments(provider, provider.read_text(encoding="utf-8"))
+    assert 'fetch_rate("INR"' not in code
+    assert "fetch_rate('INR'" not in code
+    # The one NBP call site asks for the declared bridge currency, nothing else.
+    calls = re.findall(r"nbp_rate_service\.fetch_rate\(\s*([^,]+)", code)
+    assert calls == ["BRIDGE_CURRENCY"], calls

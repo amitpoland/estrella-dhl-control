@@ -54,6 +54,12 @@ Only currencies the authority actually publishes are supported. **PLN is not
 published by RBI/FBIL, so PLN→INR fails closed** (``unsupported_currency``).
 No cross-rate is invented, and NBP — the Polish accounting authority — is
 never consulted here.
+
+That refusal is scoped to *this* module and is unchanged. Since the operator
+ruling of 2026-08-16 the PLN cross rate is assembled one layer up, at the FX
+boundary (``insurance_fx_provider``), out of this authority's **USD** quote and
+NBP's Table A PLN-per-USD mid. This module still answers only for what RBI
+publishes, and no rate is ever combined here.
 """
 
 from __future__ import annotations
