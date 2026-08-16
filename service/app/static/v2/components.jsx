@@ -506,25 +506,38 @@ function Btn({ children, onClick, variant = 'default', small, disabled, style: e
   );
 }
 
-function Modal({ title, onClose, children, wide }) {
+// `footer` is optional: when given, the header and the action row stay put and
+// only the body scrolls, so the actions stay reachable however long the content
+// is. Without it the dialog renders exactly as it always has.
+function Modal({ title, onClose, children, wide, footer, 'data-testid': testid }) {
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'var(--overlay)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       zIndex: 1000, padding: 24,
     }} onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={{
+      <div data-testid={testid} style={{
         background: 'var(--card)', borderRadius: 10,
         width: wide ? 680 : 480, maxWidth: '100%',
-        maxHeight: '90vh', overflow: 'auto',
+        maxHeight: '90vh', overflow: footer ? 'hidden' : 'auto',
+        display: footer ? 'flex' : 'block', flexDirection: 'column',
         boxShadow: '0 20px 60px var(--shadow-heavy)',
         border: '1px solid var(--border)',
       }}>
-        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, fontFamily: '"DM Serif Display", serif', color: 'var(--text)' }}>{title}</h2>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--text-3)' }}>×</button>
         </div>
-        <div style={{ padding: 24 }}>{children}</div>
+        <div style={footer
+          ? { padding: 24, overflowY: 'auto', flex: 1, minHeight: 0 }
+          : { padding: 24 }}>{children}</div>
+        {footer ? (
+          <div style={{
+            padding: '14px 24px', borderTop: '1px solid var(--border)', flexShrink: 0,
+            display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'flex-end',
+            background: 'var(--card)', borderRadius: '0 0 10px 10px',
+          }}>{footer}</div>
+        ) : null}
       </div>
     </div>
   );
