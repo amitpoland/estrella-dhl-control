@@ -54,15 +54,34 @@ class Settings(BaseSettings):
     series_bootstrap_enabled: bool = True
 
     # ── Insurance Export Statement FX (fail-closed) ──────────────────────────
-    # The insurer CCY→INR benchmark is not yet established. Until an approved
-    # provider is configured the insurance export statement CANNOT resolve INR
-    # columns (rows degrade to NEEDS REVIEW) — NBP is deliberately not a valid
-    # value and is never substituted. Providers live in
-    # services/insurance_fx_provider.py; today only "operator_fixed" exists:
-    #   INSURANCE_FX_PROVIDER=operator_fixed
-    #   INSURANCE_FX_OPERATOR_RATES_JSON={"USD":"92.50","EUR":"99.10"}
+    # Until an approved provider is configured the insurance export statement
+    # CANNOT resolve INR columns (rows degrade to NEEDS REVIEW) — NBP is
+    # deliberately not a valid value and is never substituted. Providers live
+    # in services/insurance_fx_provider.py:
+    #   INSURANCE_FX_PROVIDER=india_official   ← approved benchmark
+    #       The India Official Reference FX Authority (RBI/FBIL reference rate,
+    #       services/india_official_fx.py). Owns the date rule, the quotation
+    #       orientation and its own cache; needs no further configuration.
+    #   INSURANCE_FX_PROVIDER=operator_fixed   ← manual override
+    #       INSURANCE_FX_OPERATOR_RATES_JSON={"USD":"92.50","EUR":"99.10"}
     insurance_fx_provider: str = ""
     insurance_fx_operator_rates_json: str = ""
+
+    # ── Commercial charge convergence — APPLY gate (default OFF) ─────────────
+    # services/commercial_charge_convergence.py reads every ISSUED wFirma sales
+    # document and records what it billed in the CommercialChargeAuthority's
+    # durable record. The READ is always safe and always permitted: dry runs,
+    # the reconciliation artifact and the census need no flag.
+    # COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED=1 additionally permits the
+    # local WRITE (commercial_charges.db) — and arms the scheduler tick to
+    # apply rather than merely observe.
+    # Default OFF: this is a financial-authority write path, so an unattended
+    # run must not populate the recovered-premium authority before the
+    # operator has approved a dry-run reconciliation. With the flag off,
+    # apply=True is REFUSED (ChargeConvergenceWriteDenied), never silently
+    # downgraded to a dry run. wFirma itself is READ-ONLY on this path in
+    # both modes — no document is ever posted, edited or deleted.
+    commercial_charge_convergence_apply_enabled: bool = Field(default=False)
 
     # ── Audit hardening (feature-flagged) ─────────────────────────────────────
     # When True (env: AUDIT_HARDENING_ENABLED=1), audit_scoring.score_batch

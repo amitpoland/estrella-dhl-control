@@ -52,6 +52,10 @@ from typing import Any, Dict, List, Optional
 _CENTS = Decimal("0.01")
 _CHARGE_TYPES = ("freight", "insurance")
 
+# ── Snapshot provenance (which fact the charges came from) ───────────────────
+SOURCE_DRAFT_SNAPSHOT = "draft_snapshot"      # pre-issue intent, from a proforma draft
+SOURCE_ISSUED_DOCUMENT = "issued_document"    # what an issued fiscal document billed
+
 # ── Resolution vocabulary (the authority owns it; the writer imports it) ──────
 RESOLUTION_CALCULATED = "calculated"
 RESOLUTION_MANUAL = "manual_amount"
@@ -59,6 +63,10 @@ RESOLUTION_CUSTOMER_COURIER = "customer_courier"
 RESOLUTION_WAIVED = "waived"
 RESOLUTION_NOT_APPLICABLE = "not_applicable"
 RESOLUTION_UNRESOLVED = "unresolved"
+#: Captured from an ISSUED fiscal document (``commercial_charge_record_db``).
+#: The billed amount is a fact, not an intent — authoritative exactly as billed,
+#: including a legitimate 0 ("converged, nothing billed").
+RESOLUTION_INVOICED = "invoiced"
 
 RESOLUTION_STATES = frozenset({
     RESOLUTION_CALCULATED,
@@ -67,6 +75,7 @@ RESOLUTION_STATES = frozenset({
     RESOLUTION_WAIVED,
     RESOLUTION_NOT_APPLICABLE,
     RESOLUTION_UNRESOLVED,
+    RESOLUTION_INVOICED,
 })
 
 #: Explicit zero-states: a persisted amount of 0 is a valid commercial decision.
@@ -76,7 +85,11 @@ _ZERO_OK_STATES = frozenset({
     RESOLUTION_NOT_APPLICABLE,
 })
 #: States whose persisted amount is authoritative and billable as stored.
-_AMOUNT_STATES = frozenset({RESOLUTION_CALCULATED, RESOLUTION_MANUAL})
+_AMOUNT_STATES = frozenset({
+    RESOLUTION_CALCULATED,
+    RESOLUTION_MANUAL,
+    RESOLUTION_INVOICED,
+})
 
 
 def insurance_premium(sales_total: Any, rate: Any, minimum: Any = None) -> Decimal:
@@ -186,8 +199,14 @@ def classify_charge(charge: Dict[str, Any]) -> Dict[str, Any]:
 def resolve_commercial_charges(
     draft_currency: str,
     service_charges: List[Dict[str, Any]],
+    source: str = SOURCE_DRAFT_SNAPSHOT,
 ) -> Dict[str, Any]:
-    """Resolve the canonical freight + insurance totals from the draft snapshot.
+    """Resolve the canonical freight + insurance totals from a charge snapshot.
+
+    ``source`` names WHICH snapshot the charges came from and is echoed in
+    ``provenance``. It changes nothing about the resolution — the same rules
+    apply to a draft's intent and to an issued document's billed lines — but a
+    consumer must never have to guess which fact it is reading.
 
     Returns::
         {
@@ -280,5 +299,8 @@ def resolve_commercial_charges(
         "charges": resolved,
         "cross_currency_charges": cross,
         "unresolved_charges": unresolved,
-        "provenance": {"source": "draft_snapshot", "currency_rule": "same_currency_only"},
+        "provenance": {
+            "source": (source or SOURCE_DRAFT_SNAPSHOT),
+            "currency_rule": "same_currency_only",
+        },
     }

@@ -134,10 +134,13 @@ def test_live_cm_change_does_not_alter_confirmed_zero():
     before = _sub([dict(charge)])["insurance_total"]
     after = _sub([dict(charge)])["insurance_total"]
     assert before == after == 0.0
-    # The resolver takes no Customer Master argument at all — structurally pure.
+    # The resolver takes no Customer Master argument at all — structurally
+    # pure. ``source`` is provenance of the charges already passed in (draft
+    # snapshot vs issued document), not a lookup key: it buys the resolver no
+    # way to read anything live.
     import inspect
     params = inspect.signature(cca.resolve_commercial_charges).parameters
-    assert set(params) == {"draft_currency", "service_charges"}
+    assert set(params) == {"draft_currency", "service_charges", "source"}
 
 
 # ── writer fixtures ───────────────────────────────────────────────────────────

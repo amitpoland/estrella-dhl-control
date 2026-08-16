@@ -123,6 +123,12 @@ function InsuranceExportTab() {
   const [downloading, setDownloading] = React.useState(false);
   const [downloadError, setDownloadError] = React.useState(null);
 
+  // Charge convergence — the recovered-premium authority's own status surface.
+  const [convStatus, setConvStatus] = React.useState(null);
+  const [convRun, setConvRun] = React.useState(null);      // last run summary
+  const [convBusy, setConvBusy] = React.useState(null);    // 'dry' | 'apply'
+  const [convError, setConvError] = React.useState(null);
+
   const loadReport = React.useCallback(async (p, refresh) => {
     setLoading(true); setError(null);
     const r = await window.PzApi.getInsuranceExport(p.from, p.to, !!refresh);
@@ -143,6 +149,34 @@ function InsuranceExportTab() {
     setDrawerOpen(false); setDownloadError(null);
     loadReport(period, false);
   }, [period, loadReport]);
+
+  const loadConvStatus = React.useCallback(async () => {
+    const r = await window.PzApi.getInsuranceChargeConvergenceStatus();
+    setConvStatus(r.ok ? r.data : null);
+  }, []);
+
+  React.useEffect(() => { loadConvStatus(); }, [loadConvStatus]);
+
+  // Reconcile the charge authority for the period on screen. `apply` is the
+  // only mode that writes, it is refused server-side unless the operator has
+  // armed the gate, and the report is reloaded after it so the recovered
+  // total on screen is never left one run behind what was just recorded.
+  const runConvergence = async (apply) => {
+    setConvBusy(apply ? 'apply' : 'dry');
+    setConvError(null);
+    const r = await window.PzApi.runInsuranceChargeConvergence({
+      from: period.from, to: period.to, apply,
+    });
+    if (r.ok) {
+      setConvRun(r.data);
+      await loadConvStatus();
+      if (apply) await loadReport(period, true);
+    } else {
+      setConvRun(null);
+      setConvError(r.error || 'Charge convergence failed.');
+    }
+    setConvBusy(null);
+  };
 
   // Debounced (500 ms) declaration preview — the ONLY source of selected totals.
   React.useEffect(() => {
@@ -499,6 +533,81 @@ function InsuranceExportTab() {
                 sub={i === 0 ? recoveredSub : null}
               />
             ))}
+          </div>
+
+          {/* Charge convergence — the recovered-premium authority's status */}
+          <div data-testid="ins-export-convergence" style={{
+            display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10,
+            padding: '9px 12px', marginBottom: 12, borderRadius: 6,
+            background: 'var(--surface-2, var(--surface))',
+            border: '1px solid var(--border)',
+          }}>
+            <span style={{ ...insLabelStyle, letterSpacing: '0.06em' }}>
+              Recovered premium authority
+            </span>
+            <span data-testid="ins-export-convergence-state" style={{
+              fontSize: 11, fontWeight: 700,
+              color: convStatus && convStatus.open_conflicts
+                ? 'var(--badge-red-text)'
+                : (convStatus && convStatus.apply_enabled
+                  ? 'var(--badge-green-text)' : 'var(--text-2)'),
+            }}>
+              {!convStatus ? 'Status unavailable'
+                : convStatus.running ? 'Running…'
+                  : convStatus.open_conflicts
+                    ? `${convStatus.open_conflicts} conflict${convStatus.open_conflicts === 1 ? '' : 's'} need manual review`
+                    : convStatus.apply_enabled ? 'Automatic — armed' : 'Automatic — off'}
+            </span>
+            <span data-testid="ins-export-convergence-last" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+              {convStatus && convStatus.last_completed_at
+                ? `Last recorded ${convStatus.last_completed_at} · ${convStatus.processed} read, ${convStatus.created} new, ${convStatus.skipped} unchanged`
+                : 'Never recorded'}
+              {convStatus && typeof convStatus.documents_on_record === 'number'
+                ? ` · ${convStatus.documents_on_record} documents on record` : ''}
+            </span>
+
+            <div style={{ flex: 1 }} />
+            <button
+              data-testid="ins-export-convergence-preview"
+              onClick={() => runConvergence(false)}
+              disabled={convBusy !== null}
+              style={{ ...btnOutline, opacity: convBusy ? 0.5 : 1 }}
+            >{convBusy === 'dry' ? 'Reading…' : 'Preview convergence'}</button>
+            <button
+              data-testid="ins-export-convergence-apply"
+              onClick={() => runConvergence(true)}
+              disabled={convBusy !== null || !(convStatus && convStatus.apply_enabled)}
+              title={convStatus && !convStatus.apply_enabled
+                ? 'Recording is disabled: COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED is off'
+                : 'Records what each issued document billed as insurance'}
+              style={{
+                ...btnGold,
+                opacity: (convBusy || !(convStatus && convStatus.apply_enabled)) ? 0.5 : 1,
+                cursor: (convBusy || !(convStatus && convStatus.apply_enabled)) ? 'not-allowed' : 'pointer',
+              }}
+            >{convBusy === 'apply' ? 'Recording…' : 'Record billed premiums'}</button>
+
+            {convRun ? (
+              <div data-testid="ins-export-convergence-result" style={{
+                flexBasis: '100%', fontSize: 10.5, color: 'var(--text-2)',
+              }}>
+                {convRun.mode === 'dry_run' ? 'Preview (nothing written)' : 'Recorded'}
+                {` · ${convRun.processed} documents · ${convRun.created} ${convRun.mode === 'dry_run' ? 'would be added' : 'added'}`}
+                {` · ${convRun.skipped} already on record · ${convRun.conflicts} conflict${convRun.conflicts === 1 ? '' : 's'}`}
+                {convRun.unattributed
+                  ? ` · ${convRun.unattributed} insurance-like line${convRun.unattributed === 1 ? '' : 's'} not attributable (not recorded)`
+                  : ''}
+                {Object.keys(convRun.billed_insurance_by_currency || {}).length
+                  ? ` · billed ${Object.keys(convRun.billed_insurance_by_currency).sort()
+                    .map(c => `${c} ${convRun.billed_insurance_by_currency[c]}`).join(', ')}`
+                  : ''}
+              </div>
+            ) : null}
+            {convError ? (
+              <div data-testid="ins-export-convergence-error" style={{
+                flexBasis: '100%', fontSize: 10.5, color: 'var(--badge-red-text)',
+              }}>{convError}</div>
+            ) : null}
           </div>
 
           {/* Toolbar: filters + selection actions */}
