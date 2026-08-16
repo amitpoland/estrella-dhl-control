@@ -52,10 +52,10 @@ const INS_STATUS_CHIP = {
   cancelled:            { bg: 'var(--badge-red-bg)',     fg: 'var(--badge-red-text)',     bd: 'var(--badge-red-border)' },
 };
 
-function InsStatusChip({ status, label }) {
+function InsStatusChip({ status, label, reason }) {
   const c = INS_STATUS_CHIP[status] || INS_STATUS_CHIP.excluded;
   return (
-    <span data-testid={`ins-export-status-${status}`} style={{
+    <span data-testid={`ins-export-status-${status}`} title={reason || undefined} style={{
       fontSize: 9, padding: '1px 6px', borderRadius: 2, whiteSpace: 'nowrap',
       background: c.bg, color: c.fg, border: `1px solid ${c.bd}`,
       fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
@@ -96,10 +96,14 @@ function InsMoney({ value }) {
 // Renders the server's FX provenance as hover text. Display only — every value
 // shown here is a string the backend already resolved; the frontend performs no
 // FX arithmetic and never derives a cross rate of its own.
-function insFxProvenanceText(p) {
+function insFxProvenanceText(p, exactRate) {
   if (!p) return undefined;
   const leg = (l) => `${l.source} ${l.currency} ${l.orientation} = ${l.rate} (requested ${l.requested_date}, effective ${l.effective_date})`;
-  const lines = [`source: ${p.source}`, `requested ${p.requested_date} → effective ${p.effective_date}`];
+  const lines = [];
+  // The cell shows the rate at 4dp; the exact rate the INR column was computed
+  // from is disclosed here in full, never silently discarded.
+  if (exactRate) lines.push(`applied rate (full precision): ${exactRate}`);
+  lines.push(`source: ${p.source}`, `requested ${p.requested_date} → effective ${p.effective_date}`);
   if (p.derivation === 'cross_rate') {
     lines.push(`derivation: cross_rate — ${p.formula}`);
     if (p.nbp_leg) lines.push(`NBP leg (Table ${p.nbp_leg.table} no. ${p.nbp_leg.table_number}): ${leg(p.nbp_leg)}`);
@@ -560,18 +564,27 @@ function InsuranceExportTab() {
             <span style={{ ...insLabelStyle, letterSpacing: '0.06em' }}>
               Recovered premium authority
             </span>
-            <span data-testid="ins-export-convergence-state" style={{
-              fontSize: 11, fontWeight: 700,
-              color: convStatus && convStatus.open_conflicts
-                ? 'var(--badge-red-text)'
-                : (convStatus && convStatus.apply_enabled
-                  ? 'var(--badge-green-text)' : 'var(--text-2)'),
-            }}>
+            <span data-testid="ins-export-convergence-state"
+              title={convStatus && !convStatus.apply_enabled && convStatus.documents_on_record
+                ? 'Automatic recording is deliberately off. The authority is already '
+                  + 'populated by the approved one-time backfill; Preview convergence '
+                  + 'stays available and writes nothing.'
+                : undefined}
+              style={{
+                fontSize: 11, fontWeight: 700,
+                color: convStatus && convStatus.open_conflicts
+                  ? 'var(--badge-red-text)'
+                  : (convStatus && convStatus.apply_enabled
+                    ? 'var(--badge-green-text)' : 'var(--text-2)'),
+              }}>
               {!convStatus ? 'Status unavailable'
                 : convStatus.running ? 'Running…'
                   : convStatus.open_conflicts
                     ? `${convStatus.open_conflicts} conflict${convStatus.open_conflicts === 1 ? '' : 's'} need manual review`
-                    : convStatus.apply_enabled ? 'Automatic — armed' : 'Automatic — off'}
+                    : convStatus.apply_enabled ? 'Automatic — armed'
+                      : convStatus.documents_on_record
+                        ? 'Automatic — off · authority populated'
+                        : 'Automatic — off'}
             </span>
             <span data-testid="ins-export-convergence-last" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
               {convStatus && convStatus.last_completed_at
@@ -586,6 +599,7 @@ function InsuranceExportTab() {
               data-testid="ins-export-convergence-preview"
               onClick={() => runConvergence(false)}
               disabled={convBusy !== null}
+              title="Reads the issued documents and reports what would be recorded. Writes nothing — always available."
               style={{ ...btnOutline, opacity: convBusy ? 0.5 : 1 }}
             >{convBusy === 'dry' ? 'Reading…' : 'Preview convergence'}</button>
             <button
@@ -593,7 +607,10 @@ function InsuranceExportTab() {
               onClick={() => runConvergence(true)}
               disabled={convBusy !== null || !(convStatus && convStatus.apply_enabled)}
               title={convStatus && !convStatus.apply_enabled
-                ? 'Recording is disabled: COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED is off'
+                ? (convStatus.documents_on_record
+                  ? `Recording is intentionally disabled (COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED is off). `
+                    + `${convStatus.documents_on_record} documents are already on record from the approved backfill.`
+                  : 'Recording is disabled: COMMERCIAL_CHARGE_CONVERGENCE_APPLY_ENABLED is off')
                 : 'Records what each issued document billed as insurance'}
               style={{
                 ...btnGold,
@@ -705,14 +722,26 @@ function InsuranceExportTab() {
                           </td>
                           <td style={{ ...tdStyle, textAlign: 'left' }}>{r.date}</td>
                           <td style={{ ...tdStyle, textAlign: 'left' }}>
-                            <InsStatusChip status={r.status} label={r.status_label} />
+                            <InsStatusChip status={r.status} label={r.status_label} reason={r.recommendation_reason} />
+                            {/* The backend already classifies every row and ships the
+                                reason with it — this only displays it. No status is
+                                ever derived here. */}
+                            {r.status === 'needs_review' && r.recommendation_reason ? (
+                              <div
+                                data-testid={`ins-export-review-reason-${r.invoice_id}`}
+                                style={{
+                                  marginTop: 3, fontSize: 9.5, lineHeight: 1.3,
+                                  color: 'var(--text-2)', whiteSpace: 'normal', maxWidth: 170,
+                                }}
+                              >{r.recommendation_reason}</div>
+                            ) : null}
                           </td>
                           <td style={tdStyle}>{r.currency}</td>
                           <td style={tdStyle}><InsMoney value={r.inv_cif} /></td>
                           <td style={tdStyle}><InsMoney value={r.plus_10_pct} /></td>
                           <td style={tdStyle}><InsMoney value={r.sum_insured} /></td>
-                          <td style={tdStyle} data-testid={`ins-export-fx-${r.invoice_id}`} title={insFxProvenanceText(r.fx_provenance)}>
-                            {r.fx_rate || '—'}
+                          <td style={tdStyle} data-testid={`ins-export-fx-${r.invoice_id}`} title={insFxProvenanceText(r.fx_provenance, r.fx_rate)}>
+                            {r.fx_rate_display || r.fx_rate || '—'}
                             {r.fx_provenance && r.fx_provenance.derivation === 'cross_rate' ? (
                               <span style={{ marginLeft: 4, color: 'var(--text-3)', fontSize: 10 }}>ⓘ</span>
                             ) : null}

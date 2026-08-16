@@ -241,7 +241,10 @@ def render_insurance_export_statement_pdf(
             _num_cell(row.get("inv_cif")),
             _num_cell(row.get("plus_10_pct")),
             _num_cell(row.get("sum_insured")),
-            _num_cell(row.get("fx_rate")),
+            # Display precision comes from the projection (fx_rate_display);
+            # the full-precision fx_rate is what the INR column was computed
+            # from and is never re-derived here.
+            _num_cell(row.get("fx_rate_display") or row.get("fx_rate")),
             _num_cell(row.get("sum_insured_inr")),
         ]
         if show_recovered:
@@ -257,7 +260,7 @@ def render_insurance_export_statement_pdf(
             _num_cell(adj.get("inv_cif")),
             _num_cell(adj.get("plus_10_pct")),
             _num_cell(adj.get("sum_insured")),
-            _num_cell(adj.get("fx_rate")),
+            _num_cell(adj.get("fx_rate_display") or adj.get("fx_rate")),
             _num_cell(adj.get("sum_insured_inr")),
         ]
         if show_recovered:

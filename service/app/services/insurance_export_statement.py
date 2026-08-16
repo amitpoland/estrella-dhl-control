@@ -252,6 +252,25 @@ def _money(value: Optional[Decimal]) -> Optional[str]:
     return str(value.quantize(CENT, rounding=ROUND_HALF_UP))
 
 
+# Display-only FX precision. PLN is quoted as a cross rate whose raw Decimal
+# carries 26 fractional digits — unreadable in both the web table and the PDF.
+FX_DISPLAY_EXP = Decimal("0.0001")
+
+
+def _fx_display(value: Optional[Decimal]) -> Optional[str]:
+    """Serialize the rate for DISPLAY only — at most 4 fractional digits.
+
+    ``fx_rate`` keeps the provider's full precision and is what
+    ``sum_insured_inr`` was derived from; this string is never read back into
+    any calculation. It exists so the web renderer and the PDF renderer show
+    one identical, readable rate instead of each formatting the raw Decimal
+    their own way.
+    """
+    if value is None:
+        return None
+    return str(value.quantize(FX_DISPLAY_EXP, rounding=ROUND_HALF_UP))
+
+
 # ---------------------------------------------------------------------------
 # FX — approved insurance benchmark only, via the fail-closed
 # insurance_fx_provider boundary. This module never consults an FX source
@@ -672,6 +691,7 @@ def _build_row(
         "plus_10_pct": _money(plus_10),
         "sum_insured": _money(sum_insured),
         "fx_rate": str(fx_rate) if fx_rate is not None else None,
+        "fx_rate_display": _fx_display(fx_rate),
         "fx_provenance": fx_provenance,
         "fx_error": fx_error,
         "sum_insured_inr": _money(sum_insured_inr),
