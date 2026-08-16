@@ -133,6 +133,21 @@ class TestLiveApiCalls:
         assert "PzApi.listCarriersConfig()" in src, \
             "carriers-page.jsx must call PzApi.listCarriersConfig()"
 
+    def test_unwraps_pzapi_carriers_envelope(self):
+        """PzApi returns {ok,data}; carriers live at data.carriers — not cfgRes.carriers."""
+        src = _read(CARRIERS_PAGE)
+        assert "cfgRes.data.carriers" in src or "cfgRes.data && cfgRes.data.carriers" in src, \
+            "carriers-page.jsx must unwrap PzApi envelope via cfgRes.data.carriers"
+        assert "setCarriers(cfgRes.carriers" not in src, \
+            "must not read cfgRes.carriers (always undefined under {ok,data} envelope)"
+
+    def test_unwraps_pzapi_carrier_status_envelope(self):
+        src = _read(CARRIERS_PAGE)
+        assert "setCarrierStatus(statusRes.data" in src, \
+            "carriers-page.jsx must unwrap getCarrierStatus via statusRes.data"
+        assert "setCarrierStatus(statusRes);" not in src, \
+            "must not pass raw statusRes envelope into carrierStatus state"
+
     def test_calls_get_carrier_status(self):
         src = _read(CARRIERS_PAGE)
         assert "PzApi.getCarrierStatus()" in src, \

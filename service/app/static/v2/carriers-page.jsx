@@ -138,8 +138,21 @@ function CarriersPage() {
           PzApi.getCarrierStatus(),
         ]);
         if (cancelled) return;
-        setCarriers(cfgRes.carriers || []);
-        setCarrierStatus(statusRes);
+        // PzApi._call returns { ok, data } — body is cfgRes.data ({ count, carriers }).
+        if (!cfgRes.ok) {
+          setLoadErr(cfgRes.error || 'Failed to load carrier configs');
+          setCarriers([]);
+        } else {
+          setCarriers((cfgRes.data && cfgRes.data.carriers) || []);
+        }
+        if (!statusRes.ok) {
+          setCarrierStatus(null);
+          if (cfgRes.ok) {
+            setLoadErr(statusRes.error || 'Failed to load carrier gate status');
+          }
+        } else {
+          setCarrierStatus(statusRes.data || null);
+        }
       } catch (e) {
         if (!cancelled) setLoadErr(e.error || e.message || 'Failed to load carrier data');
       }
