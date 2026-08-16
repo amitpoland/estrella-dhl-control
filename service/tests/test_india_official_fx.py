@@ -182,10 +182,48 @@ def test_provider_boundary_passes_the_official_quote_through(fx_store, monkeypat
 
 
 def test_provider_boundary_carries_the_taxonomy_kind(fx_store, monkeypatch):
+    """A currency this authority does not publish still fails closed at the
+    boundary, carrying the authority's own taxonomy kind.
+
+    PLN is deliberately no longer the example: since the operator ruling of
+    2026-08-16 it is answered one layer up by the approved USD cross rate (see
+    ``test_insurance_fx_pln_cross_rate.py``). CHF has no publication here and
+    no bridge, so it is the currency that still proves the pass-through.
+    """
     monkeypatch.setattr(settings, "insurance_fx_provider", "india_official")
     with pytest.raises(insurance_fx_provider.InsuranceFxError) as exc:
-        insurance_fx_provider.get_rate("PLN", "2026-08-14")
+        insurance_fx_provider.get_rate("CHF", "2026-08-14")
     assert exc.value.kind == "unsupported_currency"
+
+
+def test_pln_is_answered_by_the_cross_rate_not_by_this_authority(
+    fx_store, monkeypatch
+):
+    """This module still refuses PLN outright; the boundary bridges it via USD.
+
+    Kept network-free: the NBP leg is stubbed, exactly like the RBI transport.
+    """
+    monkeypatch.setattr(settings, "insurance_fx_provider", "india_official")
+    with pytest.raises(fx.OfficialFxError) as direct:
+        fx.resolve_for_invoice_date("PLN", "2026-08-14")
+    assert direct.value.kind == "unsupported_currency"
+
+    from app.services import nbp_rate_service
+
+    monkeypatch.setattr(insurance_fx_provider, "_NBP_USD_MEMO", {}, raising=False)
+    monkeypatch.setattr(
+        nbp_rate_service,
+        "fetch_rate",
+        lambda c, d: {
+            "rate": 4.0000,
+            "table_date": "2026-08-13",
+            "table_number": "156/A/NBP/2026",
+        },
+    )
+    quote = insurance_fx_provider.get_rate("PLN", "2026-08-14")
+    # 94.0000 INR per USD / 4.0000 PLN per USD.
+    assert quote["rate"] == Decimal("94.0000") / Decimal("4.0000")
+    assert quote["derivation"] == "cross_rate"
 
 
 def test_provider_boundary_never_falls_back_to_another_fx_source(fx_store, monkeypatch):
@@ -211,9 +249,37 @@ def test_unconfigured_provider_still_fails_closed(monkeypatch):
 
 
 def test_the_fx_authority_never_imports_the_polish_accounting_authority():
-    source = (
-        __import__("pathlib").Path(fx.__file__).read_text(encoding="utf-8")
-        + __import__("pathlib").Path(insurance_fx_provider.__file__).read_text(encoding="utf-8")
-    )
+    """This authority answers only for what RBI publishes — it never reaches
+    the Polish accounting rate service, before or after the cross-rate ruling."""
+    source = __import__("pathlib").Path(fx.__file__).read_text(encoding="utf-8")
     assert "import nbp_rate_service" not in source
     assert "from .nbp_rate_service" not in source
+
+
+def test_the_boundary_reaches_nbp_only_for_the_usd_bridge_leg():
+    """The provider may consult NBP — for exactly one thing.
+
+    Superseded the blanket ban on 2026-08-16: the approved PLN cross rate needs
+    NBP's Table A PLN-per-USD mid. What stays banned is a module-level
+    dependency (which would make NBP a startup-time authority of the insurance
+    chain) and any call for a currency other than the declared bridge.
+    """
+    import re
+
+    path = __import__("pathlib").Path(insurance_fx_provider.__file__)
+    source = path.read_text(encoding="utf-8")
+    code = "\n".join(
+        ln for ln in source.splitlines() if not ln.strip().startswith("#")
+    )
+
+    # Lazy, function-local import only — never a module attribute.
+    assert not hasattr(insurance_fx_provider, "nbp_rate_service")
+    for line in code.splitlines():
+        if "import nbp_rate_service" in line:
+            assert line.startswith(" "), line
+
+    # One call site, one currency, and never NBP's own INR quote.
+    assert re.findall(r"nbp_rate_service\.fetch_rate\(\s*([^,]+)", code) == [
+        "BRIDGE_CURRENCY"
+    ]
+    assert insurance_fx_provider.BRIDGE_CURRENCY == "USD"

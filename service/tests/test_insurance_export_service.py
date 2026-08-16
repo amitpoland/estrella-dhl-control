@@ -829,3 +829,177 @@ def test_contractor_subtotals_disclose_the_gap_too(h):
     }
     assert subs["C-1"]["insurance_recovered_rows_without_authority"] == 0
     assert subs["C-2"]["insurance_recovered_rows_without_authority"] == 1
+
+
+# ── Total integrity: contractor subtotals are presentation, never an input ──
+#
+# The report total is a pure function of the row population. Contractor
+# subtotals are derived from the same rows purely for display and are never fed
+# back into ``report_totals`` — if a future refactor ever adds them as an
+# addend, every test in this section fails.
+
+
+def _population(report):
+    """The two row lists ``_totals_for`` is actually given, rebuilt from the
+    rendered report — rows plus every adjustment, nested or unattached."""
+    documents, adjustments = [], []
+    for grp in report["contractors"]:
+        for row in grp["rows"]:
+            documents.append(row)
+            adjustments.extend(row["adjustments"])
+        adjustments.extend(grp["unattached_adjustments"])
+    return documents, adjustments
+
+
+def _multi_contractor(h):
+    h.facts = [
+        _fact("101"),
+        _fact("102", fullnumber="FV 2/2026", brutto="1400.00"),
+        _fact(
+            "103",
+            fullnumber="FV 3/2026",
+            currency="EUR",
+            brutto="1000.00",
+            contractor_id="C-2",
+            contractor_name="Beta Trading GmbH",
+        ),
+    ]
+    for inv in ("101", "102", "103"):
+        h.drafts[inv] = _draft(charges=[INSURANCE_45_67])
+        h.invoiced[inv] = _invoiced()
+    h.shipments["BATCH-1"] = AWB_SHIPMENT
+    h.rates["USD"] = "88.467460"
+    h.rates["EUR"] = "95.000000"
+
+
+def test_report_total_is_a_pure_function_of_the_rows(h):
+    """The subtotal-double-count proof.
+
+    Re-running ``_totals_for`` over nothing but the row population reproduces
+    ``report_totals`` byte for byte. Contractor subtotals are not an argument,
+    so they cannot contribute — and a refactor that made them one would break
+    this equality immediately.
+    """
+    _multi_contractor(h)
+    report = _assemble()
+    documents, adjustments = _population(report)
+
+    assert ies._totals_for(documents, adjustments) == report["report_totals"]
+
+
+def test_documents_total_equals_the_exact_sum_of_row_inr(h):
+    _multi_contractor(h)
+    report = _assemble()
+    documents, _ = _population(report)
+
+    # Row INR is already 2dp, so this is exact equality — no tolerance.
+    expected = sum(
+        (Decimal(r["sum_insured_inr"]) for r in documents), Decimal("0")
+    )
+    assert report["report_totals"]["sum_insured_inr_documents"] == str(expected)
+    assert report["kpi"]["gross_insured_inr"] == str(expected)
+
+
+def test_grand_total_is_documents_plus_countable_adjustments_only(h, monkeypatch):
+    """A countable (PARTIAL_REVERSE) correction moves the total exactly once.
+
+    The classifier is forced here because the assembly layer has no evidence
+    source for a correction's reason yet — this pins the *arithmetic*, not the
+    classification.
+    """
+    _correction_fixture(
+        h,
+        xml=(
+            "<api><invoices><invoice>"
+            "<invoicecorrection><invoice><id>101</id></invoicecorrection>"
+            "</invoice></invoices></api>"
+        ),
+    )
+    monkeypatch.setattr(
+        ies,
+        "classify_correction",
+        lambda reason, amount=None: (
+            CorrectionReason.PHYSICAL_RETURN_PARTIAL,
+            InsuranceEffect.PARTIAL_REVERSE,
+        ),
+    )
+    report = _assemble()
+    documents, adjustments = _population(report)
+    totals = report["report_totals"]
+
+    countable = [
+        a for a in adjustments if a["insurance_effect"] in ies._AUTOMATIC_EFFECTS
+    ]
+    assert countable, "fixture must produce a countable adjustment"
+    assert Decimal(totals["sum_insured_inr_adjustments"]) == sum(
+        (Decimal(a["sum_insured_inr"]) for a in countable), Decimal("0")
+    )
+    assert Decimal(totals["sum_insured_inr_grand"]) == Decimal(
+        totals["sum_insured_inr_documents"]
+    ) + Decimal(totals["sum_insured_inr_adjustments"])
+    assert report["kpi"]["net_insured_inr"] == totals["sum_insured_inr_grand"]
+
+
+def test_contractor_subtotals_sum_to_the_report_total_and_not_double_it(h):
+    _multi_contractor(h)
+    report = _assemble()
+    subtotal_sum = sum(
+        (
+            Decimal(g["subtotals"]["sum_insured_inr"])
+            for g in report["contractors"]
+        ),
+        Decimal("0"),
+    )
+    grand = Decimal(report["report_totals"]["sum_insured_inr_grand"])
+
+    assert subtotal_sum == grand
+    # The mutation guard: a total built as "rows + subtotals" would be double.
+    assert subtotal_sum > 0
+    assert grand != Decimal(
+        report["report_totals"]["sum_insured_inr_documents"]
+    ) + subtotal_sum
+
+
+def test_subtotal_partition_matches_the_report_partition(h, monkeypatch):
+    """Groups and the report filter adjustments through the same rule, so no
+    row is counted in one place and dropped in the other."""
+    _correction_fixture(
+        h,
+        xml=(
+            "<api><invoices><invoice>"
+            "<invoicecorrection><invoice><id>101</id></invoicecorrection>"
+            "</invoice></invoices></api>"
+        ),
+    )
+    monkeypatch.setattr(
+        ies,
+        "classify_correction",
+        lambda reason, amount=None: (
+            CorrectionReason.PHYSICAL_RETURN_PARTIAL,
+            InsuranceEffect.PARTIAL_REVERSE,
+        ),
+    )
+    report = _assemble()
+    totals = report["report_totals"]
+
+    for field in ("sum_insured_inr_documents", "sum_insured_inr_adjustments"):
+        assert Decimal(totals[field]) == sum(
+            (Decimal(g["subtotals"][field]) for g in report["contractors"]),
+            Decimal("0"),
+        )
+
+
+def test_a_row_without_inr_is_counted_as_missing_never_as_zero(h):
+    _multi_contractor(h)
+    del h.rates["EUR"]  # FX unavailable for the Beta Trading row
+    report = _assemble()
+    documents, adjustments = _population(report)
+    totals = report["report_totals"]
+
+    assert totals["rows_without_inr"] == 1
+    priced = [r for r in documents if r["sum_insured_inr"] is not None]
+    assert len(priced) == len(documents) - 1
+    assert Decimal(totals["sum_insured_inr_documents"]) == sum(
+        (Decimal(r["sum_insured_inr"]) for r in priced), Decimal("0")
+    )
+    assert ies._totals_for(documents, adjustments) == totals

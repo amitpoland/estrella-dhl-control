@@ -93,6 +93,21 @@ function InsMoney({ value }) {
   );
 }
 
+// Renders the server's FX provenance as hover text. Display only — every value
+// shown here is a string the backend already resolved; the frontend performs no
+// FX arithmetic and never derives a cross rate of its own.
+function insFxProvenanceText(p) {
+  if (!p) return undefined;
+  const leg = (l) => `${l.source} ${l.currency} ${l.orientation} = ${l.rate} (requested ${l.requested_date}, effective ${l.effective_date})`;
+  const lines = [`source: ${p.source}`, `requested ${p.requested_date} → effective ${p.effective_date}`];
+  if (p.derivation === 'cross_rate') {
+    lines.push(`derivation: cross_rate — ${p.formula}`);
+    if (p.nbp_leg) lines.push(`NBP leg (Table ${p.nbp_leg.table} no. ${p.nbp_leg.table_number}): ${leg(p.nbp_leg)}`);
+    if (p.india_leg) lines.push(`India leg: ${leg(p.india_leg)}`);
+  }
+  return lines.join('\n');
+}
+
 function InsuranceExportTab() {
   const now = new Date();
   const [periodMode, setPeriodMode] = React.useState('monthly');
@@ -696,7 +711,12 @@ function InsuranceExportTab() {
                           <td style={tdStyle}><InsMoney value={r.inv_cif} /></td>
                           <td style={tdStyle}><InsMoney value={r.plus_10_pct} /></td>
                           <td style={tdStyle}><InsMoney value={r.sum_insured} /></td>
-                          <td style={tdStyle}>{r.fx_rate || '—'}</td>
+                          <td style={tdStyle} data-testid={`ins-export-fx-${r.invoice_id}`} title={insFxProvenanceText(r.fx_provenance)}>
+                            {r.fx_rate || '—'}
+                            {r.fx_provenance && r.fx_provenance.derivation === 'cross_rate' ? (
+                              <span style={{ marginLeft: 4, color: 'var(--text-3)', fontSize: 10 }}>ⓘ</span>
+                            ) : null}
+                          </td>
                           <td style={tdStyle}><InsMoney value={r.sum_insured_inr} /></td>
                           <td style={tdStyle}>
                             {rec.amount && rec.amount !== '0.00'

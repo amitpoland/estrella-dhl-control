@@ -254,8 +254,11 @@ def _money(value: Optional[Decimal]) -> Optional[str]:
 
 # ---------------------------------------------------------------------------
 # FX — approved insurance benchmark only, via the fail-closed
-# insurance_fx_provider boundary. NBP is NOT an insurance FX authority and is
-# never consulted here (operator ruling 2026-08-15 — Blocker 1).
+# insurance_fx_provider boundary. This module never consults an FX source
+# itself (operator ruling 2026-08-15 — Blocker 1) and performs no conversion
+# arithmetic of its own: where the approved quote is a cross rate (PLN, via the
+# provider's NBP USD bridge — ruling 2026-08-16), this layer only carries the
+# provider's two-leg provenance through to the row, verbatim.
 
 
 def _fx_to_inr(
@@ -296,11 +299,24 @@ def _fx_to_inr(
         "requested_date": quote.get("requested_date"),
         "effective_date": quote.get("effective_date"),
         # How far the applied publication sits before the requested date
-        # (weekend / Mumbai holiday walk-back). Disclosed, never hidden.
+        # (weekend / Mumbai or Warsaw holiday walk-back). Disclosed, never hidden.
         "staleness_days": quote.get("staleness_days"),
         "quote_unit": quote.get("quote_unit"),
         "rate_as_published": quote.get("rate_as_published"),
     }
+    # Cross-rate quotes carry both source legs. Passed through unchanged (rates
+    # stringified like fx_rate itself) so the statement shows WHICH two official
+    # publications produced the rate — never a single flattened number.
+    if quote.get("derivation"):
+        provenance["derivation"] = quote.get("derivation")
+        provenance["formula"] = quote.get("formula")
+        for leg_key in ("nbp_leg", "india_leg"):
+            leg = quote.get(leg_key)
+            if isinstance(leg, dict):
+                provenance[leg_key] = {
+                    k: (str(v) if isinstance(v, Decimal) else v)
+                    for k, v in leg.items()
+                }
     result = (rate, provenance, None)
     cache[key] = result
     return result
