@@ -166,6 +166,29 @@ def require_dhl_resolve(
     return user
 
 
+def require_carrier_credentials_admin(
+    user: dict = Depends(require_admin),
+    _permission: Optional[dict] = Depends(
+        require_permission("carriers.credentials.write")
+    ),
+) -> dict:
+    """Carrier Master secret mutation — session admin + credentials.write.
+
+    Blocks X-API-Key widen (same composition as ``require_users_admin``).
+    """
+    return user
+
+
+def require_carrier_credentials_view(
+    user: dict = Depends(require_admin),
+    _permission: Optional[dict] = Depends(
+        require_permission("carriers.credentials.view")
+    ),
+) -> dict:
+    """Masked credential metadata read — session admin + credentials.view."""
+    return user
+
+
 def check_session_or_redirect(request: Request) -> Optional[dict]:
     """
     For HTML page routes: return user if authenticated,

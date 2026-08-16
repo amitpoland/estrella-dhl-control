@@ -106,6 +106,7 @@ from .api.routes_master_jewelry import (
 from .api.routes_finance_postings import router as finance_postings_router
 from .api.routes_supplier_invoice_ocr import router as supplier_invoice_ocr_router
 from .api.routes_shipment_documents import router as shipment_documents_router
+from .api.routes_carrier_credentials import router as carrier_credentials_router
 from .core.config import settings
 from .core.logging import configure_logging, get_logger
 from .services.batch_manager import manager as batch_manager
@@ -405,6 +406,18 @@ async def lifespan(app: FastAPI):
     except Exception as _wfirma_sched_exc:
         log.warning("wfirma_webhook_scheduler startup failed (non-fatal): %s", _wfirma_sched_exc)
 
+    # ── Carrier Master credential store (Release B / DPAPI) ──────────────────
+    # Non-fatal: ACL/root failure leaves store unconfigured (migrated identities
+    # fail closed; legacy .env path unchanged until CARRIER_CREDENTIAL_MIGRATED).
+    try:
+        from .services.carrier.credentials.bootstrap import bootstrap_credential_store
+        bootstrap_credential_store()
+    except Exception as _cred_boot_exc:
+        log.warning(
+            "carrier_credential_store bootstrap failed (non-fatal): %s",
+            type(_cred_boot_exc).__name__,
+        )
+
     yield
     log.info("Estrella PZ Service shutting down.")
 
@@ -552,6 +565,7 @@ app.include_router(md_incoterms_router)             # MasterData-B7: Incoterms r
 app.include_router(md_vat_router)                   # MasterData-B7: VAT config (local; READ-ONLY w.r.t. wFirma invoicing)
 app.include_router(md_fx_router)                    # MasterData-B8: FX rates (REFERENCE-ONLY; NOT a PZ override path)
 app.include_router(md_carriers_config_router)       # MasterData-B9: Carrier config (LOCAL, NON-SECRET; runtime untouched)
+app.include_router(carrier_credentials_router)      # Carrier Master credential authority (masked; admin session only)
 app.include_router(md_designs_router)                # B-MD2 (MDOC): Designs master (LOCAL, additive; product_identity_engine read-only consumer)
 app.include_router(md_audit_router)                  # Phase 1: unified master-data audit (read-only query surface)
 app.include_router(md_capabilities_router)           # Wave 7: per-domain master capability contract (read-only descriptor)
