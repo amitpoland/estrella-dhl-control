@@ -148,6 +148,71 @@ class TestBuildServiceChargeLines:
         assert ln.currency == "EUR"
         assert note == ""
 
+    def test_explicit_freight_method_beats_mirror_fedex(self, monkeypatch, tmp_path):
+        """Case D: CM/charge Freight must not be replaced by mirror Fedex Courier."""
+        from app.services.commercial_lookup import (
+            FREIGHT_METHOD_FEDEX_COURIER,
+            FREIGHT_METHOD_FREIGHT,
+        )
+        _seed_mirror_and_meta(
+            monkeypatch, tmp_path,
+            {"freight": (FREIGHT_METHOD_FEDEX_COURIER, "Fracht")},
+        )
+        lines, note = self._fn()(
+            [{
+                "charge_type": "freight",
+                "amount": "150.00",
+                "currency": "EUR",
+                "wfirma_service_id": FREIGHT_METHOD_FREIGHT,
+            }],
+            "EUR",
+        )
+        assert len(lines) == 1
+        assert lines[0].wfirma_good_id == FREIGHT_METHOD_FREIGHT
+        assert note == ""
+
+    def test_cm_freight_kwarg_beats_mirror_when_charge_id_missing(
+        self, monkeypatch, tmp_path,
+    ):
+        from app.services.commercial_lookup import (
+            FREIGHT_METHOD_FEDEX_COURIER,
+            FREIGHT_METHOD_FREIGHT,
+        )
+        _seed_mirror_and_meta(
+            monkeypatch, tmp_path,
+            {"freight": (FREIGHT_METHOD_FEDEX_COURIER, "Fracht")},
+        )
+        lines, note = self._fn()(
+            [{"charge_type": "freight", "amount": "150.00", "currency": "EUR"}],
+            "EUR",
+            customer_freight_service_id=FREIGHT_METHOD_FREIGHT,
+        )
+        assert len(lines) == 1
+        assert lines[0].wfirma_good_id == FREIGHT_METHOD_FREIGHT
+        assert note == ""
+
+    def test_insurance_identity_stays_mirror_when_freight_is_explicit(
+        self, monkeypatch, tmp_path,
+    ):
+        from app.services.commercial_lookup import FREIGHT_METHOD_FREIGHT
+        _seed_both(monkeypatch, tmp_path)
+        lines, note = self._fn()(
+            [
+                {
+                    "charge_type": "freight",
+                    "amount": "100.00",
+                    "currency": "EUR",
+                    "wfirma_service_id": FREIGHT_METHOD_FREIGHT,
+                },
+                {"charge_type": "insurance", "amount": "15.00", "currency": "EUR"},
+            ],
+            "EUR",
+        )
+        by_code = {ln.product_code: ln.wfirma_good_id for ln in lines}
+        assert by_code["freight"] == FREIGHT_METHOD_FREIGHT
+        assert by_code["insurance"] == "WFP-99002"
+        assert note == ""
+
     def test_mapped_insurance_emits_line(self, monkeypatch, tmp_path):
         _seed_both(monkeypatch, tmp_path)
         lines, note = self._fn()(
@@ -525,8 +590,13 @@ class TestServiceChargesInProformaXml:
         from app.api.routes_proforma import _build_service_charge_lines
         src = inspect.getsource(_build_service_charge_lines)
         assert "_c1f_mirror_good_id" in src, (
-            "_build_service_charge_lines must resolve wfirma_good_id from the "
-            "Product MIRROR (identity authority)"
+            "_build_service_charge_lines must keep Product MIRROR as "
+            "fallback identity for service charges"
+        )
+        assert "resolve_freight_method_id" in src, (
+            "_build_service_charge_lines must resolve an explicit freight "
+            "method via commercial_lookup, not silently replace it with "
+            "the generic Product Mirror freight row"
         )
         assert "get_all_service_product_meta" in src, (
             "_build_service_charge_lines must read emission metadata from the "

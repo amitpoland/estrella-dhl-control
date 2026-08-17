@@ -1557,19 +1557,28 @@ def _build_product_registration_scan(batch_id: str) -> Dict[str, Any]:
 def _build_service_charge_lines(
     charges: List[Dict[str, Any]],
     doc_currency: str,
+    customer_freight_service_id: str = "",
 ) -> "tuple[List[wfirma_client.ReservationLine], str]":
     """
     Build wFirma ``ReservationLine`` objects for service charges that have
     a registered product mapping (keyed by charge_type).
 
-    C-3g: identity (wfirma_product_id) comes from the Product MIRROR;
-    emission metadata (display label, unit) comes from the PROFORMA
+    Freight-line identity is a Customer Master commercial choice:
+    ``charge.wfirma_service_id`` (draft snapshot) then
+    ``customer_freight_service_id``, resolved through
+    ``commercial_lookup.resolve_freight_method_id``. Product Mirror
+    ``product_code='freight'`` is fallback identity only — it must not
+    replace an explicit customer method with another method's good_id.
+
+    Insurance and other allowed types keep C-3g mirror identity.
+    Emission metadata (display label, unit) comes from the PROFORMA
     authority's service_product_registry (pildb). The legacy
     ``wfirma_products`` cache is no longer consulted.
 
     Emission rules:
       - charge_type must be in ALLOWED_SERVICE_CHARGE_TYPES
-      - the mirror must have a non-empty wfirma_id for that charge_type
+      - freight: an explicit commercial method id, else a mirror wfirma_id
+      - other types: the mirror must have a non-empty wfirma_id
       - charge.currency must match doc_currency (or be empty → adopts doc_currency)
       - amount must be positive and parseable
 
@@ -1608,8 +1617,22 @@ def _build_service_charge_lines(
             unmapped.append(f"{ct}(unresolved)")
             continue
 
-        # C-1f: mirror-first fiscal read (1d) — good_id from mirror, cache fallback
-        good_id = _c1f_mirror_good_id(ct) or ""
+        # Freight method: explicit customer/charge commercial selection wins.
+        # Product Mirror product_code='freight' is fallback identity only.
+        # Insurance and other types stay mirror-only (C-3g unchanged).
+        if ct == "freight":
+            _explicit = (
+                str(c.get("wfirma_service_id") or "").strip()
+                or str(customer_freight_service_id or "").strip()
+            )
+            good_id = commercial_lookup.resolve_freight_method_id(
+                selection=_explicit,
+                default=None,
+            ) or ""
+            if not good_id:
+                good_id = _c1f_mirror_good_id(ct) or ""
+        else:
+            good_id = _c1f_mirror_good_id(ct) or ""
         if not good_id:
             unmapped.append(ct)
             continue
@@ -2135,8 +2158,17 @@ def proforma_create(
     # charges are already snapshotted for accounting (finance_dual_write) —
     # the note is surfaced to the operator but does NOT block the create.
     if _raw_service_charges:
+        _cid_fr = (req.wfirma_contractor_id or "").strip()
+        _cm_fr = (
+            get_customer_master(_customer_master_db_path(), _cid_fr)
+            if _cid_fr else None
+        )
+        _cm_freight = (
+            (_cm_fr.freight_service_id or "").strip() if _cm_fr else ""
+        )
         _sc_lines, _sc_lines_note = _build_service_charge_lines(
-            _raw_service_charges, req.currency
+            _raw_service_charges, req.currency,
+            customer_freight_service_id=_cm_freight,
         )
         req.lines.extend(_sc_lines)
         if _sc_lines_note:
@@ -11164,7 +11196,12 @@ def _build_proforma_request_from_draft(
     # Uses same module-level wfdb for testability. Unmapped charges are noted
     # (already snapshotted for accounting); they do not block the create.
     if charges:
-        _sc_extra_lines, _sc_extra_note = _build_service_charge_lines(charges, currency)
+        _cm_freight = (
+            (_cm_d6.freight_service_id or "").strip() if _cm_d6 else ""
+        )
+        _sc_extra_lines, _sc_extra_note = _build_service_charge_lines(
+            charges, currency, customer_freight_service_id=_cm_freight,
+        )
         rlines.extend(_sc_extra_lines)
         if _sc_extra_note and not _sc_wfirma_note:
             _sc_wfirma_note = _sc_extra_note
