@@ -1150,6 +1150,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
   const [apData, setApData] = React.useState(null);
   const [treasury, setTreasury] = React.useState(null);
   const [treasuryErr, setTreasuryErr] = React.useState(null);
+  const [opsStatus, setOpsStatus] = React.useState(null);
   const [err, setErr] = React.useState(null);
   const [apErr, setApErr] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -1230,6 +1231,20 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
       });
     return () => { gone = true; };
   }, [asOf, refreshKey, localRefresh]);
+
+  React.useEffect(() => {
+    let gone = false;
+    setOpsStatus(null);
+    const load = (window.PzApi && typeof window.PzApi.getWfirmaWebhookStatus === 'function')
+      ? () => window.PzApi.getWfirmaWebhookStatus()
+      : () => window.EstrellaShared.apiFetch('/api/v1/webhooks/wfirma/status').then((d) => ({ ok: true, data: d }));
+    load().then((res) => {
+      if (gone) return;
+      if (!res || res.ok === false) return;
+      setOpsStatus(res.data || res);
+    }).catch(() => {});
+    return () => { gone = true; };
+  }, [refreshKey, localRefresh]);
 
   const reset = () => {
     onFilters({
@@ -1390,6 +1405,38 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
   }
   if (treasury && treasury.as_of && asOf && String(treasury.as_of) < String(asOf)) {
     pushExc({ key: 'treasury-stale-close', text: `Bank/cash close as-of ${treasury.as_of} is older than MA as-of ${asOf}` });
+  }
+  const apSync = (opsStatus && (opsStatus.ap_reporting_sync || (opsStatus.service && opsStatus.service.ap_reporting_sync))) || null;
+  if (apSync) {
+    if (apSync.stale_watchdog) {
+      pushExc({
+        key: 'ap-sync-stale-watchdog',
+        text: `AP incremental sync lag ${apSync.lag_hours != null ? apSync.lag_hours + 'h' : 'unknown'} exceeds freshness threshold — scheduler should catch up`,
+      });
+    }
+    if (apSync.last_error || String(apSync.status || '').toLowerCase() === 'error') {
+      pushExc({
+        key: 'ap-sync-error',
+        text: `AP incremental sync error: ${String(apSync.last_error || apSync.detail || 'unknown').slice(0, 160)}`,
+      });
+    }
+  }
+  const recon = (opsStatus && opsStatus.reconciliation) || {};
+  if (Number(recon.events_without_processing || 0) > 0) {
+    pushExc({
+      key: 'wh009-events-without-processing',
+      text: `Webhook WH-009: ${recon.events_without_processing} durable event(s) without processing row`,
+    });
+  }
+  if (Number(recon.stale_pending || 0) > 0) {
+    pushExc({
+      key: 'webhook-stale-pending',
+      text: `Webhook: ${recon.stale_pending} stale pending processing row(s)`,
+    });
+  }
+  const qDead = (opsStatus && opsStatus.queue && opsStatus.queue.dead_letter) || 0;
+  if (Number(qDead) > 0) {
+    pushExc({ key: 'webhook-dead-letters', text: `Webhook dead letters: ${qDead}` });
   }
 
   return (
@@ -1611,7 +1658,51 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         )}
       </MaSection>
 
-      <MaSection testid="ldg-ma-exceptions" title="8 · Exceptions" subtitle="Source health, data quality, stale projection, and reconciliation flags.">
+      <MaSection testid="ldg-ma-currency-exposure" title="8 · Currency Exposure" subtitle="Native-currency AR, AP, and Treasury only — no FX merge. Inventory valuation has no EJ Dashboard authority.">
+        {(() => {
+          const cash = liquidityByCcy || {};
+          const ccys = [...new Set([
+            ...Object.keys(arNetByCcy),
+            ...Object.keys(apNetByCcy),
+            ...Object.keys(cash),
+          ])].sort();
+          if (ccys.length === 0) {
+            return (
+              <MaCompactEmpty testid="ldg-ma-currency-exposure-empty"
+                msg="No AR, AP, or Treasury balances for this as-of — nothing to expose by currency." />
+            );
+          }
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {ccys.map((ccy) => {
+                const ar = arNetByCcy[ccy];
+                const ap = apNetByCcy[ccy];
+                const liq = cash[ccy];
+                return (
+                  <div key={ccy} data-testid={`ldg-ma-exposure-${ccy}`} style={{ marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8, color: 'var(--text-2)' }}>{ccy}</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+                      <LdgStatTile label="AR exposure" value={ar != null && !Number.isNaN(ar) ? LDG_FMT.money(ar, ccy) : '—'}
+                        sub={`Net receivables · ${(data && data.source) || 'local'}`} />
+                      <LdgStatTile label="AP exposure" value={ap != null && !Number.isNaN(ap) ? LDG_FMT.money(ap, ccy) : '—'}
+                        sub={`Net payables · ${(apData && apData.source) || 'local'}`} />
+                      <LdgStatTile label="Treasury exposure" value={liq != null && !Number.isNaN(liq) ? LDG_FMT.money(liq, ccy) : '—'}
+                        sub={`Cash & bank · as of ${(treasury && treasury.as_of) || asOf || '—'}`} />
+                      <LdgStatTile label="Inventory exposure" value="—"
+                        sub="Unavailable — no inventory valuation authority in EJ Dashboard" />
+                    </div>
+                  </div>
+                );
+              })}
+              <div data-testid="ldg-ma-currency-exposure-note" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                Native currencies only. Do not sum PLN+EUR+USD+CHF. Inventory stays unavailable until a named valuation authority exists (not invented here).
+              </div>
+            </div>
+          );
+        })()}
+      </MaSection>
+
+      <MaSection testid="ldg-ma-exceptions" title="9 · Exceptions" subtitle="Source health, data quality, stale projection, AP sync, webhook watchdogs, and reconciliation flags.">
         {exceptionItems.length === 0 ? (
           <MaCompactEmpty testid="ldg-ma-exceptions-none" msg="No exceptions flagged for the current portfolio." />
         ) : (

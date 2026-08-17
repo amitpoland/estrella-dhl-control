@@ -295,7 +295,8 @@ def mark_terminal_routed(
     """
     Mark a processing row terminal without invoice fetch (WH-001 / WH-005).
 
-    Used for ROUTED_STOCK, ROUTED_CONTRACTOR, and QUARANTINED states.
+    Used for ROUTED_STOCK, ROUTED_CONTRACTOR, ROUTED_PAYMENT,
+    ROUTED_INVOICE_DELETE, and QUARANTINED states.
     """
     set_state(
         db_path,
