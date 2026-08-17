@@ -54,8 +54,9 @@ def test_supplier_roster_selects_by_composite_not_contractor_alone():
     assert "suppliers.find((s) => s.contractor_id === activeId)" not in src
     assert "supplierFinancialRowId(s.contractor_id, s.currency) === activeId" in src
     # Default / focus selection also uses the composite.
-    assert "supplierFinancialRowId(rows[0].contractor_id, rows[0].currency)" in src
+    assert "supplierFinancialRowId(r.contractor_id, r.currency)" in src
     assert "if (!activeId && rows.length) setActiveId(rows[0].contractor_id);" not in src
+    assert "Do not auto-open first supplier" in src
 
 
 def test_ma_open_supplier_ledger_passes_currency():
@@ -65,15 +66,14 @@ def test_ma_open_supplier_ledger_passes_currency():
     assert "setFocusSupplierId(supplierFinancialRowId(contractorId, currency))" in src
 
 
-def test_sup_list_limit_ten_enables_10_plus_3_paging():
+def test_sup_list_limit_twenty_enables_paging():
     src = _ldg()
-    assert "SUP_LIST_LIMIT = 10" in src
+    assert "SUP_LIST_LIMIT = 20" in src
     # Pager label exposes page slice vs full roster for proof.
     assert "ldg-suppliers-page-label" in src
-    # Exact 13-row case arithmetic pinned (page1=10, page2=3).
-    n, limit = 13, 10
+    n, limit = 23, 20
     assert (n + limit - 1) // limit == 2
-    assert min(limit, n) == 10
+    assert min(limit, n) == 20
     assert max(0, n - limit) == 3
 
 
@@ -219,7 +219,7 @@ def test_routes_still_use_require_api_key_not_weakened():
     assert src.count('"/suppliers/{contractor_id}/statement.json"') >= 1
     assert src.count('"/suppliers/{contractor_id}/statement.pdf"') >= 1
     # Both supplier statement routes stay behind the same _auth guard.
-    assert "_auth  = Depends(require_api_key)" in src or "_auth = Depends(require_api_key)" in src
+    assert "_auth  = Depends(require_permission(\"reports.financial\"))" in src or "_auth = Depends(require_permission(\"reports.financial\"))" in src
     # No write verbs introduced on supplier statement surfaces.
     assert "@router.post(\n    \"/suppliers/" not in src
     assert "WFIRMA_CREATE" not in src.split("get_supplier_statement_pdf")[0][-500:]

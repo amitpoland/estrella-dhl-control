@@ -803,12 +803,12 @@ function _AccReceivableKpi({ state }) {
           ))}
         </div>
       );
-      hint = rows.length > 1 ? 'Per currency — not summed' : 'Outstanding';
+      hint = rows.length > 1 ? 'Per currency — not summed' : 'Gross receivable';
     }
   }
   return (
     <div data-testid="acc-ov-kpi-receivable" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', flex: 1, minWidth: 150 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Sales Receivable</div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Gross Receivable</div>
       <div style={{ marginTop: 6, fontFamily: '"DM Serif Display", serif', fontSize: 24, fontWeight: 700, color: 'var(--text)' }}>{body}</div>
       <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{hint}</div>
     </div>
@@ -880,10 +880,10 @@ function AccountingOverviewKpis() {
   return (
     <div style={{ display: 'flex', gap: 12, margin: '14px 0', flexWrap: 'wrap' }}>
       <_AccReceivableKpi state={recv} />
-      <_AccCcyKpi testid="acc-ov-kpi-overdue" label="Sales Overdue" rows={recv.overdue} loading={recv.loading} error={recv.error}
-        hint={recv.as_of ? `Due-date aging · as of ${recv.as_of} · ${recv.source || 'local'}` : 'Due-date aging'} />
-      <_AccCcyKpi testid="acc-ov-kpi-payable" label="Supplier Payable" rows={pay.payable} loading={pay.loading} error={pay.error}
-        hint={pay.as_of ? `Net payable · as of ${pay.as_of} · ${pay.source || 'local'}` : 'Net payable'} />
+      <_AccCcyKpi testid="acc-ov-kpi-overdue" label="Gross Overdue AR" rows={recv.overdue} loading={recv.loading} error={recv.error}
+        hint={recv.as_of ? `Due-date aging (gross) · as of ${recv.as_of} · ${recv.source || 'local'}` : 'Due-date aging (gross)'} />
+      <_AccCcyKpi testid="acc-ov-kpi-payable" label="Net Supplier Payable" rows={pay.payable} loading={pay.loading} error={pay.error}
+        hint={pay.as_of ? `Gross − credits · as of ${pay.as_of} · ${pay.source || 'local'}` : 'Gross − credits'} />
       <_AccLastSyncKpi state={sync} />
     </div>
   );
@@ -1342,10 +1342,26 @@ function AccDocGrid({ sectionId, onNav }) {
   );
 }
 // Client Balance roster — GET /api/v1/ledgers/clients (local portfolio default).
-// Open / Overdue(due-date) / Last 30d receipts / YTD invoiced / Cur / State
-// from Management Analysis portfolio. Last 30d is applied receipts in the
-// 30 calendar days ending as-of — not a second outstanding formula.
-const _ACC_BAL_COLS = ['Client', 'Open', 'Overdue', 'Last 30d', 'YTD', 'Cur', 'State'];
+// Net Open / Gross AR / Credits / Overdue(due-date) / Last 30d receipts.
+// Last 30d is applied receipts in the 30 calendar days ending as-of — not outstanding.
+const _ACC_BAL_COLS = ['Client', 'Cur', 'Net Open', 'Gross AR', 'Credits', 'Overdue', 'Last 30d', 'State'];
+const _ACC_BAL_AMT = ['Net Open', 'Gross AR', 'Credits', 'Overdue', 'Last 30d'];
+function _accPresentationLabel(r) {
+  const s = String((r && r.presentation_state) || (r && r.state) || '').toLowerCase();
+  if (s === 'offset') return 'Offset';
+  if (s === 'credit') return 'Credit';
+  if (s === 'open' || s === 'outstanding') return 'Open';
+  if (s === 'clear') return 'Clear';
+  return 'Unknown';
+}
+function _accAmtOrMulti(value, currency, byCcy, available) {
+  if (available === false) return <span style={{ color: 'var(--text-3)' }}>—</span>;
+  if (currency === 'multi' && (value == null || value === '')) {
+    const title = Object.entries(byCcy || {}).map(([k, v]) => `${k} ${v}`).join(' · ');
+    return <span title={title || 'per-currency — not summed'} style={{ color: 'var(--text-3)' }}>multi</span>;
+  }
+  return value != null && value !== '' ? String(value) : <span style={{ color: 'var(--text-3)' }}>—</span>;
+}
 function AccClientBalance({ onOpenLedger }) {
   const [st, setSt] = React.useState({ loading: true, error: null, rows: null, asOf: null, source: null, freshness: null });
   React.useEffect(() => {
@@ -1389,13 +1405,13 @@ function AccClientBalance({ onOpenLedger }) {
       </div>
       {st.asOf && (
         <div style={{ fontSize: 10.5, color: 'var(--text-3)', margin: '-6px 0 10px' }}>
-          Position as of {st.asOf} · source {st.source || 'local'}{st.freshness ? ` · ${st.freshness}` : ''} · overdue = due-date aging · Last 30d = applied receipts
+          Position as of {st.asOf} · source {st.source || 'local'}{st.freshness ? ` · ${st.freshness}` : ''} · Net Open = Gross AR − Credits · overdue = due-date aging (gross) · Last 30d = applied receipts · Invoiced (period) on Client Ledger
         </div>
       )}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-            {_ACC_BAL_COLS.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: ['Open', 'Overdue', 'Last 30d', 'YTD'].includes(c) ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
+            {_ACC_BAL_COLS.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: _ACC_BAL_AMT.includes(c) ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
           </tr></thead>
           <tbody>
             {st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading client position…</td></tr>}
@@ -1406,12 +1422,15 @@ function AccClientBalance({ onOpenLedger }) {
                 onClick={() => onOpenLedger && onOpenLedger()}
                 style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: onOpenLedger ? 'pointer' : 'default' }}>
                 <td style={{ ...td, color: 'var(--text)' }}>{r.name || r.contractor_id || '—'}</td>
-                <td style={tdm}>{r.balance_available !== false ? (r.open != null ? r.open : <span title="Multi-currency — expand in Client Ledger" style={{ color: 'var(--text-3)' }}>multi</span>) : dash}</td>
-                <td style={tdm} title="Due-date aging">{r.balance_available !== false && (r.overdue_due_date != null || r.overdue_invoice_age != null) ? (r.overdue_due_date != null ? r.overdue_due_date : r.overdue_invoice_age) : dash}</td>
-                <td style={tdm} title="Applied receipts in last 30 calendar days ending as-of">{r.balance_available !== false ? (r.last_30d != null ? r.last_30d : (r.currency === 'multi' ? <span style={{ color: 'var(--text-3)' }}>multi</span> : dash)) : dash}</td>
-                <td style={tdm} title="Gross invoiced in the activity window">{r.balance_available !== false ? (r.ytd_invoiced != null ? r.ytd_invoiced : (r.currency === 'multi' ? <span style={{ color: 'var(--text-3)' }}>multi</span> : dash)) : dash}</td>
                 <td style={td}>{r.currency || '—'}</td>
-                <td style={{ ...td, fontSize: 11 }}>{r.balance_available !== false ? r.state : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
+                <td style={tdm}>{_accAmtOrMulti(r.net_receivable, r.currency, r.net_receivable_by_currency, r.balance_available !== false)}</td>
+                <td style={tdm}>{_accAmtOrMulti(r.gross_receivable != null ? r.gross_receivable : r.open, r.currency, r.gross_receivable_by_currency || r.open_by_currency, r.balance_available !== false)}</td>
+                <td style={tdm} title="Customer credits (unaged)">{_accAmtOrMulti(r.credit_balance, r.currency, r.credit_balance_by_currency, r.balance_available !== false)}</td>
+                <td style={tdm} title="Due-date aging (gross)">{r.balance_available !== false && (r.overdue_due_date != null || r.overdue_invoice_age != null || r.currency === 'multi')
+                  ? _accAmtOrMulti(r.overdue_due_date != null ? r.overdue_due_date : r.overdue_invoice_age, r.currency, r.overdue_due_date_by_currency, true)
+                  : dash}</td>
+                <td style={tdm} title="Applied receipts in last 30 calendar days ending as-of">{r.balance_available !== false ? (r.last_30d != null ? r.last_30d : (r.currency === 'multi' ? <span style={{ color: 'var(--text-3)' }}>multi</span> : dash)) : dash}</td>
+                <td style={{ ...td, fontSize: 11 }}>{r.balance_available !== false ? _accPresentationLabel(r) : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
               </tr>
             ))}
           </tbody>
