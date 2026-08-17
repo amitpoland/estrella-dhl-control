@@ -1449,12 +1449,16 @@ function AccWfirmaSyncInline({ onNav }) {
       const svc = d.service || {};
       const q = d.queue || {};
       const recon = d.reconciliation || {};
+      const ap = d.ap_reporting_sync || svc.ap_reporting_sync || {};
       const sched = svc.scheduler_running ? 'running' : 'idle';
       const last = svc.last_tick_at ? String(svc.last_tick_at).replace('T', ' ').slice(0, 16) : '';
+      const apLag = (ap.lag_hours != null) ? ` · AP lag ${ap.lag_hours}h` : '';
+      const apWatch = ap.stale_watchdog ? ' · AP stale watchdog' : '';
+      const apErr = ap.last_error ? ` · AP err ${String(ap.last_error).slice(0, 60)}` : '';
       setHook({
         busy: false,
         data: d,
-        msg: `scheduler ${sched}${last ? ' · last tick ' + last : ''} · queue ${q.total || 0} · dead letter ${q.dead_letter || 0}${recon.stale_pending ? ' · stale pending ' + recon.stale_pending : ''}`,
+        msg: `scheduler ${sched}${last ? ' · last tick ' + last : ''} · queue ${q.total || 0} · dead letter ${q.dead_letter || 0}${recon.stale_pending ? ' · stale pending ' + recon.stale_pending : ''}${apLag}${apWatch}${apErr}`,
       });
     }).catch(() => setHook({ busy: false, msg: 'status error', data: null }));
   };
