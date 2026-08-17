@@ -61,10 +61,13 @@ def test_accounting_hub_owns_no_period_state():
     assert "periodFrom=" not in hub, "the hub must not push a period into LedgersPage"
 
 
-def test_ledgers_page_default_mode_is_this_month():
+def test_ledgers_page_default_mode_is_monthly_activity():
     ldg = _read("ledgers-page.jsx")
-    assert "mode: 'this_month'" in ldg
+    assert "ldgDefaultActivityPeriod" in ldg
+    assert "periodMode" in ldg
+    assert "mode: 'this_month'" not in ldg
     assert "LDG_WINDOW" not in ldg, "the old fallback window must be deleted, not shadowed"
+    assert "LDG_PRESETS" not in ldg
 
 
 def test_supplier_ledger_shares_the_same_period_object():
@@ -79,7 +82,7 @@ def test_supplier_ledger_shares_the_same_period_object():
 
 def test_custom_prefills_both_dates():
     ldg = _read("ledgers-page.jsx")
-    assert "onMode" in ldg and "custom" in ldg
+    assert "onPeriodMode" in ldg and "custom" in ldg
     # Switching to custom seeds from AND to from the currently resolved window.
     assert re.search(r"setCustom\(\s*\{\s*from:\s*filters\.from,\s*to:\s*filters\.to\s*\}\s*\)", ldg), (
         "switching to Custom must prefill both inputs from the resolved period"

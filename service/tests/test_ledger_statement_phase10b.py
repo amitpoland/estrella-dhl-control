@@ -431,10 +431,15 @@ def test_fx_invoice_uses_total_when_brutto_absent():
     )
     pay = _payment_xml(payment_id="P1", invoice_id="1", value="965.54",
                         currency="048/A/NBP/2020", date="2020-06-03")
-    out = _agg(invoice_xmls=[inv], payment_xmls=[pay])
+    out = _agg(
+        invoice_xmls=[inv], payment_xmls=[pay],
+        period=("2020-01-01", "2020-12-31"),
+        statement_date="2020-12-31",
+    )
     assert out["totals_per_currency"]["USD"]["invoiced"] == "965.54"
     assert out["totals_per_currency"]["USD"]["received"] == "965.54"
     assert out["totals_per_currency"]["USD"]["outstanding"] == "0.00"
+    assert out["totals_per_currency"]["USD"]["closing_balance"] == "0.00"
 
 
 def test_nbp_label_never_accepted_as_iso_currency():

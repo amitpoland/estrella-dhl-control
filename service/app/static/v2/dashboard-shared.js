@@ -46,7 +46,29 @@
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+      let detail = '';
+      const trimmed = (text || '').trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          const j = JSON.parse(trimmed);
+          if (j && j.detail != null) {
+            detail = typeof j.detail === 'string'
+              ? j.detail
+              : (j.detail.error || j.detail.message || '');
+          }
+        } catch (_) { /* ignore */ }
+      }
+      if (!detail) {
+        if (/<!DOCTYPE|<html[\s>]/i.test(trimmed)) {
+          detail = res.status >= 500
+            ? 'upstream temporarily unavailable'
+            : 'upstream request failed';
+        } else {
+          detail = trimmed.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+        }
+      }
+      if (!detail) detail = 'request failed';
+      throw new Error(`HTTP ${res.status}: ${detail}`);
     }
     if (res.status === 204 || res.status === 205) return null;
     const ct = res.headers.get('content-type') || '';
