@@ -36,9 +36,9 @@ when an operator-approved rotation workflow is specified.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -144,7 +144,20 @@ async def receive_wfirma_webhook(
     # Strip the secret before storing — it must never land in the DB.
     safe_payload = {k: v for k, v in payload.items() if k != "webhook_key"}
 
-    event_id: str = str(payload.get("id") or uuid.uuid4())
+    supplied_event_id = payload.get("id")
+    if supplied_event_id:
+        event_id = str(supplied_event_id)
+    else:
+        # Some webhook payloads have no delivery id. A random UUID would make
+        # an exact retry look new and defeat receiver-level idempotency. Derive
+        # a stable, secret-free id from the canonical stored payload instead.
+        canonical_payload = json.dumps(
+            safe_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        event_id = f"payload-sha256:{hashlib.sha256(canonical_payload).hexdigest()}"
     event_type: Optional[str] = payload.get("event_type") or payload.get("type")
     received_at: str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 

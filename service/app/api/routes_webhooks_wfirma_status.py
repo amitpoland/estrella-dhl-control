@@ -40,6 +40,7 @@ from ..auth.dependencies import get_current_user
 router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks-wfirma"])
 
 TICK_INTERVAL_SECONDS = 30
+RECONCILIATION_STALE_SECONDS = 300
 
 # Written by .claude/deploy/Deploy-PZ.ps1 — the sole writer, from the config key
 # `version_file`. Pinned by service/tests/test_deploy_authority.py. Two levels above app/:
@@ -75,6 +76,98 @@ def _get_proc_db_path() -> Optional[Path]:
         return _proc_db_path
     except Exception:
         return None
+
+
+def _get_events_db_path() -> Optional[Path]:
+    try:
+        from ..services.wfirma_webhook_scheduler import _events_db_path
+        return _events_db_path
+    except Exception:
+        return None
+
+
+def _empty_reconciliation(*, events_db_available: bool = False) -> dict:
+    return {
+        "healthy": False,
+        "events_db_available": events_db_available,
+        "durable_events": 0,
+        "processing_rows": 0,
+        "events_without_processing": 0,
+        "processing_without_event": 0,
+        "snapshots_without_processing": 0,
+        "stale_pending": 0,
+        "stale_after_seconds": RECONCILIATION_STALE_SECONDS,
+    }
+
+
+def _query_reconciliation(proc_db: Path, events_db: Optional[Path]) -> dict:
+    """
+    Compare the immutable receiver log with processing state, read-only.
+
+    This is a status-time watchdog only: it never repairs, retries, or mutates
+    either database.
+    """
+    result = _empty_reconciliation(
+        events_db_available=bool(events_db and events_db.exists())
+    )
+    try:
+        with sqlite3.connect(f"file:{proc_db}?mode=ro", uri=True) as conn:
+            processing_ids = {
+                row[0] for row in conn.execute(
+                    "SELECT event_id FROM wfirma_webhook_processing"
+                )
+            }
+            result["processing_rows"] = len(processing_ids)
+            result["snapshots_without_processing"] = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM wfirma_invoice_snapshots s
+                LEFT JOIN wfirma_webhook_processing p ON p.event_id = s.event_id
+                WHERE p.event_id IS NULL
+                """
+            ).fetchone()[0]
+            result["stale_pending"] = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM wfirma_webhook_processing
+                WHERE processing_state IN ('RECEIVED', 'RETRY_PENDING', 'FETCHING')
+                  AND datetime(COALESCE(last_attempted_at, received_at))
+                      < datetime('now', ?)
+                """,
+                (f"-{RECONCILIATION_STALE_SECONDS} seconds",),
+            ).fetchone()[0]
+    except Exception:
+        result["healthy"] = False
+        return result
+
+    if not result["events_db_available"]:
+        result["healthy"] = False
+        return result
+
+    try:
+        with sqlite3.connect(f"file:{events_db}?mode=ro", uri=True) as conn:
+            durable_ids = {
+                row[0] for row in conn.execute(
+                    "SELECT event_id FROM wfirma_webhook_events"
+                )
+            }
+        result["durable_events"] = len(durable_ids)
+        result["events_without_processing"] = len(durable_ids - processing_ids)
+        result["processing_without_event"] = len(processing_ids - durable_ids)
+    except Exception:
+        result["healthy"] = False
+        return result
+
+    result["healthy"] = not any(
+        result[key]
+        for key in (
+            "events_without_processing",
+            "processing_without_event",
+            "snapshots_without_processing",
+            "stale_pending",
+        )
+    )
+    return result
 
 
 def _scheduler_health(running: bool, last_tick_at: Optional[str], interval_seconds: int) -> str:
@@ -227,6 +320,7 @@ def wfirma_webhook_status(
     """
     service = _build_service_block()
     db_path = _get_proc_db_path()
+    events_db_path = _get_events_db_path()
 
     if db_path is None or not db_path.exists():
         return JSONResponse({
@@ -244,8 +338,12 @@ def wfirma_webhook_status(
                 "enrichment_success": 0, "enrichment_failed": 0,
             },
             "recent_dead_letters": [],
+            "reconciliation": _empty_reconciliation(
+                events_db_available=bool(events_db_path and events_db_path.exists())
+            ),
         })
 
     status = _query_status(db_path)
+    status["reconciliation"] = _query_reconciliation(db_path, events_db_path)
     status["service"] = service
     return JSONResponse(status)

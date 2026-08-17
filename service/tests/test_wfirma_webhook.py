@@ -214,6 +214,25 @@ def test_duplicate_event_accepted_not_reinserted(tmp_path):
     assert count == 1
 
 
+def test_missing_id_replay_is_idempotent(tmp_path):
+    """Payloads without id must fingerprint stably so exact retries do not duplicate."""
+    client = _app_with_key(tmp_path)
+    body = json.dumps({
+        "webhook_key": _TEST_KEY,
+        "event_type": "Faktury.Dodanie",
+        "object_id": "999001",
+    }).encode("utf-8")
+    r1 = client.post("/api/v1/webhooks/wfirma", content=body, headers=_HEADERS)
+    r2 = client.post("/api/v1/webhooks/wfirma", content=body, headers=_HEADERS)
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    db_path = tmp_path / "events.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute("SELECT event_id FROM wfirma_webhook_events").fetchall()
+    assert len(rows) == 1
+    assert str(rows[0][0]).startswith("payload-sha256:")
+
+
 # ── dependency unit tests ─────────────────────────────────────────────────────
 
 
