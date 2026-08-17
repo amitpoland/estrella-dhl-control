@@ -84,6 +84,7 @@ def test_status_response_has_required_top_level_keys():
     data = r.json()
     assert set(data.keys()) >= {
         "service", "queue", "snapshots", "metrics", "recent_dead_letters", "reconciliation",
+        "ap_reporting_sync",
     }
 
 

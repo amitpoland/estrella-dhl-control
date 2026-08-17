@@ -198,7 +198,13 @@ def _build_service_block() -> dict:
         from ..services.wfirma_webhook_scheduler import get_scheduler_status
         sched = get_scheduler_status()
     except Exception:
-        sched = {"running": False, "started_at": None, "last_tick": None, "next_tick": None}
+        sched = {
+            "running": False,
+            "started_at": None,
+            "last_tick": None,
+            "next_tick": None,
+            "ap_reporting_sync": {},
+        }
 
     started_at   = sched.get("started_at")
     running      = sched.get("running", False)
@@ -212,6 +218,7 @@ def _build_service_block() -> dict:
         "last_tick_at":          last_tick_at,
         "next_tick_at":          sched.get("next_tick"),
         "tick_interval_seconds": TICK_INTERVAL_SECONDS,
+        "ap_reporting_sync":     sched.get("ap_reporting_sync") or {},
     }
 
 
@@ -322,6 +329,8 @@ def wfirma_webhook_status(
     db_path = _get_proc_db_path()
     events_db_path = _get_events_db_path()
 
+    ap_reporting = service.get("ap_reporting_sync") or {}
+
     if db_path is None or not db_path.exists():
         return JSONResponse({
             "service": service,
@@ -341,9 +350,11 @@ def wfirma_webhook_status(
             "reconciliation": _empty_reconciliation(
                 events_db_available=bool(events_db_path and events_db_path.exists())
             ),
+            "ap_reporting_sync": ap_reporting,
         })
 
     status = _query_status(db_path)
     status["reconciliation"] = _query_reconciliation(db_path, events_db_path)
     status["service"] = service
+    status["ap_reporting_sync"] = ap_reporting
     return JSONResponse(status)
