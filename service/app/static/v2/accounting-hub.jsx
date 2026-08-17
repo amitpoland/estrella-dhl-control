@@ -743,7 +743,38 @@ function accReceivableByCurrency(rows) {
 }
 if (typeof window !== 'undefined') { window._accReceivableByCurrency = accReceivableByCurrency; }
 
-// Backend-Pending KPI tile (Sales Overdue, Supplier Payable — Item 1B).
+// Live per-currency KPI tile — never a mixed FX total.
+function _AccCcyKpi({ testid, label, rows, loading, error, hint }) {
+  let body;
+  let sub = hint || '';
+  if (loading) { body = '—'; sub = 'Loading…'; }
+  else if (error) { body = '—'; sub = 'read unavailable'; }
+  else {
+    const list = rows || [];
+    if (list.length === 0) { body = '0.00'; sub = sub || 'None'; }
+    else {
+      body = (
+        <div>
+          {list.map(r => (
+            <div key={r.currency} data-testid={`${testid}-${r.currency}`} style={{ fontSize: list.length > 1 ? 16 : 24, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace', lineHeight: 1.35 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-3)', marginRight: 6, fontFamily: 'inherit' }}>{r.currency}</span>{r.amount}
+            </div>
+          ))}
+        </div>
+      );
+      if (list.length > 1) sub = (sub ? sub + ' · ' : '') + 'Per currency — not summed';
+    }
+  }
+  return (
+    <div data-testid={testid} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', flex: 1, minWidth: 150 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+      <div style={{ marginTop: 6, fontFamily: '"DM Serif Display", serif', fontSize: 24, fontWeight: 700, color: 'var(--text)' }}>{body}</div>
+      <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{sub}</div>
+    </div>
+  );
+}
+
+// Backend-Pending KPI tile (kept for honest gated placeholders).
 function _AccKpi({ label, pendingNote }) {
   return (
     <div data-testid="acc-ov-kpi" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '14px 16px', flex: 1, minWidth: 150 }}>
@@ -808,23 +839,37 @@ function _AccLastSyncKpi({ state }) {
 // Overview KPI row — Sales Receivable from bulk MA (zero per-customer calls).
 // Never calls /ledgers/clients?limit=100 (that path was the N+1 timeout).
 function AccountingOverviewKpis() {
-  const [recv, setRecv] = React.useState({ loading: true, error: null, receivable: null });
+  const [recv, setRecv] = React.useState({ loading: true, error: null, receivable: null, overdue: null });
+  const [pay, setPay] = React.useState({ loading: true, error: null, payable: null });
   const [sync, setSync] = React.useState({ loading: true, error: null, sync: null });
   React.useEffect(() => {
     let cancelled = false;
-    // Portfolio exposure tile: the whole open book as of today, not "documents
-    // issued this quarter". scope=all_outstanding lets the server resolve the
-    // window from the configured floor — no date math on this surface.
     const today = new Date().toISOString().slice(0, 10);
     window.PzApi.getManagementAnalysis({ as_of: today, scope: 'all_outstanding' }).then(res => {
       if (cancelled) return;
-      if (!res || !res.ok) { setRecv({ loading: false, error: (res && res.error) || 'Load failed', receivable: null }); return; }
-      const summaries = ((res.data && res.data.currency_summaries) || []).map(s => ({
-        currency: s.currency,
-        amount: String(s.total_receivable != null ? s.total_receivable : '0.00'),
-      }));
-      setRecv({ loading: false, error: null, receivable: summaries });
-    }).catch(e => { if (!cancelled) setRecv({ loading: false, error: (e && e.message) || String(e), receivable: null }); });
+      if (!res || !res.ok) { setRecv({ loading: false, error: (res && res.error) || 'Load failed', receivable: null, overdue: null }); return; }
+      const summaries = (res.data && res.data.currency_summaries) || [];
+      setRecv({
+        loading: false, error: null,
+        receivable: summaries.map(s => ({ currency: s.currency, amount: String(s.total_receivable != null ? s.total_receivable : '0.00') })),
+        overdue: summaries.map(s => ({ currency: s.currency, amount: String(s.overdue != null ? s.overdue : '0.00') })),
+        source: res.data && (res.data.source || 'local'),
+        as_of: (res.data && res.data.as_of) || today,
+        freshness: res.data && res.data.freshness,
+      });
+    }).catch(e => { if (!cancelled) setRecv({ loading: false, error: (e && e.message) || String(e), receivable: null, overdue: null }); });
+    window.PzApi.getPayablesAnalysis({ as_of: today, scope: 'all_outstanding' }).then(res => {
+      if (cancelled) return;
+      if (!res || !res.ok) { setPay({ loading: false, error: (res && res.error) || 'Load failed', payable: null }); return; }
+      const summaries = (res.data && res.data.currency_summaries) || [];
+      setPay({
+        loading: false, error: null,
+        payable: summaries.map(s => ({ currency: s.currency, amount: String(s.net_payable != null ? s.net_payable : '0.00') })),
+        source: res.data && (res.data.source || 'local'),
+        as_of: (res.data && res.data.as_of) || today,
+        freshness: res.data && res.data.freshness,
+      });
+    }).catch(e => { if (!cancelled) setPay({ loading: false, error: (e && e.message) || String(e), payable: null }); });
     window.PzApi.getAnalyticsPhaseA().then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setSync({ loading: false, error: (res && res.error) || 'Load failed', sync: null }); return; }
@@ -835,8 +880,10 @@ function AccountingOverviewKpis() {
   return (
     <div style={{ display: 'flex', gap: 12, margin: '14px 0', flexWrap: 'wrap' }}>
       <_AccReceivableKpi state={recv} />
-      <_AccKpi label="Sales Overdue" pendingNote="due-date authority pending" />
-      <_AccKpi label="Supplier Payable" pendingNote="supplier ledger authority pending" />
+      <_AccCcyKpi testid="acc-ov-kpi-overdue" label="Sales Overdue" rows={recv.overdue} loading={recv.loading} error={recv.error}
+        hint={recv.as_of ? `Due-date aging · as of ${recv.as_of} · ${recv.source || 'local'}` : 'Due-date aging'} />
+      <_AccCcyKpi testid="acc-ov-kpi-payable" label="Supplier Payable" rows={pay.payable} loading={pay.loading} error={pay.error}
+        hint={pay.as_of ? `Net payable · as of ${pay.as_of} · ${pay.source || 'local'}` : 'Net payable'} />
       <_AccLastSyncKpi state={sync} />
     </div>
   );
@@ -1300,19 +1347,27 @@ function AccDocGrid({ sectionId, onNav }) {
 // rendered honestly ("—", disclosed), never faked.
 const _ACC_BAL_COLS = ['Client', 'Open', 'Overdue', 'Last 30d', 'YTD', 'Cur', 'State'];
 function AccClientBalance({ onOpenLedger }) {
-  const [st, setSt] = React.useState({ loading: true, error: null, rows: null, period: null });
+  const [st, setSt] = React.useState({ loading: true, error: null, rows: null, asOf: null, source: null });
   React.useEffect(() => {
     let cancelled = false;
-    setSt({ loading: true, error: null, rows: null, period: null });
-    // One calendar formula (components.jsx). /ledgers/clients has no scope
-    // param, so this tile keeps its quarter window — but no longer derives it.
-    const { from, to } = window.resolvePeriod('quarter', null);
-    window.PzApi.listClientBalances({ limit: 20, from, to }).then(res => {
+    setSt({ loading: true, error: null, rows: null, asOf: null, source: null });
+    const today = new Date().toISOString().slice(0, 10);
+    // Position view: current outstanding as-of today. Activity YTD stays on Client Ledger.
+    window.PzApi.getManagementAnalysis({ as_of: today, scope: 'all_outstanding' }).then(res => {
       if (cancelled) return;
-      if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, period: null }); return; }
+      if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, asOf: null, source: null }); return; }
       const d = res.data || {};
-      setSt({ loading: false, error: null, rows: d.rows || [], period: d.period || null });
-    }).catch(e => { if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null, period: null }); });
+      const rows = (d.customers || []).slice(0, 20).map(r => ({
+        contractor_id: r.contractor_id,
+        name: r.customer_name,
+        open: r.outstanding,
+        overdue_invoice_age: r.overdue,
+        currency: r.currency,
+        state: Number(r.overdue) > 0 ? 'overdue' : (Number(r.outstanding) > 0 ? 'outstanding' : 'clear'),
+        balance_available: true,
+      }));
+      setSt({ loading: false, error: null, rows, asOf: d.as_of || today, source: d.source || 'local' });
+    }).catch(e => { if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null, asOf: null, source: null }); });
     return () => { cancelled = true; };
   }, []);
   const td = { padding: '9px 12px', fontSize: 11.5, color: 'var(--text-2)' };
@@ -1329,9 +1384,9 @@ function AccClientBalance({ onOpenLedger }) {
           Open Client Ledger (statement authority)
         </button>
       </div>
-      {st.period && (
+      {st.asOf && (
         <div style={{ fontSize: 10.5, color: 'var(--text-3)', margin: '-6px 0 10px' }}>
-          Period {st.period.from} → {st.period.to} (quarter default · other periods via Ledgers) · Overdue = invoice-age basis
+          Position as of {st.asOf} · source {st.source || 'local'} · overdue = due-date aging · YTD / last 30d are activity views on Client Ledger
         </div>
       )}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
@@ -1340,7 +1395,7 @@ function AccClientBalance({ onOpenLedger }) {
             {_ACC_BAL_COLS.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: ['Open', 'Overdue', 'YTD'].includes(c) ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
           </tr></thead>
           <tbody>
-            {st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading balances from wFirma…</td></tr>}
+            {st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading client position…</td></tr>}
             {st.error && !st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} data-testid="acc-balance-error" style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable. {formatAccUpstreamError(st.error)}</td></tr>}
             {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No clients in Customer Master.</td></tr>}
             {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
@@ -1349,9 +1404,9 @@ function AccClientBalance({ onOpenLedger }) {
                 style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: onOpenLedger ? 'pointer' : 'default' }}>
                 <td style={{ ...td, color: 'var(--text)' }}>{r.name || r.contractor_id || '—'}</td>
                 <td style={tdm}>{r.balance_available ? (r.open != null ? r.open : <span title="Multi-currency — see Client Ledger" style={{ color: 'var(--text-3)' }}>multi</span>) : dash}</td>
-                <td style={tdm} title="Invoice-age basis">{r.balance_available && r.overdue_invoice_age != null ? r.overdue_invoice_age : dash}</td>
-                <td style={td} title="No authority yet">{dash}</td>
-                <td style={tdm}>{r.balance_available && r.ytd_invoiced != null ? r.ytd_invoiced : dash}</td>
+                <td style={tdm} title="Due-date aging">{r.balance_available && r.overdue_invoice_age != null ? r.overdue_invoice_age : dash}</td>
+                <td style={td} title="Activity view — open Client Ledger">{dash}</td>
+                <td style={td} title="Activity view — open Client Ledger">{dash}</td>
                 <td style={td}>{r.currency || '—'}</td>
                 <td style={{ ...td, fontSize: 11 }}>{r.balance_available ? r.state : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
               </tr>
@@ -1384,7 +1439,27 @@ function _SyncSrcCard({ testid, title, direction, children }) {
 function AccWfirmaSyncInline({ onNav }) {
   const [cust, setCust] = React.useState({ busy: false, msg: null });
   const [pay, setPay]   = React.useState({ busy: false, msg: null, cid: '' });
-  const [hook, setHook] = React.useState({ busy: false, msg: null });
+  const [hook, setHook] = React.useState({ busy: false, msg: null, data: null });
+
+  const doWebhookStatus = () => {
+    setHook(s => ({ ...s, busy: true, msg: null }));
+    window.PzApi.getWfirmaWebhookStatus().then(r => {
+      if (!r || !r.ok) { setHook({ busy: false, msg: 'status unavailable', data: null }); return; }
+      const d = r.data || {};
+      const svc = d.service || {};
+      const q = d.queue || {};
+      const recon = d.reconciliation || {};
+      const sched = svc.scheduler_running ? 'running' : 'idle';
+      const last = svc.last_tick_at ? String(svc.last_tick_at).replace('T', ' ').slice(0, 16) : '';
+      setHook({
+        busy: false,
+        data: d,
+        msg: `scheduler ${sched}${last ? ' · last tick ' + last : ''} · queue ${q.total || 0} · dead letter ${q.dead_letter || 0}${recon.stale_pending ? ' · stale pending ' + recon.stale_pending : ''}`,
+      });
+    }).catch(() => setHook({ busy: false, msg: 'status error', data: null }));
+  };
+
+  React.useEffect(() => { doWebhookStatus(); }, []);
 
   const doCustomerPreview = () => {
     setCust({ busy: true, msg: null });
@@ -1404,14 +1479,6 @@ function AccWfirmaSyncInline({ onNav }) {
       const d = r.data || {};
       setPay(s => ({ ...s, busy: false, msg: `pulled: ${d.new != null ? d.new : '?'} new · ${d.existing != null ? d.existing : '?'} existing` }));
     }).catch(e => setPay(s => ({ ...s, busy: false, msg: (e && e.message) || 'error' })));
-  };
-  const doWebhookStatus = () => {
-    setHook({ busy: true, msg: null });
-    window.PzApi.getWfirmaWebhookStatus().then(r => {
-      if (!r || !r.ok) { setHook({ busy: false, msg: 'status unavailable' }); return; }
-      const d = r.data || {};
-      setHook({ busy: false, msg: `scheduler ${d.scheduler_running ? 'running' : 'idle'}${d.last_completed_at ? ' · last ' + String(d.last_completed_at).replace('T', ' ').slice(0, 16) : ''}` });
-    }).catch(() => setHook({ busy: false, msg: 'status error' }));
   };
 
   const pullBtn = { padding: '5px 10px', borderRadius: 5, border: '1px solid var(--accent-border)', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 11, fontWeight: 600, cursor: 'pointer' };
@@ -1447,6 +1514,19 @@ function AccWfirmaSyncInline({ onNav }) {
           <button data-testid="acc-wfirma-webhook-status" disabled={hook.busy} onClick={doWebhookStatus} style={pullBtn}>{hook.busy ? '…' : 'Refresh status'}</button>
           <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 8 }}>reuses webhooks/wfirma/status</span>
           {msg(hook.msg)}
+          {hook.data && (hook.data.queue || hook.data.reconciliation) && (
+            <div data-testid="acc-wfirma-webhook-detail" style={{ marginTop: 8, fontSize: 10.5, color: 'var(--text-2)' }}>
+              <div>Completed {(hook.data.queue && hook.data.queue.completed) || 0} · unmatched {(hook.data.queue && hook.data.queue.unmatched) || 0} · failed {(hook.data.queue && hook.data.queue.enrichment_failed) || 0}</div>
+              {(hook.data.reconciliation && hook.data.reconciliation.events_without_processing > 0) && (
+                <div data-testid="acc-wfirma-webhook-wh009">Watchdog: {hook.data.reconciliation.events_without_processing} events without processing row</div>
+              )}
+              {(hook.data.recent_dead_letters || []).slice(0, 5).map((dl, i) => (
+                <div key={i} data-testid={`acc-wfirma-dead-letter-${i}`} style={{ color: 'var(--badge-red-text)', marginTop: 2 }}>
+                  Dead letter {dl.event_id || '—'}{dl.retry_count != null ? ` · retries ${dl.retry_count}` : ''}{dl.last_error ? ` · ${formatAccUpstreamError(dl.last_error)}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
         </_SyncSrcCard>
         <_SyncSrcCard testid="acc-wfirma-src-invoice" title="Invoice read" direction="PULL">
           <button data-testid="acc-wfirma-invoice-jump" onClick={() => onNav && onNav('inv')} style={pullBtn}>Open Invoices →</button>
@@ -1594,6 +1674,11 @@ function AccTreasuryPanel() {
           <window.Btn small data-testid="acc-treasury-reload" onClick={loadBalances} disabled={loading}>
             {loading ? 'Loading…' : 'Reload balances'}
           </window.Btn>
+          <a href={(window.PzApi.treasuryBalancesPdfUrl && window.PzApi.treasuryBalancesPdfUrl(asOf)) || `/api/v1/treasury/balances.pdf?as_of=${encodeURIComponent(asOf)}`}
+             target="_blank" rel="noopener" data-testid="acc-treasury-pdf"
+             style={{ fontSize: 11, fontWeight: 600, padding: '5px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none' }}>
+            ↓ Treasury PDF
+          </a>
         </div>
         {!rows.length && !loading && (
           <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No snapshots for this as-of date.</div>

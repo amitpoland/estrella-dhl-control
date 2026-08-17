@@ -173,6 +173,30 @@ def test_wave4_gated_tabs_present():
         )
 
 
+def test_overview_payables_and_overdue_are_live():
+    src = _read_v2("accounting-hub.jsx")
+    assert "acc-ov-kpi-overdue" in src
+    assert "acc-ov-kpi-payable" in src
+    assert "getPayablesAnalysis" in src
+    assert "supplier ledger authority pending" not in src
+    assert "due-date authority pending" not in src
+
+
+def test_client_balance_hub_is_as_of_position():
+    src = _read_v2("accounting-hub.jsx")
+    assert "scope: 'all_outstanding'" in src or 'scope: "all_outstanding"' in src
+    assert "resolvePeriod('quarter'" not in src
+    assert "Position as of" in src
+
+
+def test_treasury_pdf_transport_wired():
+    api = _read_v2("pz-api.js")
+    hub = _read_v2("accounting-hub.jsx")
+    assert "treasuryBalancesPdfUrl" in api
+    assert "acc-treasury-pdf" in hub
+    assert "/treasury/balances.pdf" in api
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # F — No mock arrays remain
 # ══════════════════════════════════════════════════════════════════════════════

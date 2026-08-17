@@ -2512,6 +2512,11 @@
       if (asOf) qs.set('as_of', asOf);
       return _get(`${BASE}/treasury/balances?${qs}`);
     },
+    treasuryBalancesPdfUrl: (asOf) => {
+      const qs = new URLSearchParams();
+      if (asOf) qs.set('as_of', asOf);
+      return `${BASE}/treasury/balances.pdf?${qs}`;
+    },
     postTreasuryManualBalance: (body) =>
       _post(`${BASE}/treasury/balances/manual`, body || {}),
     previewTreasuryBankImport: async (file, defaultAccount) => {

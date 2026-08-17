@@ -39,6 +39,7 @@ that has not yet been verified against a live wFirma response.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -572,6 +573,8 @@ def _build_statement_dict(
         "cache_hit": bool(uni.get("cache_hit")),
         "duration_ms": uni.get("duration_ms"),
     }
+    from datetime import datetime as _dt, timezone as _tz
+    body["issued_at"] = _dt.now(_tz.utc).replace(microsecond=0).isoformat()
     return body
 
 
@@ -1337,6 +1340,7 @@ def _build_supplier_statement_dict(
     as_of: str,
     refresh: int = 0,
     currency: str = "",
+    source: str = "local",
 ) -> Dict[str, Any]:
     """Validate → load shared AP facts → aggregate one supplier statement.
 
@@ -1360,8 +1364,7 @@ def _build_supplier_statement_dict(
     if (as_of or "").strip():
         ao = _validate_date("as_of", as_of)
     else:
-        from datetime import datetime, timezone
-        ao = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        ao = dt
 
     ccy = (currency or "").strip().upper()
     if ccy and ccy not in ("USD", "EUR", "PLN", "CHF"):
@@ -1370,13 +1373,59 @@ def _build_supplier_statement_dict(
             detail="currency must be USD, EUR, PLN, CHF, or empty",
         )
 
+    src = (source or "local").strip().lower()
+    if refresh:
+        src = "live"
+    if src not in ("local", "live"):
+        raise HTTPException(status_code=400, detail="source must be local or live")
+
+    floor = _outstanding_floor()
+    if df < floor:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": (
+                    f"Activity period start {df} is before the configured "
+                    f"ledger history floor {floor}. Opening balance cannot "
+                    f"be proven complete for this window."
+                ),
+                "code": "STATEMENT_HISTORY_FLOOR",
+                "history_floor": floor,
+                "period_from": df,
+                "period_to": dt,
+            },
+        )
+
     try:
+        from datetime import datetime, timezone
+
+        from ..services.accounting_analytics import LocalProjectionUnavailable
         from ..services.ledger_fact_universe import (
             load_ap_fact_universe,
             timing_fields_from_universe,
         )
 
-        uni = load_ap_fact_universe(df, dt, force=bool(refresh))
+        provenance: Dict[str, Any] = {}
+        if src == "local":
+            from ..services.local_fact_universe import (
+                load_ap_fact_universe_local,
+                local_projection_available,
+            )
+
+            root = Path(settings.storage_root)
+            ok, reason = local_projection_available(root)
+            if not ok:
+                raise LocalProjectionUnavailable(reason)
+            uni = load_ap_fact_universe_local(root, floor, dt)
+            provenance = uni.get("provenance") or {}
+        else:
+            uni = load_ap_fact_universe(floor, dt, force=bool(refresh))
+            provenance = {
+                "source": "live",
+                "freshness": "live",
+                "reconciliation_status": "live_wfirma",
+            }
+
         exp_stats = uni.get("exp_stats") or {}
         pay_stats = uni.get("pay_stats") or {}
 
@@ -1416,6 +1465,7 @@ def _build_supplier_statement_dict(
         if ccy:
             body = _restrict_supplier_statement_currency(body, ccy)
         qs = {
+            "source": src,
             "expense_api_calls": int(exp_stats.get("api_calls") or 0),
             "payment_api_calls": int(pay_stats.get("api_calls") or 0),
             "expenses_in_scope": len(expense_facts),
@@ -1427,8 +1477,28 @@ def _build_supplier_statement_dict(
         }
         qs.update(timing_fields_from_universe(uni))
         body["query_stats"] = qs
+        body["history_floor"] = floor
+        body["source"] = provenance.get("source") or src
+        body["freshness"] = provenance.get("freshness") or src
+        body["reconciliation_status"] = provenance.get(
+            "reconciliation_status"
+        ) or ("projection_ok" if src == "local" else "live_wfirma")
+        body["issued_at"] = (
+            datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        )
+        if not body.get("generated_at"):
+            body["generated_at"] = ao
     except HTTPException:
         raise
+    except LocalProjectionUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": f"Local financial projection unavailable: {exc.reason}",
+                "code": "LOCAL_PROJECTION_UNAVAILABLE",
+                "hint": "Run financial reporting sync, or retry with source=live / refresh=1",
+            },
+        ) from exc
     except Exception as exc:
         log.warning("[supplier-statement] read failed: %s", exc)
         raise HTTPException(
@@ -1476,6 +1546,7 @@ def get_supplier_statement(
     as_of: str = Query("", description="As-of date YYYY-MM-DD"),
     currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN|CHF"),
     refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
+    source: str = Query("local", description="local (default reporting projection) | live"),
 ) -> JSONResponse:
     """Read-only Supplier Ledger drill-down from shared AP facts.
 
@@ -1485,7 +1556,7 @@ def get_supplier_statement(
     """
     return JSONResponse(
         _build_supplier_statement_dict(
-            contractor_id, from_, to, as_of, refresh, currency,
+            contractor_id, from_, to, as_of, refresh, currency, source,
         )
     )
 
@@ -1501,6 +1572,7 @@ def get_supplier_statement_pdf(
     as_of: str = Query("", description="As-of date YYYY-MM-DD"),
     currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN|CHF"),
     refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
+    source: str = Query("local", description="local (default reporting projection) | live"),
 ) -> Response:
     """Read-only PDF rendering of the Supplier Ledger statement.
 
@@ -1512,7 +1584,7 @@ def get_supplier_statement_pdf(
     document logo; omits wFirma ids, raw metadata and DQ warnings.
     """
     statement = _build_supplier_statement_dict(
-        contractor_id, from_, to, as_of, refresh, currency,
+        contractor_id, from_, to, as_of, refresh, currency, source,
     )
 
     try:

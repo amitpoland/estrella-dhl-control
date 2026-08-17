@@ -1312,39 +1312,84 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
   const apNetByCcy = Object.fromEntries(apSummaries.map((s) => [s.currency, Number(s.net_payable)]));
   const wcCurrencies = [...new Set([...Object.keys(arNetByCcy), ...Object.keys(apNetByCcy)])].sort();
 
+  const DQ_LABELS = {
+    paymentdate_missing: 'Missing due date (AR)',
+    missing_payment_date: 'Missing due date (AP)',
+    unmatched_payment: 'Unmatched payment',
+    orphan_expense_payment: 'Payment linked to expense outside window',
+    invoice_with_empty_id: 'Invoice missing identifier',
+    expense_with_empty_id: 'Expense missing identifier',
+    missing_contractor_id: 'Missing contractor identity',
+    unsupported_currency: 'Unsupported currency',
+    duplicate_expense_id: 'Duplicate expense id',
+    duplicate_payment_id_ignored: 'Duplicate payment id ignored',
+    invoice_currency_missing: 'Invoice currency missing',
+    malformed_amount: 'Malformed amount',
+    invalid_monetary_field: 'Invalid monetary field',
+    proforma_excluded_from_fiscal: 'Proforma excluded from fiscal AR',
+    contractor_identity_fragment: 'Contractor identity fragmentation',
+  };
+  const dqLabel = (k) => DQ_LABELS[k] || String(k).replace(/_/g, ' ');
+  const seenExc = {};
+  const pushExc = (item) => {
+    if (!item || !item.key || seenExc[item.key]) return;
+    seenExc[item.key] = true;
+    exceptionItems.push(item);
+  };
+
   const exceptionItems = [];
   if (health.ok === false || health.note) {
-    exceptionItems.push({ key: 'ar-source-health', text: health.note || 'AR source health incomplete (cap/stall)' });
+    pushExc({ key: 'ar-source-health', text: health.note || 'AR source health incomplete (cap/stall)' });
   }
   if (apHealth.ok === false || apHealth.note) {
-    exceptionItems.push({ key: 'ap-source-health', text: apHealth.note || 'AP source health incomplete' });
+    pushExc({ key: 'ap-source-health', text: apHealth.note || 'AP source health incomplete' });
   }
   if (arFreshness === 'stale') {
-    exceptionItems.push({ key: 'ar-stale', text: 'AR local projection is stale — use Refresh (live) for reconciliation' });
+    pushExc({ key: 'ar-stale', text: 'AR local projection is stale — use Refresh (live) for reconciliation' });
   }
   if ((apData && apData.freshness) === 'stale') {
-    exceptionItems.push({ key: 'ap-stale', text: 'AP local projection is stale — use Refresh (live) for reconciliation' });
+    pushExc({ key: 'ap-stale', text: 'AP local projection is stale — use Refresh (live) for reconciliation' });
   }
   if (arRecon && arRecon !== 'projection_ok' && arRecon !== 'live_wfirma') {
-    exceptionItems.push({ key: 'ar-recon', text: `AR reconciliation: ${arRecon}` });
+    pushExc({ key: 'ar-recon', text: `AR reconciliation: ${arRecon}` });
   }
   if (apData && apData.reconciliation_status && apData.reconciliation_status !== 'projection_ok' && apData.reconciliation_status !== 'live_wfirma') {
-    exceptionItems.push({ key: 'ap-recon', text: `AP reconciliation: ${apData.reconciliation_status}` });
+    pushExc({ key: 'ap-recon', text: `AP reconciliation: ${apData.reconciliation_status}` });
   }
   Object.entries(dq).forEach(([k, v]) => {
-    exceptionItems.push({ key: `ar-dq-${k}`, text: `AR data quality · ${k}: ${v}` });
+    if (v == null || v === 0 || v === '0') return;
+    pushExc({ key: `ar-dq-${k}`, text: `AR · ${dqLabel(k)}: ${v}` });
   });
   Object.entries(apDq).forEach(([k, v]) => {
-    exceptionItems.push({ key: `ap-dq-${k}`, text: `AP data quality · ${k}: ${v}` });
+    if (v == null || v === 0 || v === '0') return;
+    pushExc({ key: `ap-dq-${k}`, text: `AP · ${dqLabel(k)}: ${v}` });
   });
   summaries.filter((s) => s.reconciliation_ok === false).forEach((s) => {
-    exceptionItems.push({ key: `ar-aging-${s.currency}`, text: `${s.currency} AR aging does not reconcile to net position` });
+    pushExc({ key: `ar-aging-${s.currency}`, text: `${s.currency} AR aging does not reconcile to net position` });
   });
   apSummaries.filter((s) => s.reconciliation_ok === false).forEach((s) => {
-    exceptionItems.push({ key: `ap-aging-${s.currency}`, text: `${s.currency} AP aging does not reconcile to net payable` });
+    pushExc({ key: `ap-aging-${s.currency}`, text: `${s.currency} AP aging does not reconcile to net payable` });
+  });
+  const agingFlag = (s, key, label, prefix) => {
+    const n = Number(s[key] || 0);
+    if (!n) return;
+    pushExc({ key: `${prefix}-aged-${key}-${s.currency}`, text: `${s.currency} ${prefix} ${label}: ${LDG_FMT.money(s[key], s.currency)}` });
+  };
+  summaries.forEach((s) => {
+    agingFlag(s, 'b_91_180', 'aged >90', 'AR');
+    agingFlag(s, 'b_181_365', 'severe >180', 'AR');
+    agingFlag(s, 'b_365_plus', 'critical >365', 'AR');
+  });
+  apSummaries.forEach((s) => {
+    agingFlag(s, 'b_91_180', 'aged >90', 'AP');
+    agingFlag(s, 'b_181_365', 'severe >180', 'AP');
+    agingFlag(s, 'b_365_plus', 'critical >365', 'AP');
   });
   if (treasuryErr) {
-    exceptionItems.push({ key: 'treasury-read', text: `Treasury balances unavailable: ${treasuryErr}` });
+    pushExc({ key: 'treasury-read', text: `Treasury balances unavailable: ${treasuryErr}` });
+  }
+  if (treasury && treasury.as_of && asOf && String(treasury.as_of) < String(asOf)) {
+    pushExc({ key: 'treasury-stale-close', text: `Bank/cash close as-of ${treasury.as_of} is older than MA as-of ${asOf}` });
   }
 
   return (
@@ -1432,6 +1477,8 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         <MaCfoBadge label={`Source · ${arSource}`} tone={maSourceTone(arSource)} />
         <MaCfoBadge label={`Freshness · ${arFreshness}`} tone={maFreshnessTone(arFreshness)} />
         <MaCfoBadge label={`Reconciliation · ${arRecon}`} tone={maReconTone(arRecon)} />
+        <MaCfoBadge label={`AP source · ${(apData && apData.source) || '—'}`} tone={maSourceTone((apData && apData.source) || arSource)} />
+        <MaCfoBadge label={`AP freshness · ${(apData && apData.freshness) || '—'}`} tone={maFreshnessTone((apData && apData.freshness) || '')} />
         <span data-testid="ldg-ma-asof-label" style={{ fontSize: 11, color: 'var(--text-3)' }}>
           Generated {data.generated_at || '—'}
           {data.as_of ? ` · as-of ${data.as_of}` : ''}
@@ -1466,7 +1513,8 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
           <div key={s.currency} data-testid={`ldg-ma-ccy-${s.currency}`} style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8, color: 'var(--text-2)' }}>{s.currency}</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
-              <LdgStatTile label="Receivable" value={LDG_FMT.money(s.total_receivable, s.currency)} />
+              <LdgStatTile label="Receivable" value={LDG_FMT.money(s.total_receivable, s.currency)}
+                sub={`${arSource} · as of ${data.as_of || asOf} · ${arFreshness}`} />
               <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
               <LdgStatTile label="Customer Credits" value={LDG_FMT.money(s.customer_credits, s.currency)} tone="green" />
               <LdgStatTile label="Net position" value={LDG_FMT.money(s.net_position, s.currency)}
@@ -1502,7 +1550,8 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
           <div key={s.currency} data-testid={`ldg-ma-ap-ccy-${s.currency}`} style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8, color: 'var(--text-2)' }}>{s.currency}</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
-              <LdgStatTile label="Supplier Payable" value={LDG_FMT.money(s.gross_payable, s.currency)} />
+              <LdgStatTile label="Supplier Payable" value={LDG_FMT.money(s.gross_payable, s.currency)}
+                sub={`${(apData && apData.source) || 'local'} · as of ${(apData && apData.as_of) || asOf} · ${(apData && apData.freshness) || '—'}`} />
               <LdgStatTile label="Overdue Payable" value={LDG_FMT.money(s.overdue, s.currency)} tone="red" alert={Number(s.overdue) > 0} />
               <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
               <LdgStatTile label="Supplier Credits" value={LDG_FMT.money(s.supplier_credits, s.currency)} tone="green" />
@@ -1711,6 +1760,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
 // ── SUPPLIER LEDGER — shared AP facts (statement.json) ─────────────────────
 function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }) {
   const period = { from: filters.from, to: filters.to };
+  const asOf = filters.as_of || filters.to;
   const [suppliers, setSuppliers] = React.useState(null);
   const [listErr, setListErr] = React.useState(null);
   const [activeId, setActiveId] = React.useState(focusSupplierId || '');
@@ -1722,14 +1772,14 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
   // Changing the period changes the roster, so page 2 of the old roster is
   // meaningless. The client and MA tables already did this; the supplier
   // pager did not, and kept a stale page number across period changes.
-  React.useEffect(() => { setSupListPage(1); }, [period.from, period.to]);
+  React.useEffect(() => { setSupListPage(1); }, [asOf]);
 
   React.useEffect(() => {
     let gone = false;
     setSuppliers(null); setListErr(null);
     onLoadInfo && onLoadInfo({ status: 'loading', at: null, count: null, error: null });
     const payParams = {
-      from: period.from, to: period.to, as_of: period.to, status: 'outstanding',
+      scope: 'all_outstanding', as_of: asOf, status: 'outstanding',
     };
     if (refreshKey > 0) payParams.refresh = 1;
     window.PzApi.getPayablesAnalysis(payParams)
@@ -1753,7 +1803,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
         onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: (e && e.message) || '' });
       });
     return () => { gone = true; };
-  }, [period.from, period.to, refreshKey]);
+  }, [asOf, refreshKey]);
 
   React.useEffect(() => {
     if (!focusSupplierId || !suppliers || !suppliers.length) return;
@@ -1774,7 +1824,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
     const opts = { currency: sel.currency };
     if (refreshKey > 0) opts.refresh = true;
     window.PzApi.getSupplierStatement(
-      sel.contractor_id, period.from, period.to, period.to, opts,
+      sel.contractor_id, period.from, period.to, asOf, opts,
     )
       .then((res) => {
         if (gone) return;
@@ -1788,7 +1838,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
         setStmtLoading(false);
       });
     return () => { gone = true; };
-  }, [activeId, period.from, period.to, refreshKey]);
+  }, [activeId, period.from, period.to, asOf, refreshKey]);
 
   if (listErr && !suppliers) {
     return (
@@ -1799,7 +1849,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
     );
   }
   if (!suppliers) {
-    return <div data-testid="ldg-suppliers-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading supplier payables from wFirma…</div>;
+    return <div data-testid="ldg-suppliers-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading supplier payables…</div>;
   }
   if (suppliers.length === 0) {
     return <div data-testid="ldg-suppliers-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)' }}>No outstanding suppliers in this period.</div>;
@@ -1867,7 +1917,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <a href={window.PzApi.supplierStatementPdfUrl(active.contractor_id, {
-                from: period.from, to: period.to, as_of: period.to,
+                from: period.from, to: period.to, as_of: asOf,
                 currency: active.currency,
               })}
              target="_blank" rel="noopener" data-testid="ldg-supplier-statement-pdf"
@@ -1878,9 +1928,12 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
-          <LdgStatTile label="Gross Payable" value={LDG_FMT.money(active.gross_payable, active.currency)} />
-          <LdgStatTile label="Credits" value={LDG_FMT.money(active.credit_balance, active.currency)} tone="green" />
-          <LdgStatTile label="Net Payable" value={LDG_FMT.money(active.net_payable, active.currency)} />
+          <LdgStatTile label="Opening / B/F" value={stmt ? LDG_FMT.money((stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).opening_balance, active.currency) : '—'}
+            sub="Carried into this period" />
+          <LdgStatTile label="Closing" value={stmt ? LDG_FMT.money((stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).closing_balance || (stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).net_payable, active.currency) : LDG_FMT.money(active.net_payable, active.currency)}
+            sub={`As of ${period.to}`} />
+          <LdgStatTile label="Net Payable" value={LDG_FMT.money(active.net_payable, active.currency)}
+            sub="Open position (payables roster)" />
           <LdgStatTile label="Overdue" value={LDG_FMT.money(active.overdue, active.currency)} tone="red" alert={Number(active.overdue) > 0} />
         </div>
         {stmtLoading && <div data-testid="ldg-supplier-stmt-loading" style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading statement…</div>}
@@ -1892,7 +1945,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
           return (
             <window.Card key={ccy} style={{ padding: 0, marginBottom: 14, overflow: 'auto' }} data-testid={`ldg-supplier-stmt-${ccy}`}>
               <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 700 }}>
-                {ccy} · outstanding {tot.outstanding} · net {tot.net_payable}
+                {ccy} · opening {tot.opening_balance || '0.00'} · closing {tot.closing_balance || tot.net_payable} · net {tot.net_payable}
               </div>
               {ag && (
                 <div data-testid={`ldg-supplier-aging-${ccy}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 14, padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
@@ -1915,23 +1968,37 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
                   {rows.length === 0 && (
                     <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)' }}>No movements.</td></tr>
                   )}
-                  {rows.map((e, i) => (
-                    <tr key={`${e.wfirma_doc_id}-${i}`} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  {rows.map((e, i) => {
+                    const isBf = e.type === 'opening_balance' || e.is_opening_balance;
+                    return (
+                    <tr key={`${e.wfirma_doc_id}-${i}`} data-testid={isBf ? `ldg-supplier-bf-${ccy}` : undefined}
+                      style={{ borderBottom: '1px solid var(--border-subtle)', background: isBf ? 'var(--bg-subtle)' : undefined }}>
                       <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{e.date || '—'}</td>
                       <td style={{ padding: '6px 8px' }}>{e.doc_number || '—'}</td>
-                      <td style={{ padding: '6px 8px' }}>{e.type}</td>
+                      <td style={{ padding: '6px 8px' }}>{isBf ? 'Opening / B/F' : e.type}</td>
                       <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{e.debit}</td>
                       <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{e.credit}</td>
                       <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{e.running_balance}</td>
                       <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{e.due_date || '—'}</td>
                       <td style={{ padding: '6px 8px' }}>{e.status || '—'}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
+              {tot.closing_balance != null && (
+                <div data-testid={`ldg-supplier-closing-${ccy}`} style={{ padding: '8px 12px', fontSize: 11.5, fontWeight: 700, borderTop: '1px solid var(--border)' }}>
+                  Closing balance as of {period.to}: {LDG_FMT.money(tot.closing_balance, ccy)}
+                </div>
+              )}
             </window.Card>
           );
         })}
+        {stmt && (stmt.unmatched_payments_per_currency && stmt.unmatched_payments_per_currency[active.currency] || []).length > 0 && (
+          <div data-testid="ldg-supplier-unapplied" style={{ marginTop: 8, padding: 12, border: '1px solid var(--badge-amber-border)', borderRadius: 8, background: 'var(--badge-amber-bg)', fontSize: 11.5 }}>
+            Genuinely unapplied payments (not in running balance): {(stmt.unmatched_payments_per_currency[active.currency] || []).length}
+          </div>
+        )}
       </div>
       )}
     </div>

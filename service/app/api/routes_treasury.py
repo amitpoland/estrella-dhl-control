@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from ..auth.dependencies import require_permission, require_role
@@ -88,6 +88,45 @@ def get_balances(as_of: str = Query(..., description="YYYY-MM-DD")) -> JSONRespo
         "source": "treasury.sqlite",
         "authority": "local_treasury_projection",
     })
+
+
+@router.get("/balances.pdf", dependencies=[_auth])
+def get_balances_pdf(as_of: str = Query(..., description="YYYY-MM-DD")) -> Response:
+    """PDF of the same as-of snapshot as GET /balances. No monetary arithmetic."""
+    if len(as_of) != 10 or as_of[4] != "-" or as_of[7] != "-":
+        raise HTTPException(status_code=400, detail="as_of must be YYYY-MM-DD")
+    from datetime import datetime, timezone
+
+    from ..services.statement_pdf_renderer import render_treasury_balances_pdf
+
+    rows = latest_balances_as_of(_db(), as_of)
+    payload = {
+        "as_of": as_of,
+        "count": len(rows),
+        "rows": rows,
+        "source": "treasury.sqlite",
+        "authority": "local_treasury_projection",
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "freshness": "as_of_snapshot",
+    }
+    try:
+        pdf_bytes = render_treasury_balances_pdf(payload)
+    except Exception as exc:
+        log.warning("[treasury-pdf] render failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": f"PDF render failed: {exc}", "code": "TREASURY_PDF_RENDER_FAILED"},
+        ) from exc
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="treasury-balances-{as_of}.pdf"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @router.post("/balances/manual", dependencies=[_auth])
