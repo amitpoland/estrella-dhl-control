@@ -511,8 +511,28 @@ def _build_statement_dict(
 
     contractor_meta = _contractor_meta_from_customer_master(cid, rcv)
 
+    # Tally-style statement: load fiscal invoices from the configured
+    # outstanding floor through period_end so OPENING can carry prior
+    # position. Payments already use empty lower bound through ``to``.
+    floor = _outstanding_floor()
+    if df < floor:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": (
+                    f"Activity period start {df} is before the configured "
+                    f"ledger history floor {floor}. Opening balance cannot "
+                    f"be proven complete for this window."
+                ),
+                "code": "STATEMENT_HISTORY_FLOOR",
+                "history_floor": floor,
+                "period_from": df,
+                "period_to": dt,
+            },
+        )
+
     try:
-        uni = load_ar_fact_universe(df, dt)
+        uni = load_ar_fact_universe(floor, dt)
     except Exception as exc:
         log.warning(
             "[statement %s] load_ar_fact_universe failed: %s",
@@ -533,7 +553,7 @@ def _build_statement_dict(
         cid,
     )
 
-    return aggregate_statement_from_facts(
+    body = aggregate_statement_from_facts(
         contractor_meta,
         invoice_facts,
         payment_facts,
@@ -541,6 +561,18 @@ def _build_statement_dict(
         (df, dt),
         aging_method=method,
     )
+    # Provenance for UI/PDF — same authority, explicit floor disclosure.
+    body["history_floor"] = floor
+    body["source"] = "wfirma"
+    body["freshness"] = {
+        "as_of": ao,
+        "period_start": df,
+        "period_end": dt,
+        "history_floor": floor,
+        "cache_hit": bool(uni.get("cache_hit")),
+        "duration_ms": uni.get("duration_ms"),
+    }
+    return body
 
 
 @router.get(

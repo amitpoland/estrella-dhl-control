@@ -646,12 +646,18 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
 }
 
 function ClientDetailPanel({ client, stmt, period, tab, onTab, onClose, onRowClick, selectedId }) {
+  const unmatchedCount = React.useMemo(() => {
+    if (!stmt || stmt.status !== 'ok' || !stmt.data) return 0;
+    const u = stmt.data.unmatched_payments_per_currency || {};
+    return Object.values(u).reduce((n, arr) => n + ((arr && arr.length) || 0), 0);
+  }, [stmt]);
   const tabs = [
     { id: 'statement', label: 'Statement' },
     { id: 'invoices', label: 'Invoices' },
     { id: 'payments', label: 'Payments' },
+    { id: 'unapplied', label: unmatchedCount ? `Unapplied (${unmatchedCount})` : 'Unapplied' },
     { id: 'aging', label: 'Aging' },
-    { id: 'info', label: 'Client Information' },
+    { id: 'info', label: 'Client Info' },
   ];
   return (
     <div data-testid="ldg-client-detail" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)', overflow: 'hidden' }}>
@@ -672,6 +678,11 @@ function ClientDetailPanel({ client, stmt, period, tab, onTab, onClose, onRowCli
       <div style={{ padding: '12px 14px' }}>
         <div style={{ marginBottom: 12 }}>
           <ClientHeaderCard client={client} stmt={stmt} period={period} />
+        </div>
+        <div data-testid="ldg-position-vs-activity-note" style={{ marginBottom: 12, padding: '8px 12px', fontSize: 11, color: 'var(--text-3)', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
+          Activity period ({period.from} → {period.to}) filters the movements listed below.
+          Position tiles above remain as-of {period.as_of || period.to} and do not change with the activity window
+          unless you change Position as-of.
         </div>
         {tab === 'info' && (
           <div data-testid="ldg-client-info">
@@ -694,6 +705,9 @@ function ClientDetailPanel({ client, stmt, period, tab, onTab, onClose, onRowCli
             <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Aging unavailable — open Statement tab or refresh.</div>
           )
         )}
+        {tab === 'unapplied' && (
+          <UnappliedPaymentsPanel stmt={stmt} />
+        )}
         {(tab === 'statement' || tab === 'invoices' || tab === 'payments') && (
           <ClientStatementTable
             client={client}
@@ -706,6 +720,53 @@ function ClientDetailPanel({ client, stmt, period, tab, onTab, onClose, onRowCli
         )}
       </div>
     </div>
+  );
+}
+
+function UnappliedPaymentsPanel({ stmt }) {
+  if (stmt.status === 'loading' || stmt.status === 'idle') {
+    return <div data-testid="ldg-unapplied-loading" style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading unapplied payments…</div>;
+  }
+  if (stmt.status === 'error') {
+    return <div data-testid="ldg-unapplied-error" style={{ padding: 16, color: 'var(--badge-red-text)', fontSize: 12 }}>Unapplied list unavailable — {stmt.err}</div>;
+  }
+  const u = (stmt.data && stmt.data.unmatched_payments_per_currency) || {};
+  const rows = [];
+  Object.keys(u).sort().forEach((ccy) => {
+    (u[ccy] || []).forEach((p) => rows.push({ ...p, currency: p.currency || ccy }));
+  });
+  if (!rows.length) {
+    return <div data-testid="ldg-unapplied-empty" style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No unapplied payments for this client in the loaded history.</div>;
+  }
+  return (
+    <window.Card>
+      <div data-testid="ldg-unapplied-panel" style={{ padding: '12px 16px' }}>
+        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Unapplied payments ({rows.length})</div>
+        <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginBottom: 10 }}>
+          These payments are not matched to a fiscal invoice in the loaded history. They do not silently settle open invoices.
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ background: 'var(--bg-subtle)' }}>
+              {['Date', 'Payment id', 'Amount', 'Cur', 'Linked invoice'].map((h) => (
+                <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, color: 'var(--text-3)' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((p, i) => (
+              <tr key={p.wfirma_doc_id || i} data-testid="ldg-unapplied-row" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                <td style={{ padding: '8px 10px' }}>{p.date || '—'}</td>
+                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>{p.wfirma_doc_id || '—'}</td>
+                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>{LDG_FMT.money(p.value, p.currency)}</td>
+                <td style={{ padding: '8px 10px' }}>{p.currency || '—'}</td>
+                <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--text-3)' }}>{p.linked_invoice || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </window.Card>
   );
 }
 
@@ -750,27 +811,27 @@ function ClientHeaderCard({ client: c, stmt, period }) {
       ) : (
         <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
           {c.currency === 'multi' ? (
-            <LdgStatTile label="Open (position)" value="multi-currency"
+            <LdgStatTile label="Outstanding" value="multi-currency"
               sub={`as-of ${asOf} · per currency: ${Object.entries(c.open_by_currency || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'see statement'}`} />
           ) : (
-            <LdgStatTile label="Open (position)" value={LDG_FMT.money(c.open, c.currency)}
-              sub={`full outstanding as-of ${asOf} · not period-bounded`} />
+            <LdgStatTile label="Outstanding" value={LDG_FMT.money(c.open, c.currency)}
+              sub={`full open position as-of ${asOf}`} />
           )}
-          <LdgStatTile label="Aged (invoice age)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_invoice_age, c.currency)}
-            sub={(Number(c.overdue_invoice_age) || 0) > 0 ? 'unpaid past invoice date — as-of position' : 'invoice-age basis · as-of position'}
+          <LdgStatTile label="Overdue / Aged" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_invoice_age, c.currency)}
+            sub={(Number(c.overdue_invoice_age) || 0) > 0 ? 'unpaid past invoice/due date — as-of position' : 'none overdue on invoice-age basis'}
             tone={(Number(c.overdue_invoice_age) || 0) > 0 ? 'amber' : 'green'} />
-          <LdgStatTile label="Invoiced (activity)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.ytd_invoiced, c.currency)}
-            sub={`activity window ${period.from} → ${period.to}`} />
-          <LdgStatTile label="Last 30 days" value="—" sub="backend pending" />
+          <LdgStatTile label="Not Due" value={c.currency === 'multi' ? 'see aging' : LDG_FMT.money(
+            Math.max(0, (Number(c.open) || 0) - (Number(c.overdue_invoice_age) || 0)),
+            c.currency
+          )}
+            sub="Outstanding − Aged (approx.) · as-of position" />
+          <LdgStatTile label="Credit Limit" value="—" sub="unavailable — not in wFirma ledger authority" />
         </div>
       )}
 
-      {/* Honest capability note (Lesson M five-state: the old mock PROMISED
-          credit-limit / KUKE utilisation and inventory exposure here) */}
       <div data-testid="ldg-credit-kuke-pending" style={{ padding: '8px 16px', borderTop: '1px solid var(--border-subtle)', fontSize: 10.5, color: 'var(--text-3)' }}>
-        Credit-limit / KUKE utilisation and inventory exposure: <strong>backend pending</strong> — no ledger
-        authority serves these yet (Customer Master holds KUKE terms; exposure needs the inventory valuation feed).
-        {stmtGen && <span style={{ marginLeft: 10 }}>Statement generated {stmtGen}.</span>}
+        Credit Limit / KUKE utilisation and Avg Payment Delay: unavailable — not served by the live ledger authority (shown as unavailable, not zero).
+        {stmtGen && <span style={{ marginLeft: 10 }}>Statement as-of {stmtGen}.</span>}
       </div>
     </window.Card>
   );
@@ -923,7 +984,13 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
   const agingBy = d.aging_per_currency || {};
   const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(client.contractor_id)}/statement.pdf?from=${period.from}&to=${period.to}`;
 
-  const TYPE_LABEL = { invoice: 'Invoice', correction: 'Correction', payment: 'Payment', proforma: 'Proforma' };
+  const TYPE_LABEL = {
+    opening_balance: 'Opening / B/F',
+    invoice: 'Invoice',
+    correction: 'Credit Note',
+    payment: 'Payment',
+    proforma: 'Proforma',
+  };
   const agingBuckets = (a) => {
     if (!a) return [];
     const order = [
@@ -962,7 +1029,7 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
           <LdgSourceBadge mode="wfirma" />
           <LdgReadOnlyBadge />
           <span data-testid="ldg-stmt-scope-label" style={{ fontSize: 10.5, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
-            Period activity only
+            Opening → period movements → Closing
           </span>
           {d.period && (d.period.from || d.period.to) && (
             <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{d.period.from || '…'} → {d.period.to || '…'}</span>
@@ -976,7 +1043,7 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
 
       {currencies.length === 0 && (
         <div data-testid="ldg-stmt-empty" style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
-          No invoices or payments on record for this customer in the activity period.
+          No invoices or payments on record for this customer through the selected period.
         </div>
       )}
 
@@ -988,8 +1055,15 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
           entries = entries.filter((r) => r.type === 'payment');
         }
         const totals = totalsBy[ccy] || {};
+        const movementCount = entries.filter((r) => !r.is_opening_balance).length;
         return (
           <div key={ccy} data-testid={`ldg-stmt-ccy-${ccy}`}>
+            <div data-testid={`ldg-stmt-summary-${ccy}`} style={{ padding: '10px 16px', display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 11.5, borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-subtle)' }}>
+              <span>Opening: <strong style={{ fontFamily: 'monospace' }}>{LDG_FMT.money(totals.opening_balance || '0.00', ccy)}</strong></span>
+              <span>+ Debits: <strong style={{ fontFamily: 'monospace' }}>{LDG_FMT.money(totals.period_debits || totals.invoiced || '0.00', ccy)}</strong></span>
+              <span>− Credits: <strong style={{ fontFamily: 'monospace' }}>{LDG_FMT.money(totals.period_credits || '0.00', ccy)}</strong></span>
+              <span>= Closing <span style={{ color: 'var(--text-3)' }}>(as of {period.to})</span>: <strong style={{ fontFamily: 'monospace' }} data-testid={`ldg-stmt-closing-${ccy}`}>{LDG_FMT.money(totals.closing_balance || totals.outstanding || '0.00', ccy)}</strong></span>
+            </div>
             <LdgAgingStrip buckets={[
               { label: ccy, value: '' },
               ...agingBuckets(agingBy[ccy]).map(b => ({ ...b, value: LDG_FMT.money(b.value, '') })),
@@ -998,26 +1072,28 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-                    {['Date', 'Doc no.', 'Type', 'Debit', 'Credit', 'Running balance', 'Source'].map((h, i) => (
-                      <th key={h} style={{ padding: '8px 12px', textAlign: i >= 3 && i <= 5 ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                    {['Date', 'Document', 'Type', 'Debit', 'Credit', 'Balance', 'Due', 'Status'].map((h, i) => (
+                      <th key={h} style={{ padding: '8px 12px', textAlign: (i >= 3 && i <= 5) ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {entries.map((r, i) => {
-                    const rowId = `${ccy}-${r.wfirma_doc_id || i}`;
+                    const rowId = `${ccy}-${r.wfirma_doc_id || r.type || i}-${i}`;
                     const isSelected = selectedId === rowId;
+                    const isBf = r.type === 'opening_balance' || r.is_opening_balance;
                     return (
                       <tr key={rowId}
-                        onClick={() => onRowClick && onRowClick({ ...r, id: rowId })}
-                        style={{ borderBottom: '1px solid var(--border-subtle)', cursor: onRowClick ? 'pointer' : 'default', background: isSelected ? 'var(--bg-subtle)' : 'transparent' }}>
+                        onClick={() => !isBf && onRowClick && onRowClick({ ...r, id: rowId })}
+                        style={{ borderBottom: '1px solid var(--border-subtle)', cursor: (!isBf && onRowClick) ? 'pointer' : 'default', background: isBf ? 'var(--bg-subtle)' : (isSelected ? 'var(--bg-subtle)' : 'transparent'), fontWeight: isBf ? 700 : 400 }}>
                         <td style={{ padding: '8px 12px', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>{r.date || '—'}</td>
                         <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: 'var(--text)', fontWeight: 600 }}>{r.doc_number || (r.type === 'payment' ? (r.linked_invoice ? `→ ${r.linked_invoice}` : '(unmatched)') : '—')}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--text-2)' }}>{TYPE_LABEL[r.type] || r.type}</td>
                         <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: Number(r.debit) > 0 ? 'var(--text)' : 'var(--text-3)' }}>{Number(r.debit) > 0 ? LDG_FMT.money(r.debit, ccy) : '—'}</td>
                         <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', color: Number(r.credit) > 0 ? 'var(--badge-green-text)' : 'var(--text-3)' }}>{Number(r.credit) > 0 ? LDG_FMT.money(r.credit, ccy) : '—'}</td>
                         <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: 'var(--text)' }}>{LDG_FMT.money(r.running_balance, ccy)}</td>
-                        <td style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-3)' }}>wFirma</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{r.due_date || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-2)' }}>{r.status || '—'}</td>
                       </tr>
                     );
                   })}
@@ -1025,9 +1101,9 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
               </table>
             </div>
             <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 11.5, background: 'var(--bg-subtle)' }}>
-              <span style={{ color: 'var(--text-3)' }}>{entries.length} entr{entries.length === 1 ? 'y' : 'ies'} · {ccy} · period activity (not full client open)</span>
+              <span style={{ color: 'var(--text-3)' }}>{movementCount} movement{movementCount === 1 ? '' : 's'} · {ccy} · carried opening + period</span>
               <span style={{ color: 'var(--text)', fontWeight: 700, fontFamily: 'monospace' }} data-testid={`ldg-stmt-outstanding-${ccy}`}>
-                Period closing balance: {LDG_FMT.money(totals.outstanding, ccy)}
+                Closing balance as of {period.to}: {LDG_FMT.money(totals.closing_balance || totals.outstanding, ccy)}
               </span>
             </div>
           </div>

@@ -69,7 +69,8 @@ FORBIDDEN_ENTRY_FIELDS: Tuple[str, ...] = (
     "paymentstate",
     "remaining",
     "alreadypaid",
-    "due_date",
+    # due_date IS emitted as an operator column (derived from paymentdate).
+    # The raw wFirma spelling ``paymentdate`` must never appear on the wire.
     "paymentdate",
     "paid_date",
     "aging",
@@ -228,12 +229,17 @@ def aggregate_invoice_ledger(
 # basis as Management Analysis. ``invoice_age`` only when the caller
 # passes that method explicitly (no silent per-surface mix).
 #
-# Statement period semantics (period statement model):
-#   invoices with issue date in [from, to] + payments with payment date
-#   in [from, to]. Payments that link to invoices outside the fetched
-#   invoice window remain ``payment_links_invoice_outside_window`` —
-#   the window is NOT silently broadened; opening-balance is a separate
-#   model and is not mixed in here.
+# Statement period semantics (Tally-style carried balances):
+#   Caller loads invoice facts from the configured history floor through
+#   period ``to``, and payments through ``to`` (no lower bound). The
+#   aggregator then:
+#     • matches payments against the FULL invoice set (so a payment in
+#       the activity window can settle an invoice from before ``from``);
+#     • computes OPENING = net of all matched movements with date < from;
+#     • lists only movements with date in [from, to] as period activity;
+#     • runs the balance from opening → closing.
+#   Payments that still cannot match any loaded invoice remain unmatched.
+#   Opening is never invented as zero when prior history is present.
 
 AGING_METHOD_DUE_DATE = "due_date"
 AGING_METHOD_INVOICE_AGE = "invoice_age"
@@ -242,6 +248,7 @@ _AGING_METHODS = (AGING_METHOD_DUE_DATE, AGING_METHOD_INVOICE_AGE)
 # Entry types in chronological output. Numeric tie-break rank below
 # enforces invoice-before-same-day-payment ordering (§5.1 of the spec).
 _ENTRY_TYPE_RANK = {
+    "opening_balance": -1,
     "invoice":    0,
     "correction": 1,
     "proforma":   2,
@@ -777,8 +784,9 @@ def _entry_for_invoice(fact: Dict[str, Any]) -> Dict[str, Any]:
         "wfirma_doc_id":   fact["id"],
         "doc_number":      fact["fullnumber"],
         "date":            fact["date"],
+        # Operator-facing due column — derived from verified paymentdate.
+        # Raw wFirma spelling ``paymentdate`` stays off the wire (FORBIDDEN).
         "due_date":        (fact.get("paymentdate") or "").strip(),
-        "paymentdate":     (fact.get("paymentdate") or "").strip(),
         "currency":        fact["currency"],
         "debit":           _q(debit),
         "credit":          _q(credit),
@@ -998,41 +1006,154 @@ def aggregate_statement_from_facts(
             _ENTRY_TYPE_RANK.get(r["type"], 99),
             r["wfirma_doc_id"],
         ))
-        # Compute running balance.
-        running = Decimal("0")
+
+    # ── Tally-style opening / period / closing split ───────────────────
+    # Opening = net of movements dated strictly before period.from.
+    # Period movements = dates in [from, to]. Running balance starts at
+    # opening so contiguous periods satisfy previous_closing == next_opening.
+    period_from = str(df or "")
+    period_to = str(dt or "")
+
+    def _in_period(date_s: str) -> bool:
+        d = (date_s or "").strip()
+        if not d:
+            return False
+        if period_from and d < period_from:
+            return False
+        if period_to and d > period_to:
+            return False
+        return True
+
+    def _before_period(date_s: str) -> bool:
+        d = (date_s or "").strip()
+        if not d or not period_from:
+            return False
+        return d < period_from
+
+    opening_by_ccy: Dict[str, Decimal] = {}
+    period_entries_by_ccy: Dict[str, List[Dict[str, Any]]] = {}
+    for ccy, rows in entries_by_ccy.items():
+        opening = Decimal("0")
+        period_rows: List[Dict[str, Any]] = []
         for e in rows:
+            d = e.get("date") or ""
+            delta = Decimal(e["debit"]) - Decimal(e["credit"])
+            if _before_period(d):
+                opening += delta
+            elif _in_period(d):
+                period_rows.append(e)
+            # else: after period_to — ignored for this statement window
+        opening_by_ccy[ccy] = opening
+        # Status on invoice/correction rows from settlements through period_to
+        for e in period_rows:
+            if e.get("type") in ("invoice", "correction", "normal"):
+                inv_id = e.get("wfirma_doc_id") or ""
+                inv = invoice_by_id.get(inv_id)
+                if inv is not None:
+                    paid = paid_against_invoice.get(inv_id, Decimal("0"))
+                    rem = remaining_after_payments(inv["brutto"], paid)
+                    if rem <= 0:
+                        e["status"] = "Paid"
+                    elif paid > 0:
+                        e["status"] = "Partial"
+                    else:
+                        e["status"] = "Open"
+                else:
+                    e["status"] = e.get("status") or ""
+            elif e.get("type") == "payment":
+                e["status"] = "Applied"
+            e.pop("paymentdate", None)
+            e["source"] = "wfirma"
+        # Running balance from opening through period movements
+        running = opening
+        for e in period_rows:
             running += Decimal(e["debit"]) - Decimal(e["credit"])
             e["running_balance"] = _q(running)
+        # Prepend B/F row when there is prior activity OR non-zero opening
+        display_rows: List[Dict[str, Any]] = []
+        if opening != 0 or any(_before_period(e.get("date") or "") for e in rows):
+            bf_debit = opening if opening > 0 else Decimal("0")
+            bf_credit = (-opening) if opening < 0 else Decimal("0")
+            display_rows.append({
+                "type": "opening_balance",
+                "wfirma_doc_id": "",
+                "doc_number": "OPENING BALANCE / B/F",
+                "date": period_from or "",
+                "due_date": "",
+                "currency": ccy,
+                "debit": _q(bf_debit),
+                "credit": _q(bf_credit),
+                "running_balance": _q(opening),
+                "status": "B/F",
+                "source": "carried",
+                "is_opening_balance": True,
+            })
+        display_rows.extend(period_rows)
+        period_entries_by_ccy[ccy] = display_rows
 
-    # ── Per-currency totals ────────────────────────────────────────────
+    entries_by_ccy = period_entries_by_ccy
+
+    # Currencies with only pre-period activity still need a closing view
+    for ccy, opening in opening_by_ccy.items():
+        if ccy not in entries_by_ccy:
+            entries_by_ccy[ccy] = []
+        currencies.add(ccy)
+
+    # ── Per-currency totals (period activity + carried balances) ───────
     totals_by_ccy: Dict[str, Dict[str, Any]] = {}
-    for ccy, rows in entries_by_ccy.items():
+    for ccy in sorted(currencies):
+        rows = [e for e in (entries_by_ccy.get(ccy) or [])
+                if not e.get("is_opening_balance")]
+        opening = opening_by_ccy.get(ccy, Decimal("0"))
         invoiced = Decimal("0")
         credited = Decimal("0")
         received = Decimal("0")
+        period_debits = Decimal("0")
+        period_credits = Decimal("0")
+        fx_adjustments = Decimal("0")  # no FX authority — always zero unless lines exist
         for e in rows:
             d = Decimal(e["debit"])
             c = Decimal(e["credit"])
+            period_debits += d
+            period_credits += c
             if e["type"] in ("invoice", "correction"):
                 invoiced += d
                 credited += c
             elif e["type"] == "payment":
                 received += c
-                # Negative payments ("reversal") added a debit; subtract
-                # from received to keep the "money received" total honest.
                 received -= d
-        outstanding = invoiced - credited - received
+            elif e["type"] == "fx_adjustment":
+                fx_adjustments += d - c
+        closing = opening + period_debits - period_credits
+        # Invariant check (internal); surface as warning if drift
+        expected = opening + invoiced - credited - received + fx_adjustments
+        if abs(closing - expected) > Decimal("0.005"):
+            warnings.append({
+                "event": "statement_closing_invariant_drift",
+                "currency": ccy,
+                "opening": _q(opening),
+                "closing": _q(closing),
+                "expected": _q(expected),
+            })
         totals_by_ccy[ccy] = {
+            "opening_balance": _q(opening),
+            "period_debits":   _q(period_debits),
+            "period_credits":  _q(period_credits),
+            "fx_adjustments":  _q(fx_adjustments),
+            "closing_balance": _q(closing),
             "invoiced":    _q(invoiced),
             "credited":    _q(credited),
             "received":    _q(received),
-            "outstanding": _q(outstanding),
+            # Legacy alias: period closing — NOT current portfolio open.
+            # UI/PDF must label this "Closing balance", never "Outstanding".
+            "outstanding": _q(closing),
             "entry_count": len(rows),
         }
 
     # ── Aging per currency ────────────────────────────────────────────
-    # Authority: due_date (paymentdate) by default — Management Analysis
-    # parity. invoice_age only when explicitly selected by the caller.
+    # Aging uses the FULL loaded invoice set (history floor → period to)
+    # with settlements through period_to, anchored at statement_date —
+    # this is the as-of position view, not the period activity subtotal.
     aging_by_ccy: Dict[str, Dict[str, Any]] = {}
     oldest_overdue_date = ""
     for ccy in sorted(currencies):
@@ -1095,6 +1216,12 @@ def aggregate_statement_from_facts(
         },
         "generated_at":   statement_date,
         "period":         {"from": str(df or ""), "to": str(dt or "")},
+        "period_start":   str(df or ""),
+        "period_end":     str(dt or ""),
+        "position_as_of": statement_date,
+        "source":         "wfirma",
+        "as_of":          statement_date,
+        "statement_model": "opening_period_closing",
         "currencies":     sorted(currencies),
         "entries_per_currency":          entries_by_ccy,
         "totals_per_currency":           totals_by_ccy,

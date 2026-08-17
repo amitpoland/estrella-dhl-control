@@ -395,28 +395,29 @@ def _currency_section_flowables(
     totals = (stmt.get("totals_per_currency") or {}).get(ccy) or {}
     aging  = (stmt.get("aging_per_currency")  or {}).get(ccy) or {}
 
-    # Totals card.
-    out_amt = _safe(totals.get("outstanding") or "0.00")
+    totals_rows = [
+        ["Opening balance", _safe(totals.get("opening_balance") or "0.00")],
+        ["Period debits",   _safe(totals.get("period_debits") or totals.get("invoiced") or "0.00")],
+        ["Period credits",  _safe(totals.get("period_credits")
+                                  or str(Decimal(str(totals.get("credited") or "0"))
+                                         + Decimal(str(totals.get("received") or "0"))))],
+        ["Closing balance", _safe(totals.get("closing_balance") or totals.get("outstanding") or "0.00")],
+        ["Entries",         str(totals.get("entry_count") or 0)],
+    ]
+    out_amt = _safe(totals.get("closing_balance") or totals.get("outstanding") or "0.00")
     is_negative = False
     try:
-        is_negative = Decimal(str(totals.get("outstanding") or "0")) < 0
+        is_negative = Decimal(str(totals.get("closing_balance") or totals.get("outstanding") or "0")) < 0
     except Exception:
         is_negative = False
     out_color = "#B91C1C" if is_negative else "#0B3D2E"
-    totals_rows = [
-        ["Invoiced",     _safe(totals.get("invoiced")     or "0.00")],
-        ["Credited",     _safe(totals.get("credited")     or "0.00")],
-        ["Received",     _safe(totals.get("received")     or "0.00")],
-        ["Outstanding",  out_amt],
-        ["Entries",      str(totals.get("entry_count")   or 0)],
-    ]
     totals_t = Table(
-        [[Paragraph("<b>Totals</b>", styles["section_header"])]] + [
+        [[Paragraph("<b>Period statement</b>", styles["section_header"])]] + [
             [Paragraph(f"<font color='#475569'>{lbl}</font>",
                         ParagraphStyle("tk", fontName=_FONT_REG, fontSize=9,
                                         leading=11, alignment=TA_LEFT)),
              Paragraph(f"<font name='{_FONT_BOLD}' "
-                        f"color='{out_color if lbl == 'Outstanding' else '#0F172A'}'>"
+                        f"color='{out_color if lbl == 'Closing balance' else '#0F172A'}'>"
                         f"{val}</font>",
                         ParagraphStyle("tv", fontName=_FONT_BOLD, fontSize=10,
                                         leading=12, alignment=TA_RIGHT))]
@@ -429,7 +430,7 @@ def _currency_section_flowables(
         ("BACKGROUND",     (0,0), (-1,-1), colors.white),
         ("BOX",            (0,0), (-1,-1), 0.4, _EJ_LINE),
         ("LINEBELOW",      (0,0), (-1,0),  1.0, _EJ_GOLD),
-        ("LINEABOVE",      (0,4), (-1,4),  0.6, _EJ_BRAND),  # over Outstanding
+        ("LINEABOVE",      (0,4), (-1,4),  0.6, _EJ_BRAND),  # over Closing balance
         ("LEFTPADDING",    (0,0), (-1,-1), 8),
         ("RIGHTPADDING",   (0,0), (-1,-1), 8),
         ("TOPPADDING",     (0,0), (-1,-1), 4),
@@ -532,15 +533,20 @@ def _currency_section_flowables(
 
         # Type pill colour.
         type_color = {
+            "opening_balance": "#475569",
             "invoice":    "#0B3D2E",
             "correction": "#B0892F",
             "proforma":   "#475569",
             "payment":    "#0F5A45",
         }.get(ent_type, "#475569")
+        type_label = {
+            "opening_balance": "B/F",
+            "correction": "Credit Note",
+        }.get(ent_type, ent_type)
 
         table_data.append([
             _safe(e.get("date") or ""),
-            Paragraph(f"<font color='{type_color}'><b>{_safe(ent_type)}</b></font>",
+            Paragraph(f"<font color='{type_color}'><b>{_safe(type_label)}</b></font>",
                        ParagraphStyle("c", fontName=_FONT_BOLD, fontSize=8)),
             _safe(doc_number),
             _safe(linked),

@@ -42,10 +42,9 @@ def test_ledger_uses_year_month_from_to_not_preset_chips():
 def test_ledger_separates_position_asof_from_activity_period():
     ldg = _read("ledgers-page.jsx")
     assert "Position as-of" in ldg
-    assert "Period activity only" in ldg
-    assert "Period closing balance" in ldg
-    assert "full outstanding as-of" in ldg
-    assert "not period-bounded" in ldg
+    assert "Opening → period movements → Closing" in ldg
+    assert "Closing balance as of" in ldg
+    assert "full open position as-of" in ldg or "ldg-position-vs-activity-note" in ldg
     # Roster still uses as_of for all_outstanding
     assert "to: period.as_of || period.to" in ldg
     assert "scope: period.scope || 'all_outstanding'" in ldg
@@ -178,7 +177,7 @@ def test_source_badges_local_vs_wfirma():
     assert "ldg-source-local" in ldg
     assert "ldg-source-wfirma" in ldg
     assert "mode={tab === 'analysis' ? 'local' : 'wfirma'}" in ldg
-    assert "Period activity only" in ldg
+    assert "Opening → period movements → Closing" in ldg
 
 
 def test_accounting_jsx_has_no_object_object_interpolation():
