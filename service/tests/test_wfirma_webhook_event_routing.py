@@ -242,3 +242,89 @@ def test_invoice_without_object_id_still_retries_not_quarantine(tmp_path: Path) 
             "SELECT processing_state FROM wfirma_webhook_processing WHERE event_id='evt-noid'"
         ).fetchone()
     assert row[0] == "DEAD_LETTER"
+
+
+@pytest.mark.parametrize(
+    "event_type,domain",
+    [
+        ("Faktury.Dodanie", DOMAIN_INVOICE),
+        ("Faktury.Usunięcie", "INVOICE_DELETE"),
+        ("invoice.delete", "INVOICE_DELETE"),
+        ("Płatności.Dodanie", "PAYMENT"),
+        ("Platnosci.Dodanie", "PAYMENT"),
+        ("payment.add", "PAYMENT"),
+        ("Towary.Zmiana", DOMAIN_STOCK),
+        ("Kontrahenci.Dodanie", DOMAIN_CONTRACTOR),
+        ("ping", DOMAIN_UNKNOWN),
+    ],
+)
+def test_classify_event_domain_table(event_type: str, domain: str) -> None:
+    from app.services.wfirma_webhook_event_router import (
+        DOMAIN_INVOICE_DELETE,
+        DOMAIN_PAYMENT,
+        classify_event_domain,
+    )
+
+    expected = {
+        "INVOICE_DELETE": DOMAIN_INVOICE_DELETE,
+        "PAYMENT": DOMAIN_PAYMENT,
+    }.get(domain, domain)
+    assert classify_event_domain(event_type) == expected
+
+
+def test_payment_event_routed_without_invoice_fetch(tmp_path: Path) -> None:
+    events_db = tmp_path / "wfirma_webhook_events.db"
+    proc_db = tmp_path / "wfirma_processing.db"
+    _create_events_db(events_db)
+    _insert_event(
+        events_db,
+        "evt-pay",
+        "Płatności.Dodanie",
+        {"object_id": "P-1", "payment_id": "P-1"},
+    )
+    init_db(proc_db)
+
+    fetch_mock = MagicMock(side_effect=AssertionError("invoice fetch must not run"))
+    with _scheduler_ctx(events_db, proc_db) as sched, patch(
+        "app.services.wfirma_client.fetch_invoice_xml", fetch_mock
+    ):
+        sched._run_processing_tick()
+
+    fetch_mock.assert_not_called()
+    with sqlite3.connect(str(proc_db)) as conn:
+        row = conn.execute(
+            "SELECT processing_state, last_error FROM wfirma_webhook_processing "
+            "WHERE event_id='evt-pay'"
+        ).fetchone()
+    assert row[0] == "ROUTED_PAYMENT"
+    assert "routed_payment_pending_consumer" in row[1]
+    assert get_snapshot_by_event(proc_db, "evt-pay") is None
+
+
+def test_invoice_delete_routed_without_fetch(tmp_path: Path) -> None:
+    events_db = tmp_path / "wfirma_webhook_events.db"
+    proc_db = tmp_path / "wfirma_processing.db"
+    _create_events_db(events_db)
+    _insert_event(
+        events_db,
+        "evt-del",
+        "Faktury.Usunięcie",
+        {"object_id": "INV-9", "invoice_id": "INV-9"},
+    )
+    init_db(proc_db)
+
+    fetch_mock = MagicMock(side_effect=AssertionError("delete must not fetch"))
+    with _scheduler_ctx(events_db, proc_db) as sched, patch(
+        "app.services.wfirma_client.fetch_invoice_xml", fetch_mock
+    ):
+        sched._run_processing_tick()
+
+    fetch_mock.assert_not_called()
+    with sqlite3.connect(str(proc_db)) as conn:
+        row = conn.execute(
+            "SELECT processing_state, last_error FROM wfirma_webhook_processing "
+            "WHERE event_id='evt-del'"
+        ).fetchone()
+    assert row[0] == "ROUTED_INVOICE_DELETE"
+    assert "tombstone_pending" in row[1]
+    assert get_snapshot_by_event(proc_db, "evt-del") is None
