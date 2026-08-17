@@ -99,3 +99,25 @@ def test_sort_client_balance_overdue_before_clear():
     assert ordered[0] == "ovd"
     assert ordered[1] == "open"
     assert ordered[2] == "clear"
+
+
+# ── Treasury panel (Accounting Hub) ───────────────────────────────────────
+
+def test_treasury_section_wired_in_hub():
+    hub = _read("accounting-hub.jsx")
+    assert "id: 'treasury'" in hub
+    assert "function AccTreasuryPanel" in hub
+    assert "acc-treasury-root" in hub
+    assert "acc-treasury-manual-save" in hub
+    assert "acc-treasury-import-confirm" in hub
+    assert "acc-treasury-close-save" in hub
+
+
+def test_treasury_pz_api_wrappers():
+    api = _read("pz-api.js")
+    assert "getTreasuryBalances:" in api
+    assert "postTreasuryManualBalance:" in api
+    assert "previewTreasuryBankImport:" in api
+    assert "confirmTreasuryBankImport:" in api
+    assert "postTreasuryDailyClose:" in api
+    assert "/treasury/balances" in api

@@ -1275,8 +1275,8 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         ) : (
           <MaCompactEmpty testid="ldg-ma-liquidity-empty"
             msg={treasuryErr
-              ? `Treasury balances could not be loaded (${treasuryErr}). Import via POST /api/v1/treasury/balances/manual or bank import — dedicated Treasury tab UI is pending (Slice 12).`
-              : 'No treasury balance snapshots for this as-of date. Capture balances via Treasury import or manual entry (API: /api/v1/treasury/balances) — Treasury tab UI pending.'} />
+              ? `Treasury balances could not be loaded (${treasuryErr}). Use Accounting → Treasury to capture balances.`
+              : 'No treasury balance snapshots for this as-of date. Capture via Accounting → Treasury (manual entry or bank import).'} />
         )}
       </MaSection>
 

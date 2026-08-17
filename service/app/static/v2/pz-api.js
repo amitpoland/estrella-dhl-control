@@ -2506,5 +2506,35 @@
       return { ok: true, filename: name };
     },
 
+    // ── Treasury (local projection — not wFirma) ───────────────────────────
+    getTreasuryBalances: (asOf) => {
+      const qs = new URLSearchParams();
+      if (asOf) qs.set('as_of', asOf);
+      return _get(`${BASE}/treasury/balances?${qs}`);
+    },
+    postTreasuryManualBalance: (body) =>
+      _post(`${BASE}/treasury/balances/manual`, body || {}),
+    previewTreasuryBankImport: async (file, defaultAccount) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      if (defaultAccount) fd.append('default_account', defaultAccount);
+      try {
+        const res = await fetch(`${BASE}/treasury/imports/preview`, {
+          method: 'POST', credentials: 'same-origin', body: fd,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          return { ok: false, status: res.status, error: (data && data.detail) || `HTTP ${res.status}` };
+        }
+        return { ok: true, data };
+      } catch (e) {
+        return { ok: false, error: (e && e.message) || 'upload failed' };
+      }
+    },
+    confirmTreasuryBankImport: (batchId) =>
+      _post(`${BASE}/treasury/imports/${encodeURIComponent(batchId)}/confirm`, {}),
+    postTreasuryDailyClose: (body) =>
+      _post(`${BASE}/treasury/daily-close`, body || {}),
+
   });
 })();
