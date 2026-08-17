@@ -51,6 +51,7 @@ from .persistence.shipment_db import insert_shipment as _db_insert
 from .persistence.shipment_db import update_state as _db_update
 from .persistence.shipment_db import persist_notification_audit as _db_persist_notify
 from .persistence.shipment_db import EXTERNAL_PROVIDERS, PROVIDER_DHL
+from .persistence.shipment_db import is_valid_provider_code, normalize_provider_code
 from .notification_audit import build_notification_audit
 from ...core.config import settings
 
@@ -379,23 +380,39 @@ def register_external_shipment(
     client_ref: Optional[str] = None,
     operator: Optional[str] = None,
     service_product: Optional[str] = None,
+    master_data_db_path: Optional[Path] = None,
 ) -> ShipmentResult:
-    """Register a customer-arranged FedEx/UPS shipment. Never calls a carrier API.
+    """Register a customer-arranged external shipment. Never calls a carrier API.
 
     Writes the existing ``carrier_shipments`` row (mode=external, state=complete)
     with provider + tracking_ref. DHL is rejected — it stays on create_shipment.
-    Same facts replay onto the stored row (no adapter, no second table).
+
+    Provider vocabulary:
+      • legacy FEDEX / UPS / OTHER always accepted
+      • any *active* Carrier Master ``carrier_code`` accepted when
+        ``master_data_db_path`` is supplied (no new carrier table)
     """
     _init_shipment_db(db_path)
 
-    p = (provider or "").strip().upper()
+    p = normalize_provider_code(provider)
     if p == PROVIDER_DHL:
         raise CarrierGateError(
             "DHL shipments must be created through the existing booking path."
         )
-    if p not in EXTERNAL_PROVIDERS:
+    allowed = set(EXTERNAL_PROVIDERS)
+    if master_data_db_path is not None:
+        try:
+            from ..master_data_db import list_carrier_configs
+            for cfg in list_carrier_configs(Path(master_data_db_path), active=True):
+                code = normalize_provider_code(getattr(cfg, "carrier_code", "") or "")
+                if code and code != PROVIDER_DHL:
+                    allowed.add(code)
+        except Exception:
+            # Master read failure must not widen vocabulary — fall back to legacy set.
+            pass
+    if p not in allowed or not is_valid_provider_code(p):
         raise CarrierGateError(
-            f"Unknown carrier provider {p!r}; expected one of {EXTERNAL_PROVIDERS}"
+            f"Unknown carrier provider {p!r}; expected one of {sorted(allowed)}"
         )
 
     ref = normalize_tracking_ref(tracking_ref)

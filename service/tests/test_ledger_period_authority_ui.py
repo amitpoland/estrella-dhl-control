@@ -99,10 +99,11 @@ def test_resolve_period_returns_null_for_incomplete_custom():
 
 # ── 6. Page size ──────────────────────────────────────────────────────────
 
-def test_all_list_limits_are_ten():
+def test_all_list_limits_are_twenty():
     ldg = _read("ledgers-page.jsx")
-    for name in ("LDG_LIST_LIMIT", "SUP_LIST_LIMIT", "MA_TABLE_LIMIT"):
-        assert f"{name} = 10" in ldg, f"{name} must be 10"
+    for name in ("LDG_LIST_LIMIT", "SUP_LIST_LIMIT"):
+        assert f"{name} = 20" in ldg, f"{name} must be 20"
+    assert "MA_TABLE_LIMIT = 10" in ldg, "MA_TABLE_LIMIT stays 10"
 
 
 # ── 7. No duplicate status filters ────────────────────────────────────────

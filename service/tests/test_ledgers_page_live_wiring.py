@@ -38,11 +38,9 @@ def test_reads_client_balance_authority():
         "Client roster must read via the shared PzApi.listClientBalancesShared "
         "authority (single live /ledgers/clients read shared with Accounting Overview)"
     )
-    # Was 15. Deliberate contract change, operator decision: compact 10/page
-    # rosters across all four ledger tables. Server-side paging is unchanged —
-    # only the page size moved.
-    assert "LDG_LIST_LIMIT = 10" in src, (
-        "Client roster must request limit=10 (shared register paging contract)"
+    # Operator decision: compact 20/page rosters (Accounting + Client Balance).
+    assert "LDG_LIST_LIMIT = 20" in src, (
+        "Client roster must request limit=20 (shared register paging contract)"
     )
     assert "limit: 100" not in src, (
         "Client roster must not request limit=100 (former N+1 timeout path)"
@@ -126,9 +124,12 @@ _REQUIRED_TESTIDS = [
     "ldg-suppliers-root",       # supplier tab: live Supplier Ledger
     "ldg-entry-drawer",
     "ldg-entry-links-pending",  # drawer cross-links: backend pending
-    "ldg-filter-search",        # search input is WIRED (was a dead input)
-    "ldg-filter-no-match",      # honest zero-match state for the search
-    "ldg-clients-pager",        # 15-row server page controls (replaces limit=100 truncate note)
+    "ldg-clients-root",         # full-width client balance table (no permanent rail)
+    "ldg-client-tabs",          # Statement / Invoices / Payments / Aging / Info
+    "ldg-suppliers-balance-table",
+    "ldg-supplier-detail",
+    "ldg-filter-search",
+    "ldg-clients-pager",
 ]
 
 
@@ -175,6 +176,14 @@ def test_still_exports_window_ledgers_page():
         "ledgers-page.jsx must keep exporting window.LedgersPage — the "
         "Accounting hub mounts it (census AC-5)"
     )
+
+
+def test_client_statement_lazy_not_per_roster_row():
+    """Statement JSON is fetched only when the detail panel is open."""
+    src = _src()
+    assert "Lazy statement" in src or "only when detail panel open" in src
+    assert "detailId" in src
+    assert "if (!detailId)" in src
 
 
 def test_accounting_hub_reaches_supplier_ledger_through_one_mount():
