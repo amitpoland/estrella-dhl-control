@@ -82,7 +82,9 @@ def test_status_response_has_required_top_level_keys():
     with patch("app.api.routes_webhooks_wfirma_status._get_proc_db_path", return_value=None):
         r = client.get("/api/v1/webhooks/wfirma/status")
     data = r.json()
-    assert set(data.keys()) >= {"service", "queue", "snapshots", "metrics", "recent_dead_letters"}
+    assert set(data.keys()) >= {
+        "service", "queue", "snapshots", "metrics", "recent_dead_letters", "reconciliation",
+    }
 
 
 def test_status_service_keys():
@@ -234,6 +236,20 @@ def test_status_returns_zeros_when_db_not_initialised():
     assert data["snapshots"]["total"] == 0
     assert data["metrics"]["webhooks_received"] == 0
     assert data["recent_dead_letters"] == []
+    assert "reconciliation" in data
+    assert data["reconciliation"]["durable_events"] == 0
+    assert data["reconciliation"]["healthy"] is False
+
+
+def test_empty_reconciliation_shape():
+    from app.api.routes_webhooks_wfirma_status import _empty_reconciliation
+    row = _empty_reconciliation(events_db_available=True)
+    assert row["events_db_available"] is True
+    assert set(row.keys()) >= {
+        "healthy", "durable_events", "processing_rows",
+        "events_without_processing", "processing_without_event",
+        "snapshots_without_processing", "stale_pending", "stale_after_seconds",
+    }
 
 
 # ── query_status with real data ───────────────────────────────────────────────
