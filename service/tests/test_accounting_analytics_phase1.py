@@ -287,3 +287,19 @@ def test_route_management_analysis_ok(client, monkeypatch):
     assert usd["total_receivable"] == "75.00"
     assert body["customers"][0]["customer_name"] == "Acme"
     assert "083/A/NBP" not in str(body["currency_summaries"])
+
+
+def test_receipts_last_30d_uses_matched_payments_in_as_of_window():
+    """Last 30d is applied receipts, not outstanding and not unmatched cash."""
+    invoices = [_inv(iid="1", gross="200.00", due="2021-01-10")]
+    payments = [
+        _pay(pid="P-in", invoice_id="1", value="40.00", date="2021-01-20"),
+        _pay(pid="P-old", invoice_id="1", value="25.00", date="2020-12-01"),
+        _pay(pid="P-unlinked", invoice_id="NOPE", value="99.00", date="2021-01-25"),
+    ]
+    out = build_portfolio_from_facts(
+        invoices, payments, as_of="2021-02-01", period=("2020-01-01", "2021-02-01")
+    )
+    row = out["customers"][0]
+    assert Decimal(row["receipts_last_30d"]) == Decimal("40.00")
+    assert Decimal(row["outstanding"]) == Decimal("135.00")  # 200 - 40 - 25

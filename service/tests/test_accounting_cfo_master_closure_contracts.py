@@ -52,3 +52,23 @@ def test_router_documents_wh002_wh003_pending_no_mutation():
     assert "tombstone pending" in src.lower() or "tombstone_pending" in src
     assert "payment_poll_sync" in src
     assert "OI-10" in src
+
+
+def test_last_30d_is_documented_receipts_not_backend_pending():
+    ledgers = LEDGERS.read_text(encoding="utf-8")
+    hub = HUB.read_text(encoding="utf-8")
+    routes = (ROOT / "app" / "api" / "routes_ledgers.py").read_text(encoding="utf-8")
+    analytics = (ROOT / "app" / "services" / "accounting_analytics.py").read_text(
+        encoding="utf-8"
+    )
+    assert "receipts_last_30d" in analytics
+    assert '"last_30d":             "backend_pending"' not in routes
+    assert "documented (matched payment receipts" in routes
+    assert "Last 30d (receipts)" in ledgers
+    assert "Applied receipts in last 30 calendar days" in hub
+    assert "wh002-pending" in ledgers
+    assert "wh003-pending" in ledgers
+    assert "wh004-hard-block" in ledgers
+    assert "formatLedgerWarning" in ledgers
+    assert "Authority:" in ledgers
+    assert "[object Object]" in ledgers  # guarded, never rendered raw

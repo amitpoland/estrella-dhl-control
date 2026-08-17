@@ -272,7 +272,7 @@
     // Default window = current UTC quarter (YTD via explicit from/to or hub preset).
     // Returns { ok, data: { period, count, rows[], column_status } }
     // rows[]: { contractor_id, name, open, overdue_invoice_age, ytd_invoiced,
-    //           last_30d (null · Backend Pending), currency, state, balance_available }
+    //           last_30d (applied receipts, 30d ending as-of), currency, state, balance_available }
     // Shares ONE short-TTL, in-flight-aware cache entry (keyed by resolved query
     // string) with listClientBalancesShared, so Accounting Overview and the
     // embedded Client Ledger no longer issue two independent live reads for the
