@@ -266,7 +266,7 @@ function LdgPeriodBar({ filters, custom, periodErr, onPeriodMode, onYear, onMont
         </div>
       )}
       <div data-testid="ldg-period-semantics" style={{ flexBasis: '100%', fontSize: 10.5, color: 'var(--text-3)' }}>
-        Client Balance Open / Aged = full outstanding position as of the as-of date (not limited to the activity window).
+        Client Balance Open / Overdue = full outstanding position as of the as-of date (due-date aging; not limited to the activity window).
         Statement lines = activity in From→To only.
       </div>
     </div>
@@ -556,7 +556,7 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
   }, [detailId, detailTab, refreshKey, period.from, period.to]);
 
   if (clients === null) {
-    return <div data-testid="ldg-clients-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading client balances from wFirma…</div>;
+    return <div data-testid="ldg-clients-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading client balances (local projection)…</div>;
   }
   if (listErr && clients.length === 0) {
     return (
@@ -593,8 +593,8 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
         <table data-testid="ldg-clients-balance-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
-              {['Client', 'Open (as-of)', 'Aged', 'Invoiced (period)', 'Cur', 'State', ''].map((h) => (
-                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Open (as-of)', 'Aged', 'Invoiced (period)'].includes(h) ? 'right' : 'left' }}>{h}</th>
+              {['Client', 'Open (as-of)', 'Overdue (due-date)', 'Invoiced (period)', 'Cur', 'State', ''].map((h) => (
+                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Open (as-of)', 'Overdue (due-date)', 'Invoiced (period)'].includes(h) ? 'right' : 'left' }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -606,7 +606,7 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
               <tr key={x.contractor_id} data-testid="acc-balance-row" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                 <td style={{ padding: '8px 10px', fontWeight: 600 }}>{x.name || x.contractor_id}</td>
                 {moneyCell(x.open, x.currency, x.balance_available !== false)}
-                {moneyCell(x.overdue_invoice_age, x.currency, x.balance_available !== false && x.overdue_invoice_age != null)}
+                {moneyCell(x.overdue_due_date != null ? x.overdue_due_date : x.overdue_invoice_age, x.currency, x.balance_available !== false && (x.overdue_due_date != null || x.overdue_invoice_age != null))}
                 {moneyCell(x.ytd_invoiced, x.currency, x.balance_available !== false && x.ytd_invoiced != null)}
                 <td style={{ padding: '8px 10px' }}>{x.currency || '—'}</td>
                 <td style={{ padding: '8px 10px' }}>{x.balance_available ? <LdgStatusPill status={x.state === 'outstanding' ? 'Outstanding' : x.state === 'clear' ? 'Clear' : x.state} /> : 'unknown'}</td>
@@ -817,14 +817,14 @@ function ClientHeaderCard({ client: c, stmt, period }) {
             <LdgStatTile label="Outstanding" value={LDG_FMT.money(c.open, c.currency)}
               sub={`full open position as-of ${asOf}`} />
           )}
-          <LdgStatTile label="Overdue / Aged" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_invoice_age, c.currency)}
-            sub={(Number(c.overdue_invoice_age) || 0) > 0 ? 'unpaid past invoice/due date — as-of position' : 'none overdue on invoice-age basis'}
-            tone={(Number(c.overdue_invoice_age) || 0) > 0 ? 'amber' : 'green'} />
+          <LdgStatTile label="Overdue (due-date)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age, c.currency)}
+            sub={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'unpaid past due date — as-of position' : 'none overdue on due-date basis'}
+            tone={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'amber' : 'green'} />
           <LdgStatTile label="Not Due" value={c.currency === 'multi' ? 'see aging' : LDG_FMT.money(
-            Math.max(0, (Number(c.open) || 0) - (Number(c.overdue_invoice_age) || 0)),
+            c.not_due != null ? c.not_due : Math.max(0, (Number(c.open) || 0) - (Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0)),
             c.currency
           )}
-            sub="Outstanding − Aged (approx.) · as-of position" />
+            sub="Canonical due-date not-due · as-of position" />
           <LdgStatTile label="Credit Limit" value="—" sub="unavailable — not in wFirma ledger authority" />
         </div>
       )}

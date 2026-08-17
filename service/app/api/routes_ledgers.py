@@ -33,8 +33,10 @@ that has not yet been verified against a live wFirma response.
 #   4. Output a Markdown evidence document — committed to the repo so
 #      Phase 10B has verified field/filter contracts to build on.
 #
-# The probe MUST NOT commit dumped XML (real customer data); only the
-# field/filter availability summary.
+# Client Balance (GET /ledgers/clients) now uses the Management Analysis
+# portfolio (source=local default). Due-date overdue is documented.
+# The PHASE10A.5 probe above is historical for the original invoice-ledger
+# endpoint; it does not block Client Balance due-date aging.
 """
 from __future__ import annotations
 
@@ -757,19 +759,16 @@ def _statement_logo_path() -> str:
 # computed live per client and fault-isolated so one client's wFirma failure
 # does not fail the whole roster.
 #
-# SPLIT (operator ruling 2026-07-05) — column authority status:
-#   Open (outstanding)          DOCUMENTED  — totals_per_currency.outstanding
-#   Currency / State            DOCUMENTED  — derived from the same totals
-#   YTD (invoiced in period)    DOCUMENTED  — totals_per_currency.invoiced,
-#                                             default window = year-to-date
-#   Overdue (invoice-age)       DOCUMENTED  — aging total minus "current"
-#                                             bucket (invoice_age basis)
-#   Overdue (due-date)          BACKEND PENDING — blocked by the PHASE10A.5
-#                                             payment-state probe (see top of
-#                                             file); invoice-age substituted,
-#                                             basis disclosed, never relabelled
-#   Last 30d (rolling receipts) BACKEND PENDING — no existing authority emits
-#                                             a rolling-window receipts figure
+# Column authority (Client Balance — converged onto Management Analysis portfolio):
+#   Open (outstanding)          DOCUMENTED  — portfolio remaining (due-date AR)
+#   Currency / State            DOCUMENTED  — native currency; no FX merge
+#   Overdue (due-date)          DOCUMENTED  — portfolio overdue buckets
+#   Not due                     DOCUMENTED  — portfolio not_due
+#   Credits                     DOCUMENTED  — portfolio credit_balance
+#   Invoiced (period)           DOCUMENTED  — portfolio gross_invoiced (window)
+#   Last 30d (rolling receipts) BACKEND PENDING — no rolling-receipts authority
+# Legacy ``_roster_row_from_statement`` remains for statement-reducer tests /
+# any explicit legacy reader; default Client Balance does NOT use it.
 from datetime import datetime, timezone   # noqa: E402
 from decimal import Decimal               # noqa: E402
 
@@ -808,11 +807,17 @@ def _sort_client_balance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
     5. clear
     """
 
+    def _overdue_amt(r: Dict[str, Any]) -> Decimal:
+        # Prefer canonical due-date overdue; fall back to legacy field name.
+        if r.get("overdue_due_date") is not None:
+            return _dec_or_zero(r.get("overdue_due_date"))
+        return _dec_or_zero(r.get("overdue_invoice_age"))
+
     def _tier(r: Dict[str, Any]) -> int:
         if not r.get("balance_available"):
             return 4
         st = (r.get("state") or "").lower()
-        ovd = _dec_or_zero(r.get("overdue_invoice_age"))
+        ovd = _overdue_amt(r)
         opn = _dec_or_zero(r.get("open"))
         if st == "clear" or (opn <= 0 and ovd <= 0):
             return 3
@@ -829,7 +834,7 @@ def _sort_client_balance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
     def _key(r: Dict[str, Any]):
         t = _tier(r)
-        ovd = _dec_or_zero(r.get("overdue_invoice_age"))
+        ovd = _overdue_amt(r)
         opn = _dec_or_zero(r.get("open"))
         return (
             t,
@@ -842,14 +847,98 @@ def _sort_client_balance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return sorted(rows, key=_key)
 
 
+def _q2(v: Any) -> str:
+    try:
+        return f"{Decimal(str(v or '0')):.2f}"
+    except Exception:
+        return "0.00"
+
+
+def _roster_row_from_portfolio_group(
+    default_currency: str,
+    port_rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Map-only: Management Analysis portfolio customer rows → Client Balance roster.
+
+    No remaining / aging arithmetic — copies published portfolio fields.
+    Multi-currency clients collapse to ``currency=multi`` with per-ccy maps;
+    never FX-sums across currencies into a single Open.
+    """
+    by_ccy: Dict[str, Dict[str, Any]] = {}
+    for r in port_rows or []:
+        ccy = (r.get("currency") or "").strip().upper()
+        if not ccy:
+            continue
+        by_ccy[ccy] = r
+
+    ccys = sorted(by_ccy.keys())
+    open_by_ccy = {c: _q2(by_ccy[c].get("outstanding")) for c in ccys}
+    overdue_by_ccy = {c: _q2(by_ccy[c].get("overdue")) for c in ccys}
+    not_due_by_ccy = {c: _q2(by_ccy[c].get("not_due")) for c in ccys}
+    credit_by_ccy = {c: _q2(by_ccy[c].get("credit_balance")) for c in ccys}
+    invoiced_by_ccy = {c: _q2(by_ccy[c].get("gross_invoiced")) for c in ccys}
+
+    open_total = _sum_ccy(open_by_ccy)
+    overdue_total_amt = _sum_ccy(overdue_by_ccy)
+    single = ccys[0] if len(ccys) == 1 else None
+    if single:
+        currency = single
+    elif len(ccys) > 1:
+        currency = "multi"
+    else:
+        currency = default_currency or "—"
+
+    oldest_dates = [
+        (by_ccy[c].get("oldest_due_date") or "").strip()
+        for c in ccys
+        if (by_ccy[c].get("oldest_due_date") or "").strip()
+    ]
+    oldest_overdue = min(oldest_dates) if oldest_dates else None
+
+    open_invoice_count = sum(
+        int(by_ccy[c].get("open_invoice_count") or 0) for c in ccys
+    )
+
+    if open_total > 0 and overdue_total_amt > 0:
+        state = "outstanding"
+    elif open_total > 0:
+        state = "outstanding"
+    elif _sum_ccy(credit_by_ccy) > 0:
+        state = "clear"  # credit-only: no positive open AR
+    else:
+        state = "clear"
+
+    return {
+        "balance_available": True,
+        "currencies": ccys,
+        "currency": currency,
+        "open": (open_by_ccy[single] if single else None),
+        "open_by_currency": open_by_ccy,
+        # Canonical overdue = due-date (portfolio). Keep legacy field name in
+        # sync so existing UI columns (Aged) show the same figure.
+        "overdue_due_date": (overdue_by_ccy[single] if single else None),
+        "overdue_due_date_by_currency": overdue_by_ccy,
+        "overdue_invoice_age": (overdue_by_ccy[single] if single else None),
+        "overdue_invoice_age_by_currency": overdue_by_ccy,
+        "not_due": (not_due_by_ccy[single] if single else None),
+        "not_due_by_currency": not_due_by_ccy,
+        "credit_balance": (credit_by_ccy[single] if single else None),
+        "credit_balance_by_currency": credit_by_ccy,
+        "oldest_overdue_date": oldest_overdue,
+        "ytd_invoiced": (invoiced_by_ccy[single] if single else None),
+        "ytd_invoiced_by_currency": invoiced_by_ccy,
+        "last_30d": None,  # Backend Pending — no rolling-receipts authority
+        "open_invoice_count": open_invoice_count,
+        "state": state if open_total > 0 or overdue_total_amt > 0 else "clear",
+    }
+
+
 def _roster_row_from_statement(default_currency: str,
                                stmt: Dict[str, Any]) -> Dict[str, Any]:
-    """Reduce a Phase-10B statement dict to the Client-Balance roster summary.
+    """LEGACY reducer: statement dict → roster summary.
 
-    Reuses ``aggregate_statement`` output verbatim — NO new payment logic is
-    introduced here. Overdue is the aged figure (aging total minus
-    the ``not_due`` / legacy ``current`` bucket); due-date overdue is NOT
-    computed separately for the roster (architecture §7).
+    Retained for unit tests and any explicit statement-derived readers.
+    Default ``GET /ledgers/clients`` uses ``_roster_row_from_portfolio_group``.
     """
     totals = stmt.get("totals_per_currency", {}) or {}
     aging  = stmt.get("aging_per_currency", {}) or {}
@@ -887,12 +976,11 @@ def _roster_row_from_statement(default_currency: str,
         "currency":                        currency,
         "open":                            (open_by_ccy[single] if single else None),
         "open_by_currency":                open_by_ccy,
-        # Invoice-age basis ONLY — due-date overdue is Backend Pending.
         "overdue_invoice_age":             (aged_by_ccy[single] if single else None),
         "overdue_invoice_age_by_currency": aged_by_ccy,
-        "overdue_due_date":                None,   # Backend Pending (PHASE10A.5)
+        "overdue_due_date":                (aged_by_ccy[single] if single else None),
+        "overdue_due_date_by_currency":    aged_by_ccy,
         "oldest_overdue_date":             oldest_overdue,
-        # YTD = invoiced within the (default year-to-date) statement window.
         "ytd_invoiced":                    (invoiced_by_ccy[single] if single else None),
         "ytd_invoiced_by_currency":        invoiced_by_ccy,
         "last_30d":                        None,   # Backend Pending
@@ -934,14 +1022,21 @@ def list_client_balances(
     contractor: str = Query("", description="Exact wFirma contractor id"),
     currency: str = Query("", description="Filter by currency code (PLN/EUR/USD/…)"),
     status: str = Query("", description="Filter by state: outstanding|clear|unknown"),
-    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AR fact cache"),
+    refresh: int = Query(0, ge=0, le=1, description="1 = force live wFirma reconciliation path"),
+    source: str = Query(
+        "local",
+        description="local (default — financial reporting projection) | live (explicit reconciliation)",
+    ),
 ) -> JSONResponse:
     """Read-only Client Balance roster — POSITION AS OF (default).
 
-    Default ``scope=all_outstanding`` loads fiscal invoices from the outstanding
-    floor through ``to`` (as-of), with settlement payments through the same
-    as-of (Slice 2). Pass ``scope=activity`` plus ``from``/``to`` for an
-    activity-window register (legacy quarter behaviour).
+    Default ``source=local`` reuses the Management Analysis portfolio
+    (``build_management_analysis`` → ``build_portfolio_from_facts``). No
+    portfolio-wide wFirma waterfall on normal page load. Pass ``source=live``
+    or ``refresh=1`` for controlled live reconciliation.
+
+    Customer Master remains identity authority; portfolio contractors absent
+    from CM are appended so financial exposure is not hidden.
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     ao = (to or "").strip() or today
@@ -960,6 +1055,11 @@ def list_client_balances(
     contractor_f = (contractor or "").strip()
     currency_f = (currency or "").strip().upper()
     status_f = (status or "").strip().lower()
+    src = (source or "local").strip().lower()
+    if src not in ("local", "live"):
+        raise HTTPException(status_code=400, detail="source must be local or live")
+    if refresh:
+        src = "live"
 
     customers = _cm_list_customers(
         _CM_DB_PATH,
@@ -974,39 +1074,53 @@ def list_client_balances(
             if (getattr(c, "bill_to_contractor_id", "") or "").strip() == contractor_f
         ]
 
-    from ..services.ledger_fact_universe import (
-        load_ar_fact_universe,
-        timing_fields_from_universe,
+    from ..services.accounting_analytics import (
+        LocalProjectionUnavailable,
+        build_management_analysis,
     )
-    from ..services.ledger_aggregator import build_statement_index_by_contractor
 
+    t_route0 = time.perf_counter()
     try:
-        t_route0 = time.perf_counter()
-        uni = load_ar_fact_universe(df, dt, force=bool(refresh))
-        t_agg0 = time.perf_counter()
-        stmt_by_cid = build_statement_index_by_contractor(
-            uni["invoice_facts"],
-            uni["payment_facts"],
-            statement_date=dt,
-            period=(df, dt),
+        portfolio = build_management_analysis(
+            date_from=df,
+            date_to=dt,
+            as_of=ao,
+            currency="",  # currency filter applied after CM join (multi-ccy)
+            contractor_id=contractor_f,
+            status="",
+            force_refresh=bool(refresh),
+            source=src,
         )
-        ej_aggregate_ms = int((time.perf_counter() - t_agg0) * 1000)
+    except LocalProjectionUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": f"Local financial projection unavailable: {exc.reason}",
+                "code": "LOCAL_PROJECTION_UNAVAILABLE",
+                "hint": "Run financial reporting sync, or retry with source=live / refresh=1",
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        log.warning("[client-balances] bulk AR read failed: %s", exc)
+        log.warning("[client-balances] portfolio build failed: %s", exc)
         raise HTTPException(
             status_code=502,
             detail={
-                "error": f"wFirma bulk AR read failed: {exc}",
-                "code": "CLIENT_BALANCES_BULK_FETCH_FAILED",
+                "error": f"Client Balance portfolio read failed: {exc}",
+                "code": "CLIENT_BALANCES_PORTFOLIO_FAILED",
             },
         ) from exc
 
-    empty_stmt = {
-        "totals_per_currency": {},
-        "aging_per_currency": {},
-    }
+    by_cid: Dict[str, List[Dict[str, Any]]] = {}
+    for prow in portfolio.get("customers") or []:
+        cid = (prow.get("contractor_id") or "").strip()
+        if not cid:
+            continue
+        by_cid.setdefault(cid, []).append(prow)
 
-    rows = []
+    rows: List[Dict[str, Any]] = []
+    seen_cids: set = set()
     for cust in customers:
         cid = (getattr(cust, "bill_to_contractor_id", "") or "").strip()
         base = {
@@ -1019,8 +1133,38 @@ def list_client_balances(
         if not cid:
             rows.append(_unavailable_row(base, default_ccy, "no wFirma contractor id"))
             continue
-        stmt = stmt_by_cid.get(cid) or empty_stmt
-        rows.append({**base, **_roster_row_from_statement(default_ccy, stmt)})
+        seen_cids.add(cid)
+        port_rows = by_cid.get(cid) or []
+        if not port_rows:
+            rows.append({
+                **base,
+                **_roster_row_from_portfolio_group(default_ccy, []),
+                "state": "clear",
+            })
+            continue
+        rows.append({**base, **_roster_row_from_portfolio_group(default_ccy, port_rows)})
+
+    # Orphan portfolio contractors (financial exposure without CM identity)
+    q_l = (q or "").strip().lower()
+    for cid, port_rows in by_cid.items():
+        if cid in seen_cids:
+            continue
+        if contractor_f and cid != contractor_f:
+            continue
+        name = (port_rows[0].get("customer_name") or "").strip() or cid
+        if q_l and q_l not in name.lower() and q_l not in cid.lower():
+            continue
+        base = {
+            "contractor_id": cid,
+            "name": name,
+            "country": "",
+            "vat_id": "",
+            "identity_note": "financial_fact_without_customer_master",
+        }
+        rows.append({
+            **base,
+            **_roster_row_from_portfolio_group("", port_rows),
+        })
 
     if currency_f:
         rows = [
@@ -1037,22 +1181,15 @@ def list_client_balances(
     rows = _sort_client_balance_rows(rows)
     total = len(rows)
     page_rows = rows[start:start + limit]
-    inv_stats = uni.get("inv_stats") or {}
-    pay_stats = uni.get("pay_stats") or {}
-    qs = {
-        "invoice_api_calls": int(inv_stats.get("api_calls") or 0),
-        "payment_api_calls": int(pay_stats.get("api_calls") or 0),
-        "invoices_normalized": len(uni.get("invoice_facts") or []),
-        "payments_normalized": len(uni.get("payment_facts") or []),
-        "per_customer_wfirma_calls": 0,
-        "cache_hit": bool(uni.get("cache_hit")),
-        "coalesced": bool(uni.get("coalesced")),
-        "refresh": bool(refresh),
-    }
-    qs.update(timing_fields_from_universe(uni))
-    qs["ej_aggregate_ms"] = ej_aggregate_ms
-    qs["ej_ms"] = int(qs.get("ej_normalize_ms") or 0) + ej_aggregate_ms
+    qs = dict(portfolio.get("query_stats") or {})
+    qs["per_customer_wfirma_calls"] = 0
+    qs["refresh"] = bool(refresh)
     qs["route_wall_ms"] = int((time.perf_counter() - t_route0) * 1000)
+    # MA already sets invoice/payment api_calls; ensure local default is zeroed
+    if (portfolio.get("source") or src) == "local":
+        qs["invoice_api_calls"] = int(qs.get("invoice_api_calls") or 0)
+        qs["payment_api_calls"] = int(qs.get("payment_api_calls") or 0)
+
     return JSONResponse({
         "period":       {"from": df, "to": dt, "scope": sc, "as_of": ao},
         "start":        start,
@@ -1060,6 +1197,9 @@ def list_client_balances(
         "count":        len(page_rows),
         "total":        total,
         "rows":         page_rows,
+        "source":       portfolio.get("source") or src,
+        "freshness":    portfolio.get("freshness"),
+        "reconciliation_status": portfolio.get("reconciliation_status"),
         "filters": {
             "contractor": contractor_f or None,
             "currency": currency_f or None,
@@ -1067,15 +1207,18 @@ def list_client_balances(
             "country": (country or "").strip().upper() or None,
             "q": (q or "").strip() or None,
             "scope": sc,
+            "source": src,
         },
         "query_stats": qs,
         "column_status": {
-            "open":                 "documented",
+            "open":                 "documented (portfolio outstanding)",
             "currency":             "documented",
             "state":                "documented",
-            "ytd_invoiced":         "documented (invoiced in period)",
-            "overdue_invoice_age":  "documented (invoice-age basis)",
-            "overdue_due_date":     "backend_pending (PHASE10A.5 probe)",
+            "ytd_invoiced":         "documented (gross_invoiced in window)",
+            "overdue_due_date":     "documented (due-date aging)",
+            "overdue_invoice_age":  "documented (alias of due-date overdue)",
+            "not_due":              "documented",
+            "credit_balance":       "documented",
             "last_30d":             "backend_pending",
         },
     })
