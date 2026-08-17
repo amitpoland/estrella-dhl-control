@@ -32,6 +32,19 @@ def test_mm_unsupported_not_backend_pending():
     assert "warehouse_document_m_m" in src
 
 
+def test_hub_client_balance_uses_shared_clients_roster():
+    src = HUB.read_text(encoding="utf-8")
+    assert "listClientBalancesShared" in src
+    assert 'testid="acc-balance"' in src
+    assert "due-date aging" in src
+
+
+def test_client_ledger_roster_not_live_wfirma_copy():
+    src = LEDGERS.read_text(encoding="utf-8")
+    assert "Loading client balances (local projection)" in src
+    assert "Overdue (due-date)" in src
+
+
 def test_router_documents_wh002_wh003_pending_no_mutation():
     src = ROUTER.read_text(encoding="utf-8")
     assert "DOMAIN_INVOICE_DELETE" in src

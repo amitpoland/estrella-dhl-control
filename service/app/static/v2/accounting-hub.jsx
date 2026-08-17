@@ -1341,33 +1341,35 @@ function AccDocGrid({ sectionId, onNav }) {
     </div>
   );
 }
-// Wave 4 Item 4 — live Client Balance roster (GET /api/v1/ledgers/clients).
-// Open / Overdue(invoice-age) / YTD / Cur / State are DOCUMENTED (reuse the
-// Statement authority). "Last 30d" and due-date Overdue are Backend Pending —
-// rendered honestly ("—", disclosed), never faked.
+// Client Balance roster — GET /api/v1/ledgers/clients (local portfolio default).
+// Open / Overdue(due-date) / Cur / State from Management Analysis portfolio.
+// Last 30d + YTD activity metrics remain on Client Ledger statement.
 const _ACC_BAL_COLS = ['Client', 'Open', 'Overdue', 'Last 30d', 'YTD', 'Cur', 'State'];
 function AccClientBalance({ onOpenLedger }) {
-  const [st, setSt] = React.useState({ loading: true, error: null, rows: null, asOf: null, source: null });
+  const [st, setSt] = React.useState({ loading: true, error: null, rows: null, asOf: null, source: null, freshness: null });
   React.useEffect(() => {
     let cancelled = false;
-    setSt({ loading: true, error: null, rows: null, asOf: null, source: null });
+    setSt({ loading: true, error: null, rows: null, asOf: null, source: null, freshness: null });
     const today = new Date().toISOString().slice(0, 10);
-    // Position view: current outstanding as-of today. Activity YTD stays on Client Ledger.
-    window.PzApi.getManagementAnalysis({ as_of: today, scope: 'all_outstanding' }).then(res => {
+    window.PzApi.listClientBalancesShared({
+      as_of: today, to: today, scope: 'all_outstanding', limit: 20, start: 0, source: 'local',
+    }).then(res => {
       if (cancelled) return;
-      if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, asOf: null, source: null }); return; }
-      const d = res.data || {};
-      const rows = (d.customers || []).slice(0, 20).map(r => ({
-        contractor_id: r.contractor_id,
-        name: r.customer_name,
-        open: r.outstanding,
-        overdue_invoice_age: r.overdue,
-        currency: r.currency,
-        state: Number(r.overdue) > 0 ? 'overdue' : (Number(r.outstanding) > 0 ? 'outstanding' : 'clear'),
-        balance_available: true,
+      if (!res || res.error) {
+        setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, asOf: null, source: null, freshness: null });
+        return;
+      }
+      const rows = (res.rows || []).map(r => ({
+        ...r,
+        overdue_invoice_age: r.overdue_due_date != null ? r.overdue_due_date : r.overdue_invoice_age,
       }));
-      setSt({ loading: false, error: null, rows, asOf: d.as_of || today, source: d.source || 'local' });
-    }).catch(e => { if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null, asOf: null, source: null }); });
+      setSt({
+        loading: false, error: null, rows,
+        asOf: (res.period && (res.period.as_of || res.period.to)) || today,
+        source: res.source || 'local',
+        freshness: res.freshness || null,
+      });
+    }).catch(e => { if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null, asOf: null, source: null, freshness: null }); });
     return () => { cancelled = true; };
   }, []);
   const td = { padding: '9px 12px', fontSize: 11.5, color: 'var(--text-2)' };
@@ -1386,7 +1388,7 @@ function AccClientBalance({ onOpenLedger }) {
       </div>
       {st.asOf && (
         <div style={{ fontSize: 10.5, color: 'var(--text-3)', margin: '-6px 0 10px' }}>
-          Position as of {st.asOf} · source {st.source || 'local'} · overdue = due-date aging · YTD / last 30d are activity views on Client Ledger
+          Position as of {st.asOf} · source {st.source || 'local'}{st.freshness ? ` · ${st.freshness}` : ''} · overdue = due-date aging · YTD / last 30d on Client Ledger
         </div>
       )}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
@@ -1396,19 +1398,19 @@ function AccClientBalance({ onOpenLedger }) {
           </tr></thead>
           <tbody>
             {st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading client position…</td></tr>}
-            {st.error && !st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} data-testid="acc-balance-error" style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable. {formatAccUpstreamError(st.error)}</td></tr>}
-            {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No clients in Customer Master.</td></tr>}
+            {st.error && !st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} data-testid="acc-balance-error" style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>Client Balance unavailable. {formatAccUpstreamError(st.error)}</td></tr>}
+            {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No clients match filters.</td></tr>}
             {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
               <tr key={r.contractor_id || i} data-testid="acc-balance-row"
                 onClick={() => onOpenLedger && onOpenLedger()}
                 style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: onOpenLedger ? 'pointer' : 'default' }}>
                 <td style={{ ...td, color: 'var(--text)' }}>{r.name || r.contractor_id || '—'}</td>
-                <td style={tdm}>{r.balance_available ? (r.open != null ? r.open : <span title="Multi-currency — see Client Ledger" style={{ color: 'var(--text-3)' }}>multi</span>) : dash}</td>
-                <td style={tdm} title="Due-date aging">{r.balance_available && r.overdue_invoice_age != null ? r.overdue_invoice_age : dash}</td>
+                <td style={tdm}>{r.balance_available !== false ? (r.open != null ? r.open : <span title="Multi-currency — expand in Client Ledger" style={{ color: 'var(--text-3)' }}>multi</span>) : dash}</td>
+                <td style={tdm} title="Due-date aging">{r.balance_available !== false && (r.overdue_due_date != null || r.overdue_invoice_age != null) ? (r.overdue_due_date != null ? r.overdue_due_date : r.overdue_invoice_age) : dash}</td>
                 <td style={td} title="Activity view — open Client Ledger">{dash}</td>
                 <td style={td} title="Activity view — open Client Ledger">{dash}</td>
                 <td style={td}>{r.currency || '—'}</td>
-                <td style={{ ...td, fontSize: 11 }}>{r.balance_available ? r.state : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
+                <td style={{ ...td, fontSize: 11 }}>{r.balance_available !== false ? r.state : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
               </tr>
             ))}
           </tbody>

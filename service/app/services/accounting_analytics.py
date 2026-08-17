@@ -277,6 +277,9 @@ def build_portfolio_from_facts(
             "due_date_unavailable": _q(buckets["due_date_unavailable"]),
             "outstanding": _q(outstanding),
             "overdue": _q(overdue),
+            # Period gross invoices already accumulated — exposed for Client
+            # Balance activity column (not a second formula).
+            "gross_invoiced": _q(row["gross_invoiced"]),
             "oldest_due_date": row["oldest_due_date"] or None,
             "days_oldest_overdue": int(row["days_oldest_overdue"]),
             "last_invoice_date": row["last_invoice_date"] or None,

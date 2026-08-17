@@ -210,7 +210,8 @@ def test_fe_default_preset_is_bounded_not_ytd():
     ldg = (Path(__file__).resolve().parent.parent / "app/static/v2/ledgers-page.jsx").read_text(
         encoding="utf-8"
     )
-    assert "mode: 'this_month'" in ldg, "ledger cold path must default to the current month"
+    assert "periodMode: 'monthly'" in ldg, "ledger cold path must default to the current month"
+    assert "function ldgDefaultActivityPeriod()" in ldg
     assert "mode: 'ytd'" not in ldg, "YTD must stay an explicit operator choice, never the default"
 
 
@@ -241,21 +242,31 @@ def test_refresh_query_on_clients_forces_universe():
         bill_to_contractor_id="9", bill_to_name="X",
         country="PL", nip="", default_currency="PLN",
     )
+    live_port = {
+        "customers": [],
+        "query_stats": {
+            "source": "live",
+            "invoice_api_calls": 2,
+            "payment_api_calls": 2,
+            "wfirma_wait_ms": 10,
+            "ej_normalize_ms": 0,
+            "ej_ms": 0,
+            "ej_aggregate_ms": 0,
+            "per_customer_wfirma_calls": 0,
+        },
+        "source": "live",
+        "freshness": "live",
+        "reconciliation_status": "live_wfirma",
+    }
     with TestClient(app) as client, \
          patch.object(R, "_cm_list_customers", return_value=[cust]), \
-         patch("app.services.ledger_fact_universe.load_ar_fact_universe") as load_ar, \
-         patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
-               return_value={}):
-        load_ar.return_value = {
-            "invoice_facts": [], "payment_facts": [],
-            "inv_stats": {}, "pay_stats": {}, "duration_ms": 1,
-            "wfirma_wait_ms": 0, "ej_normalize_ms": 0, "ej_ms": 0,
-            "cache_hit": False, "coalesced": False,
-        }
+         patch("app.services.accounting_analytics.build_management_analysis",
+               return_value=live_port) as build:
         r = client.get(
             "/api/v1/ledgers/clients?refresh=1",
             headers={"X-API-KEY": settings.api_key or "test-key"},
         )
     assert r.status_code == 200
-    assert load_ar.call_args.kwargs.get("force") is True
+    assert build.call_args.kwargs.get("force_refresh") is True
     assert r.json()["query_stats"]["refresh"] is True
+    assert r.json()["source"] == "live"
