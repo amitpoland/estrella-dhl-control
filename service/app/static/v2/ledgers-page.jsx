@@ -155,22 +155,55 @@ function LdgReadOnlyBadge() {
 function LdgStatusPill({ status }) {
   const map = {
     'Open':       { bg: 'var(--badge-amber-bg)',   tx: 'var(--badge-amber-text)',   bd: 'var(--badge-amber-border)' },
+    'Offset':     { bg: 'var(--badge-green-bg)',   tx: 'var(--badge-green-text)',   bd: 'var(--badge-green-border)' },
+    'Credit':     { bg: 'var(--badge-green-bg)',   tx: 'var(--badge-green-text)',   bd: 'var(--badge-green-border)' },
     'Overdue':    { bg: 'var(--badge-red-bg)',     tx: 'var(--badge-red-text)',     bd: 'var(--badge-red-border)' },
     'Paid':       { bg: 'var(--badge-green-bg)',   tx: 'var(--badge-green-text)',   bd: 'var(--badge-green-border)' },
     'Partial':    { bg: 'var(--badge-amber-bg)',   tx: 'var(--badge-amber-text)',   bd: 'var(--badge-amber-border)' },
     'Reconciled': { bg: 'var(--badge-green-bg)',   tx: 'var(--badge-green-text)',   bd: 'var(--badge-green-border)' },
     'Pending':    { bg: 'var(--badge-neutral-bg)', tx: 'var(--badge-neutral-text)', bd: 'var(--badge-neutral-border)' },
-    // Live /ledgers/clients row states (routes_ledgers.py: outstanding | clear)
     'Outstanding': { bg: 'var(--badge-amber-bg)', tx: 'var(--badge-amber-text)', bd: 'var(--badge-amber-border)' },
     'Clear':       { bg: 'var(--badge-green-bg)', tx: 'var(--badge-green-text)', bd: 'var(--badge-green-border)' },
+    'Unknown':     { bg: 'var(--badge-neutral-bg)', tx: 'var(--badge-neutral-text)', bd: 'var(--badge-neutral-border)' },
   };
   const t = map[status] || map['Pending'];
   return (
-    <span style={{
+    <span title={status === 'Offset' ? 'Net zero — credits equal gross; overdue is gross aging' : undefined} style={{
       display: 'inline-block', padding: '2px 7px', borderRadius: 3,
       fontSize: 10, fontWeight: 600,
       background: t.bg, color: t.tx, border: `1px solid ${t.bd}`,
     }}>{status}</span>
+  );
+}
+
+function ldgByCcyTitle(byCcy) {
+  return Object.entries(byCcy || {}).map(([k, v]) => `${k} ${v}`).join(' · ');
+}
+
+function LdgPresentationPill({ state, fallback }) {
+  const raw = String(state || fallback || '').toLowerCase();
+  const labelMap = {
+    open: 'Open', outstanding: 'Open', offset: 'Offset', credit: 'Credit',
+    clear: 'Clear', unknown: 'Unknown',
+  };
+  const label = labelMap[raw] || (state || fallback || 'Unknown');
+  return <LdgStatusPill status={label} />;
+}
+
+function LdgMoneyTd({ value, currency, byCcy, available, testid }) {
+  if (available === false) {
+    return <td data-testid={testid} style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-3)' }}>—</td>;
+  }
+  if (currency === 'multi') {
+    return (
+      <td data-testid={testid} title={ldgByCcyTitle(byCcy) || 'per-currency — not summed'}
+        style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-3)' }}>multi</td>
+    );
+  }
+  return (
+    <td data-testid={testid} style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>
+      {LDG_FMT.money(value, currency)}
+    </td>
   );
 }
 
@@ -266,8 +299,8 @@ function LdgPeriodBar({ filters, custom, periodErr, onPeriodMode, onYear, onMont
         </div>
       )}
       <div data-testid="ldg-period-semantics" style={{ flexBasis: '100%', fontSize: 10.5, color: 'var(--text-3)' }}>
-        Client Balance Open / Overdue = full outstanding position as of the as-of date (due-date aging; not limited to the activity window).
-        Statement lines = activity in From→To only.
+        Client Balance Net Open = Gross AR − Credits as of the as-of date. Overdue / Not Due = gross aging (credits not aged).
+        Statement lines = activity in From→To only. Statement Closing is not the roster gross.
       </div>
     </div>
   );
@@ -592,7 +625,15 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
         </select>
         <select data-testid="ldg-clients-status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
           style={{ padding: '6px 8px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)' }}>
-          {['', 'outstanding', 'clear', 'unknown'].map((s) => <option key={s || 'all'} value={s}>{s || 'All statuses'}</option>)}
+          {[
+            ['', 'All statuses'],
+            ['open', 'Open (net > 0)'],
+            ['offset', 'Offset (net zero)'],
+            ['credit', 'Credit only'],
+            ['outstanding', 'Gross outstanding'],
+            ['clear', 'Clear'],
+            ['unknown', 'Unknown'],
+          ].map(([v, lab]) => <option key={v || 'all'} value={v}>{lab}</option>)}
         </select>
         <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 'auto' }}>Sorted: overdue → largest → outstanding → clear · {LDG_LIST_LIMIT}/page</span>
       </div>
@@ -601,6 +642,7 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
           Source · {listMeta.source} · as-of {listMeta.as_of || '—'}
           {listMeta.freshness ? ` · freshness ${listMeta.freshness}` : ''}
           {listMeta.reconciliation ? ` · recon ${listMeta.reconciliation}` : ''}
+          {' · Net Open = Gross AR − Customer Credits · Overdue + Not Due = Gross AR'}
           {' · Last 30d = applied receipts (not outstanding)'}
           {listMeta.unmapped ? ` · ${listMeta.unmapped} contractor(s) without Customer Master` : ''}
         </div>
@@ -610,14 +652,14 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
         <table data-testid="ldg-clients-balance-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
-              {['Client', 'Open (as-of)', 'Overdue (due-date)', 'Last 30d (receipts)', 'Invoiced (period)', 'Cur', 'State', ''].map((h) => (
-                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Open (as-of)', 'Overdue (due-date)', 'Last 30d (receipts)', 'Invoiced (period)'].includes(h) ? 'right' : 'left' }}>{h}</th>
+              {['Client', 'Cur', 'Net Open', 'Gross AR', 'Credits', 'Overdue', 'Not Due', 'Last 30d (receipts)', 'Invoiced (period)', 'State', ''].map((h) => (
+                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Net Open', 'Gross AR', 'Credits', 'Overdue', 'Not Due', 'Last 30d (receipts)', 'Invoiced (period)'].includes(h) ? 'right' : 'left' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {clients.length === 0 && (
-              <tr><td colSpan={8} data-testid="ldg-clients-empty" style={{ padding: 28, textAlign: 'center', color: 'var(--text-3)' }}>No clients match filters.</td></tr>
+              <tr><td colSpan={11} data-testid="ldg-clients-empty" style={{ padding: 28, textAlign: 'center', color: 'var(--text-3)' }}>No clients match filters.</td></tr>
             )}
             {clients.map((x) => (
               <tr key={x.contractor_id} data-testid="acc-balance-row" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
@@ -627,18 +669,30 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
                     <div style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-3)' }}>No Customer Master identity</div>
                   ) : null}
                 </td>
-                {moneyCell(x.open, x.currency, x.balance_available !== false)}
-                {moneyCell(x.overdue_due_date != null ? x.overdue_due_date : x.overdue_invoice_age, x.currency, x.balance_available !== false && (x.overdue_due_date != null || x.overdue_invoice_age != null))}
+                <td style={{ padding: '8px 10px' }}>{x.currency || '—'}</td>
+                <LdgMoneyTd testid={`ldg-client-net-${x.contractor_id}`} value={x.net_receivable} currency={x.currency}
+                  byCcy={x.net_receivable_by_currency} available={x.balance_available !== false} />
+                <LdgMoneyTd testid={`ldg-client-gross-${x.contractor_id}`} value={x.gross_receivable != null ? x.gross_receivable : x.open} currency={x.currency}
+                  byCcy={x.gross_receivable_by_currency || x.open_by_currency} available={x.balance_available !== false} />
+                <LdgMoneyTd testid={`ldg-client-credits-${x.contractor_id}`} value={x.credit_balance} currency={x.currency}
+                  byCcy={x.credit_balance_by_currency} available={x.balance_available !== false} />
+                <LdgMoneyTd testid={`ldg-client-overdue-${x.contractor_id}`}
+                  value={x.overdue_due_date != null ? x.overdue_due_date : x.overdue_invoice_age} currency={x.currency}
+                  byCcy={x.overdue_due_date_by_currency || x.overdue_invoice_age_by_currency}
+                  available={x.balance_available !== false && (x.overdue_due_date != null || x.overdue_invoice_age != null || x.currency === 'multi')} />
+                <LdgMoneyTd testid={`ldg-client-notdue-${x.contractor_id}`} value={x.not_due} currency={x.currency}
+                  byCcy={x.not_due_by_currency} available={x.balance_available !== false && (x.not_due != null || x.currency === 'multi')} />
                 {x.currency === 'multi' && x.last_30d == null
                   ? <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-3)' }} title="Native currencies stay separate">multi</td>
                   : moneyCell(x.last_30d, x.currency, x.balance_available !== false && x.last_30d != null)}
                 {moneyCell(x.ytd_invoiced, x.currency, x.balance_available !== false && x.ytd_invoiced != null)}
-                <td style={{ padding: '8px 10px' }}>{x.currency || '—'}</td>
-                <td style={{ padding: '8px 10px' }}>{x.balance_available ? <LdgStatusPill status={x.state === 'outstanding' ? 'Outstanding' : x.state === 'clear' ? 'Clear' : x.state} /> : 'unknown'}</td>
+                <td style={{ padding: '8px 10px' }}>{x.balance_available
+                  ? <LdgPresentationPill state={x.presentation_state} fallback={x.state} />
+                  : 'unknown'}</td>
                 <td style={{ padding: '8px 10px' }}>
                   <window.Btn small variant="outline" data-testid={`ldg-client-open-${x.contractor_id}`}
                     onClick={() => { setDetailId(x.contractor_id); setDetailTab('statement'); }}>
-                    Open
+                    Ledger
                   </window.Btn>
                 </td>
               </tr>
@@ -706,8 +760,8 @@ function ClientDetailPanel({ client, stmt, period, tab, onTab, onClose, onRowCli
         </div>
         <div data-testid="ldg-position-vs-activity-note" style={{ marginBottom: 12, padding: '8px 12px', fontSize: 11, color: 'var(--text-3)', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border)' }}>
           Activity period ({period.from} → {period.to}) filters the movements listed below.
-          Position tiles above remain as-of {period.as_of || period.to} and do not change with the activity window
-          unless you change Position as-of.
+          Position tiles above are as-of {period.as_of || period.to}: Gross Outstanding is aged positive remaining;
+          Credits are unaged; Net Position = Gross − Credits. Statement Closing is period activity, not the roster gross.
         </div>
         {tab === 'info' && (
           <div data-testid="ldg-client-info">
@@ -811,7 +865,7 @@ function ClientHeaderCard({ client: c, stmt, period }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>{c.name || c.contractor_id}</div>
             {c.country && <span style={{ fontSize: 10, color: 'var(--text-3)', padding: '2px 6px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 3 }}>{c.country}</span>}
-            {c.state && c.state !== 'unknown' && <LdgStatusPill status={c.state === 'outstanding' ? 'Outstanding' : c.state === 'clear' ? 'Clear' : c.state} />}
+            {c.state && c.state !== 'unknown' && <LdgPresentationPill state={c.presentation_state} fallback={c.state} />}
           </div>
           <div style={{ fontSize: 11.5, color: 'var(--text-3)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             <span>VAT / Tax ID: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.vat_id || '—'}</span></span>
@@ -834,23 +888,24 @@ function ClientHeaderCard({ client: c, stmt, period }) {
           Balance unavailable — {c.note || 'wFirma read failed for this contractor'}. Use ↻ Refresh to retry.
         </div>
       ) : (
-        <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+        <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
           {c.currency === 'multi' ? (
-            <LdgStatTile label="Outstanding" value="multi-currency"
-              sub={`as-of ${asOf} · per currency: ${Object.entries(c.open_by_currency || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'see statement'}`} />
+            <LdgStatTile label="Gross Outstanding" value="multi-currency"
+              sub={`as-of ${asOf} · per currency: ${ldgByCcyTitle(c.gross_receivable_by_currency || c.open_by_currency) || 'see statement'}`} />
           ) : (
-            <LdgStatTile label="Outstanding" value={LDG_FMT.money(c.open, c.currency)}
-              sub={`full open position as-of ${asOf}`} />
+            <LdgStatTile label="Gross Outstanding" value={LDG_FMT.money(c.gross_receivable != null ? c.gross_receivable : c.open, c.currency)}
+              sub={`positive remaining as-of ${asOf} · aged`} />
           )}
+          <LdgStatTile label="Customer Credits" value={c.currency === 'multi' ? 'multi-currency' : LDG_FMT.money(c.credit_balance, c.currency)}
+            sub={c.currency === 'multi' ? ldgByCcyTitle(c.credit_balance_by_currency) : 'unaged credit notes / advances'}
+            tone="green" />
+          <LdgStatTile label="Net Position" value={c.currency === 'multi' ? 'multi-currency' : LDG_FMT.money(c.net_receivable, c.currency)}
+            sub={c.currency === 'multi' ? ldgByCcyTitle(c.net_receivable_by_currency) : 'Gross − Customer Credits'} />
           <LdgStatTile label="Overdue (due-date)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age, c.currency)}
-            sub={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'unpaid past due date — as-of position' : 'none overdue on due-date basis'}
+            sub={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'gross aging — credits are not aged' : 'none overdue on due-date basis'}
             tone={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'amber' : 'green'} />
-          <LdgStatTile label="Not Due" value={c.currency === 'multi' ? 'see aging' : LDG_FMT.money(
-            c.not_due != null ? c.not_due : Math.max(0, (Number(c.open) || 0) - (Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0)),
-            c.currency
-          )}
-            sub="Canonical due-date not-due · as-of position" />
-          <LdgStatTile label="Credit Limit" value="—" sub="unavailable — not in wFirma ledger authority" />
+          <LdgStatTile label="Not Due" value={c.currency === 'multi' ? 'see aging' : LDG_FMT.money(c.not_due, c.currency)}
+            sub="Canonical due-date not-due · as-of position (gross)" />
         </div>
       )}
 
@@ -1693,11 +1748,11 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
           <div key={s.currency} data-testid={`ldg-ma-ccy-${s.currency}`} style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8, color: 'var(--text-2)' }}>{s.currency}</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
-              <LdgStatTile label="Receivable" value={LDG_FMT.money(s.total_receivable, s.currency)}
+              <LdgStatTile label="Gross Receivable" value={LDG_FMT.money(s.total_receivable, s.currency)}
                 sub={`${arSource} · as of ${data.as_of || asOf} · ${arFreshness}`} />
               <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
               <LdgStatTile label="Customer Credits" value={LDG_FMT.money(s.customer_credits, s.currency)} tone="green" />
-              <LdgStatTile label="Net position" value={LDG_FMT.money(s.net_position, s.currency)}
+              <LdgStatTile label="Net Receivable" value={LDG_FMT.money(s.net_position, s.currency)}
                 sub={`${s.customers_outstanding} outstanding`} />
             </div>
           </div>
@@ -1730,7 +1785,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
           <div key={s.currency} data-testid={`ldg-ma-ap-ccy-${s.currency}`} style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8, color: 'var(--text-2)' }}>{s.currency}</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
-              <LdgStatTile label="Supplier Payable" value={LDG_FMT.money(s.gross_payable, s.currency)}
+              <LdgStatTile label="Gross Payable" value={LDG_FMT.money(s.gross_payable, s.currency)}
                 sub={`${(apData && apData.source) || 'local'} · as of ${(apData && apData.as_of) || asOf} · ${(apData && apData.freshness) || '—'}`} />
               <LdgStatTile label="Overdue Payable" value={LDG_FMT.money(s.overdue, s.currency)} tone="red" alert={Number(s.overdue) > 0} />
               <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
@@ -1883,7 +1938,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         <table data-testid="ldg-ma-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 960 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
-              {['Customer', 'Ccy', 'Credit', 'Not Due', '1–30', '31–60', '61–90', '91–180', '181–365', '365+', 'Outstanding', 'Oldest Due', 'Last Payment', ''].map((h) => (
+              {['Customer', 'Ccy', 'Credits', 'Not Due', '1–30', '31–60', '61–90', '91–180', '181–365', '365+', 'Gross AR', 'Oldest Due', 'Last Payment', ''].map((h) => (
                 <th key={h} style={{ padding: '8px 8px', borderBottom: '1px solid var(--border)', fontSize: 10, color: 'var(--text-3)', fontWeight: 600, textAlign: h === 'Customer' || h === '' ? 'left' : 'right' }}>{h}</th>
               ))}
             </tr>
@@ -1940,7 +1995,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
             <table data-testid="ldg-ma-ap-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 960 }}>
               <thead>
                 <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
-                  {['Supplier', 'Ccy', 'Credit', 'Not Due', '1–30', '31–60', '61–90', '91–180', '181–365', '365+', 'Net Payable', 'Oldest Due', 'Last Payment', ''].map((h) => (
+              {['Supplier', 'Ccy', 'Credits', 'Not Due', '1–30', '31–60', '61–90', '91–180', '181–365', '365+', 'Net Payable', 'Oldest Due', 'Last Payment', ''].map((h) => (
                     <th key={h} style={{ padding: '8px 8px', borderBottom: '1px solid var(--border)', fontSize: 10, color: 'var(--text-3)', fontWeight: 600, textAlign: h === 'Supplier' || h === '' ? 'left' : 'right' }}>{h}</th>
                   ))}
                 </tr>
@@ -2103,12 +2158,15 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
 
   return (
     <div data-testid="ldg-suppliers-root">
+      <div data-testid="ldg-suppliers-authority" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+        Net Open = Gross Payable − Supplier Credits · Overdue + Not Due = Gross Payable · Credits are not aged
+      </div>
       <window.Card style={{ padding: 0, overflow: 'auto', marginBottom: active ? 14 : 0 }}>
         <table data-testid="ldg-suppliers-balance-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)' }}>
-              {['Supplier', 'Currency', 'Net payable', 'Overdue', 'Not due', ''].map((h) => (
-                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: h && h !== 'Supplier' && h !== 'Currency' && h !== '' ? 'right' : 'left' }}>{h}</th>
+              {['Supplier', 'Currency', 'Net Open', 'Gross Payable', 'Credits', 'Overdue', 'Not Due', 'State', ''].map((h) => (
+                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: h && h !== 'Supplier' && h !== 'Currency' && h !== 'State' && h !== '' ? 'right' : 'left' }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -2119,11 +2177,14 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
                 <tr key={rid} data-testid={`ldg-sup-row-${s.contractor_id}-${s.currency}`} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                   <td style={{ padding: '8px 10px', fontWeight: 600 }}>{s.supplier_name || s.contractor_id}</td>
                   <td style={{ padding: '8px 10px' }}>{s.currency}</td>
-                  <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(s.net_payable, s.currency)}</td>
-                  <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: 'var(--badge-red-text)' }}>{LDG_FMT.money(s.overdue, s.currency)}</td>
-                  <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(s.not_due, s.currency)}</td>
+                  <td data-testid={`ldg-sup-net-${rid}`} style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(s.net_payable, s.currency)}</td>
+                  <td data-testid={`ldg-sup-gross-${rid}`} style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(s.gross_payable, s.currency)}</td>
+                  <td data-testid={`ldg-sup-credits-${rid}`} style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(s.credit_balance, s.currency)}</td>
+                  <td data-testid={`ldg-sup-overdue-${rid}`} style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: 'var(--badge-red-text)' }}>{LDG_FMT.money(s.overdue, s.currency)}</td>
+                  <td data-testid={`ldg-sup-notdue-${rid}`} style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(s.not_due, s.currency)}</td>
+                  <td style={{ padding: '8px 10px' }}><LdgPresentationPill state={s.presentation_state} /></td>
                   <td style={{ padding: '8px 10px' }}>
-                    <window.Btn small variant="outline" data-testid={`ldg-sup-open-${rid}`} onClick={() => setActiveId(rid)}>Open</window.Btn>
+                    <window.Btn small variant="outline" data-testid={`ldg-sup-open-${rid}`} onClick={() => setActiveId(rid)}>Ledger</window.Btn>
                   </td>
                 </tr>
               );
@@ -2161,13 +2222,20 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
-          <LdgStatTile label="Opening / B/F" value={stmt ? LDG_FMT.money((stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).opening_balance, active.currency) : '—'}
-            sub="Carried into this period" />
-          <LdgStatTile label="Closing" value={stmt ? LDG_FMT.money((stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).closing_balance || (stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).net_payable, active.currency) : LDG_FMT.money(active.net_payable, active.currency)}
-            sub={`As of ${period.to}`} />
           <LdgStatTile label="Net Payable" value={LDG_FMT.money(active.net_payable, active.currency)}
-            sub="Open position (payables roster)" />
-          <LdgStatTile label="Overdue" value={LDG_FMT.money(active.overdue, active.currency)} tone="red" alert={Number(active.overdue) > 0} />
+            sub="Gross Payable − Supplier Credits" />
+          <LdgStatTile label="Gross Payable" value={LDG_FMT.money(active.gross_payable, active.currency)}
+            sub="Positive remaining · aged" />
+          <LdgStatTile label="Supplier Credits" value={LDG_FMT.money(active.credit_balance, active.currency)}
+            sub="Unaged credit notes / advances" tone="green" />
+          <LdgStatTile label="Overdue" value={LDG_FMT.money(active.overdue, active.currency)} tone="red" alert={Number(active.overdue) > 0}
+            sub="Gross aging — credits are not aged" />
+          <LdgStatTile label="Not Due" value={LDG_FMT.money(active.not_due, active.currency)}
+            sub="Gross not-due" />
+          <LdgStatTile label="Opening / B/F" value={stmt ? LDG_FMT.money((stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).opening_balance, active.currency) : '—'}
+            sub="Period statement — not roster position" />
+          <LdgStatTile label="Closing" value={stmt ? LDG_FMT.money((stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).closing_balance || (stmt.totals_per_currency && stmt.totals_per_currency[active.currency] || {}).net_payable, active.currency) : '—'}
+            sub={`Period statement as of ${period.to}`} />
         </div>
         {stmtLoading && <div data-testid="ldg-supplier-stmt-loading" style={{ padding: 20, color: 'var(--text-3)', fontSize: 12 }}>Loading statement…</div>}
         {stmtErr && <div data-testid="ldg-supplier-stmt-error" style={{ padding: 16, border: '1px solid var(--badge-red-border)', borderRadius: 8, color: 'var(--badge-red-text)', fontSize: 12 }}>{stmtErr}</div>}

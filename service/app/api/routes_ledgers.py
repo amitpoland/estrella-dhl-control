@@ -798,6 +798,65 @@ def _dec_or_zero(v: Any) -> Decimal:
         return Decimal("0")
 
 
+def _presentation_state(gross: Any, credits: Any) -> str:
+    """Display state from canonical Gross / Credits. Not a second engine.
+
+    open    = Gross > 0 and Net > 0
+    offset  = Gross > 0 and Net == 0 (credits fully cover gross)
+    credit  = Gross == 0 and Credits > 0
+    clear   = Gross == 0 and Credits == 0
+    """
+    g = _dec_or_zero(gross)
+    cr = _dec_or_zero(credits)
+    net = g - cr
+    if g > 0 and net == 0:
+        return "offset"
+    if g == 0 and cr > 0:
+        return "credit"
+    if g > 0:
+        return "open"
+    return "clear"
+
+
+def _presentation_state_from_maps(
+    gross_by: Dict[str, Any],
+    credit_by: Dict[str, Any],
+) -> str:
+    """Per-currency presentation roll-up. Never FX-sums amounts."""
+    any_open = False
+    any_offset = False
+    any_credit = False
+    keys = set(gross_by or {}) | set(credit_by or {})
+    if not keys:
+        return "clear"
+    for ccy in keys:
+        st = _presentation_state(
+            (gross_by or {}).get(ccy), (credit_by or {}).get(ccy)
+        )
+        if st == "open":
+            any_open = True
+        elif st == "offset":
+            any_offset = True
+        elif st == "credit":
+            any_credit = True
+    if any_open:
+        return "open"
+    if any_offset:
+        return "offset"
+    if any_credit:
+        return "credit"
+    return "clear"
+
+
+def _enrich_supplier_presentation(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy-only AP display aliases. Does not change remaining or aging."""
+    out = dict(row or {})
+    gp = out.get("gross_payable")
+    cr = out.get("credit_balance")
+    out["presentation_state"] = _presentation_state(gp, cr)
+    return out
+
+
 def _sort_client_balance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Default roster sort:
     1. overdue
@@ -876,8 +935,15 @@ def _roster_row_from_portfolio_group(
     overdue_by_ccy = {c: _q2(by_ccy[c].get("overdue")) for c in ccys}
     not_due_by_ccy = {c: _q2(by_ccy[c].get("not_due")) for c in ccys}
     credit_by_ccy = {c: _q2(by_ccy[c].get("credit_balance")) for c in ccys}
+    due_na_by_ccy = {c: _q2(by_ccy[c].get("due_date_unavailable")) for c in ccys}
     invoiced_by_ccy = {c: _q2(by_ccy[c].get("gross_invoiced")) for c in ccys}
     last30_by_ccy = {c: _q2(by_ccy[c].get("receipts_last_30d")) for c in ccys}
+    # Net = Gross − Credits (canonical identity). Alias so the UI never subtracts.
+    net_by_ccy = {
+        c: _q2(_dec_or_zero(open_by_ccy[c]) - _dec_or_zero(credit_by_ccy[c]))
+        for c in ccys
+    }
+    presentation_state = _presentation_state_from_maps(open_by_ccy, credit_by_ccy)
 
     open_total = _sum_ccy(open_by_ccy)
     overdue_total_amt = _sum_ccy(overdue_by_ccy)
@@ -915,6 +981,11 @@ def _roster_row_from_portfolio_group(
         "currency": currency,
         "open": (open_by_ccy[single] if single else None),
         "open_by_currency": open_by_ccy,
+        "gross_receivable": (open_by_ccy[single] if single else None),
+        "gross_receivable_by_currency": open_by_ccy,
+        "net_receivable": (net_by_ccy[single] if single else None),
+        "net_receivable_by_currency": net_by_ccy,
+        "presentation_state": presentation_state,
         # Canonical overdue = due-date (portfolio). Keep legacy field name in
         # sync so existing UI columns (Aged) show the same figure.
         "overdue_due_date": (overdue_by_ccy[single] if single else None),
@@ -923,6 +994,8 @@ def _roster_row_from_portfolio_group(
         "overdue_invoice_age_by_currency": overdue_by_ccy,
         "not_due": (not_due_by_ccy[single] if single else None),
         "not_due_by_currency": not_due_by_ccy,
+        "due_date_unavailable": (due_na_by_ccy[single] if single else None),
+        "due_date_unavailable_by_currency": due_na_by_ccy,
         "credit_balance": (credit_by_ccy[single] if single else None),
         "credit_balance_by_currency": credit_by_ccy,
         "oldest_overdue_date": oldest_overdue,
@@ -1025,7 +1098,11 @@ def list_client_balances(
     q:       str = Query("", description="Case-insensitive name substring"),
     contractor: str = Query("", description="Exact wFirma contractor id"),
     currency: str = Query("", description="Filter by currency code (PLN/EUR/USD/…)"),
-    status: str = Query("", description="Filter by state: outstanding|clear|unknown"),
+    status: str = Query(
+        "",
+        description="Filter: outstanding|clear|unknown (legacy state) or "
+                    "open|offset|credit|clear (presentation_state)",
+    ),
     refresh: int = Query(0, ge=0, le=1, description="1 = force live wFirma reconciliation path"),
     source: str = Query(
         "local",
@@ -1179,7 +1256,12 @@ def list_client_balances(
                 and currency_f in (r.get("open_by_currency") or {})
             )
         ]
-    if status_f:
+    if status_f in ("open", "offset", "credit"):
+        rows = [
+            r for r in rows
+            if (r.get("presentation_state") or "").lower() == status_f
+        ]
+    elif status_f:
         rows = [r for r in rows if (r.get("state") or "").lower() == status_f]
 
     rows = _sort_client_balance_rows(rows)
@@ -1215,13 +1297,17 @@ def list_client_balances(
         },
         "query_stats": qs,
         "column_status": {
-            "open":                 "documented (portfolio outstanding)",
+            "open":                 "documented (portfolio outstanding = GROSS AR)",
+            "gross_receivable":     "documented (alias of open / outstanding)",
+            "net_receivable":       "documented (gross − credit_balance; identity alias)",
+            "presentation_state":   "documented (open|offset|credit|clear from gross/credits)",
             "currency":             "documented",
             "state":                "documented",
             "ytd_invoiced":         "documented (gross_invoiced in window)",
             "overdue_due_date":     "documented (due-date aging)",
             "overdue_invoice_age":  "documented (alias of due-date overdue)",
             "not_due":              "documented",
+            "due_date_unavailable": "documented",
             "credit_balance":       "documented",
             "last_30d":             "documented (matched payment receipts, 30 calendar days ending as_of)",
         },
@@ -1445,6 +1531,8 @@ def _build_payables_analysis_dict(
     filters["scope"] = sc
     filters["outstanding_floor"] = df if sc == "all_outstanding" else None
     filters["source"] = body.get("source") or src
+    suppliers = body.get("suppliers") or []
+    body["suppliers"] = [_enrich_supplier_presentation(s) for s in suppliers]
     return body
 
 

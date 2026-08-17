@@ -60,6 +60,7 @@ def _ar(scope="all_outstanding", currencies=("EUR",)) -> dict:
     sums = {
         "EUR": {"currency": "EUR", "total_receivable": "4500.00", "overdue": "1500.00",
                  "not_due": "3000.00", "customer_credits": "200.00",
+                 "net_position": "4300.00",
                  "customers_outstanding": 3, "oldest_overdue_days": 47,
                  "aging": {"not_due": "1500.00", "b_1_30": "1500.00", "b_31_60": "0.00",
                             "b_91_180": "0.00", "b_365_plus": "0.00",
@@ -67,6 +68,7 @@ def _ar(scope="all_outstanding", currencies=("EUR",)) -> dict:
                  "reconciliation_ok": True},
         "USD": {"currency": "USD", "total_receivable": "800.00", "overdue": "0.00",
                  "not_due": "800.00", "customer_credits": "0.00",
+                 "net_position": "800.00",
                  "customers_outstanding": 1, "oldest_overdue_days": 0,
                  "aging": {"not_due": "800.00", "b_1_30": "0.00", "b_31_60": "0.00",
                             "b_91_180": "0.00", "b_365_plus": "0.00",

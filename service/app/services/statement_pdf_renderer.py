@@ -1177,10 +1177,11 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
     ar_sum = ar_sum or {}
     ap_sum = ap_sum or {}
     recv_card = _kv_card("Receivables", [
-        ("Total receivable", str(ar_sum.get("total_receivable") or "0.00")),
+        ("Gross receivable", str(ar_sum.get("total_receivable") or "0.00")),
         ("Overdue",          str(ar_sum.get("overdue") or "0.00")),
         ("Not due",          str(ar_sum.get("not_due") or "0.00")),
         ("Customer credits", str(ar_sum.get("customer_credits") or "0.00")),
+        ("Net receivable",   str(ar_sum.get("net_position") or "0.00")),
         ("Customers open",   str(ar_sum.get("customers_outstanding") or 0)),
         ("Oldest overdue",   f"{ar_sum.get('oldest_overdue_days') or 0} days"),
     ], styles, rule_above=0)
@@ -1218,7 +1219,7 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
     shown_ar = ar_rows[:_EXPOSURE_ROWS]
     out.extend(_exposure_flowables(
         "Customer exposure",
-        ["Customer", "Outstanding", "Overdue", "Credits", "Oldest due", "Open"],
+        ["Customer", "Gross receivable", "Overdue", "Credits", "Oldest due", "Open"],
         [[r.get("customer_name") or "—", r.get("outstanding") or "0.00",
           r.get("overdue") or "0.00", r.get("credit_balance") or "0.00",
           r.get("oldest_due_date") or "—", str(r.get("open_invoice_count") or 0)]
