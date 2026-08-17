@@ -61,6 +61,8 @@ def test_label_helpers_resolve_or_passthrough():
     assert wdc.label_for_vat_mode(None) == "—"
     assert wdc.label_for_currency("eur").startswith("EUR")
     assert wdc.label_for_currency(None) == "—"
+    assert wdc.label_for_language("0") == "Polish"
+    assert wdc.label_for_language("1") == "English"
     assert wdc.label_for_language("2") == "English"
     assert wdc.label_for_language("") == "— Default (use account language)"
     # Unknown ids fall through with a stable shape
@@ -514,7 +516,12 @@ def test_baseline_still_works_when_refresh_was_never_called():
     assert d["source"] == "baseline"
     assert len(d["invoice_series"])  >= 1
     assert len(d["proforma_series"]) >= 1
-    # VAT modes / languages / currencies always present from baseline.
-    assert len(d["vat_modes"])  == 3
-    assert len(d["languages"])  >= 5
-    assert len(d["currencies"]) >= 5
+    # Operator-selectable languages: blank + Polish=0 + English=1.
+    assert len(d["languages"])  >= 3
+    lang_by_id = {str(x["id"]): x["label"] for x in d["languages"]}
+    assert lang_by_id["0"] == "Polish"
+    assert lang_by_id["1"] == "English"
+    assert "freight_methods" in d
+    freight_by_id = {str(x["id"]): x["label"] for x in d["freight_methods"]}
+    assert freight_by_id["17833901"] == "Freight"
+    assert freight_by_id["13002743"] == "Fedex Courier"

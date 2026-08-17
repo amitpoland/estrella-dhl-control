@@ -340,7 +340,7 @@ def test_commercial_lookup_is_single_payment_authority():
 def test_commercial_lookup_enum_ids_are_canonical():
     from app.services import commercial_lookup as cl
     assert cl.vat_mode_ids() == frozenset({"222", "228", "229"})
-    assert {"", "1", "2", "3", "4", "5", "6"} <= cl.invoice_language_ids()
+    assert {"", "0", "1", "2", "3", "4", "5", "6"} <= cl.invoice_language_ids()
     # Validators normalise typed values (int VAT mode, mixed-case payment).
     assert cl.validate_vat_mode(228) and cl.validate_vat_mode("228")
     assert cl.validate_payment_method("TRANSFER")

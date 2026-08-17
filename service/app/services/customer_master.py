@@ -419,7 +419,8 @@ def compute_insurance_suggestion(
 
 def pick_freight_service_id(c: CustomerMaster, default: Optional[str] = None) -> Optional[str]:
     """Customer's stored freight good_id beats default. Default constant lives
-    on the CustomerMaster dataclass (13002743 — Fedex Courier)."""
+    on the CustomerMaster dataclass (13002743 — Fedex Courier). A stored
+    Freight id (17833901) is returned unchanged — the two ids are not aliases."""
     return c.freight_service_id or default
 
 

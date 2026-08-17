@@ -45,14 +45,16 @@ from app.services.freight_history_db import (
     init_db,
     save_freight_history,
 )
+from .commercial_lookup import (
+    FREIGHT_METHOD_DEFAULT as FREIGHT_SERVICE_ID_DEFAULT,
+    is_canonical_freight_method_id,
+)
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# wFirma good_id for the freight service line (live-confirmed 2026-05-03).
-# Same constant is also imported by send_wfirma_proforma_live_test.py — both
-# must agree.
-FREIGHT_SERVICE_ID_DEFAULT = "13002743"
+# Canonical freight-method ids live in commercial_lookup
+# (Freight=17833901, Fedex Courier=13002743 default).
 
 # Keywords that classify an invoicecontent line as freight when good_id alone
 # isn't enough (e.g. operator entered a freight charge with a different service id).
@@ -166,9 +168,12 @@ def find_freight_in_wfirma(contractor_id: str,
 
 
 def _is_freight_line(good_id: str, name: str, configured_id: str) -> bool:
-    """A line is freight if its good_id matches the configured service or
-    its name contains a freight keyword."""
-    if good_id and good_id == configured_id:
+    """A line is freight if its good_id matches the configured service, a
+    canonical freight-method id (Freight or Fedex Courier), or its name
+    contains a freight keyword. Canonical ids are never rewritten into
+    each other — matching is recognition, not remapping.
+    """
+    if good_id and (good_id == configured_id or is_canonical_freight_method_id(good_id)):
         return True
     n = name.lower()
     return any(k in n for k in FREIGHT_KEYWORDS)

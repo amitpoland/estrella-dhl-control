@@ -927,9 +927,9 @@ def test_parser_extracts_address_fields_from_fixture():
     assert r.receiver == "0"
 
 
-def test_parser_drops_translation_language_id_zero_sentinel():
-    """wFirma uses <translation_language><id>0</id></translation_language> as
-    'no preference'. The parser must surface that as empty string, not '0'."""
+def test_parser_keeps_translation_language_id_zero_as_polish():
+    """Canonical map: Polish = 0. The parser must surface id 0, not drop it
+    as a 'no preference' sentinel (that drop prevented PL from being saved)."""
     import unittest.mock as _mock
     from service.app.services import wfirma_client as wfc
     fixture = """<?xml version="1.0"?><api><contractors><contractor>
@@ -938,7 +938,7 @@ def test_parser_drops_translation_language_id_zero_sentinel():
     </contractor></contractors><status><code>OK</code></status></api>"""
     with _mock.patch.object(wfc, "_http_request", return_value=(200, fixture)):
         r = wfc.fetch_contractor_by_id("1")
-    assert r.translation_language_id == ""
+    assert r.translation_language_id == "0"
 
 
 def test_parser_pulls_bank_account_from_nested_contractor_account():

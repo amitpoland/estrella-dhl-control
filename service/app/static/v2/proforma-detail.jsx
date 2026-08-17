@@ -8928,11 +8928,18 @@ function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
           <div style={row}>
             <span style={lab}>Invoice language</span>
             <select data-testid="pf-ct-lang-select" value={form.invoice_language_id} onChange={e => setField('invoice_language_id', e.target.value)} style={sel}>
-              {(languages.length ? languages : [{ id: '', label: '— Default —' }, { id: '2', label: 'English' }, { id: '1', label: 'Polish (Polski)' }]).map(o => (
+              {(languages.length ? languages : [{ id: '', label: '— Default —' }, { id: '0', label: 'Polish' }, { id: '1', label: 'English' }]).map(o => (
                 <option key={o.id === '' ? 'default' : o.id} value={o.id}>
                   {o.label}{o.id === '3' ? ' — avoid accidental German' : ''}
                 </option>
               ))}
+              {form.invoice_language_id &&
+               !(languages || []).some(o => String(o.id) === String(form.invoice_language_id)) &&
+               !['', '0', '1'].includes(String(form.invoice_language_id)) && (
+                <option data-testid="pf-ct-lang-unresolved" value={form.invoice_language_id}>
+                  Unknown language (#{form.invoice_language_id})
+                </option>
+              )}
             </select>
           </div>
           {err && <div data-testid="pf-ct-err" style={{ fontSize: 11, color: 'var(--badge-red-text)', margin: '4px 0' }}>{err}</div>}

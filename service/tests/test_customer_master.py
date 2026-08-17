@@ -891,7 +891,7 @@ def test_api_invoices_tab_round_trip(cm_api_client):
             "preferred_proforma_series_id": "WF_PROF_1",
             "preferred_invoice_series_id":  "WF_INV_2",
             "vat_mode":                     222,
-            "default_language_id":          "en",
+            "default_language_id":          "1",
             "payment_terms_days":           45,
             "default_currency":             "EUR",
         },
@@ -904,7 +904,7 @@ def test_api_invoices_tab_round_trip(cm_api_client):
     assert data["preferred_proforma_series_id"] == "WF_PROF_1"
     assert data["preferred_invoice_series_id"]  == "WF_INV_2"
     assert data["vat_mode"]                     == 222
-    assert data["default_language_id"]          == "en"
+    assert data["default_language_id"]          == "1"
     assert data["payment_terms_days"]           == 45
     assert data["default_currency"]             == "EUR"
 
@@ -931,3 +931,66 @@ def test_api_invoices_tab_blank_optionals_200(cm_api_client):
     assert data["preferred_invoice_series_id"]  is None
     assert data["default_language_id"]          is None
     assert data["payment_terms_days"]           is None
+
+
+def test_api_language_polish_zero_round_trip(cm_api_client):
+    """Polish = 0 must persist and reload; it is not dropped as a sentinel."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/LANG_PL_0",
+        json={
+            "bill_to_name":        "Polish Lang Co",
+            "country":             "PL",
+            "default_language_id": "0",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    g = cm_api_client.get("/api/v1/customer-master/LANG_PL_0", headers=_cm_hdr())
+    assert g.status_code == 200
+    assert g.json()["default_language_id"] == "0"
+
+
+def test_api_language_english_one_round_trip(cm_api_client):
+    r = cm_api_client.put(
+        "/api/v1/customer-master/LANG_EN_1",
+        json={
+            "bill_to_name":        "English Lang Co",
+            "country":             "GB",
+            "default_language_id": "1",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    g = cm_api_client.get("/api/v1/customer-master/LANG_EN_1", headers=_cm_hdr())
+    assert g.json()["default_language_id"] == "1"
+
+
+def test_api_freight_method_override_survives_reload(cm_api_client):
+    """Freight (17833901) is not rewritten to Fedex Courier (13002743)."""
+    r = cm_api_client.put(
+        "/api/v1/customer-master/FRT_OVERRIDE",
+        json={
+            "bill_to_name":       "Freight Override Co",
+            "country":            "DE",
+            "freight_service_id": "17833901",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    g = cm_api_client.get("/api/v1/customer-master/FRT_OVERRIDE", headers=_cm_hdr())
+    assert g.json()["freight_service_id"] == "17833901"
+
+
+def test_api_fedex_courier_not_rewritten_to_freight(cm_api_client):
+    r = cm_api_client.put(
+        "/api/v1/customer-master/FRT_FEDEX",
+        json={
+            "bill_to_name":       "Fedex Courier Co",
+            "country":            "DE",
+            "freight_service_id": "13002743",
+        },
+        headers=_cm_hdr(),
+    )
+    assert r.status_code == 200, r.text
+    g = cm_api_client.get("/api/v1/customer-master/FRT_FEDEX", headers=_cm_hdr())
+    assert g.json()["freight_service_id"] == "13002743"

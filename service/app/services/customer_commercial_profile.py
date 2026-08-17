@@ -42,11 +42,16 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional, Tuple
 
+from .commercial_lookup import (
+    FREIGHT_METHOD_FEDEX_COURIER as FREIGHT_SERVICE_ID,
+    FREIGHT_METHOD_IDS,
+)
+
 
 # ── Constants (locked) ────────────────────────────────────────────────────────
 
-# Service good_ids for line classification — same as used elsewhere.
-FREIGHT_SERVICE_ID    = "13002743"
+# FREIGHT_SERVICE_ID is the Fedex Courier default (not an alias for Freight).
+
 INSURANCE_SERVICE_ID  = "13102217"
 FREIGHT_KEYWORDS      = ("fedex", "freight", "fracht", "courier", "dhl",
                           "transport", "shipping", "shipment", "postage")
@@ -206,7 +211,7 @@ def _classify_line(name: str, good_id: str) -> str:
     n = (name or "").lower()
     if any(k in n for k in INSURANCE_KEYWORDS) or good_id == INSURANCE_SERVICE_ID:
         return "insurance"
-    if any(k in n for k in FREIGHT_KEYWORDS) or good_id == FREIGHT_SERVICE_ID:
+    if any(k in n for k in FREIGHT_KEYWORDS) or good_id in FREIGHT_METHOD_IDS:
         return "freight"
     return "product"
 

@@ -82,7 +82,7 @@ class CustomerMaster:
     default_incoterm:                   Optional[str] = None
 
     # Freight defaults
-    freight_service_id:      Optional[str] = "13002743"   # wFirma good_id (Fedex Courier)
+    freight_service_id:      Optional[str] = "13002743"   # wFirma good_id; default Fedex Courier (not Freight)
     freight_last_amount:     Optional[Decimal] = None
     freight_avg_amount:      Optional[Decimal] = None
     freight_currency:        Optional[str] = None

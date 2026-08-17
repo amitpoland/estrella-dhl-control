@@ -47,11 +47,14 @@ from app.services.customer_invoice_snapshot_db import (   # noqa: E402
     init_db, list_distinct_contractors, list_invoices,
     upsert_invoice_with_lines, upsert_profile,
 )
+from app.services.commercial_lookup import (  # noqa: E402
+    FREIGHT_METHOD_FEDEX_COURIER as FREIGHT_SERVICE_ID,
+    FREIGHT_METHOD_IDS,
+)
 
 
 # ── Constants (line classification) ───────────────────────────────────────────
 
-FREIGHT_SERVICE_ID    = "13002743"
 INSURANCE_SERVICE_ID  = "13102217"
 FREIGHT_KEYWORDS      = ("fedex", "freight", "fracht", "courier", "dhl",
                           "transport", "shipping", "shipment", "postage")
@@ -177,7 +180,7 @@ def classify_line(name: str, good_id: str) -> str:
     n = (name or "").lower()
     if any(k in n for k in INSURANCE_KEYWORDS) or good_id == INSURANCE_SERVICE_ID:
         return "insurance"
-    if any(k in n for k in FREIGHT_KEYWORDS) or good_id == FREIGHT_SERVICE_ID:
+    if any(k in n for k in FREIGHT_KEYWORDS) or good_id in FREIGHT_METHOD_IDS:
         return "freight"
     # Heuristic for product detection — jewellery keywords (Polish + English)
     jewelry = ("jewel", "gold", "silver", "diamond", "ring", "pendant",
