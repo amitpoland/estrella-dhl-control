@@ -288,3 +288,34 @@ def test_json_route_still_works(client):
                        headers=_hdr())
     assert r.status_code == 200
     assert r.json()["totals_per_currency"]["EUR"]["outstanding"] == "100.00"
+
+
+def test_page_numbers_are_x_of_y():
+    t = _text(render_supplier_statement_pdf(_stmt()))
+    assert "Page 1 of " in t
+
+
+def test_treasury_balances_pdf_prints_payload_rows_only():
+    from app.services.statement_pdf_renderer import render_treasury_balances_pdf
+    payload = {
+        "as_of": "2026-08-17",
+        "count": 1,
+        "rows": [{
+            "account_location": "mBank PLN",
+            "currency": "PLN",
+            "closing_balance": "1234.50",
+            "source": "MANUAL",
+            "effective_date": "2026-08-16",
+            "operator": "amit",
+        }],
+        "source": "treasury.sqlite",
+        "authority": "local_treasury_projection",
+        "generated_at": "2026-08-17T10:00:00+00:00",
+    }
+    pdf = render_treasury_balances_pdf(payload)
+    assert pdf.startswith(b"%PDF-")
+    t = _text(pdf)
+    assert "mBank PLN" in t
+    assert "1234.50" in t
+    assert "Treasury" in t
+    assert "Page 1 of " in t

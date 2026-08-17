@@ -47,6 +47,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.platypus import (
     KeepTogether, PageBreak, Paragraph, SimpleDocTemplate,
     Spacer, Table, TableStyle, Image,
@@ -100,10 +101,14 @@ def _register_unicode_fonts() -> Tuple[str, str]:
         return "EJStmt", "EJStmt-Bold"
 
     candidates = [
+        ("C:\\Windows\\Fonts\\DejaVuSans.ttf",
+         "C:\\Windows\\Fonts\\DejaVuSans-Bold.ttf"),
         ("/Library/Fonts/DejaVuSans.ttf",
          "/Library/Fonts/DejaVuSans-Bold.ttf"),
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ("C:\\Windows\\Fonts\\arial.ttf",
+         "C:\\Windows\\Fonts\\arialbd.ttf"),
         ("/Library/Fonts/Arial Unicode.ttf",
          "/Library/Fonts/Arial Unicode.ttf"),
         (os.path.join(_rl_font_dir, "Vera.ttf"),
@@ -126,6 +131,31 @@ def _register_unicode_fonts() -> Tuple[str, str]:
 
 
 _FONT_REG, _FONT_BOLD = _register_unicode_fonts()
+
+
+class _NumberedCanvas(pdf_canvas.Canvas):
+    """Two-pass page numbers: ``Page X of Y`` after the story is known."""
+
+    def __init__(self, *args, **kwargs):
+        pdf_canvas.Canvas.__init__(self, *args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.setFont(_FONT_REG, 6.5)
+            self.setFillColor(_EJ_INK_2)
+            self.drawCentredString(
+                105 * mm, 10 * mm,
+                f"Page {self._pageNumber} of {num_pages}",
+            )
+            pdf_canvas.Canvas.showPage(self)
+        pdf_canvas.Canvas.save(self)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -283,39 +313,54 @@ def _masthead_flowable(
 
 
 def _meta_strip_flowable(stmt: Dict[str, Any], styles):
-    """Four-column metadata strip: Issued / Period / Aging method / Currencies."""
-    period_str = f"{stmt['period']['from']} → {stmt['period']['to']}"
+    """Metadata strip: Issued / As-of / Period / Currency + Source / Freshness."""
+    period = stmt.get("period") or {}
+    period_str = f"{period.get('from') or '—'} → {period.get('to') or '—'}"
     currencies = ", ".join(stmt.get("currencies") or []) or "—"
-    # Aging method label drawn from the FIRST currency block (all
-    # blocks share the same hardcoded label in Phase 10B). Fall back
-    # to the "Invoice age" literal when there's no aging block.
     aging_blocks = stmt.get("aging_per_currency") or {}
     method_token = stmt.get("aging_method") or "due_date"
     for v in aging_blocks.values():
         method_token = v.get("method", method_token) or method_token
         break
     method_label = _aging_method_label(method_token)
+    freshness = stmt.get("freshness")
+    if isinstance(freshness, dict):
+        freshness_s = str(
+            freshness.get("as_of")
+            or freshness.get("period_end")
+            or "—"
+        )
+    else:
+        freshness_s = str(freshness or "—")
+    recon = stmt.get("reconciliation_status") or "—"
+    source = stmt.get("source") or "—"
 
-    cells = [
-        ("Issued",         _safe(stmt.get("generated_at") or "")),
-        ("Period",         _safe(period_str)),
-        ("Aging method",   _safe(method_label)),
-        ("Currencies",     _safe(currencies)),
+    row1 = [
+        ("Issued",     _safe(stmt.get("issued_at") or stmt.get("generated_at") or "")),
+        ("As of",      _safe(stmt.get("as_of") or "")),
+        ("Period",     _safe(period_str)),
+        ("Currencies", _safe(currencies)),
     ]
-    rows = [
-        [Paragraph(label, styles["label"]) for label, _ in cells],
-        [Paragraph(f"<b>{val}</b>", styles["value"]) for _, val in cells],
+    row2 = [
+        ("Source",     _safe(source)),
+        ("Freshness",  _safe(freshness_s)),
+        ("Reconciled", _safe(recon)),
+        ("Aging",      _safe(method_label)),
     ]
-    t = Table(rows, colWidths=[45*mm]*4)
+    labels1 = [Paragraph(lbl, styles["label"]) for lbl, _ in row1]
+    vals1 = [Paragraph(f"<b>{val or '—'}</b>", styles["value"]) for _, val in row1]
+    labels2 = [Paragraph(lbl, styles["label"]) for lbl, _ in row2]
+    vals2 = [Paragraph(f"<b>{val or '—'}</b>", styles["value"]) for _, val in row2]
+    t = Table([labels1, vals1, labels2, vals2], colWidths=[45 * mm] * 4)
     t.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0), (-1,-1), _EJ_CREAM),
-        ("BOX",           (0,0), (-1,-1), 0.4, _EJ_LINE),
-        ("INNERGRID",     (0,0), (-1,-1), 0.4, _EJ_LINE),
-        ("VALIGN",        (0,0), (-1,-1), "TOP"),
-        ("LEFTPADDING",   (0,0), (-1,-1), 8),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 8),
-        ("TOPPADDING",    (0,0), (-1,-1), 6),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("BACKGROUND",    (0, 0), (-1, -1), _EJ_CREAM),
+        ("BOX",           (0, 0), (-1, -1), 0.4, _EJ_LINE),
+        ("INNERGRID",     (0, 0), (-1, -1), 0.4, _EJ_LINE),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     return t
 
@@ -714,13 +759,11 @@ def _make_footer_drawer(
         canvas.saveState()
         canvas.setFont(_FONT_REG, 6.5)
         canvas.setFillColor(_EJ_INK_2)
-        canvas.drawString(15*mm, 10*mm, left)
-        page_str = f"Page {canvas.getPageNumber()}"
-        canvas.drawCentredString(105*mm, 10*mm, page_str)
+        canvas.drawString(15 * mm, 10 * mm, left)
         canvas.setFont(_FONT_BOLD, 7)
         canvas.setFillColor(_EJ_GOLD_2)
         right = f"Aging: {method_label} · {generated_at}"
-        canvas.drawRightString(195*mm, 10*mm, right)
+        canvas.drawRightString(195 * mm, 10 * mm, right)
         canvas.restoreState()
     return _drawer
 
@@ -783,7 +826,10 @@ def render_statement_pdf(
 
     try:
         footer = _make_footer_drawer(stmt, seller=seller)
-        doc.build(story, onFirstPage=footer, onLaterPages=footer)
+        doc.build(
+            story, onFirstPage=footer, onLaterPages=footer,
+            canvasmaker=_NumberedCanvas,
+        )
     except Exception as exc:
         raise RuntimeError(f"reportlab build failed: {exc}") from exc
 
@@ -884,8 +930,16 @@ def _grid_table(headers: List[str], rows: List[List[str]],
         ))
         for i, h in enumerate(headers)
     ]
-    t = Table([head] + [[_safe(c) for c in r] for r in rows],
-              colWidths=col_widths, repeatRows=1)
+    t = Table([head] + [
+        [
+            Paragraph(_safe(c), ParagraphStyle(
+                "gc", fontName=_FONT_REG, fontSize=8, leading=10,
+                alignment=TA_RIGHT if i >= right_from else TA_LEFT,
+            ))
+            for i, c in enumerate(r)
+        ]
+        for r in rows
+    ], colWidths=col_widths, repeatRows=1)
     t.setStyle(TableStyle([
         ("BACKGROUND",    (0, 0), (-1, 0), _EJ_BRAND),
         ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
@@ -923,7 +977,11 @@ def _supplier_currency_flowables(stmt: Dict[str, Any], ccy: str, styles) -> List
     totals = (stmt.get("totals_per_currency") or {}).get(ccy) or {}
     aging = (stmt.get("aging_per_currency") or {}).get(ccy) or {}
 
-    totals_card = _kv_card("Totals", [
+    totals_card = _kv_card("Period statement", [
+        ("Opening / B/F",    str(totals.get("opening_balance") or "0.00")),
+        ("Period debits",    str(totals.get("period_debits") or "0.00")),
+        ("Period credits",   str(totals.get("period_credits") or "0.00")),
+        ("Closing balance",  str(totals.get("closing_balance") or totals.get("net_payable") or "0.00")),
         ("Expenses",         str(totals.get("gross_payable") or "0.00")),
         ("Supplier credits", str(totals.get("supplier_credits") or "0.00")),
         ("Payments applied", str(totals.get("payments_applied") or "0.00")),
@@ -967,6 +1025,18 @@ def _supplier_currency_flowables(stmt: Dict[str, Any], ccy: str, styles) -> List
         out.append(Paragraph(
             "<i>No entries in this currency for the selected period.</i>",
             styles["subtle"],
+        ))
+    unmatched = (stmt.get("unmatched_payments_per_currency") or {}).get(ccy) or []
+    if unmatched:
+        out.append(Paragraph("<b>Unapplied payments</b>", styles["section_header"]))
+        urows = [
+            [u.get("date") or "", "Unapplied payment", u.get("value") or "0.00"]
+            for u in unmatched
+        ]
+        out.append(_grid_table(
+            ["Date", "Type", "Amount"],
+            urows, [30 * mm, 80 * mm, 40 * mm],
+            right_from=2,
         ))
     out.append(Spacer(1, 8))
     return out
@@ -1023,7 +1093,10 @@ def render_supplier_statement_pdf(
 
     try:
         footer = _make_footer_drawer(stmt, seller=seller)
-        doc.build(story, onFirstPage=footer, onLaterPages=footer)
+        doc.build(
+            story, onFirstPage=footer, onLaterPages=footer,
+            canvasmaker=_NumberedCanvas,
+        )
     except Exception as exc:
         raise RuntimeError(f"reportlab build failed: {exc}") from exc
 
@@ -1253,10 +1326,94 @@ def render_management_analysis_pdf(
                   "aging_method": "due_date"}
     try:
         footer = _make_footer_drawer(footer_ctx, seller=seller)
-        doc.build(story, onFirstPage=footer, onLaterPages=footer)
+        doc.build(
+            story, onFirstPage=footer, onLaterPages=footer,
+            canvasmaker=_NumberedCanvas,
+        )
     except Exception as exc:
         raise RuntimeError(f"reportlab build failed: {exc}") from exc
 
+    pdf_bytes = buf.getvalue()
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise RuntimeError("reportlab produced output that does not look like a PDF")
+    return pdf_bytes
+
+
+def render_treasury_balances_pdf(
+    payload: Dict[str, Any],
+    *,
+    seller: Optional[Dict[str, str]] = None,
+    logo_path: str = "",
+) -> bytes:
+    """Render GET /treasury/balances JSON. No monetary arithmetic."""
+    if not isinstance(payload, dict):
+        raise ValueError("treasury payload must be a dict")
+    stmt = _strip_forbidden(payload)
+    styles = _styles()
+    seller = seller or {}
+    as_of = str(stmt.get("as_of") or "")
+    meta = {
+        "generated_at": stmt.get("generated_at") or as_of,
+        "as_of": as_of,
+        "period": {"from": as_of, "to": as_of},
+        "currencies": sorted({
+            str(r.get("currency") or "")
+            for r in (stmt.get("rows") or [])
+            if r.get("currency")
+        }),
+        "source": stmt.get("source") or "treasury.sqlite",
+        "freshness": stmt.get("freshness") or "as_of_snapshot",
+        "reconciliation_status": stmt.get("authority") or "local_treasury_projection",
+        "aging_method": "due_date",
+        "contractor": {"name": "Treasury balances"},
+    }
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=15 * mm, rightMargin=15 * mm,
+        topMargin=18 * mm, bottomMargin=15 * mm,
+        title="Treasury Balances",
+        author=(seller.get("name") or "Estrella Jewels"),
+    )
+    story: List[Any] = [
+        _masthead_flowable(meta, styles, seller=seller,
+                           logo_path=logo_path or "", title="Treasury Balances"),
+        Spacer(1, 4),
+        _meta_strip_flowable(meta, styles),
+        Spacer(1, 8),
+    ]
+    rows = stmt.get("rows") or []
+    if not rows:
+        story.append(Paragraph(
+            "<i>No treasury snapshots for this as-of date.</i>",
+            styles["subtle"],
+        ))
+    else:
+        grid = []
+        for r in rows:
+            grid.append([
+                str(r.get("account_location") or ""),
+                str(r.get("currency") or ""),
+                str(r.get("closing_balance") or "0.00"),
+                str(r.get("source") or ""),
+                str(r.get("effective_date") or ""),
+                str(r.get("operator") or ""),
+            ])
+        story.append(_grid_table(
+            ["Account", "Ccy", "Closing", "Source", "Effective", "Operator"],
+            grid,
+            [42 * mm, 16 * mm, 28 * mm, 28 * mm, 28 * mm, 38 * mm],
+            right_from=2,
+        ))
+    try:
+        footer = _make_footer_drawer(meta, seller=seller)
+        doc.build(
+            story, onFirstPage=footer, onLaterPages=footer,
+            canvasmaker=_NumberedCanvas,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"reportlab build failed: {exc}") from exc
     pdf_bytes = buf.getvalue()
     if not pdf_bytes.startswith(b"%PDF-"):
         raise RuntimeError("reportlab produced output that does not look like a PDF")
@@ -1267,4 +1424,5 @@ __all__ = [
     "render_statement_pdf",
     "render_supplier_statement_pdf",
     "render_management_analysis_pdf",
+    "render_treasury_balances_pdf",
 ]

@@ -667,13 +667,100 @@ def aggregate_supplier_statement(
             "correction": "",
         })
 
-    totals_by_ccy: Dict[str, Dict[str, Any]] = {}
+    # Tally-style opening / period / closing. Remaining / aging stay on the
+    # FULL loaded expense set (history floor → period.to) using
+    # remaining_after_payments + expense/id knock-off — no second matching path.
+    period_from = str(df or "")
+    period_to = str(dt or "")
+
+    def _in_period(date_s: str) -> bool:
+        d = (date_s or "").strip()
+        if not d:
+            return False
+        if period_from and d < period_from:
+            return False
+        if period_to and d > period_to:
+            return False
+        return True
+
+    def _before_period(date_s: str) -> bool:
+        d = (date_s or "").strip()
+        if not d or not period_from:
+            return False
+        return d < period_from
+
+    opening_by_ccy: Dict[str, Decimal] = {}
+    period_entries_by_ccy: Dict[str, List[Dict[str, Any]]] = {}
     for ccy, rows in entries_by_ccy.items():
-        rows.sort(key=lambda r: (r["date"], 0 if r["type"] != "payment" else 1, r["wfirma_doc_id"]))
-        running = Decimal("0")
+        rows.sort(key=lambda r: (
+            r["date"], 0 if r["type"] != "payment" else 1, r["wfirma_doc_id"],
+        ))
+        opening = Decimal("0")
+        period_rows: List[Dict[str, Any]] = []
         for e in rows:
+            delta = Decimal(e["debit"]) - Decimal(e["credit"])
+            d = e.get("date") or ""
+            if _before_period(d):
+                opening += delta
+            elif _in_period(d):
+                period_rows.append(e)
+        opening_by_ccy[ccy] = opening
+        running = opening
+        for e in period_rows:
             running += Decimal(e["debit"]) - Decimal(e["credit"])
             e["running_balance"] = _q(running)
+        display_rows: List[Dict[str, Any]] = []
+        if opening != 0 or any(_before_period(e.get("date") or "") for e in rows):
+            bf_debit = opening if opening > 0 else Decimal("0")
+            bf_credit = (-opening) if opening < 0 else Decimal("0")
+            display_rows.append({
+                "type": "opening_balance",
+                "wfirma_doc_id": "",
+                "doc_number": "OPENING BALANCE / B/F",
+                "date": period_from or "",
+                "due_date": "",
+                "currency": ccy,
+                "debit": _q(bf_debit),
+                "credit": _q(bf_credit),
+                "running_balance": _q(opening),
+                "status": "B/F",
+                "remaining": None,
+                "source": "carried",
+                "is_opening_balance": True,
+                "correction": "",
+            })
+        display_rows.extend(period_rows)
+        period_entries_by_ccy[ccy] = display_rows
+
+    entries_by_ccy = period_entries_by_ccy
+
+    unmatched_by_ccy: Dict[str, List[Dict[str, Any]]] = {}
+    meta_cid = str(meta.get("wfirma_contractor_id") or "")
+    for p in match.get("unmatched_payments") or []:
+        # AR invoice-linked payments are not supplier unapplied.
+        if p.get("linked_invoice"):
+            continue
+        pay_cid = str(p.get("contractor_id") or "")
+        if meta_cid and pay_cid and pay_cid != meta_cid:
+            continue
+        if _normalize_doc_link_id(p.get("linked_expense")):
+            continue  # orphan / outside-window — already in warnings
+        ccy = (p.get("currency") or "").strip().upper() or "UNRESOLVED"
+        unmatched_by_ccy.setdefault(ccy, []).append({
+            "wfirma_doc_id": p.get("id") or "",
+            "value": _q(p.get("value") or Decimal("0")),
+            "currency": ccy if ccy != "UNRESOLVED" else "",
+            "date": p.get("date") or "",
+            "linked_expense": "",
+        })
+
+    totals_by_ccy: Dict[str, Dict[str, Any]] = {}
+    for ccy, rows in entries_by_ccy.items():
+        period_rows = [e for e in rows if not e.get("is_opening_balance")]
+        opening = opening_by_ccy.get(ccy, Decimal("0"))
+        period_debits = sum((Decimal(e["debit"]) for e in period_rows), Decimal("0"))
+        period_credits = sum((Decimal(e["credit"]) for e in period_rows), Decimal("0"))
+        closing = opening + period_debits - period_credits
         gross_pay = Decimal("0")
         credits = Decimal("0")
         paid = Decimal("0")
@@ -701,14 +788,26 @@ def aggregate_supplier_statement(
                 pos += rem
             elif rem < 0:
                 credit_bal += -rem
+        net_payable = pos - credit_bal
+        if abs(closing - net_payable) > Decimal("0.005"):
+            warnings.append({
+                "event": "supplier_statement_closing_invariant_drift",
+                "currency": ccy,
+                "closing": _q(closing),
+                "net_payable": _q(net_payable),
+            })
         totals_by_ccy[ccy] = {
+            "opening_balance": _q(opening),
+            "period_debits": _q(period_debits),
+            "period_credits": _q(period_credits),
+            "closing_balance": _q(closing),
             "gross_payable": _q(gross_pay),
             "supplier_credits": _q(credits if credits else credit_bal),
             "payments_applied": _q(paid),
             "outstanding": _q(pos),
             "credit_balance": _q(credit_bal),
-            "net_payable": _q(pos - credit_bal),
-            "entry_count": len(rows),
+            "net_payable": _q(net_payable),
+            "entry_count": len(period_rows),
             "formula_outstanding": _q(outstanding),
         }
 
@@ -759,6 +858,7 @@ def aggregate_supplier_statement(
         "entries_per_currency": entries_by_ccy,
         "totals_per_currency": totals_by_ccy,
         "aging_per_currency": aging_by_ccy,
+        "unmatched_payments_per_currency": unmatched_by_ccy,
         "warnings": warnings,
         "query_stats": {"per_supplier_wfirma_calls": 0},
     }

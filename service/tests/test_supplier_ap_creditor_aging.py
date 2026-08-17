@@ -241,6 +241,59 @@ def test_supplier_statement_uses_same_remaining():
     assert Decimal(usd["outstanding"]) == Decimal("60.00")
     assert Decimal(usd["net_payable"]) == Decimal("60.00")
     assert any(e["type"] == "payment" for e in stmt["entries_per_currency"]["USD"])
+    assert Decimal(usd["opening_balance"]) == Decimal("0.00")
+    assert Decimal(usd["closing_balance"]) == Decimal("60.00")
+    opening = Decimal(usd["opening_balance"])
+    assert opening + Decimal(usd["period_debits"]) - Decimal(usd["period_credits"]) == Decimal(usd["closing_balance"])
+
+
+def test_supplier_statement_opening_closing_and_contiguous():
+    """Tally identity on AP: opening + period_debits - period_credits = closing.
+
+    Knock-off remains payment/expense/id via match_payments_to_expenses.
+    """
+    prior = [_exp(eid="E0", gross="100.00", date="2020-06-01", due="2020-07-01")]
+    prior_pay = [_pay(pid="P0", expense_id="E0", value="20.00", date="2020-07-01")]
+    period_exp = [_exp(eid="E1", gross="50.00", date="2021-06-01", due="2021-07-01")]
+    facts_e = prior + period_exp
+    facts_p = prior_pay
+    jan = aggregate_supplier_statement(
+        facts_e, facts_p,
+        contractor_meta={"wfirma_contractor_id": "S1", "name": "SupplierCo"},
+        period=("2021-01-01", "2021-12-31"),
+        as_of="2021-12-31",
+    )
+    usd = jan["totals_per_currency"]["USD"]
+    opening = Decimal(usd["opening_balance"])
+    closing = Decimal(usd["closing_balance"])
+    assert opening == Decimal("80.00")
+    assert Decimal(usd["period_debits"]) == Decimal("50.00")
+    assert Decimal(usd["period_credits"]) == Decimal("0.00")
+    assert closing == Decimal("130.00")
+    assert opening + Decimal(usd["period_debits"]) - Decimal(usd["period_credits"]) == closing
+    assert Decimal(usd["net_payable"]) == closing
+    assert Decimal(usd["outstanding"]) == Decimal("130.00")
+    entries = jan["entries_per_currency"]["USD"]
+    assert entries[0]["type"] == "opening_balance"
+    assert any(e.get("is_opening_balance") for e in entries)
+
+    # Previous closing == next opening (contiguous years).
+    next_stmt = aggregate_supplier_statement(
+        facts_e, facts_p,
+        contractor_meta={"wfirma_contractor_id": "S1", "name": "SupplierCo"},
+        period=("2022-01-01", "2022-12-31"),
+        as_of="2022-12-31",
+    )
+    assert next_stmt["totals_per_currency"]["USD"]["opening_balance"] == usd["closing_balance"]
+
+
+def test_supplier_statement_does_not_invent_second_match_path():
+    import inspect
+    from app.services import ledger_aggregator as la
+    src = inspect.getsource(la.aggregate_supplier_statement)
+    assert "match_payments_to_expenses(" in src
+    assert "match_payments_to_invoices(" not in src
+    assert src.count("remaining_after_payments(") >= 1
 
 
 def test_duplicate_payment_id_does_not_double_count():
