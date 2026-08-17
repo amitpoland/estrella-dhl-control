@@ -2,32 +2,41 @@
 
 ## Current task
 
-- **Task:** EJ Accounting + CFO MIS campaign
-- **Worktree:** `C:\PZ-wt\accounting-cfo-mis`
-- **Branch:** `feat/accounting-cfo-mis` (ahead of origin/main after merge)
-- **Status:** Backfill + AR recon + local perf DONE; Treasury UI added; deploy NOT done
+- **Task:** EJ Accounting + CFO MIS — AP payment→expense persist repair
+- **Worktree:** `C:\PZ-wt\accounting-cfo-mis` branch `fix/ap-payment-expense-link`
+- **State:** `VALIDATING` (financial gate PASS; persist code not deployed)
+- **HOLD class:** none
 
-### Completed this resume
+## HOLD reason (one line)
 
-1. Preflight: `C:\PZ\.env` credentials present; `STORAGE_ROOT=C:\PZ\storage`; FR DB was missing; 74 GB free
-2. Validation window sync OK → full backfill **764 AR / 2164 AP / 0 errors** → `C:\PZ\storage\financial_reporting.sqlite`
-3. AR recon vs Stage A: EUR/PLN exact; USD **−73 explained** (WDT 31/2026 paid) — see `AR-CUTOVER-RECONCILIATION-2026-08-17.md`
-4. Local MA **~94–112 ms**, **0** portfolio wFirma calls (was ~53 s / 20 calls)
-5. Merged unrelated `origin/main` insurance-export tests (`c8e60aa7`)
-6. Treasury Hub UI panel + PzApi wrappers (pending commit)
+(none) — local AP remaining now equals live Supplier Ledger by currency. Persist code is not yet on production `b03143ee`.
 
-### WH-008 note
+## Proven (do not re-open)
 
-`WFIRMA_WEBHOOK_KEY` has **1** slot (len 32). Three wFirma registrations exist — operator must supply comma-separated keys for all three before operational multi-webhook reliance. Do not print keys.
+- Diamond Point Client Ledger opening/closing/contiguous/PDF — PASS
+- AR local vs locked 2026-08-17 — MATCH (EUR/PLN/USD)
+- PR #1268 already merged/deployed: `b03143ee`; rollback unit `b03143ee-20260817-083240`
+- Five-supplier AP remaining local == live (0.00)
+- Full AP Class-C unexplained = ZERO (CHF/EUR/PLN/USD MATCH)
+- Aging invariant local+live true per currency
 
-### Inventory webhook
+## AP persist repair (2026-08-17)
 
-Still blocked on genuine Produkty qty payload (OI-10).
+Root cause: `insert_payment_snapshot` omitted `expense_id`. Fixed write path + historical backfill of `C:\PZ\storage\payment_state.db`.
 
-### Next for release
+Coverage: 3023/0 linked → 3058/2038 linked. Unapplied: 1018 invoice-linked AR + 2 neither.
 
-1. Commit Treasury UI + recon note
-2. Push + PR
-3. Seven-agent gate
-4. Deploy-PZ.ps1
-5. Prod smoke (SHA, local CFO, freshness badges)
+Evidence:
+- `.claude/memory/AP-PAYMENT-EXPENSE-REPAIR-2026-08-17.md`
+- `.claude/memory/FINANCIAL-TRUTH-GATE-AP-POST-REPAIR-2026-08-17.json`
+- DB backup: `C:\PZ\storage\payment_state.db.bak-ap-expense-2026-08-17`
+
+## Next
+
+1. Commit/PR persist code on `fix/ap-payment-expense-link`
+2. Seven-agent gate + App deploy (required so new scheduler inserts keep `expense_id`)
+3. **Deploy PR note for Finance:** first local MA / payables load after deploy will show lower open AP — backfilled `expense_id` links activating; intended correction, not a regression.
+
+Adversarial review ([AP persist adversarial review](fdd37b72-2db0-4341-853f-fed068a3bc77)): SHIP WITH MITIGATIONS — no blockers. Mitigations applied: converge-clear WARNING log + cross-contractor knock-off test.
+
+Do not roll back `b03143ee` for this defect.

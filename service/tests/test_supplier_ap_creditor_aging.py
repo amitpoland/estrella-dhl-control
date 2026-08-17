@@ -123,6 +123,17 @@ def test_invoice_id_zero_does_not_block_expense_link():
     assert m["paid_against_expense"]["E1"] == Decimal("40.00")
 
 
+def test_cross_contractor_expense_link_applies_with_warning_not_refusal():
+    """wFirma expense/id is authoritative; contractor mismatch is advisory only."""
+    expenses = [_exp(eid="E1", cid="S1", gross="100.00")]
+    payments = [_pay(pid="P1", expense_id="E1", cid="S2", value="40.00")]
+    m = match_payments_to_expenses(expenses, payments)
+    assert m["paid_against_expense"]["E1"] == Decimal("40.00")
+    assert "P1" in m["matched_payment_ids"]
+    events = {w["event"] for w in m["warnings"]}
+    assert "payment_expense_contractor_mismatch" in events
+
+
 def test_negative_correction_is_credit_not_aged():
     expenses = [
         _exp(eid="CN1", gross="-3368.48", due="2022-03-30", correction="1"),
@@ -230,6 +241,17 @@ def test_supplier_statement_uses_same_remaining():
     assert Decimal(usd["outstanding"]) == Decimal("60.00")
     assert Decimal(usd["net_payable"]) == Decimal("60.00")
     assert any(e["type"] == "payment" for e in stmt["entries_per_currency"]["USD"])
+
+
+def test_duplicate_payment_id_does_not_double_count():
+    expenses = [_exp(eid="E1", gross="100.00")]
+    payments = [
+        _pay(pid="P1", expense_id="E1", value="40.00"),
+        _pay(pid="P1", expense_id="E1", value="40.00"),
+    ]
+    m = match_payments_to_expenses(expenses, payments)
+    assert m["paid_against_expense"]["E1"] == Decimal("40.00")
+    assert "duplicate_payment_id_ignored" in {w["event"] for w in m["warnings"]}
 
 
 def test_ar_phase1_unchanged_by_ap_payment_fact_key():

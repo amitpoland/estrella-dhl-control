@@ -1,0 +1,201 @@
+{
+  "relationship_field": "payment/expense/id",
+  "sentinel": "0 means no link",
+  "suppliers": [
+    {
+      "contractor_id": "38142296",
+      "supplier": "ESTRELLA JEWELS LLP",
+      "payments_fetched": 555,
+      "with_expense_id": 555,
+      "without_expense_id": 0,
+      "samples": [
+        {
+          "payment_id": "118670162",
+          "expense_id": "37270160",
+          "invoice_id": null,
+          "amount": "6652.00",
+          "currency_label": "",
+          "payment_date": "2020-06-08",
+          "contractor_id": "38142296",
+          "supplier": "ESTRELLA JEWELS LLP"
+        },
+        {
+          "payment_id": "118670168",
+          "expense_id": "37269962",
+          "invoice_id": null,
+          "amount": "305.00",
+          "currency_label": "",
+          "payment_date": "2020-06-08",
+          "contractor_id": "38142296",
+          "supplier": "ESTRELLA JEWELS LLP"
+        },
+        {
+          "payment_id": "118670174",
+          "expense_id": "37269896",
+          "invoice_id": null,
+          "amount": "1352.00",
+          "currency_label": "",
+          "payment_date": "2020-06-08",
+          "contractor_id": "38142296",
+          "supplier": "ESTRELLA JEWELS LLP"
+        }
+      ]
+    },
+    {
+      "contractor_id": "98777713",
+      "supplier": "Urzad Skarbowy w Nowym Targu",
+      "payments_fetched": 132,
+      "with_expense_id": 132,
+      "without_expense_id": 0,
+      "samples": [
+        {
+          "payment_id": "303606433",
+          "expense_id": "87140500",
+          "invoice_id": null,
+          "amount": "1532.00",
+          "currency_label": "",
+          "payment_date": "2023-07-18",
+          "contractor_id": "98777713",
+          "supplier": "Urzad Skarbowy w Nowym Targu"
+        },
+        {
+          "payment_id": "315019564",
+          "expense_id": "90098572",
+          "invoice_id": null,
+          "amount": "208.00",
+          "currency_label": "",
+          "payment_date": "2023-09-11",
+          "contractor_id": "98777713",
+          "supplier": "Urzad Skarbowy w Nowym Targu"
+        },
+        {
+          "payment_id": "315019663",
+          "expense_id": "90165505",
+          "invoice_id": null,
+          "amount": "639.00",
+          "currency_label": "",
+          "payment_date": "2023-09-11",
+          "contractor_id": "98777713",
+          "supplier": "Urzad Skarbowy w Nowym Targu"
+        }
+      ]
+    },
+    {
+      "contractor_id": "61517345",
+      "supplier": "EUROPE SIMPLEKS HURTOWNIA",
+      "payments_fetched": 34,
+      "with_expense_id": 34,
+      "without_expense_id": 0,
+      "samples": [
+        {
+          "payment_id": "327637771",
+          "expense_id": "54189806",
+          "invoice_id": null,
+          "amount": "25.00",
+          "currency_label": "",
+          "payment_date": "2021-09-13",
+          "contractor_id": "61517345",
+          "supplier": "EUROPE SIMPLEKS HURTOWNIA"
+        },
+        {
+          "payment_id": "390229554",
+          "expense_id": "115595277",
+          "invoice_id": null,
+          "amount": "6457.50",
+          "currency_label": "",
+          "payment_date": "2024-09-16",
+          "contractor_id": "61517345",
+          "supplier": "EUROPE SIMPLEKS HURTOWNIA"
+        },
+        {
+          "payment_id": "390229557",
+          "expense_id": "115595031",
+          "invoice_id": null,
+          "amount": "351.29",
+          "currency_label": "",
+          "payment_date": "2024-09-16",
+          "contractor_id": "61517345",
+          "supplier": "EUROPE SIMPLEKS HURTOWNIA"
+        }
+      ]
+    },
+    {
+      "contractor_id": "71554001",
+      "supplier": "Global Jewellery Pvt. Ltd.",
+      "payments_fetched": 31,
+      "with_expense_id": 19,
+      "without_expense_id": 12,
+      "samples": [
+        {
+          "payment_id": "338539435",
+          "expense_id": "62652467",
+          "invoice_id": null,
+          "amount": "208.00",
+          "currency_label": "119/A/NBP/2022",
+          "payment_date": "2022-06-23",
+          "contractor_id": "71554001",
+          "supplier": "Global Jewellery Pvt. Ltd."
+        },
+        {
+          "payment_id": "469995161",
+          "expense_id": "135746489",
+          "invoice_id": null,
+          "amount": "774.00",
+          "currency_label": "",
+          "payment_date": "2025-07-04",
+          "contractor_id": "71554001",
+          "supplier": "Global Jewellery Pvt. Ltd."
+        },
+        {
+          "payment_id": "469995170",
+          "expense_id": "135746414",
+          "invoice_id": null,
+          "amount": "3567.00",
+          "currency_label": "",
+          "payment_date": "2025-07-04",
+          "contractor_id": "71554001",
+          "supplier": "Global Jewellery Pvt. Ltd."
+        }
+      ]
+    },
+    {
+      "contractor_id": "38567354",
+      "supplier": "DHL Express (Poland)",
+      "payments_fetched": 356,
+      "with_expense_id": 356,
+      "without_expense_id": 0,
+      "samples": [
+        {
+          "payment_id": "117263930",
+          "expense_id": "37268975",
+          "invoice_id": null,
+          "amount": "231.95",
+          "currency_label": "",
+          "payment_date": "2020-02-01",
+          "contractor_id": "38567354",
+          "supplier": "DHL Express (Poland)"
+        },
+        {
+          "payment_id": "117274727",
+          "expense_id": "37270862",
+          "invoice_id": null,
+          "amount": "84.87",
+          "currency_label": "",
+          "payment_date": "2020-05-14",
+          "contractor_id": "38567354",
+          "supplier": "DHL Express (Poland)"
+        },
+        {
+          "payment_id": "162780254",
+          "expense_id": "49223837",
+          "invoice_id": null,
+          "amount": "598.87",
+          "currency_label": "",
+          "payment_date": "2021-04-28",
+          "contractor_id": "38567354",
+          "supplier": "DHL Express (Poland)"
+        }
+      ]
+    }
+  ]
+}

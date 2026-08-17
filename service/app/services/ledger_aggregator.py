@@ -543,6 +543,13 @@ def match_payments_to_expenses(
                 "payment_currency": pay_iso,
             })
             continue
+        if p["id"] in matched_payment_ids:
+            warnings.append({
+                "event": "duplicate_payment_id_ignored",
+                "wfirma_doc_id": p["id"],
+                "linked_expense": linked,
+            })
+            continue
         p = dict(p)
         p["currency"] = inherited or pay_iso
         p["linked_expense"] = linked

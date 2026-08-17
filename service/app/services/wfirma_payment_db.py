@@ -136,6 +136,18 @@ def get_contractors_due_for_sync(
     return due
 
 
+def _normalize_stored_doc_link(raw: Optional[str]) -> str:
+    """Same sentinel rule as ledger_aggregator._normalize_doc_link_id.
+
+    Live wFirma sends ``invoice/id=0`` and ``expense/id=0`` as no-link
+    sentinels. Empty / whitespace / literal ``"0"`` → empty string.
+    """
+    s = (raw or "").strip()
+    if not s or s == "0":
+        return ""
+    return s
+
+
 def insert_payment_snapshot(
     db_path: Path,
     *,
@@ -152,22 +164,53 @@ def insert_payment_snapshot(
     notes: Optional[str],
     fetched_at: str,
     raw_json: str,
+    expense_id: Optional[str] = None,
+    converge_expense_link: bool = False,
 ) -> bool:
     """
     INSERT OR IGNORE payment snapshot.
     Returns True when the row was newly inserted, False when already present.
+
+    ``expense_id`` is the canonical wFirma ``<expense><id>`` relationship.
+    When ``converge_expense_link`` is True (payment sync / backfill), an
+    existing row's ``expense_id`` is updated to the fetched canonical value
+    — including clearing a stale link when wFirma now sends the ``0``
+    sentinel. Contractor identity and other snapshot columns are never
+    overwritten on a duplicate payment_id.
     """
+    link = _normalize_stored_doc_link(expense_id)
     with _connect(db_path) as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO wfirma_payment_snapshots
-               (payment_id, contractor_id, invoice_id, payment_date, value, value_pln,
+               (payment_id, contractor_id, invoice_id, expense_id, payment_date, value, value_pln,
                 currency_label, payment_method, payment_type, type, notes, fetched_at, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (payment_id, contractor_id, invoice_id, payment_date, value, value_pln,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (payment_id, contractor_id, invoice_id, link, payment_date, value, value_pln,
              currency_label, payment_method, payment_type, type_, notes, fetched_at, raw_json),
         )
+        inserted = cur.rowcount > 0
+        if converge_expense_link:
+            old_row = conn.execute(
+                "SELECT expense_id FROM wfirma_payment_snapshots WHERE payment_id = ?",
+                (payment_id,),
+            ).fetchone()
+            old_link = _normalize_stored_doc_link(old_row[0] if old_row else None)
+            if old_link and not link:
+                log.warning(
+                    "payment_snapshot: converge cleared expense_id payment_id=%s "
+                    "old_expense_id=%s (wFirma sent no-link sentinel)",
+                    payment_id,
+                    old_link,
+                )
+            conn.execute(
+                """UPDATE wfirma_payment_snapshots
+                   SET expense_id = ?
+                   WHERE payment_id = ?
+                     AND COALESCE(expense_id, '') != ?""",
+                (link, payment_id, link),
+            )
         conn.commit()
-        return cur.rowcount > 0
+        return inserted
 
 
 def mark_contractor_synced(
@@ -197,6 +240,37 @@ def get_snapshot_count(db_path: Path) -> int:
         return conn.execute(
             "SELECT COUNT(*) FROM wfirma_payment_snapshots"
         ).fetchone()[0]
+
+
+def payment_expense_link_coverage(db_path: Path) -> dict:
+    """Count snapshots with vs without a canonical expense relationship."""
+    init_payment_db(db_path)
+    with _connect(db_path) as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM wfirma_payment_snapshots"
+        ).fetchone()[0]
+        linked = conn.execute(
+            """SELECT COUNT(*) FROM wfirma_payment_snapshots
+               WHERE expense_id IS NOT NULL
+                 AND TRIM(expense_id) NOT IN ('', '0')"""
+        ).fetchone()[0]
+    return {
+        "payments_total": int(total),
+        "with_expense_relationship": int(linked),
+        "without_expense_relationship": int(total) - int(linked),
+    }
+
+
+def list_snapshot_contractor_ids(db_path: Path) -> List[str]:
+    """Distinct contractor_id values already present in payment snapshots."""
+    init_payment_db(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT contractor_id FROM wfirma_payment_snapshots
+               WHERE contractor_id IS NOT NULL AND TRIM(contractor_id) != ''
+               ORDER BY contractor_id"""
+        ).fetchall()
+    return [str(r[0]) for r in rows]
 
 
 def get_sync_state(db_path: Path) -> List[dict]:

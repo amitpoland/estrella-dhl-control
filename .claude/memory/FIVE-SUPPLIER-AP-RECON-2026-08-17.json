@@ -1,0 +1,79 @@
+{
+  "rows": [
+    {
+      "supplier": "ESTRELLA JEWELS LLP",
+      "contractor_id": "38142296",
+      "currency": "USD",
+      "gross_docs": "3591816.34",
+      "allocated_payments": "2911314.71",
+      "credits": "7787.13",
+      "local_remaining": "680501.63",
+      "statement_outstanding": "680501.63",
+      "captured_live_open": "680501.63",
+      "delta_local_minus_captured_live": "0.00",
+      "matched_payments": 555,
+      "unmatched_payments": 0,
+      "pass": true
+    },
+    {
+      "supplier": "Urzad Skarbowy w Nowym Targu",
+      "contractor_id": "98777713",
+      "currency": "PLN",
+      "gross_docs": "250020.00",
+      "allocated_payments": "249586.00",
+      "credits": "0.00",
+      "local_remaining": "434.00",
+      "statement_outstanding": "434.00",
+      "captured_live_open": "434.00",
+      "delta_local_minus_captured_live": "0.00",
+      "matched_payments": 132,
+      "unmatched_payments": 0,
+      "pass": true
+    },
+    {
+      "supplier": "EUROPE SIMPLEKS HURTOWNIA",
+      "contractor_id": "61517345",
+      "currency": "USD",
+      "gross_docs": "223860.00",
+      "allocated_payments": "215250.00",
+      "credits": "0.00",
+      "local_remaining": "8610.00",
+      "statement_outstanding": "8610.00",
+      "captured_live_open": "8610.00",
+      "delta_local_minus_captured_live": "0.00",
+      "matched_payments": 18,
+      "unmatched_payments": 16,
+      "pass": true
+    },
+    {
+      "supplier": "Global Jewellery Pvt. Ltd.",
+      "contractor_id": "71554001",
+      "currency": "USD",
+      "gross_docs": "207750.57",
+      "allocated_payments": "170091.57",
+      "credits": "0.00",
+      "local_remaining": "37659.00",
+      "statement_outstanding": "37659.00",
+      "captured_live_open": "37659.00",
+      "delta_local_minus_captured_live": "0.00",
+      "matched_payments": 19,
+      "unmatched_payments": 12,
+      "pass": true
+    },
+    {
+      "supplier": "DHL Express (Poland)",
+      "contractor_id": "38567354",
+      "currency": "PLN",
+      "gross_docs": "185852.81",
+      "allocated_payments": "184827.14",
+      "credits": "0.00",
+      "local_remaining": "1025.67",
+      "statement_outstanding": "1025.67",
+      "captured_live_open": "1025.67",
+      "delta_local_minus_captured_live": "0.00",
+      "matched_payments": 357,
+      "unmatched_payments": 0,
+      "pass": true
+    }
+  ]
+}

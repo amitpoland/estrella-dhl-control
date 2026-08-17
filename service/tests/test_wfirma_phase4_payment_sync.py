@@ -35,7 +35,12 @@ def _hours_ago(h: int) -> str:
     return dt.isoformat()
 
 
-def _make_payment_node(payment_id: str, contractor_id: str, invoice_id: str = "99") -> ET.Element:
+def _make_payment_node(
+    payment_id: str,
+    contractor_id: str,
+    invoice_id: str = "99",
+    expense_id: str = "0",
+) -> ET.Element:
     xml = (
         f"<payment>"
         f"  <id>{payment_id}</id>"
@@ -49,6 +54,7 @@ def _make_payment_node(payment_id: str, contractor_id: str, invoice_id: str = "9
         f"  <notes>test</notes>"
         f"  <contractor><id>{contractor_id}</id></contractor>"
         f"  <invoice><id>{invoice_id}</id></invoice>"
+        f"  <expense><id>{expense_id}</id></expense>"
         f"</payment>"
     )
     return ET.fromstring(xml)
@@ -142,6 +148,58 @@ class TestInsertPaymentSnapshot:
                 "SELECT contractor_id FROM wfirma_payment_snapshots WHERE payment_id='P001'"
             ).fetchone()
         assert row[0] == "C001"  # original preserved
+
+    def test_converge_clearing_expense_id_logs_warning(self, tmp_path, caplog):
+        import logging
+
+        db = self._db(tmp_path)
+        from service.app.services.wfirma_payment_db import insert_payment_snapshot
+
+        caplog.set_level(logging.WARNING, logger="app.services.wfirma_payment_db")
+        insert_payment_snapshot(
+            db,
+            payment_id="P1",
+            contractor_id="C001",
+            invoice_id="0",
+            expense_id="E99",
+            payment_date="2026-01-15",
+            value="10.00",
+            value_pln=None,
+            currency_label="",
+            payment_method=None,
+            payment_type=None,
+            type_=None,
+            notes=None,
+            fetched_at=_now(),
+            raw_json="{}",
+        )
+        insert_payment_snapshot(
+            db,
+            payment_id="P1",
+            contractor_id="C001",
+            invoice_id="0",
+            expense_id="0",
+            payment_date="2026-01-15",
+            value="10.00",
+            value_pln=None,
+            currency_label="",
+            payment_method=None,
+            payment_type=None,
+            type_=None,
+            notes=None,
+            fetched_at=_now(),
+            raw_json="{}",
+            converge_expense_link=True,
+        )
+        assert any(
+            "converge cleared expense_id" in r.message and "E99" in r.message
+            for r in caplog.records
+        )
+        with sqlite3.connect(str(db)) as conn:
+            row = conn.execute(
+                "SELECT expense_id FROM wfirma_payment_snapshots WHERE payment_id='P1'"
+            ).fetchone()
+        assert row[0] in ("", None)
 
 
 class TestGetContractorsDueForSync:
@@ -319,6 +377,199 @@ class TestSyncPaymentsForContractor:
                 "SELECT invoice_id FROM wfirma_payment_snapshots WHERE payment_id='P1'"
             ).fetchone()
         assert row[0] == "42"
+
+    def test_expense_id_extracted(self, tmp_path):
+        db = self._db(tmp_path)
+        node = _make_payment_node("P1", "C001", invoice_id="0", expense_id="37267250")
+        with patch(
+            "service.app.services.wfirma_client.fetch_payments_for_contractor",
+            return_value=[node],
+        ):
+            from service.app.services.wfirma_payment_sync_processor import sync_payments_for_contractor
+            sync_payments_for_contractor(contractor_id="C001", payment_db=db, now=_now())
+        with sqlite3.connect(str(db)) as conn:
+            row = conn.execute(
+                "SELECT expense_id, invoice_id FROM wfirma_payment_snapshots WHERE payment_id='P1'"
+            ).fetchone()
+        assert row[0] == "37267250"
+        assert row[1] == "0"
+
+    def test_expense_id_sentinel_zero_stored_empty(self, tmp_path):
+        db = self._db(tmp_path)
+        node = _make_payment_node("P1", "C001", expense_id="0")
+        with patch(
+            "service.app.services.wfirma_client.fetch_payments_for_contractor",
+            return_value=[node],
+        ):
+            from service.app.services.wfirma_payment_sync_processor import sync_payments_for_contractor
+            sync_payments_for_contractor(contractor_id="C001", payment_db=db, now=_now())
+        with sqlite3.connect(str(db)) as conn:
+            row = conn.execute(
+                "SELECT expense_id FROM wfirma_payment_snapshots WHERE payment_id='P1'"
+            ).fetchone()
+        assert row[0] in ("", None)
+
+    def test_resync_converges_expense_id_on_existing_row(self, tmp_path):
+        db = self._db(tmp_path)
+        from service.app.services.wfirma_payment_db import insert_payment_snapshot, get_snapshot_count
+        insert_payment_snapshot(
+            db,
+            payment_id="P1",
+            contractor_id="C001",
+            invoice_id="0",
+            payment_date="2026-01-15",
+            value="1000.00",
+            value_pln="4200.00",
+            currency_label="EUR",
+            payment_method="transfer",
+            payment_type="normal",
+            type_="income",
+            notes=None,
+            fetched_at=_now(),
+            raw_json="{}",
+        )
+        node = _make_payment_node("P1", "C001", invoice_id="0", expense_id="37267250")
+        with patch(
+            "service.app.services.wfirma_client.fetch_payments_for_contractor",
+            return_value=[node],
+        ):
+            from service.app.services.wfirma_payment_sync_processor import sync_payments_for_contractor
+            new, existing, err = sync_payments_for_contractor(
+                contractor_id="C001", payment_db=db, now=_now()
+            )
+        assert err is None
+        assert new == 0
+        assert existing == 1
+        assert get_snapshot_count(db) == 1
+        with sqlite3.connect(str(db)) as conn:
+            row = conn.execute(
+                "SELECT expense_id, contractor_id FROM wfirma_payment_snapshots WHERE payment_id='P1'"
+            ).fetchone()
+        assert row[0] == "37267250"
+        assert row[1] == "C001"
+
+    def test_backfill_fills_historical_and_is_idempotent(self, tmp_path):
+        db = self._db(tmp_path)
+        from service.app.services.wfirma_payment_db import (
+            insert_payment_snapshot,
+            payment_expense_link_coverage,
+        )
+        insert_payment_snapshot(
+            db,
+            payment_id="P1",
+            contractor_id="C001",
+            invoice_id="0",
+            payment_date="2026-01-15",
+            value="67.00",
+            value_pln=None,
+            currency_label="",
+            payment_method=None,
+            payment_type=None,
+            type_=None,
+            notes=None,
+            fetched_at=_now(),
+            raw_json="{}",
+        )
+        before = payment_expense_link_coverage(db)
+        assert before["with_expense_relationship"] == 0
+        node = _make_payment_node("P1", "C001", invoice_id="0", expense_id="37267250")
+        ck = tmp_path / "ckpt.jsonl"
+        with patch(
+            "service.app.services.wfirma_client.fetch_payments_for_contractor",
+            return_value=[node],
+        ):
+            from service.app.services.wfirma_payment_sync_processor import (
+                backfill_payment_expense_links,
+            )
+            first = backfill_payment_expense_links(
+                payment_db=db,
+                contractor_ids=["C001"],
+                now=_now(),
+                checkpoint_path=ck,
+            )
+            second = backfill_payment_expense_links(
+                payment_db=db,
+                contractor_ids=["C001"],
+                now=_now(),
+                checkpoint_path=ck,
+            )
+        assert first["after"]["with_expense_relationship"] == 1
+        assert first["after"]["payments_total"] == 1
+        assert second["contractors_ok"] == 0
+        assert second["contractors_skipped_checkpoint"] == 1
+
+    def test_bulk_period_converges_cross_contractor_expense_link(self, tmp_path):
+        db = self._db(tmp_path)
+        from service.app.services.wfirma_payment_db import insert_payment_snapshot
+        insert_payment_snapshot(
+            db,
+            payment_id="232683830",
+            contractor_id="59764244",
+            invoice_id="0",
+            payment_date="2022-06-17",
+            value="1015.87",
+            value_pln=None,
+            currency_label="",
+            payment_method=None,
+            payment_type=None,
+            type_=None,
+            notes=None,
+            fetched_at=_now(),
+            raw_json="{}",
+        )
+        node = _make_payment_node(
+            "232683830", "59764244", invoice_id="0", expense_id="999001"
+        )
+        with patch(
+            "service.app.services.wfirma_client.fetch_payments_for_period",
+            return_value=[node],
+        ):
+            from service.app.services.wfirma_payment_sync_processor import (
+                backfill_payment_expense_links_from_period,
+            )
+            out = backfill_payment_expense_links_from_period(
+                payment_db=db, date_to="2026-08-17", now=_now()
+            )
+        assert out["after"]["with_expense_relationship"] == 1
+        assert out["existing_snapshots_seen"] == 1
+        with sqlite3.connect(str(db)) as conn:
+            row = conn.execute(
+                "SELECT expense_id, contractor_id FROM wfirma_payment_snapshots "
+                "WHERE payment_id='232683830'"
+            ).fetchone()
+        assert row[0] == "999001"
+        assert row[1] == "59764244"
+
+    def test_rate_limit_retries_then_succeeds(self, tmp_path):
+        db = self._db(tmp_path)
+        node = _make_payment_node("P1", "C001", expense_id="E9")
+        calls = {"n": 0}
+
+        def _fetch(cid, a, b):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("payments/find wFirma status=TOTAL REQUESTS LIMIT EXCEEDED: ")
+            return [node]
+
+        slept = []
+        with patch(
+            "service.app.services.wfirma_client.fetch_payments_for_contractor",
+            side_effect=_fetch,
+        ):
+            from service.app.services.wfirma_payment_sync_processor import (
+                backfill_payment_expense_links,
+            )
+            out = backfill_payment_expense_links(
+                payment_db=db,
+                contractor_ids=["C001"],
+                now=_now(),
+                max_retries=2,
+                retry_delay_s=1.0,
+                sleep_fn=slept.append,
+            )
+        assert out["contractors_ok"] == 1
+        assert slept == [1.0]
+        assert out["after"]["with_expense_relationship"] == 1
 
     def test_does_not_touch_wfirma_processing_db(self, tmp_path):
         proc_db = tmp_path / "wfirma_processing.db"

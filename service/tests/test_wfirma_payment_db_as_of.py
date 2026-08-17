@@ -56,3 +56,28 @@ def test_list_payments_as_of_and_expense_id_column(tmp_path: Path):
 
     empty = list_payments_as_of(db, "2026-12-31", invoice_ids=["NOPE"])
     assert empty == []
+
+
+def test_insert_persists_expense_id_and_as_of_includes_old_payment(tmp_path: Path):
+    db = tmp_path / "pay.db"
+    init_payment_db(db)
+    assert insert_payment_snapshot(
+        db,
+        payment_id="P_OLD",
+        contractor_id="C1",
+        invoice_id="",
+        expense_id="E9",
+        payment_date="2025-01-01",
+        value="12.00",
+        value_pln=None,
+        currency_label="",
+        payment_method=None,
+        payment_type=None,
+        type_=None,
+        notes=None,
+        fetched_at="2026-08-17T00:00:00+00:00",
+        raw_json="{}",
+    )
+    rows = list_payments_as_of(db, "2026-08-17")
+    assert rows[0]["payment_id"] == "P_OLD"
+    assert rows[0]["expense_id"] == "E9"

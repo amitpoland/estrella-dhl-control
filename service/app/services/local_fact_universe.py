@@ -148,16 +148,12 @@ def reporting_row_to_expense_fact(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def payment_row_to_fact(row: Dict[str, Any]) -> Dict[str, Any]:
-    inv = str(row.get("invoice_id") or "").strip()
-    exp = str(row.get("expense_id") or "").strip()
-    if inv in ("0", "None"):
-        inv = ""
-    if exp in ("0", "None"):
-        exp = ""
+    from .ledger_aggregator import _normalize_doc_link_id
+
     return {
         "id": str(row.get("payment_id") or "").strip(),
-        "linked_invoice": inv,
-        "linked_expense": exp,
+        "linked_invoice": _normalize_doc_link_id(row.get("invoice_id")),
+        "linked_expense": _normalize_doc_link_id(row.get("expense_id")),
         "value": _dec(row.get("value")),
         "value_pln": _dec(row.get("value_pln")),
         "date": (row.get("payment_date") or "").strip(),
