@@ -587,7 +587,7 @@ def test_scheduler_tick_dead_letters_after_max_retries(tmp_path: Path) -> None:
 
 
 def test_scheduler_tick_dead_letters_event_with_no_object_id(tmp_path: Path) -> None:
-    """Events whose payload has no recognisable invoice-id field → DEAD_LETTER after retries."""
+    """Invoice-domain events whose payload has no recognisable invoice-id field → DEAD_LETTER after retries."""
     events_db = tmp_path / "wfirma_webhook_events.db"
     proc_db = tmp_path / "wfirma_processing.db"
     with sqlite3.connect(str(events_db)) as conn:
@@ -595,7 +595,7 @@ def test_scheduler_tick_dead_letters_event_with_no_object_id(tmp_path: Path) -> 
             "CREATE TABLE wfirma_webhook_events (event_id TEXT PRIMARY KEY, event_type TEXT, payload_json TEXT NOT NULL, received_at TEXT NOT NULL)"
         )
         conn.execute(
-            "INSERT INTO wfirma_webhook_events VALUES ('evt-noid', 'ping', ?, ?)",
+            "INSERT INTO wfirma_webhook_events VALUES ('evt-noid', 'Faktury.Dodanie', ?, ?)",
             (json.dumps({"no_id_here": True}), _NOW),
         )
     init_db(proc_db)

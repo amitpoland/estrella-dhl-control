@@ -285,6 +285,30 @@ def mark_retry_pending(db_path: Path, event_id: str) -> None:
         )
 
 
+def mark_terminal_routed(
+    db_path: Path,
+    event_id: str,
+    state: str,
+    reason: str,
+    now: str,
+) -> None:
+    """
+    Mark a processing row terminal without invoice fetch (WH-001 / WH-005).
+
+    Used for ROUTED_STOCK, ROUTED_CONTRACTOR, and QUARANTINED states.
+    """
+    set_state(
+        db_path,
+        event_id,
+        state,
+        extra={
+            "last_error": reason[:500],
+            "last_attempted_at": now,
+            "completed_at": now,
+        },
+    )
+
+
 # ── Snapshot table ─────────────────────────────────────────────────────────────
 
 
