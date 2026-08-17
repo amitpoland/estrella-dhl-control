@@ -1068,6 +1068,9 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
               { label: ccy, value: '' },
               ...agingBuckets(agingBy[ccy]).map(b => ({ ...b, value: LDG_FMT.money(b.value, '') })),
             ]} />
+            <div data-testid="ldg-aging-closing-note" style={{ padding: '6px 16px', fontSize: 10.5, color: 'var(--text-3)' }}>
+              Aging shows open invoice receivables only; credit notes are excluded from aging buckets. Use Closing balance for the net period-end position.
+            </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
                 <thead>

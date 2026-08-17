@@ -1052,7 +1052,9 @@ def aggregate_statement_from_facts(
                 if inv is not None:
                     paid = paid_against_invoice.get(inv_id, Decimal("0"))
                     rem = remaining_after_payments(inv["brutto"], paid)
-                    if rem <= 0:
+                    if inv.get("type") == "correction":
+                        e["status"] = "Issued"
+                    elif rem <= 0:
                         e["status"] = "Paid"
                     elif paid > 0:
                         e["status"] = "Partial"

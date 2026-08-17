@@ -123,6 +123,11 @@ def test_credit_note_appears_once_as_credit():
     t = stmt["totals_per_currency"]["USD"]
     assert t["credited"] == "100.00"
     assert t["closing_balance"] == "900.00"
+    assert entries[0]["status"] == "Issued"
+    # Aging excludes credit notes — total can diverge from closing
+    aging_total = Decimal(stmt["aging_per_currency"]["USD"]["total"])
+    assert aging_total == Decimal("1000.00")
+    assert aging_total != Decimal(t["closing_balance"])
 
 
 def test_partial_payment_and_payment_outside_period_in_opening():
