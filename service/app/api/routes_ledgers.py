@@ -39,7 +39,7 @@ that has not yet been verified against a live wFirma response.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -684,13 +684,20 @@ def _statement_seller_block() -> Dict[str, str]:
     """Reuse CompanyProfile (same seller authority as packing/proforma)."""
     from ..core.config import settings as _settings
     from ..services.master_data_db import get_company_profile
-    from ..services.commercial_packing_list import _seller_from_company
 
     try:
         company = get_company_profile(_settings.storage_root / "master_data.sqlite")
     except Exception:
         company = None
-    return _seller_from_company(company)
+    if company is None:
+        return {"name": "", "addr": "", "city": "", "country": "", "vat": ""}
+    return {
+        "name": company.legal_name or company.short_name or "",
+        "addr": company.street or "",
+        "city": company.postal_city or "",
+        "country": company.country or "",
+        "vat": company.nip or company.vat_eu or "",
+    }
 
 
 def _statement_logo_path() -> str:
@@ -750,13 +757,64 @@ def _sum_ccy(m: Dict[str, Any]) -> Decimal:
     return tot
 
 
+def _dec_or_zero(v: Any) -> Decimal:
+    try:
+        return Decimal(str(v or "0"))
+    except Exception:
+        return Decimal("0")
+
+
+def _sort_client_balance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Default roster sort:
+    1. overdue
+    2. largest overdue
+    3. oldest overdue (earliest oldest_overdue_date)
+    4. outstanding not due
+    5. clear
+    """
+
+    def _tier(r: Dict[str, Any]) -> int:
+        if not r.get("balance_available"):
+            return 4
+        st = (r.get("state") or "").lower()
+        ovd = _dec_or_zero(r.get("overdue_invoice_age"))
+        opn = _dec_or_zero(r.get("open"))
+        if st == "clear" or (opn <= 0 and ovd <= 0):
+            return 3
+        if ovd > 0:
+            return 0
+        if opn > 0:
+            return 1
+        return 2
+
+    def _oldest_key(r: Dict[str, Any]) -> str:
+        # Ascending date string; missing → last within overdue tier
+        d = (r.get("oldest_overdue_date") or "").strip()
+        return d if d else "9999-99-99"
+
+    def _key(r: Dict[str, Any]):
+        t = _tier(r)
+        ovd = _dec_or_zero(r.get("overdue_invoice_age"))
+        opn = _dec_or_zero(r.get("open"))
+        return (
+            t,
+            -ovd,
+            _oldest_key(r) if t == 0 else "",
+            -opn,
+            (r.get("name") or r.get("contractor_id") or "").lower(),
+        )
+
+    return sorted(rows, key=_key)
+
+
 def _roster_row_from_statement(default_currency: str,
                                stmt: Dict[str, Any]) -> Dict[str, Any]:
     """Reduce a Phase-10B statement dict to the Client-Balance roster summary.
 
     Reuses ``aggregate_statement`` output verbatim — NO new payment logic is
-    introduced here. Overdue is the invoice-age aged figure (aging total minus
-    the ``current`` bucket); due-date overdue is NOT computed (architecture §7).
+    introduced here. Overdue is the aged figure (aging total minus
+    the ``not_due`` / legacy ``current`` bucket); due-date overdue is NOT
+    computed separately for the roster (architecture §7).
     """
     totals = stmt.get("totals_per_currency", {}) or {}
     aging  = stmt.get("aging_per_currency", {}) or {}
@@ -769,7 +827,9 @@ def _roster_row_from_statement(default_currency: str,
     for c in ccys:
         a = aging.get(c, {}) or {}
         try:
-            aged = Decimal(str(a.get("total", "0"))) - Decimal(str(a.get("current", "0")))
+            # Canonical key is not_due; accept legacy "current" for older fixtures.
+            not_due = a.get("not_due", a.get("current", "0"))
+            aged = Decimal(str(a.get("total", "0"))) - Decimal(str(not_due or "0"))
         except Exception:
             aged = Decimal("0")
         aged_by_ccy[c] = f"{aged:.2f}"
@@ -783,6 +843,9 @@ def _roster_row_from_statement(default_currency: str,
     else:
         currency = default_currency or "—"
 
+    # Oldest overdue due date for roster sort (from statement aging walk).
+    oldest_overdue = (stmt.get("oldest_overdue_date") or "").strip() or None
+
     return {
         "balance_available":               True,
         "currencies":                      ccys,
@@ -793,6 +856,7 @@ def _roster_row_from_statement(default_currency: str,
         "overdue_invoice_age":             (aged_by_ccy[single] if single else None),
         "overdue_invoice_age_by_currency": aged_by_ccy,
         "overdue_due_date":                None,   # Backend Pending (PHASE10A.5)
+        "oldest_overdue_date":             oldest_overdue,
         # YTD = invoiced within the (default year-to-date) statement window.
         "ytd_invoiced":                    (invoiced_by_ccy[single] if single else None),
         "ytd_invoiced_by_currency":        invoiced_by_ccy,
@@ -822,10 +886,14 @@ def _unavailable_row(base: Dict[str, Any], default_currency: str,
 @router.get("/clients", dependencies=[_auth])
 def list_client_balances(
     from_:   str = Query("", alias="from",
-                          description="Window start YYYY-MM-DD; default = current UTC quarter start"),
-    to:      str = Query("", description="Window end YYYY-MM-DD; default = today UTC"),
+                          description="Optional ACTIVITY window start; ignored for position when scope=all_outstanding"),
+    to:      str = Query("", description="As-of / window end YYYY-MM-DD; default = today UTC"),
+    scope:   str = Query(
+        "all_outstanding",
+        description="all_outstanding (default POSITION as-of) | activity (invoice issue window)",
+    ),
     start:   int = Query(0, ge=0),
-    limit:   int = Query(15, ge=1, le=100),
+    limit:   int = Query(20, ge=1, le=100),
     country: str = Query("", description="Filter by ISO-3166 alpha-2 country"),
     q:       str = Query("", description="Case-insensitive name substring"),
     contractor: str = Query("", description="Exact wFirma contractor id"),
@@ -833,25 +901,26 @@ def list_client_balances(
     status: str = Query("", description="Filter by state: outstanding|clear|unknown"),
     refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AR fact cache"),
 ) -> JSONResponse:
-    """Read-only Client Balance roster (Wave 4 Item 4).
+    """Read-only Client Balance roster — POSITION AS OF (default).
 
-    Client identity is owned by the **Customer Master**; balance / invoice /
-    payment figures are owned by the existing **Statement authority**
-    (``aggregate_statement_from_facts`` / shared AR remaining). One bulk
-    invoices+payments load for the window — ``per_customer_wfirma_calls=0``.
-
-    Outcomes:
-      200 — roster JSON (rows may be empty)
-      400 — invalid date / ``from > to``
-      502 — bulk wFirma read failed
+    Default ``scope=all_outstanding`` loads fiscal invoices from the outstanding
+    floor through ``to`` (as-of), with settlement payments through the same
+    as-of (Slice 2). Pass ``scope=activity`` plus ``from``/``to`` for an
+    activity-window register (legacy quarter behaviour).
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    df = (from_ or "").strip() or _utc_quarter_start(today)
-    dt = (to or "").strip() or today
-    df = _validate_date("from", df)
-    dt = _validate_date("to", dt)
-    if df > dt:
-        raise HTTPException(status_code=400, detail=f"from {df!r} is after to {dt!r}")
+    ao = (to or "").strip() or today
+    ao = _validate_date("to", ao)
+    sc = (scope or "").strip().lower() or "all_outstanding"
+    if sc == "all_outstanding":
+        df = _outstanding_floor()
+        dt = ao
+    else:
+        df = (from_ or "").strip() or _utc_quarter_start(today)
+        dt = ao
+        df = _validate_date("from", df)
+        if df > dt:
+            raise HTTPException(status_code=400, detail=f"from {df!r} is after to {dt!r}")
 
     contractor_f = (contractor or "").strip()
     currency_f = (currency or "").strip().upper()
@@ -862,14 +931,13 @@ def list_client_balances(
         country=(country.strip().upper() or None),
         q=(q.strip() or None),
         active=True,
-        limit=start + limit if not contractor_f else 5000,
+        limit=5000 if not contractor_f else 5000,
     )
     if contractor_f:
         customers = [
             c for c in customers
             if (getattr(c, "bill_to_contractor_id", "") or "").strip() == contractor_f
         ]
-    page = customers[start:start + limit]
 
     from ..services.ledger_fact_universe import (
         load_ar_fact_universe,
@@ -904,7 +972,7 @@ def list_client_balances(
     }
 
     rows = []
-    for cust in page:
+    for cust in customers:
         cid = (getattr(cust, "bill_to_contractor_id", "") or "").strip()
         base = {
             "contractor_id": cid,
@@ -931,6 +999,9 @@ def list_client_balances(
     if status_f:
         rows = [r for r in rows if (r.get("state") or "").lower() == status_f]
 
+    rows = _sort_client_balance_rows(rows)
+    total = len(rows)
+    page_rows = rows[start:start + limit]
     inv_stats = uni.get("inv_stats") or {}
     pay_stats = uni.get("pay_stats") or {}
     qs = {
@@ -948,17 +1019,19 @@ def list_client_balances(
     qs["ej_ms"] = int(qs.get("ej_normalize_ms") or 0) + ej_aggregate_ms
     qs["route_wall_ms"] = int((time.perf_counter() - t_route0) * 1000)
     return JSONResponse({
-        "period":       {"from": df, "to": dt},
+        "period":       {"from": df, "to": dt, "scope": sc, "as_of": ao},
         "start":        start,
         "limit":        limit,
-        "count":        len(rows),
-        "rows":         rows,
+        "count":        len(page_rows),
+        "total":        total,
+        "rows":         page_rows,
         "filters": {
             "contractor": contractor_f or None,
             "currency": currency_f or None,
             "status": status_f or None,
             "country": (country or "").strip().upper() or None,
             "q": (q or "").strip() or None,
+            "scope": sc,
         },
         "query_stats": qs,
         "column_status": {
@@ -982,12 +1055,16 @@ def _build_management_analysis_dict(
     status: str,
     refresh: int,
     scope: str = "",
+    source: str = "local",
 ) -> Dict[str, Any]:
     """Validate → resolve window → build the receivables portfolio dict.
 
     The single AR analysis authority: ``management-analysis.json`` and
     ``management-analysis.pdf`` both call this, so the PDF is a projection of
     the same numbers the screen renders, not a second calculation.
+
+    Default ``source=local`` (reporting projection). ``refresh=1`` or
+    ``source=live`` forces the live wFirma waterfall for reconciliation.
     """
     df, dt, ao, sc = _resolve_analysis_window(scope, from_, to, as_of)
 
@@ -1003,8 +1080,14 @@ def _build_management_analysis_dict(
             status_code=400,
             detail="status must be outstanding, overdue, credit, or empty",
         )
+    src = (source or "local").strip().lower()
+    if src not in ("local", "live"):
+        raise HTTPException(status_code=400, detail="source must be local or live")
 
-    from ..services.accounting_analytics import build_management_analysis
+    from ..services.accounting_analytics import (
+        LocalProjectionUnavailable,
+        build_management_analysis,
+    )
 
     try:
         body = build_management_analysis(
@@ -1015,15 +1098,25 @@ def _build_management_analysis_dict(
             contractor_id=(contractor_id or "").strip(),
             status=st,
             force_refresh=bool(refresh),
+            source=src,
         )
+    except LocalProjectionUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": f"Local financial projection unavailable: {exc.reason}",
+                "code": "LOCAL_PROJECTION_UNAVAILABLE",
+                "hint": "Run financial reporting sync, or retry with source=live / refresh=1",
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        log.warning("[management-analysis] bulk read failed: %s", exc)
+        log.warning("[management-analysis] portfolio read failed: %s", exc)
         raise HTTPException(
             status_code=502,
             detail={
-                "error": f"wFirma portfolio read failed: {exc}",
+                "error": f"portfolio read failed: {exc}",
                 "code": "MANAGEMENT_ANALYSIS_FETCH_FAILED",
             },
         ) from exc
@@ -1033,6 +1126,7 @@ def _build_management_analysis_dict(
     filters = body.setdefault("filters", {})
     filters["scope"] = sc
     filters["outstanding_floor"] = df if sc == "all_outstanding" else None
+    filters["source"] = body.get("source") or src
     return body
 
 
@@ -1055,16 +1149,23 @@ def get_management_analysis(
         description="all_outstanding (from defaults to the configured floor, "
                     "to defaults to as_of) | custom_period | empty (= custom_period)",
     ),
-    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AR fact cache"),
+    refresh: int = Query(
+        0, ge=0, le=1,
+        description="1 = force live wFirma waterfall (bypass local projection)",
+    ),
+    source: str = Query(
+        "local",
+        description="local (default reporting projection) | live (wFirma waterfall)",
+    ),
 ) -> JSONResponse:
-    """Read-only receivables portfolio + due-date aging (Management Analysis).
+    """Receivables portfolio + due-date aging (Management Analysis / CFO).
 
-    Bulk ``invoices/find`` + ``payments/find`` only — zero per-customer
-    wFirma calls. Currency portfolios stay separate (no FX grand total).
-    Drill-down remains ``/clients/{id}/statement.json``.
+    Default path: local financial_reporting projection (no live waterfall).
+    ``refresh=1`` or ``source=live`` for controlled reconciliation.
+    Currency portfolios stay separate (no FX grand total).
     """
     return JSONResponse(_build_management_analysis_dict(
-        from_, to, as_of, currency, contractor_id, status, refresh, scope,
+        from_, to, as_of, currency, contractor_id, status, refresh, scope, source,
     ))
 
 
@@ -1078,11 +1179,12 @@ def _build_payables_analysis_dict(
     aging_bucket: str,
     refresh: int,
     scope: str = "",
+    source: str = "local",
 ) -> Dict[str, Any]:
     """Validate → resolve window → build the payables portfolio dict.
 
     The single AP analysis authority, shared by ``payables-analysis.json`` and
-    the Management Analysis PDF.
+    the Management Analysis PDF. Default ``source=local``.
     """
     df, dt, ao, sc = _resolve_analysis_window(scope, from_, to, as_of)
 
@@ -1100,16 +1202,22 @@ def _build_payables_analysis_dict(
         )
     bucket = (aging_bucket or "").strip()
     allowed_buckets = {
-        "not_due", "b_1_30", "b_31_90", "b_91_180", "b_180_plus",
-        "due_date_unavailable",
+        "not_due", "b_1_30", "b_31_60", "b_61_90", "b_91_180",
+        "b_181_365", "b_365_plus", "due_date_unavailable",
     }
     if bucket and bucket not in allowed_buckets:
         raise HTTPException(
             status_code=400,
             detail=f"aging_bucket must be one of {sorted(allowed_buckets)} or empty",
         )
+    src = (source or "local").strip().lower()
+    if src not in ("local", "live"):
+        raise HTTPException(status_code=400, detail="source must be local or live")
 
-    from ..services.accounting_analytics import build_payables_analysis
+    from ..services.accounting_analytics import (
+        LocalProjectionUnavailable,
+        build_payables_analysis,
+    )
 
     try:
         body = build_payables_analysis(
@@ -1121,15 +1229,25 @@ def _build_payables_analysis_dict(
             status=st,
             aging_bucket=bucket,
             force_refresh=bool(refresh),
+            source=src,
         )
+    except LocalProjectionUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": f"Local financial projection unavailable: {exc.reason}",
+                "code": "LOCAL_PROJECTION_UNAVAILABLE",
+                "hint": "Run financial reporting sync, or retry with source=live / refresh=1",
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        log.warning("[payables-analysis] bulk read failed: %s", exc)
+        log.warning("[payables-analysis] portfolio read failed: %s", exc)
         raise HTTPException(
             status_code=502,
             detail={
-                "error": f"wFirma payables read failed: {exc}",
+                "error": f"payables portfolio read failed: {exc}",
                 "code": "PAYABLES_ANALYSIS_FETCH_FAILED",
             },
         ) from exc
@@ -1137,6 +1255,7 @@ def _build_payables_analysis_dict(
     filters = body.setdefault("filters", {})
     filters["scope"] = sc
     filters["outstanding_floor"] = df if sc == "all_outstanding" else None
+    filters["source"] = body.get("source") or src
     return body
 
 
@@ -1156,24 +1275,26 @@ def get_payables_analysis(
     ),
     aging_bucket: str = Query(
         "",
-        description="Optional bucket: not_due|b_1_30|b_31_90|b_91_180|b_180_plus|due_date_unavailable",
+        description="Optional bucket: not_due|b_1_30|b_31_60|b_61_90|b_91_180|b_181_365|b_365_plus|due_date_unavailable",
     ),
     scope: str = Query(
         "",
         description="all_outstanding (from defaults to the configured floor, "
                     "to defaults to as_of) | custom_period | empty (= custom_period)",
     ),
-    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
+    refresh: int = Query(
+        0, ge=0, le=1,
+        description="1 = force live wFirma waterfall (bypass local projection)",
+    ),
+    source: str = Query(
+        "local",
+        description="local (default reporting projection) | live (wFirma waterfall)",
+    ),
 ) -> JSONResponse:
-    """Read-only payables portfolio + creditor aging (Management Analysis).
-
-    Bulk ``expenses/find`` + ``payments/find`` only — zero per-supplier
-    wFirma calls. Currency portfolios stay separate (no FX grand total).
-    Drill-down: ``/suppliers/{id}/statement.json``.
-    """
+    """Payables portfolio + creditor aging. Default local projection; live on refresh."""
     return JSONResponse(_build_payables_analysis_dict(
         from_, to, as_of, currency, contractor_id, status, aging_bucket,
-        refresh, scope,
+        refresh, scope, source,
     ))
 
 
@@ -1412,7 +1533,8 @@ def get_management_analysis_pdf(
     ap_status: str = Query("", description="AP status: outstanding | overdue | credit"),
     aging_bucket: str = Query("", description="Optional AP bucket filter"),
     scope: str = Query("", description="all_outstanding | custom_period | empty"),
-    refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL fact caches"),
+    refresh: int = Query(0, ge=0, le=1, description="1 = force live wFirma waterfall"),
+    source: str = Query("local", description="local | live"),
 ) -> Response:
     """Read-only PDF rendering of Management Analysis (AR + AP).
 
@@ -1423,11 +1545,11 @@ def get_management_analysis_pdf(
     grand total anywhere in the document.
     """
     ar = _build_management_analysis_dict(
-        from_, to, as_of, currency, contractor_id, status, refresh, scope,
+        from_, to, as_of, currency, contractor_id, status, refresh, scope, source,
     )
     ap = _build_payables_analysis_dict(
         from_, to, as_of, currency, contractor_id, ap_status, aging_bucket,
-        refresh, scope,
+        refresh, scope, source,
     )
 
     try:

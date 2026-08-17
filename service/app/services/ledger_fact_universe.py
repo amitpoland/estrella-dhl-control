@@ -4,6 +4,14 @@ Read-only. Never a second accounting authority — only caches the same bulk
 invoice/payment/expense XML→fact projections already used by Management
 Analysis and Client/Supplier ledgers.
 
+Period semantics (POSITION settlements vs ACTIVITY documents):
+  • Invoices / expenses — ACTIVITY window: issue ``date`` in ``[date_from, date_to]``
+    as callers pass (issue-date filter).
+  • Payments — POSITION settlements: every payment with ``payment_date <= as_of_upper``
+    (default ``date_to``) that can settle documents in the universe. Payments are
+    NOT dropped merely because ``payment_date < date_from``. Fetch + Python filter
+    use an empty / early floor and ``date_to`` as the upper bound for payments only.
+
 Process-local only (no cross-user disk, no auth principal in the value).
 ``force=True`` (Refresh) bypasses TTL and starts a new load; in-flight
 callers for the same key still coalesce onto the newest load after eviction.
@@ -172,12 +180,17 @@ def load_ar_fact_universe(
     force: bool = False,
     ttl_s: float = DEFAULT_TTL_S,
 ) -> Dict[str, Any]:
-    """Bulk fiscal invoices + payments for a window. Zero per-customer wFirma calls.
+    """Bulk fiscal invoices + POSITION payments. Zero per-customer wFirma calls.
 
     Default ``types`` is :data:`FISCAL_AR_INVOICE_TYPES` (normal + correction).
     Proforma is excluded so Client Balance and Management Analysis cannot
     diverge into commercial AR. Pass ``COMMERCIAL_AR_INVOICE_TYPES`` only for
     an explicitly non-fiscal register.
+
+    Invoices keep ACTIVITY filter ``[date_from, date_to]``. Payments use
+    settlement as-of: floor empty (all history) through ``date_to`` so an
+    out-of-window payment still reduces outstanding when it settles an
+    in-window invoice.
     """
     df = (date_from or "").strip()
     dt = (date_to or "").strip()
@@ -197,11 +210,12 @@ def load_ar_fact_universe(
         inv_nodes = wfirma_client.fetch_invoices_for_period(
             df, dt, types=types, stats=inv_stats
         )
-        pay_nodes = wfirma_client.fetch_payments_for_period(df, dt, stats=pay_stats)
+        # POSITION settlements: no lower bound — only payment_date <= date_to.
+        pay_nodes = wfirma_client.fetch_payments_for_period("", dt, stats=pay_stats)
         wfirma_wait_ms = _sum_wait(inv_stats) + _sum_wait(pay_stats)
         t_n0 = time.perf_counter()
         inv_nodes = _python_filter_by_date(inv_nodes, df, dt, "date")
-        pay_nodes = _python_filter_by_date(pay_nodes, df, dt, "date")
+        pay_nodes = _python_filter_by_date(pay_nodes, "", dt, "date")
         invoice_facts = [_parse_invoice_fact(n) for n in inv_nodes]
         payment_facts = [_parse_payment_fact(n) for n in pay_nodes]
         ej_normalize_ms = int((time.perf_counter() - t_n0) * 1000)
@@ -232,7 +246,11 @@ def load_ap_fact_universe(
     force: bool = False,
     ttl_s: float = DEFAULT_TTL_S,
 ) -> Dict[str, Any]:
-    """Bulk expenses + payments for a window. Zero per-supplier wFirma calls."""
+    """Bulk expenses + POSITION payments. Zero per-supplier wFirma calls.
+
+    Expenses keep ACTIVITY filter ``[date_from, date_to]``. Payments use
+    settlement as-of through ``date_to`` (empty lower bound).
+    """
     df = (date_from or "").strip()
     dt = (date_to or "").strip()
     if not df or not dt:
@@ -247,11 +265,11 @@ def load_ap_fact_universe(
         exp_stats: Dict[str, Any] = {}
         pay_stats: Dict[str, Any] = {}
         exp_nodes = wfirma_client.fetch_expenses_for_period(df, dt, stats=exp_stats)
-        pay_nodes = wfirma_client.fetch_payments_for_period(df, dt, stats=pay_stats)
+        pay_nodes = wfirma_client.fetch_payments_for_period("", dt, stats=pay_stats)
         wfirma_wait_ms = _sum_wait(exp_stats) + _sum_wait(pay_stats)
         t_n0 = time.perf_counter()
         exp_nodes = _python_filter_by_date(exp_nodes, df, dt, "date")
-        pay_nodes = _python_filter_by_date(pay_nodes, df, dt, "date")
+        pay_nodes = _python_filter_by_date(pay_nodes, "", dt, "date")
         expense_facts = [_parse_expense_fact(n) for n in exp_nodes]
         payment_facts = [_parse_payment_fact(n) for n in pay_nodes]
         ej_normalize_ms = int((time.perf_counter() - t_n0) * 1000)

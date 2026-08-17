@@ -61,15 +61,15 @@ def _ar(scope="all_outstanding", currencies=("EUR",)) -> dict:
         "EUR": {"currency": "EUR", "total_receivable": "4500.00", "overdue": "1500.00",
                  "not_due": "3000.00", "customer_credits": "200.00",
                  "customers_outstanding": 3, "oldest_overdue_days": 47,
-                 "aging": {"not_due": "1500.00", "b_1_30": "1500.00", "b_31_90": "0.00",
-                            "b_91_180": "0.00", "b_180_plus": "0.00",
+                 "aging": {"not_due": "1500.00", "b_1_30": "1500.00", "b_31_60": "0.00",
+                            "b_91_180": "0.00", "b_365_plus": "0.00",
                             "due_date_unavailable": "0.00"},
                  "reconciliation_ok": True},
         "USD": {"currency": "USD", "total_receivable": "800.00", "overdue": "0.00",
                  "not_due": "800.00", "customer_credits": "0.00",
                  "customers_outstanding": 1, "oldest_overdue_days": 0,
-                 "aging": {"not_due": "800.00", "b_1_30": "0.00", "b_31_90": "0.00",
-                            "b_91_180": "0.00", "b_180_plus": "0.00",
+                 "aging": {"not_due": "800.00", "b_1_30": "0.00", "b_31_60": "0.00",
+                            "b_91_180": "0.00", "b_365_plus": "0.00",
                             "due_date_unavailable": "0.00"},
                  "reconciliation_ok": True},
     }
@@ -77,13 +77,13 @@ def _ar(scope="all_outstanding", currencies=("EUR",)) -> dict:
         {"contractor_id": "C1", "customer_name": "Maison Lyon", "currency": "EUR",
          "outstanding": "3000.00", "overdue": "1500.00", "credit_balance": "200.00",
          "oldest_due_date": "2026-05-01", "open_invoice_count": 2,
-         "not_due": "1500.00", "b_1_30": "1500.00", "b_31_90": "0.00",
-         "b_91_180": "0.00", "b_180_plus": "0.00", "due_date_unavailable": "0.00"},
+         "not_due": "1500.00", "b_1_30": "1500.00", "b_31_60": "0.00",
+         "b_91_180": "0.00", "b_365_plus": "0.00", "due_date_unavailable": "0.00"},
         {"contractor_id": "C2", "customer_name": "Bijoux SA", "currency": "USD",
          "outstanding": "800.00", "overdue": "0.00", "credit_balance": "0.00",
          "oldest_due_date": "2026-09-01", "open_invoice_count": 1,
-         "not_due": "800.00", "b_1_30": "0.00", "b_31_90": "0.00",
-         "b_91_180": "0.00", "b_180_plus": "0.00", "due_date_unavailable": "0.00"},
+         "not_due": "800.00", "b_1_30": "0.00", "b_31_60": "0.00",
+         "b_91_180": "0.00", "b_365_plus": "0.00", "due_date_unavailable": "0.00"},
     ]
     return {
         "generated_at": "2026-08-10T09:00:00Z",
@@ -106,27 +106,27 @@ def _ap(currencies=("EUR",)) -> dict:
         "EUR": {"currency": "EUR", "gross_payable": "2200.00", "overdue": "700.00",
                  "not_due": "1500.00", "supplier_credits": "100.00",
                  "net_payable": "2100.00", "suppliers_outstanding": 2,
-                 "aging": {"not_due": "1500.00", "b_1_30": "700.00", "b_31_90": "0.00",
-                            "b_91_180": "0.00", "b_180_plus": "0.00",
+                 "aging": {"not_due": "1500.00", "b_1_30": "700.00", "b_31_60": "0.00",
+                            "b_91_180": "0.00", "b_365_plus": "0.00",
                             "due_date_unavailable": "0.00"}},
         "USD": {"currency": "USD", "gross_payable": "300.00", "overdue": "0.00",
                  "not_due": "300.00", "supplier_credits": "0.00",
                  "net_payable": "300.00", "suppliers_outstanding": 1,
-                 "aging": {"not_due": "300.00", "b_1_30": "0.00", "b_31_90": "0.00",
-                            "b_91_180": "0.00", "b_180_plus": "0.00",
+                 "aging": {"not_due": "300.00", "b_1_30": "0.00", "b_31_60": "0.00",
+                            "b_91_180": "0.00", "b_365_plus": "0.00",
                             "due_date_unavailable": "0.00"}},
     }
     sups = [
         {"contractor_id": "S1", "supplier_name": "Gemstone Traders", "currency": "EUR",
          "gross_payable": "2200.00", "overdue": "700.00", "credit_balance": "100.00",
          "oldest_due_date": "2026-06-01", "open_expense_count": 2,
-         "not_due": "1500.00", "b_1_30": "700.00", "b_31_90": "0.00",
-         "b_91_180": "0.00", "b_180_plus": "0.00", "due_date_unavailable": "0.00"},
+         "not_due": "1500.00", "b_1_30": "700.00", "b_31_60": "0.00",
+         "b_91_180": "0.00", "b_365_plus": "0.00", "due_date_unavailable": "0.00"},
         {"contractor_id": "S2", "supplier_name": "Setter Co", "currency": "USD",
          "gross_payable": "300.00", "overdue": "0.00", "credit_balance": "0.00",
          "oldest_due_date": "2026-10-01", "open_expense_count": 1,
-         "not_due": "300.00", "b_1_30": "0.00", "b_31_90": "0.00",
-         "b_91_180": "0.00", "b_180_plus": "0.00", "due_date_unavailable": "0.00"},
+         "not_due": "300.00", "b_1_30": "0.00", "b_31_60": "0.00",
+         "b_91_180": "0.00", "b_365_plus": "0.00", "due_date_unavailable": "0.00"},
     ]
     return {
         "generated_at": "2026-08-10T09:00:00Z",
@@ -192,7 +192,7 @@ def test_aging_row_is_the_summary_aging_not_a_renderer_sum():
     """Break the DTO's aging block and the page must follow it — proving the
     renderer reads the summary rather than re-adding the exposure rows."""
     ar, ap = _ar(), _ap()
-    ar["currency_summaries"][0]["aging"]["b_31_90"] = "12345.67"
+    ar["currency_summaries"][0]["aging"]["b_31_60"] = "12345.67"
     t = _text(render_management_analysis_pdf(ar, ap))
     assert "12345.67" in t, (
         "the aging row must project currency_summaries[].aging — a renderer-side "

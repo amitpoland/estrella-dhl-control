@@ -436,14 +436,16 @@ def _currency_section_flowables(
         ("BOTTOMPADDING",  (0,0), (-1,-1), 4),
     ]))
 
-    # Aging card.
+    # Aging card — canonical financial_aging keys (MA / statement parity).
     method = _aging_method_label(aging.get("method") or "due_date")
     aging_rows = [
-        ["current", _safe(aging.get("current") or "0.00")],
-        ["1–30",    _safe(aging.get("1_30")    or "0.00")],
-        ["31–60",   _safe(aging.get("31_60")   or "0.00")],
-        ["61–90",   _safe(aging.get("61_90")   or "0.00")],
-        ["90+",     _safe(aging.get("90_plus") or "0.00")],
+        ["not due",  _safe(aging.get("not_due") or aging.get("current") or "0.00")],
+        ["1–30",     _safe(aging.get("b_1_30") or aging.get("1_30") or "0.00")],
+        ["31–60",    _safe(aging.get("b_31_60") or aging.get("31_60") or "0.00")],
+        ["61–90",    _safe(aging.get("b_61_90") or aging.get("61_90") or "0.00")],
+        ["91–180",   _safe(aging.get("b_91_180") or "0.00")],
+        ["181–365",  _safe(aging.get("b_181_365") or "0.00")],
+        ["365+",     _safe(aging.get("b_365_plus") or aging.get("90_plus") or "0.00")],
     ]
     if aging.get("due_date_unavailable") not in (None, "", "0.00"):
         aging_rows.append([
@@ -797,14 +799,16 @@ def render_statement_pdf(
 # every figure below is a string the aggregator / analytics layer already
 # produced and the screen already shows (screen DTO == PDF DTO).
 
-# AP aging buckets, in report order. Same keys as ``accounting_analytics._BUCKETS``
-# so Supplier Statement, Payables Analysis and this PDF cannot disagree.
+# AP/MA aging buckets, in report order. Same keys as financial_aging
+# (via accounting_analytics) so Supplier Statement / MA PDF cannot disagree.
 _AP_BUCKETS: Tuple[Tuple[str, str], ...] = (
     ("not_due",              "Not due"),
     ("b_1_30",               "1–30"),
-    ("b_31_90",              "31–90"),
+    ("b_31_60",              "31–60"),
+    ("b_61_90",              "61–90"),
     ("b_91_180",             "91–180"),
-    ("b_180_plus",           "180+"),
+    ("b_181_365",            "181–365"),
+    ("b_365_plus",           "365+"),
     ("due_date_unavailable", "Due date n/a"),
 )
 
@@ -1118,7 +1122,7 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
     out.append(cards)
     out.append(Spacer(1, 8))
 
-    bucket_headers = ["", "Not due", "1–30", "31–90", "91–180", "180+", "Due n/a"]
+    bucket_headers = ["", "Not due", "1–30", "31–60", "61–90", "91–180", "181–365", "365+", "Due n/a"]
     def _bucket_row(label, src):
         return [label] + [str((src or {}).get(k) or "0.00")
                           for k, _ in _AP_BUCKETS]
@@ -1127,7 +1131,7 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
         bucket_headers,
         [_bucket_row("Receivables", ar_sum.get("aging")),
          _bucket_row("Payables", ap_sum.get("aging"))],
-        [30 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm],
+        [22 * mm, 20 * mm, 18 * mm, 18 * mm, 18 * mm, 20 * mm, 22 * mm, 18 * mm, 22 * mm],
         right_from=1,
     ))
     out.append(Spacer(1, 8))

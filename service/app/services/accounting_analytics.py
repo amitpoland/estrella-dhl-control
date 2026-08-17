@@ -9,10 +9,11 @@ No wFirma writes. No second ledger DB. No FX consolidation across
 USD/EUR/PLN. Aging uses invoice ``paymentdate`` (due date), never issue
 date, for positive remainings.
 
-Period semantics (identical to Client Ledger):
-  • invoices included by issue date in [from, to]
-  • payments included by payment date in [from, to]
-  • window is never silently broadened
+Period semantics (identical to Client Ledger / fact-universe loader):
+  • invoices / expenses — ACTIVITY: issue date in [from, to]
+  • payments — POSITION settlements: payment_date <= as_of upper (date_to);
+    not dropped merely because payment_date < from
+  • remaining_after_payments / match_payments_* remain the money authority
 """
 from __future__ import annotations
 
@@ -20,8 +21,16 @@ import time
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .financial_aging import (
+    AGING_BUCKETS_WITH_UNAVAILABLE,
+    due_bucket,
+    empty_buckets,
+    overdue_total,
+    sum_buckets as _sum_aging_buckets,
+)
 from .ledger_aggregator import (
     _days_between,
     _parse_expense_fact,
@@ -35,25 +44,14 @@ from .ledger_aggregator import (
 from . import wfirma_client
 
 
-# Due-date aging buckets (Management Analysis). Distinct from the older
-# statement invoice_age buckets (current/1_30/31_60/61_90/90_plus).
-_BUCKETS = ("not_due", "b_1_30", "b_31_90", "b_91_180", "b_180_plus", "due_date_unavailable")
-
-
-def _due_bucket(days_overdue: int) -> str:
-    if days_overdue <= 0:
-        return "not_due"
-    if days_overdue <= 30:
-        return "b_1_30"
-    if days_overdue <= 90:
-        return "b_31_90"
-    if days_overdue <= 180:
-        return "b_91_180"
-    return "b_180_plus"
+# Re-export canonical keys for statement/supplier aging consumers that still
+# import from this module (ledger_aggregator supplier statement path).
+_BUCKETS = AGING_BUCKETS_WITH_UNAVAILABLE
+_due_bucket = due_bucket
 
 
 def _empty_buckets() -> Dict[str, Decimal]:
-    return {b: Decimal("0") for b in _BUCKETS}
+    return empty_buckets(include_unavailable=True)
 
 
 def _sum_buckets(rows: List[Dict[str, Any]]) -> Dict[str, Decimal]:
@@ -62,11 +60,7 @@ def _sum_buckets(rows: List[Dict[str, Any]]) -> Dict[str, Decimal]:
     The currency-level aging breakdown belongs to this layer, not to the screen
     or the PDF: both are projections of the summary this returns.
     """
-    acc = _empty_buckets()
-    for r in rows:
-        for b in _BUCKETS:
-            acc[b] += Decimal(r[b])
-    return acc
+    return _sum_aging_buckets(rows, include_unavailable=True)
 
 
 def _python_filter_by_date(nodes, df: str, dt: str, date_tag: str = "date"):
@@ -257,12 +251,7 @@ def build_portfolio_from_facts(
         receivable = sum((buckets[b] for b in _BUCKETS), Decimal("0"))
         credit = row["credit_balance"]
         outstanding = receivable  # positive AR only; credits separate
-        overdue = (
-            buckets["b_1_30"]
-            + buckets["b_31_90"]
-            + buckets["b_91_180"]
-            + buckets["b_180_plus"]
-        )
+        overdue = overdue_total(buckets)
         not_due = buckets["not_due"]
 
         if status_f == "outstanding" and outstanding <= 0 and credit <= 0:
@@ -280,9 +269,11 @@ def build_portfolio_from_facts(
             "credit_balance": _q(credit),
             "not_due": _q(not_due),
             "b_1_30": _q(buckets["b_1_30"]),
-            "b_31_90": _q(buckets["b_31_90"]),
+            "b_31_60": _q(buckets["b_31_60"]),
+            "b_61_90": _q(buckets["b_61_90"]),
             "b_91_180": _q(buckets["b_91_180"]),
-            "b_180_plus": _q(buckets["b_180_plus"]),
+            "b_181_365": _q(buckets["b_181_365"]),
+            "b_365_plus": _q(buckets["b_365_plus"]),
             "due_date_unavailable": _q(buckets["due_date_unavailable"]),
             "outstanding": _q(outstanding),
             "overdue": _q(overdue),
@@ -376,6 +367,14 @@ def build_portfolio_from_facts(
     }
 
 
+class LocalProjectionUnavailable(RuntimeError):
+    """Raised when source=local but the reporting projection is empty/missing."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 def build_management_analysis(
     *,
     date_from: str,
@@ -386,8 +385,14 @@ def build_management_analysis(
     status: str = "",
     types: tuple = (),
     force_refresh: bool = False,
+    source: str = "local",
+    storage_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Live bulk portfolio read — ZERO per-customer wFirma calls.
+    """Receivables portfolio for Management Analysis / CFO MIS.
+
+    Default ``source=local`` reads the verified financial reporting projection
+    (zero live wFirma waterfall). Use ``source=live`` or ``force_refresh=True``
+    for controlled reconciliation / cache-bypass live reads.
 
     Default invoice types = fiscal AR (normal + correction). Proforma is
     never part of Management Analysis receivables.
@@ -407,7 +412,37 @@ def build_management_analysis(
     )
 
     type_set = types if types else FISCAL_AR_INVOICE_TYPES
-    uni = load_ar_fact_universe(df, dt, types=type_set, force=force_refresh)
+    src = (source or "local").strip().lower()
+    if force_refresh:
+        src = "live"
+    if src not in ("local", "live"):
+        raise ValueError("source must be local or live")
+
+    provenance: Dict[str, Any] = {}
+    if src == "local":
+        from .local_fact_universe import (
+            load_ar_fact_universe_local,
+            local_projection_available,
+        )
+        from ..core.config import settings
+
+        root = Path(storage_root) if storage_root else Path(settings.storage_root)
+        ok, reason = local_projection_available(root)
+        if not ok:
+            raise LocalProjectionUnavailable(reason)
+        uni = load_ar_fact_universe_local(root, df, dt, types=type_set)
+        provenance = uni.get("provenance") or {}
+    else:
+        uni = load_ar_fact_universe(df, dt, types=type_set, force=force_refresh)
+        provenance = {
+            "source": "live",
+            "freshness": "live",
+            "reconciliation_status": "live_wfirma",
+            "as_of_generated_at": datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat(),
+        }
+
     invoice_facts = uni["invoice_facts"]
     payment_facts = uni["payment_facts"]
     inv_stats = uni.get("inv_stats") or {}
@@ -415,6 +450,7 @@ def build_management_analysis(
 
     t_agg0 = time.perf_counter()
     query_stats = {
+        "source": src,
         "invoice_api_calls": int(inv_stats.get("api_calls") or 0),
         "payment_api_calls": int(pay_stats.get("api_calls") or 0),
         "invoice_pages": int(inv_stats.get("pages") or 0),
@@ -436,6 +472,7 @@ def build_management_analysis(
     query_stats.update(timing_fields_from_universe(uni))
     health = {
         "ok": True,
+        "source": src,
         "invoice_cap_hit": inv_stats.get("stopped_reason") == "safety_cap",
         "payment_cap_hit": pay_stats.get("stopped_reason") == "safety_cap",
         "invoice_paging_stalled": inv_stats.get("stopped_reason") == "no_new_ids",
@@ -444,6 +481,9 @@ def build_management_analysis(
     if health["invoice_cap_hit"] or health["payment_cap_hit"]:
         health["ok"] = False
         health["note"] = "Safety cap hit — portfolio may be incomplete"
+    if src == "local" and provenance.get("freshness") == "stale":
+        health["ok"] = True
+        health["note"] = "Local projection is stale — refresh for live reconciliation"
 
     portfolio = build_portfolio_from_facts(
         invoice_facts,
@@ -461,6 +501,10 @@ def build_management_analysis(
     qs["ej_aggregate_ms"] = ej_aggregate_ms
     qs["ej_ms"] = int(qs.get("ej_normalize_ms") or 0) + ej_aggregate_ms
     portfolio["query_stats"] = qs
+    portfolio["source"] = provenance.get("source") or src
+    portfolio["freshness"] = provenance.get("freshness") or src
+    portfolio["reconciliation_status"] = provenance.get("reconciliation_status")
+    portfolio["projection"] = provenance.get("projection")
     return portfolio
 
 
@@ -633,12 +677,7 @@ def build_payables_portfolio_from_facts(
         buckets = row["buckets"]
         gross_payable = sum((buckets[b] for b in _BUCKETS), Decimal("0"))
         credit = row["credit_balance"]
-        overdue = (
-            buckets["b_1_30"]
-            + buckets["b_31_90"]
-            + buckets["b_91_180"]
-            + buckets["b_180_plus"]
-        )
+        overdue = overdue_total(buckets)
         not_due = buckets["not_due"]
         net = gross_payable - credit
 
@@ -661,9 +700,11 @@ def build_payables_portfolio_from_facts(
             "net_payable": _q(net),
             "not_due": _q(not_due),
             "b_1_30": _q(buckets["b_1_30"]),
-            "b_31_90": _q(buckets["b_31_90"]),
+            "b_31_60": _q(buckets["b_31_60"]),
+            "b_61_90": _q(buckets["b_61_90"]),
             "b_91_180": _q(buckets["b_91_180"]),
-            "b_180_plus": _q(buckets["b_180_plus"]),
+            "b_181_365": _q(buckets["b_181_365"]),
+            "b_365_plus": _q(buckets["b_365_plus"]),
             "due_date_unavailable": _q(buckets["due_date_unavailable"]),
             "overdue": _q(overdue),
             "oldest_due_date": row["oldest_due_date"] or None,
@@ -771,8 +812,10 @@ def build_payables_analysis(
     status: str = "",
     aging_bucket: str = "",
     force_refresh: bool = False,
+    source: str = "local",
+    storage_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Live bulk AP portfolio — ZERO per-supplier wFirma calls."""
+    """AP portfolio — default local projection; live only on refresh/source=live."""
     df = (date_from or "").strip()
     dt = (date_to or "").strip()
     if not df or not dt:
@@ -783,7 +826,37 @@ def build_payables_analysis(
 
     from .ledger_fact_universe import load_ap_fact_universe, timing_fields_from_universe
 
-    uni = load_ap_fact_universe(df, dt, force=force_refresh)
+    src = (source or "local").strip().lower()
+    if force_refresh:
+        src = "live"
+    if src not in ("local", "live"):
+        raise ValueError("source must be local or live")
+
+    provenance: Dict[str, Any] = {}
+    if src == "local":
+        from .local_fact_universe import (
+            load_ap_fact_universe_local,
+            local_projection_available,
+        )
+        from ..core.config import settings
+
+        root = Path(storage_root) if storage_root else Path(settings.storage_root)
+        ok, reason = local_projection_available(root)
+        if not ok:
+            raise LocalProjectionUnavailable(reason)
+        uni = load_ap_fact_universe_local(root, df, dt)
+        provenance = uni.get("provenance") or {}
+    else:
+        uni = load_ap_fact_universe(df, dt, force=force_refresh)
+        provenance = {
+            "source": "live",
+            "freshness": "live",
+            "reconciliation_status": "live_wfirma",
+            "as_of_generated_at": datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat(),
+        }
+
     expense_facts = uni["expense_facts"]
     payment_facts = uni["payment_facts"]
     exp_stats = uni.get("exp_stats") or {}
@@ -791,6 +864,7 @@ def build_payables_analysis(
 
     t_agg0 = time.perf_counter()
     query_stats = {
+        "source": src,
         "expense_api_calls": int(exp_stats.get("api_calls") or 0),
         "payment_api_calls": int(pay_stats.get("api_calls") or 0),
         "expense_pages": int(exp_stats.get("pages") or 0),
@@ -812,6 +886,7 @@ def build_payables_analysis(
     query_stats.update(timing_fields_from_universe(uni))
     health = {
         "ok": True,
+        "source": src,
         "expense_cap_hit": exp_stats.get("stopped_reason") == "safety_cap",
         "payment_cap_hit": pay_stats.get("stopped_reason") == "safety_cap",
         "expense_paging_stalled": exp_stats.get("stopped_reason") == "no_new_ids",
@@ -822,6 +897,8 @@ def build_payables_analysis(
     if health["expense_cap_hit"] or health["payment_cap_hit"]:
         health["ok"] = False
         health["note"] = "Safety cap hit — portfolio may be incomplete"
+    if src == "local" and provenance.get("freshness") == "stale":
+        health["note"] = "Local projection is stale — refresh for live reconciliation"
 
     portfolio = build_payables_portfolio_from_facts(
         expense_facts,
@@ -840,10 +917,15 @@ def build_payables_analysis(
     qs["ej_aggregate_ms"] = ej_aggregate_ms
     qs["ej_ms"] = int(qs.get("ej_normalize_ms") or 0) + ej_aggregate_ms
     portfolio["query_stats"] = qs
+    portfolio["source"] = provenance.get("source") or src
+    portfolio["freshness"] = provenance.get("freshness") or src
+    portfolio["reconciliation_status"] = provenance.get("reconciliation_status")
+    portfolio["projection"] = provenance.get("projection")
     return portfolio
 
 
 __all__ = [
+    "LocalProjectionUnavailable",
     "build_management_analysis",
     "build_portfolio_from_facts",
     "build_payables_analysis",

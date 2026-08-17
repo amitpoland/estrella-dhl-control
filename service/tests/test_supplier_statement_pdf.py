@@ -84,12 +84,12 @@ def _stmt(*, currencies=("EUR",), warnings=None) -> dict:
                  "net_payable": "60.00", "entry_count": 1},
     }
     aging = {
-        "EUR": {"not_due": "0.00", "b_1_30": "100.00", "b_31_90": "0.00",
-                 "b_91_180": "0.00", "b_180_plus": "0.00",
+        "EUR": {"not_due": "0.00", "b_1_30": "100.00", "b_31_60": "0.00",
+                 "b_91_180": "0.00", "b_365_plus": "0.00",
                  "due_date_unavailable": "0.00", "total": "100.00",
                  "method": "due_date"},
-        "USD": {"not_due": "60.00", "b_1_30": "0.00", "b_31_90": "0.00",
-                 "b_91_180": "0.00", "b_180_plus": "0.00",
+        "USD": {"not_due": "60.00", "b_1_30": "0.00", "b_31_60": "0.00",
+                 "b_91_180": "0.00", "b_365_plus": "0.00",
                  "due_date_unavailable": "0.00", "total": "60.00",
                  "method": "due_date"},
     }
@@ -172,7 +172,7 @@ def test_pdf_prints_no_figure_the_statement_does_not_contain():
 def test_aging_summary_uses_the_ap_buckets():
     t = _text(render_supplier_statement_pdf(_stmt()))
     assert "Aging" in t
-    for label in ("Not due", "1–30", "31–90", "91–180", "180+"):
+    for label in ("Not due", "1–30", "31–60", "61–90", "91–180", "181–365", "365+"):
         assert label in t, f"AP bucket {label!r} missing"
 
 

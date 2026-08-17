@@ -19,7 +19,7 @@ Coverage:
     7. bulk wFirma failure -> 502 (no fabricated roster)
     8. customer with no contractor id -> unavailable row, no fabricated figures
     9. from > to -> 400
-   10. default window is current UTC quarter when from/to omitted
+   10. default window is all_outstanding (position as-of) when scope omitted
    11. pagination: start/limit slice the roster
    12. query_stats.per_customer_wfirma_calls == 0
    13. query_stats exposes wfirma_wait_ms / ej_ms timing split
@@ -59,9 +59,10 @@ def _stmt_single(outstanding="600.00", invoiced="1000.00",
                   "entry_count": 3},
         },
         "aging_per_currency": {
-            ccy: {"method": "invoice_age", "current": current,
-                  "1_30": "200.00", "31_60": "0.00", "61_90": "0.00",
-                  "90_plus": "300.00", "total": total},
+            ccy: {"method": "invoice_age", "not_due": current,
+                  "b_1_30": "200.00", "b_31_60": "0.00", "b_61_90": "0.00",
+                  "b_91_180": "0.00", "b_181_365": "0.00",
+                  "b_365_plus": "300.00", "total": total},
         },
     }
 
@@ -112,8 +113,9 @@ def test_reducer_multi_currency_single_fields_none():
         "invoiced": "50.00", "credited": "0.00", "received": "0.00",
         "outstanding": "50.00", "entry_count": 1}
     stmt["aging_per_currency"]["EUR"] = {
-        "method": "invoice_age", "current": "50.00", "1_30": "0.00",
-        "31_60": "0.00", "61_90": "0.00", "90_plus": "0.00", "total": "50.00"}
+        "method": "invoice_age", "not_due": "50.00", "b_1_30": "0.00",
+        "b_31_60": "0.00", "b_61_90": "0.00", "b_91_180": "0.00",
+        "b_181_365": "0.00", "b_365_plus": "0.00", "total": "50.00"}
     row = R._roster_row_from_statement("USD", stmt)
     assert row["open"] is None
     assert row["overdue_invoice_age"] is None
@@ -190,22 +192,27 @@ def test_route_customer_without_contractor_id(client):
 
 def test_route_from_after_to_is_400(client):
     with patch.object(R, "_cm_list_customers", return_value=[]):
-        r = client.get("/api/v1/ledgers/clients?from=2026-12-01&to=2026-01-01",
-                       headers=_auth_headers())
+        r = client.get(
+            "/api/v1/ledgers/clients?scope=activity&from=2026-12-01&to=2026-01-01",
+            headers=_auth_headers(),
+        )
     assert r.status_code == 400
 
 
-def test_route_default_window_is_current_quarter(client):
+def test_route_default_window_is_all_outstanding(client):
     with patch.object(R, "_cm_list_customers", return_value=[]), \
          patch("app.services.ledger_fact_universe.load_ar_fact_universe",
                return_value=_ar_universe()), \
          patch("app.services.ledger_aggregator.build_statement_index_by_contractor",
-               return_value={}):
+               return_value={}), \
+         patch.object(R, "_outstanding_floor", return_value="2020-01-01"):
         r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
     period = r.json()["period"]
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    assert period["from"] == R._utc_quarter_start(today)
+    assert period["scope"] == "all_outstanding"
+    assert period["from"] == "2020-01-01"
     assert period["to"] == today
+    assert period["as_of"] == today
 
 
 def test_route_query_stats_exposes_timing_split(client):
