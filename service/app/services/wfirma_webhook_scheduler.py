@@ -57,18 +57,22 @@ def get_scheduler_status() -> dict:
         except Exception:
             pass
     ap_reporting: dict = {}
+    ar_reporting: dict = {}
     try:
-        from .financial_reporting_sync import get_ap_sync_status
+        from .financial_reporting_sync import get_ap_sync_status, get_ar_sync_status
 
         ap_reporting = get_ap_sync_status()
+        ar_reporting = get_ar_sync_status()
     except Exception:
         ap_reporting = {"status": "unavailable"}
+        ar_reporting = {"status": "unavailable"}
     return {
         "running":    running,
         "started_at": _started_at,
         "last_tick":  _last_tick_at,
         "next_tick":  next_tick,
         "ap_reporting_sync": ap_reporting,
+        "ar_reporting_sync": ar_reporting,
     }
 
 
@@ -126,6 +130,9 @@ def _run_processing_tick() -> None:
     # Same placement as series refresh: must not be starved by a webhook-storage
     # problem. Reuses sync_ap (CLI authority); local projection writes only.
     _run_ap_reporting_sync_tick()
+
+    # ── Step 0c: AR financial-reporting incremental sync (cooldown-gated) ────
+    _run_ar_reporting_sync_tick()
 
     if _events_db_path is None or _proc_db_path is None:
         return
@@ -311,6 +318,40 @@ def _run_ap_reporting_sync_tick() -> None:
     except Exception as exc:
         log.warning(
             "wfirma_scheduler: ap reporting sync failed (non-fatal): %s", exc
+        )
+
+
+def _run_ar_reporting_sync_tick() -> None:
+    """
+    AR financial-reporting projection sync — called at the start of every tick.
+
+    Keeps ``financial_reporting.sqlite`` AR invoices current via the ONE shared
+    ``sync_ar`` used by the CLI backfill. Cooldown-gated (~1 h) with overlap
+    window so late-created invoices with earlier issue dates are not missed.
+
+    - wFirma READ-ONLY (``invoices/find``).
+    - Local projection writes only — never payment_state / formulas / knock-off.
+    - Failure-isolated: never raises into the scheduler tick.
+    """
+    try:
+        from .financial_reporting_sync import run_ar_incremental_tick
+
+        summary = run_ar_incremental_tick()
+        if summary is None:
+            return  # cooldown has not elapsed
+        log.info(
+            "wfirma_scheduler: ar_reporting_sync ok=%s window=%s..%s "
+            "fetched=%s upserted=%s errors=%s",
+            summary.get("ok"),
+            summary.get("date_from"),
+            summary.get("date_to"),
+            summary.get("fetched"),
+            summary.get("upserted"),
+            len(summary.get("errors") or []),
+        )
+    except Exception as exc:
+        log.warning(
+            "wfirma_scheduler: ar reporting sync failed (non-fatal): %s", exc
         )
 
 

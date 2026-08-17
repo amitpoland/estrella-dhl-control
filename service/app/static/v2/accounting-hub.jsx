@@ -1354,11 +1354,38 @@ function _accPresentationLabel(r) {
   if (s === 'clear') return 'Clear';
   return 'Unknown';
 }
-function _accAmtOrMulti(value, currency, byCcy, available) {
+function _accMultiCcyLines(byCcy, testid) {
+  const entries = Object.entries(byCcy || {}).sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return <span style={{ color: 'var(--text-3)' }}>—</span>;
+  return (
+    <div data-testid={testid} style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-end' }}>
+      {entries.map(([ccy, amt]) => (
+        <div key={ccy} data-testid={testid ? `${testid}-${ccy}` : undefined} style={{ whiteSpace: 'nowrap' }}>
+          <span style={{ color: 'var(--text-3)', fontSize: 9, fontWeight: 700, marginRight: 4 }}>{ccy}</span>
+          <span>{String(amt)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function _accLegStates(presentationStateBy, testid) {
+  const entries = Object.entries(presentationStateBy || {}).sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return 'Unknown';
+  return (
+    <div data-testid={testid} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {entries.map(([ccy, st]) => (
+        <div key={ccy} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-3)' }}>{ccy}</span>
+          <span>{st === 'offset' ? 'Offset' : st === 'open' || st === 'outstanding' ? 'Open' : st === 'credit' ? 'Credit' : st === 'clear' ? 'Clear' : 'Unknown'}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function _accAmtOrMulti(value, currency, byCcy, available, testid) {
   if (available === false) return <span style={{ color: 'var(--text-3)' }}>—</span>;
   if (currency === 'multi' && (value == null || value === '')) {
-    const title = Object.entries(byCcy || {}).map(([k, v]) => `${k} ${v}`).join(' · ');
-    return <span title={title || 'per-currency — not summed'} style={{ color: 'var(--text-3)' }}>multi</span>;
+    return _accMultiCcyLines(byCcy, testid);
   }
   return value != null && value !== '' ? String(value) : <span style={{ color: 'var(--text-3)' }}>—</span>;
 }
@@ -1422,15 +1449,19 @@ function AccClientBalance({ onOpenLedger }) {
                 onClick={() => onOpenLedger && onOpenLedger()}
                 style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: onOpenLedger ? 'pointer' : 'default' }}>
                 <td style={{ ...td, color: 'var(--text)' }}>{r.name || r.contractor_id || '—'}</td>
-                <td style={td}>{r.currency || '—'}</td>
-                <td style={tdm}>{_accAmtOrMulti(r.net_receivable, r.currency, r.net_receivable_by_currency, r.balance_available !== false)}</td>
-                <td style={tdm}>{_accAmtOrMulti(r.gross_receivable != null ? r.gross_receivable : r.open, r.currency, r.gross_receivable_by_currency || r.open_by_currency, r.balance_available !== false)}</td>
-                <td style={tdm} title="Customer credits (unaged)">{_accAmtOrMulti(r.credit_balance, r.currency, r.credit_balance_by_currency, r.balance_available !== false)}</td>
+                <td style={td}>{r.currency === 'multi' ? ((r.currencies || []).join(' · ') || 'multi') : (r.currency || '—')}</td>
+                <td style={tdm}>{_accAmtOrMulti(r.net_receivable, r.currency, r.net_receivable_by_currency, r.balance_available !== false, `acc-bal-net-${r.contractor_id}`)}</td>
+                <td style={tdm}>{_accAmtOrMulti(r.gross_receivable != null ? r.gross_receivable : r.open, r.currency, r.gross_receivable_by_currency || r.open_by_currency, r.balance_available !== false, `acc-bal-gross-${r.contractor_id}`)}</td>
+                <td style={tdm} title="Customer credits (unaged)">{_accAmtOrMulti(r.credit_balance, r.currency, r.credit_balance_by_currency, r.balance_available !== false, `acc-bal-credits-${r.contractor_id}`)}</td>
                 <td style={tdm} title="Due-date aging (gross)">{r.balance_available !== false && (r.overdue_due_date != null || r.overdue_invoice_age != null || r.currency === 'multi')
-                  ? _accAmtOrMulti(r.overdue_due_date != null ? r.overdue_due_date : r.overdue_invoice_age, r.currency, r.overdue_due_date_by_currency, true)
+                  ? _accAmtOrMulti(r.overdue_due_date != null ? r.overdue_due_date : r.overdue_invoice_age, r.currency, r.overdue_due_date_by_currency, true, `acc-bal-overdue-${r.contractor_id}`)
                   : dash}</td>
-                <td style={tdm} title="Applied receipts in last 30 calendar days ending as-of">{r.balance_available !== false ? (r.last_30d != null ? r.last_30d : (r.currency === 'multi' ? <span style={{ color: 'var(--text-3)' }}>multi</span> : dash)) : dash}</td>
-                <td style={{ ...td, fontSize: 11 }}>{r.balance_available !== false ? _accPresentationLabel(r) : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
+                <td style={tdm} title="Applied receipts in last 30 calendar days ending as-of">{r.balance_available !== false ? (r.last_30d != null ? r.last_30d : (r.currency === 'multi' ? _accMultiCcyLines(r.last_30d_by_currency, `acc-bal-last30-${r.contractor_id}`) : dash)) : dash}</td>
+                <td style={{ ...td, fontSize: 11 }}>{r.balance_available !== false
+                  ? (r.currency === 'multi'
+                    ? _accLegStates(r.presentation_state_by_currency, `acc-bal-leg-state-${r.contractor_id}`)
+                    : _accPresentationLabel(r))
+                  : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
               </tr>
             ))}
           </tbody>
@@ -1472,15 +1503,19 @@ function AccWfirmaSyncInline({ onNav }) {
       const q = d.queue || {};
       const recon = d.reconciliation || {};
       const ap = d.ap_reporting_sync || svc.ap_reporting_sync || {};
+      const ar = d.ar_reporting_sync || svc.ar_reporting_sync || {};
       const sched = svc.scheduler_running ? 'running' : 'idle';
       const last = svc.last_tick_at ? String(svc.last_tick_at).replace('T', ' ').slice(0, 16) : '';
       const apLag = (ap.lag_hours != null) ? ` · AP lag ${ap.lag_hours}h` : '';
+      const arLag = (ar.lag_hours != null) ? ` · AR lag ${ar.lag_hours}h` : '';
       const apWatch = ap.stale_watchdog ? ' · AP stale watchdog' : '';
+      const arWatch = ar.stale_watchdog ? ' · AR stale watchdog' : '';
       const apErr = ap.last_error ? ` · AP err ${String(ap.last_error).slice(0, 60)}` : '';
+      const arErr = ar.last_error ? ` · AR err ${String(ar.last_error).slice(0, 60)}` : '';
       setHook({
         busy: false,
         data: d,
-        msg: `scheduler ${sched}${last ? ' · last tick ' + last : ''} · queue ${q.total || 0} · dead letter ${q.dead_letter || 0}${recon.stale_pending ? ' · stale pending ' + recon.stale_pending : ''}${apLag}${apWatch}${apErr}`,
+        msg: `scheduler ${sched}${last ? ' · last tick ' + last : ''} · queue ${q.total || 0} · dead letter ${q.dead_letter || 0}${recon.stale_pending ? ' · stale pending ' + recon.stale_pending : ''}${apLag}${arLag}${apWatch}${arWatch}${apErr}${arErr}`,
       });
     }).catch(() => setHook({ busy: false, msg: 'status error', data: null }));
   };

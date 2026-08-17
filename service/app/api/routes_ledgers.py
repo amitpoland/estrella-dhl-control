@@ -944,6 +944,22 @@ def _roster_row_from_portfolio_group(
         for c in ccys
     }
     presentation_state = _presentation_state_from_maps(open_by_ccy, credit_by_ccy)
+    presentation_state_by_ccy = {
+        c: _presentation_state(open_by_ccy[c], credit_by_ccy[c]) for c in ccys
+    }
+    currency_legs = [
+        {
+            "currency": c,
+            "gross_receivable": open_by_ccy[c],
+            "credit_balance": credit_by_ccy[c],
+            "net_receivable": net_by_ccy[c],
+            "overdue": overdue_by_ccy[c],
+            "not_due": not_due_by_ccy[c],
+            "due_date_unavailable": due_na_by_ccy[c],
+            "presentation_state": presentation_state_by_ccy[c],
+        }
+        for c in ccys
+    ]
 
     open_total = _sum_ccy(open_by_ccy)
     overdue_total_amt = _sum_ccy(overdue_by_ccy)
@@ -986,6 +1002,8 @@ def _roster_row_from_portfolio_group(
         "net_receivable": (net_by_ccy[single] if single else None),
         "net_receivable_by_currency": net_by_ccy,
         "presentation_state": presentation_state,
+        "presentation_state_by_currency": presentation_state_by_ccy,
+        "currency_legs": currency_legs,
         # Canonical overdue = due-date (portfolio). Keep legacy field name in
         # sync so existing UI columns (Aged) show the same figure.
         "overdue_due_date": (overdue_by_ccy[single] if single else None),

@@ -5,10 +5,10 @@ Loads fiscal invoices (normal + correction) and expenses via existing
 ``wfirma_client.fetch_*_for_period`` helpers and upserts into
 ``financial_reporting_db``. NEVER writes to wFirma.
 
-Scheduled incremental AP automation reuses ``sync_ap`` via
-``app.services.financial_reporting_sync.run_ap_incremental_tick``
-(wired into ``wfirma_webhook_scheduler``). This CLI remains the full /
-historical backfill path.
+Scheduled incremental AR/AP automation reuses ``sync_ar`` / ``sync_ap`` via
+``app.services.financial_reporting_sync.run_ar_incremental_tick`` /
+``run_ap_incremental_tick`` (wired into ``wfirma_webhook_scheduler``). This CLI
+remains the full / historical backfill path.
 
 Usage:
     python -m app.tools.sync_financial_reporting --from 2024-01-01 --to 2026-08-17
