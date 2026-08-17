@@ -418,14 +418,15 @@ def insert_shipment(
 
     provider (keyword-only) is the carrier owning this shipment. Defaults to
     DHL — the only carrier with a booking adapter — so existing callers are
-    unchanged. Customer-arranged FEDEX/UPS registrations pass their own.
+    unchanged. Customer-arranged FEDEX/UPS/OTHER registrations pass their own.
+    Closed storage vocabulary: only PROVIDERS. Carrier Master codes that are
+    not in this set must be normalised to OTHER by the coordinator before insert.
     """
-    if provider not in PROVIDERS and not is_valid_provider_code(provider):
-        raise ValueError(
-            f"Unknown carrier provider {provider!r}; expected one of {PROVIDERS} "
-            f"or a Carrier Master code"
-        )
     provider = normalize_provider_code(provider)
+    if provider not in PROVIDERS:
+        raise ValueError(
+            f"Unknown carrier provider {provider!r}; expected one of {PROVIDERS}"
+        )
     if result.mode == ShipmentMode.LIVE:
         raise ValueError(
             "Live shipment results must not be inserted into carrier_shipments DB. "
