@@ -79,6 +79,21 @@ def _read_payload(event_id: str) -> str:
         return "{}"
 
 
+def _read_event_type(event_id: str) -> Optional[str]:
+    """Read event_type from the immutable events DB for a single event."""
+    if _events_db_path is None:
+        return None
+    try:
+        with sqlite3.connect(str(_events_db_path)) as conn:
+            row = conn.execute(
+                "SELECT event_type FROM wfirma_webhook_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
 def _run_processing_tick() -> None:
     """
     Single scheduler tick.
@@ -109,9 +124,16 @@ def _run_processing_tick() -> None:
         increment_retry,
         mark_dead_letter,
         mark_retry_pending,
+        mark_terminal_routed,
         MAX_RETRIES,
     )
     from .wfirma_snapshot_processor import InvoiceSnapshotProcessor, _extract_object_id
+    from .wfirma_webhook_event_router import (
+        DOMAIN_INVOICE,
+        classify_event_domain,
+        skip_reason_for_domain,
+        terminal_state_for_domain,
+    )
 
     now = _now_utc()
 
@@ -119,13 +141,14 @@ def _run_processing_tick() -> None:
     try:
         with sqlite3.connect(str(_events_db_path)) as conn:
             event_rows = conn.execute(
-                "SELECT event_id, payload_json, received_at FROM wfirma_webhook_events"
+                "SELECT event_id, event_type, payload_json, received_at "
+                "FROM wfirma_webhook_events"
             ).fetchall()
     except Exception as exc:
         log.warning("wfirma_scheduler: cannot read events DB: %s", exc)
         return
 
-    for event_id, payload_json, received_at in event_rows:
+    for event_id, _event_type, payload_json, received_at in event_rows:
         object_id = _extract_object_id(payload_json or "{}")
         ensure_processing_row(
             _proc_db_path,
@@ -147,6 +170,23 @@ def _run_processing_tick() -> None:
             event_id: str = row["event_id"]
             object_id: Optional[str] = row.get("object_id")
             current_retry: int = row.get("retry_count", 0)
+            event_type = _read_event_type(event_id)
+            domain = classify_event_domain(event_type)
+
+            if domain != DOMAIN_INVOICE:
+                terminal = terminal_state_for_domain(domain)
+                if terminal:
+                    reason = skip_reason_for_domain(domain, event_type)
+                    mark_terminal_routed(
+                        _proc_db_path, event_id, terminal, reason, now
+                    )
+                    log.info(
+                        "wfirma_scheduler: %s event_id=%s event_type=%s (no invoice fetch)",
+                        terminal.lower(),
+                        event_id,
+                        event_type,
+                    )
+                continue
 
             if not object_id:
                 log.warning(

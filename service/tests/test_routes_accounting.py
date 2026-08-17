@@ -124,3 +124,31 @@ def test_accounting_wfirma_error_returns_502():
         assert r.status_code == 502
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_accounting_wz_awbs_endpoint():
+    c = _client()
+    try:
+        with patch(
+            "app.services.accounting_awb_projection.resolve_awbs_for_warehouse_document",
+            return_value={"awbs": [{"awb": "1234567890", "carrier": "DHL"}], "source": "test"},
+        ) as m:
+            r = c.get("/api/v1/accounting/documents/wz/999/awbs")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["doc_type"] == "wz"
+        assert body["wfirma_id"] == "999"
+        assert body["awbs"][0]["awb"] == "1234567890"
+        m.assert_called_once()
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_accounting_awbs_rejects_non_warehouse_types():
+    c = _client()
+    try:
+        r = c.get("/api/v1/accounting/documents/invoice/1/awbs")
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+

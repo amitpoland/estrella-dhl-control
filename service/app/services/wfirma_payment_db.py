@@ -69,7 +69,24 @@ def init_payment_db(db_path: Path) -> None:
             snapshot_count  INTEGER NOT NULL DEFAULT 0
         );
         """)
+        # Additive upgrades — never DROP. Keep INSERT OR IGNORE working
+        # without requiring expense_id in the insert column list.
+        _add_column_if_missing(conn, "wfirma_payment_snapshots", "expense_id", "TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wps_payment_date "
+            "ON wfirma_payment_snapshots (payment_date)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wps_expense "
+            "ON wfirma_payment_snapshots (expense_id)"
+        )
         conn.commit()
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, decl: str) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 def get_contractors_due_for_sync(
@@ -190,3 +207,44 @@ def get_sync_state(db_path: Path) -> List[dict]:
             "SELECT contractor_id, last_synced_at, snapshot_count "
             "FROM payment_sync_state ORDER BY contractor_id"
         ).fetchall()]
+
+
+def list_payments_as_of(
+    db_path: Path,
+    as_of: str,
+    *,
+    invoice_ids: Optional[List[str]] = None,
+    contractor_id: Optional[str] = None,
+) -> List[dict]:
+    """POSITION settlements: payments with payment_date <= as_of.
+
+    Optional filters narrow to invoice ids and/or a single contractor.
+    Does not apply an activity lower bound — callers that need windowed
+    ACTIVITY should filter invoices separately.
+    """
+    ao = (as_of or "").strip()
+    if not ao:
+        raise ValueError("as_of is required")
+    init_payment_db(db_path)
+    sql = (
+        "SELECT payment_id, contractor_id, invoice_id, expense_id, payment_date, "
+        "value, value_pln, currency_label, payment_method, payment_type, type, notes, "
+        "fetched_at "
+        "FROM wfirma_payment_snapshots "
+        "WHERE (payment_date IS NULL OR payment_date = '' OR payment_date <= ?)"
+    )
+    params: list = [ao]
+    if contractor_id:
+        sql += " AND contractor_id = ?"
+        params.append(contractor_id)
+    if invoice_ids is not None:
+        ids = [i for i in invoice_ids if i]
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        sql += f" AND invoice_id IN ({placeholders})"
+        params.extend(ids)
+    sql += " ORDER BY payment_date ASC, payment_id ASC"
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]

@@ -27,6 +27,12 @@ Deliberately excluded from Phase 1:
   - No business state mutation.
   - No wFirma API calls.
   - No invoice / customer sync.
+
+WH-008 (webhook API key lifecycle): multi-key acceptance is implemented here
+(``WFIRMA_WEBHOOK_KEY`` comma-separated set + per-delivery echo). Key rotation,
+revocation audit, and operator UI for registration management are NOT implemented
+— wFirma webhook registrations remain UI-only (see webhooks skill); extend only
+when an operator-approved rotation workflow is specified.
 """
 from __future__ import annotations
 

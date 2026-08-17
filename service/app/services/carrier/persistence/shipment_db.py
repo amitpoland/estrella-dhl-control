@@ -109,20 +109,22 @@ _ADDITIVE_COLUMNS = [
     ("provider", "TEXT"),
 ]
 
-# Provider vocabulary. DHL is booked through the live adapter; FEDEX/UPS are
-# customer-arranged (operator registers provider + tracking + external AWB).
+# Provider vocabulary. DHL is booked through the live adapter; FEDEX/UPS/OTHER
+# (and active Carrier Master codes) are customer-arranged external registrations.
 PROVIDER_DHL = "DHL"
-PROVIDERS = ("DHL", "FEDEX", "UPS")
-EXTERNAL_PROVIDERS = ("FEDEX", "UPS")
-_MODE_CHECK_CURRENT = "CHECK(mode IN ('shadow', 'live', 'external'))"
-_MODE_IN_RE = re.compile(
-    r"CHECK\s*\(\s*mode\s+IN\s*\(([^)]*)\)\s*\)",
-    re.IGNORECASE,
-)
-_MODE_CHECK_RE = re.compile(
-    r"CHECK\s*\(\s*mode\s+IN\s*\(\s*[^)]+?\s*\)\s*\)",
-    re.IGNORECASE,
-)
+PROVIDER_OTHER = "OTHER"
+PROVIDERS = ("DHL", "FEDEX", "UPS", "OTHER")
+EXTERNAL_PROVIDERS = ("FEDEX", "UPS", "OTHER")
+_PROVIDER_RE = re.compile(r"^[A-Z0-9_]{2,32}$")
+
+
+def normalize_provider_code(provider: str) -> str:
+    return (provider or "").strip().upper()
+
+
+def is_valid_provider_code(provider: str) -> bool:
+    p = normalize_provider_code(provider)
+    return bool(p and _PROVIDER_RE.match(p))
 
 
 def resolve_provider(stored: Optional[str]) -> str:
@@ -132,7 +134,18 @@ def resolve_provider(stored: Optional[str]) -> str:
     existed then, so DHL is evidence-backed, not a guess. Callers must use
     this instead of defaulting a blank carrier in a projection or a UI.
     """
-    return (stored or "").strip().upper() or PROVIDER_DHL
+    return normalize_provider_code(stored or "") or PROVIDER_DHL
+
+
+_MODE_CHECK_CURRENT = "CHECK(mode IN ('shadow', 'live', 'external'))"
+_MODE_IN_RE = re.compile(
+    r"CHECK\s*\(\s*mode\s+IN\s*\(([^)]*)\)\s*\)",
+    re.IGNORECASE,
+)
+_MODE_CHECK_RE = re.compile(
+    r"CHECK\s*\(\s*mode\s+IN\s*\(\s*[^)]+?\s*\)\s*\)",
+    re.IGNORECASE,
+)
 
 # Outbound-only filter — return drafts must never leak into AWB attribution.
 _OUTBOUND_ONLY = (
@@ -405,8 +418,11 @@ def insert_shipment(
 
     provider (keyword-only) is the carrier owning this shipment. Defaults to
     DHL — the only carrier with a booking adapter — so existing callers are
-    unchanged. Customer-arranged FEDEX/UPS registrations pass their own.
+    unchanged. Customer-arranged FEDEX/UPS/OTHER registrations pass their own.
+    Closed storage vocabulary: only PROVIDERS. Carrier Master codes that are
+    not in this set must be normalised to OTHER by the coordinator before insert.
     """
+    provider = normalize_provider_code(provider)
     if provider not in PROVIDERS:
         raise ValueError(
             f"Unknown carrier provider {provider!r}; expected one of {PROVIDERS}"

@@ -34,6 +34,11 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 
+from .financial_aging import (
+    AGING_BUCKETS,
+    due_bucket as _due_bucket_canonical,
+)
+
 
 # Fields the aggregator emits per entry — pinned by the Phase 10A test
 # ``test_entries_contain_exactly_seven_proven_fields``. Keep this tuple
@@ -243,20 +248,14 @@ _ENTRY_TYPE_RANK = {
     "payment":    3,
 }
 
-# Aging bucket labels in their stable JSON order. Pinned by tests.
-_AGING_BUCKETS = ("current", "1_30", "31_60", "61_90", "90_plus")
+# Aging bucket labels in their stable JSON order. Canonical set from
+# financial_aging (MA / Client Balance / Statement parity).
+_AGING_BUCKETS = AGING_BUCKETS
 
 
 def _bucket_for_days(days_old: int) -> str:
-    if days_old <= 0:
-        return "current"
-    if days_old <= 30:
-        return "1_30"
-    if days_old <= 60:
-        return "31_60"
-    if days_old <= 90:
-        return "61_90"
-    return "90_plus"
+    """Map days-overdue (or invoice age) to a canonical aging key."""
+    return _due_bucket_canonical(days_old)
 
 
 def _empty_aging() -> Dict[str, str]:
@@ -778,6 +777,8 @@ def _entry_for_invoice(fact: Dict[str, Any]) -> Dict[str, Any]:
         "wfirma_doc_id":   fact["id"],
         "doc_number":      fact["fullnumber"],
         "date":            fact["date"],
+        "due_date":        (fact.get("paymentdate") or "").strip(),
+        "paymentdate":     (fact.get("paymentdate") or "").strip(),
         "currency":        fact["currency"],
         "debit":           _q(debit),
         "credit":          _q(credit),
@@ -1033,6 +1034,7 @@ def aggregate_statement_from_facts(
     # Authority: due_date (paymentdate) by default — Management Analysis
     # parity. invoice_age only when explicitly selected by the caller.
     aging_by_ccy: Dict[str, Dict[str, Any]] = {}
+    oldest_overdue_date = ""
     for ccy in sorted(currencies):
         bucket: Dict[str, Decimal] = {b: Decimal("0") for b in _AGING_BUCKETS}
         total = Decimal("0")
@@ -1059,9 +1061,14 @@ def aggregate_statement_from_facts(
                 days_old = _days_between(statement_date, anchor)
             else:
                 days_old = _days_between(statement_date, inv["date"])
+                anchor = (inv.get("date") or "").strip()
             b = _bucket_for_days(days_old)
             bucket[b] += remaining
             total += remaining
+            # Overdue = days_old > 0 (due date strictly before as-of).
+            if days_old > 0 and anchor:
+                if not oldest_overdue_date or anchor < oldest_overdue_date:
+                    oldest_overdue_date = anchor
         block: Dict[str, Any] = {
             "method":  method,
             **{k: _q(v) for k, v in bucket.items()},
@@ -1093,6 +1100,7 @@ def aggregate_statement_from_facts(
         "totals_per_currency":           totals_by_ccy,
         "aging_per_currency":            aging_by_ccy,
         "unmatched_payments_per_currency": unmatched_payments_by_ccy,
+        "oldest_overdue_date": oldest_overdue_date or None,
         "warnings":       warnings,
         "aging_method":   method,
     }

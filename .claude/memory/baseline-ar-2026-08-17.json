@@ -1,0 +1,298 @@
+{
+  "measured_at_utc": "2026-08-17T00:12:34.363889+00:00",
+  "expected_prod_sha": "2f04ae1c20ae17cfa72765df76ea3db59268f415",
+  "prod_version_txt": "2f04ae1c20ae17cfa72765df76ea3db59268f415",
+  "sha_aligned": true,
+  "health": {
+    "http": 200,
+    "ms": 6,
+    "keys": [
+      "status",
+      "engine",
+      "environment",
+      "detail"
+    ]
+  },
+  "management_analysis": {
+    "http": 200,
+    "ms": 53367,
+    "error": null,
+    "slim": {
+      "as_of": "2026-08-17",
+      "generated_at": "2026-08-17T00:12:31Z",
+      "query_stats": {
+        "invoice_api_calls": 4,
+        "payment_api_calls": 16,
+        "invoice_pages": 4,
+        "payment_pages": 16,
+        "invoices_normalized": 764,
+        "payments_normalized": 3056,
+        "invoice_duplicates_suppressed": 0,
+        "payment_duplicates_suppressed": 0,
+        "invoice_stop_reason": "short",
+        "payment_stop_reason": "short",
+        "per_customer_wfirma_calls": 0,
+        "cache_hit": false,
+        "coalesced": false,
+        "wfirma_wait_ms": 50273,
+        "ej_normalize_ms": 58,
+        "ej_ms": 67,
+        "duration_ms": 53291,
+        "inv_page_wait_ms": [
+          15822,
+          6626,
+          7288,
+          13814
+        ],
+        "pay_page_wait_ms": [
+          433,
+          451,
+          442,
+          441,
+          431,
+          414,
+          431,
+          430,
+          443,
+          434,
+          435,
+          440,
+          433,
+          432,
+          417,
+          216
+        ],
+        "ej_aggregate_ms": 9
+      },
+      "currency_summaries": [
+        {
+          "currency": "EUR",
+          "total_receivable": "212383.49",
+          "overdue": "39826.04",
+          "not_due": "172557.45",
+          "customer_credits": "14584.41",
+          "due_date_unavailable": "0.00",
+          "customers_outstanding": 10,
+          "customers_overdue": 10,
+          "customers_with_credit": 6,
+          "oldest_overdue_days": 685,
+          "invoices_represented": 256,
+          "open_invoices": 22,
+          "aging_plus_unavailable": "212383.49",
+          "aging": {
+            "not_due": "172557.45",
+            "b_1_30": "5320.45",
+            "b_31_90": "8351.63",
+            "b_91_180": "10323.31",
+            "b_180_plus": "15830.65",
+            "due_date_unavailable": "0.00"
+          },
+          "reconciliation_ok": true,
+          "net_position": "197799.08"
+        },
+        {
+          "currency": "PLN",
+          "total_receivable": "96077.65",
+          "overdue": "18002.90",
+          "not_due": "78074.75",
+          "customer_credits": "31296.79",
+          "due_date_unavailable": "0.00",
+          "customers_outstanding": 1,
+          "customers_overdue": 1,
+          "customers_with_credit": 1,
+          "oldest_overdue_days": 33,
+          "invoices_represented": 57,
+          "open_invoices": 6,
+          "aging_plus_unavailable": "96077.65",
+          "aging": {
+            "not_due": "78074.75",
+            "b_1_30": "0.00",
+            "b_31_90": "18002.90",
+            "b_91_180": "0.00",
+            "b_180_plus": "0.00",
+            "due_date_unavailable": "0.00"
+          },
+          "reconciliation_ok": true,
+          "net_position": "64780.86"
+        },
+        {
+          "currency": "USD",
+          "total_receivable": "373062.49",
+          "overdue": "280798.80",
+          "not_due": "92263.69",
+          "customer_credits": "170204.80",
+          "due_date_unavailable": "0.00",
+          "customers_outstanding": 25,
+          "customers_overdue": 24,
+          "customers_with_credit": 18,
+          "oldest_overdue_days": 2029,
+          "invoices_represented": 451,
+          "open_invoices": 63,
+          "aging_plus_unavailable": "373062.49",
+          "aging": {
+            "not_due": "92263.69",
+            "b_1_30": "24748.97",
+            "b_31_90": "104882.07",
+            "b_91_180": "15365.00",
+            "b_180_plus": "135802.76",
+            "due_date_unavailable": "0.00"
+          },
+          "reconciliation_ok": true,
+          "net_position": "202857.69"
+        }
+      ],
+      "customers_count": 82,
+      "currency_summaries_list": [
+        {
+          "currency": "EUR",
+          "total_receivable": "212383.49",
+          "overdue": "39826.04",
+          "not_due": "172557.45",
+          "customer_credits": "14584.41",
+          "due_date_unavailable": "0.00",
+          "customers_outstanding": 10,
+          "customers_overdue": 10,
+          "customers_with_credit": 6,
+          "oldest_overdue_days": 685,
+          "invoices_represented": 256,
+          "open_invoices": 22,
+          "aging_plus_unavailable": "212383.49",
+          "aging": {
+            "not_due": "172557.45",
+            "b_1_30": "5320.45",
+            "b_31_90": "8351.63",
+            "b_91_180": "10323.31",
+            "b_180_plus": "15830.65",
+            "due_date_unavailable": "0.00"
+          },
+          "reconciliation_ok": true,
+          "net_position": "197799.08"
+        },
+        {
+          "currency": "PLN",
+          "total_receivable": "96077.65",
+          "overdue": "18002.90",
+          "not_due": "78074.75",
+          "customer_credits": "31296.79",
+          "due_date_unavailable": "0.00",
+          "customers_outstanding": 1,
+          "customers_overdue": 1,
+          "customers_with_credit": 1,
+          "oldest_overdue_days": 33,
+          "invoices_represented": 57,
+          "open_invoices": 6,
+          "aging_plus_unavailable": "96077.65",
+          "aging": {
+            "not_due": "78074.75",
+            "b_1_30": "0.00",
+            "b_31_90": "18002.90",
+            "b_91_180": "0.00",
+            "b_180_plus": "0.00",
+            "due_date_unavailable": "0.00"
+          },
+          "reconciliation_ok": true,
+          "net_position": "64780.86"
+        },
+        {
+          "currency": "USD",
+          "total_receivable": "373062.49",
+          "overdue": "280798.80",
+          "not_due": "92263.69",
+          "customer_credits": "170204.80",
+          "due_date_unavailable": "0.00",
+          "customers_outstanding": 25,
+          "customers_overdue": 24,
+          "customers_with_credit": 18,
+          "oldest_overdue_days": 2029,
+          "invoices_represented": 451,
+          "open_invoices": 63,
+          "aging_plus_unavailable": "373062.49",
+          "aging": {
+            "not_due": "92263.69",
+            "b_1_30": "24748.97",
+            "b_31_90": "104882.07",
+            "b_91_180": "15365.00",
+            "b_180_plus": "135802.76",
+            "due_date_unavailable": "0.00"
+          },
+          "reconciliation_ok": true,
+          "net_position": "202857.69"
+        }
+      ]
+    }
+  },
+  "clients": {
+    "http": 200,
+    "ms": 2713,
+    "error": null,
+    "slim": {
+      "query_stats": {
+        "invoice_api_calls": 1,
+        "payment_api_calls": 1,
+        "invoices_normalized": 29,
+        "payments_normalized": 121,
+        "per_customer_wfirma_calls": 0,
+        "cache_hit": false,
+        "coalesced": false,
+        "refresh": true,
+        "wfirma_wait_ms": 2633,
+        "ej_normalize_ms": 2,
+        "ej_ms": 3,
+        "duration_ms": 2679,
+        "inv_page_wait_ms": [
+          2325
+        ],
+        "pay_page_wait_ms": [
+          308
+        ],
+        "ej_aggregate_ms": 1,
+        "route_wall_ms": 2683
+      },
+      "period": {
+        "from": "2026-07-01",
+        "to": "2026-08-17"
+      },
+      "row_count": 15,
+      "aggregated_by_currency": {
+        "\u2014": {
+          "outstanding": 0.0,
+          "overdue": 0.0,
+          "not_due": 0.0,
+          "credits": 0.0,
+          "clients": 11
+        },
+        "PLN": {
+          "outstanding": 0.0,
+          "overdue": 0.0,
+          "not_due": 0.0,
+          "credits": 0.0,
+          "clients": 1
+        },
+        "USD": {
+          "outstanding": 0.0,
+          "overdue": 0.0,
+          "not_due": 0.0,
+          "credits": 0.0,
+          "clients": 2
+        },
+        "EUR": {
+          "outstanding": 0.0,
+          "overdue": 0.0,
+          "not_due": 0.0,
+          "credits": 0.0,
+          "clients": 1
+        }
+      },
+      "oldest_due_observed": null
+    }
+  },
+  "prior_stage_a_lock_approx": {
+    "USD_AR": 373062.49,
+    "USD_overdue": 280798.8,
+    "EUR_AR": 212383.49,
+    "EUR_overdue": 39826.04,
+    "PLN_AR": 96077.65,
+    "PLN_overdue": 18002.9,
+    "note": "pre-Stage-B lock; re-measure supersedes for Slice-2 delta"
+  }
+}

@@ -103,7 +103,7 @@ def test_aging_plus_credit_equation():
     assert Decimal(row["not_due"]) == Decimal("40.00")
     assert Decimal(row["outstanding"]) == Decimal("40.00")
     # Credits must not reduce an overdue bucket artificially
-    assert Decimal(row["b_180_plus"]) == Decimal("0.00")
+    assert Decimal(row["b_365_plus"]) == Decimal("0.00")
 
 
 def test_currency_summary_carries_the_aging_breakdown():
@@ -119,15 +119,17 @@ def test_currency_summary_carries_the_aging_breakdown():
     )
     usd = next(s for s in out["currency_summaries"] if s["currency"] == "USD")
     aging = usd["aging"]
-    assert set(aging) == {"not_due", "b_1_30", "b_31_90", "b_91_180",
-                          "b_180_plus", "due_date_unavailable"}
+    assert set(aging) == {
+        "not_due", "b_1_30", "b_31_60", "b_61_90", "b_91_180",
+        "b_181_365", "b_365_plus", "due_date_unavailable",
+    }
     rows = [c for c in out["customers"] if c["currency"] == "USD"]
     for bucket, total in aging.items():
         assert Decimal(total) == sum(Decimal(r[bucket]) for r in rows), bucket
     assert sum(Decimal(v) for v in aging.values()) == Decimal(
         usd["aging_plus_unavailable"]
     )
-    assert Decimal(aging["b_180_plus"]) == Decimal("100.00")
+    assert Decimal(aging["b_365_plus"]) == Decimal("100.00")
     assert Decimal(aging["not_due"]) == Decimal("40.00")
 
 
@@ -139,7 +141,8 @@ def test_credits_never_enter_overdue_buckets():
     )
     row = out["customers"][0]
     assert Decimal(row["credit_balance"]) == Decimal("30.00")
-    for b in ("not_due", "b_1_30", "b_31_90", "b_91_180", "b_180_plus"):
+    for b in ("not_due", "b_1_30", "b_31_60", "b_61_90", "b_91_180",
+              "b_181_365", "b_365_plus"):
         assert Decimal(row[b]) == Decimal("0.00")
 
 
@@ -150,7 +153,7 @@ def test_missing_paymentdate_goes_to_unavailable_not_aged():
     )
     row = out["customers"][0]
     assert Decimal(row["due_date_unavailable"]) == Decimal("100.00")
-    assert Decimal(row["b_180_plus"]) == Decimal("0.00")
+    assert Decimal(row["b_365_plus"]) == Decimal("0.00")
     assert out["due_date_coverage"]["open_missing_paymentdate"] == 1
 
 
@@ -271,7 +274,7 @@ def test_route_management_analysis_ok(client, monkeypatch):
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     r = client.get(
         "/api/v1/ledgers/management-analysis.json"
-        "?from=2021-01-01&to=2021-12-31&as_of=2021-07-01",
+        "?from=2021-01-01&to=2021-12-31&as_of=2021-07-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 200, r.text

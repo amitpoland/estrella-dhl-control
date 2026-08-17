@@ -217,3 +217,27 @@ def get_accounting_document_pdf(
         "Content-Disposition": f'{disposition}; filename="{filename}"',
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@router.get("/documents/{doc_type}/{wfirma_id}/awbs", dependencies=[_auth])
+def get_accounting_document_awbs(doc_type: str, wfirma_id: str) -> dict:
+    """Logistics-owned AWB projection for WZ/PZ (read-only, multi-AWB).
+
+    Consumes carrier_shipments via batch linkage — never an Accounting AWB editor.
+    """
+    from ..core.config import settings
+    from ..services.accounting_awb_projection import resolve_awbs_for_warehouse_document
+
+    key = (doc_type or "").strip().lower()
+    if key not in ("wz", "pz"):
+        raise HTTPException(
+            status_code=404,
+            detail="AWB projection is available only for wz and pz warehouse documents.",
+        )
+    wid = (wfirma_id or "").strip()
+    if not wid or not wid.isdigit():
+        raise HTTPException(status_code=400, detail="wfirma_id must be a numeric id")
+    body = resolve_awbs_for_warehouse_document(
+        key.upper(), wid, storage_root=settings.storage_root,
+    )
+    return {"doc_type": key, "wfirma_id": wid, **body}

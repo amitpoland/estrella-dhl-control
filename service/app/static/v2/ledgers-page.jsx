@@ -24,8 +24,8 @@ const LDG_FMT = {
 const LDG_TODAY = () => new Date().toISOString().slice(0, 10);
 
 // Compact paging — every roster/table on this page uses the same page size.
-const LDG_LIST_LIMIT = 10;
-const SUP_LIST_LIMIT = 10;
+const LDG_LIST_LIMIT = 20;
+const SUP_LIST_LIMIT = 20;
 const MA_TABLE_LIMIT = 10;
 
 // AP financial-row identity = (contractor_id, currency). Backend payables grain
@@ -40,11 +40,12 @@ const parseSupplierFinancialRowId = (rowId) => {
   return { contractor_id: s.slice(0, i), currency: s.slice(i + 1).toUpperCase() };
 };
 
-// AP aging buckets in report order — same keys the backend emits, so this
-// strip and the Supplier Statement PDF read one authority.
+// AP / MA aging buckets in report order — same keys the backend emits
+// (financial_aging.AGING_BUCKETS_WITH_UNAVAILABLE).
 const SUP_AGING_BUCKETS = [
-  ['not_due', 'not due'], ['b_1_30', '1–30'], ['b_31_90', '31–90'],
-  ['b_91_180', '91–180'], ['b_180_plus', '180+'], ['due_date_unavailable', 'due n/a'],
+  ['not_due', 'not due'], ['b_1_30', '1–30'], ['b_31_60', '31–60'],
+  ['b_61_90', '61–90'], ['b_91_180', '91–180'], ['b_181_365', '181–365'],
+  ['b_365_plus', '365+'], ['due_date_unavailable', 'due n/a'],
 ];
 
 // currency_summaries[].aging → the shape LdgAgingStrip renders. The analytics
@@ -394,73 +395,71 @@ function LedgersPage(props) {
 // authority (routes_ledgers.py → live wFirma reads). No value is fabricated:
 // a failed read renders its own honest state, never a placeholder number.
 function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, filters, focusContractorId }) {
-  const [clients, setClients] = React.useState(null);      // null = loading
+  const [clients, setClients] = React.useState(null);
   const [listErr, setListErr] = React.useState(null);
-  const [active, setActive]   = React.useState('');
-  const [stmt, setStmt]       = React.useState({ status: 'idle', data: null, err: null });
+  const [detailId, setDetailId] = React.useState('');
+  const [detailTab, setDetailTab] = React.useState('statement');
+  const [stmt, setStmt] = React.useState({ status: 'idle', data: null, err: null });
+  const [searchQ, setSearchQ] = React.useState('');
   const [currencyFilter, setCurrencyFilter] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('');
   const [listPage, setListPage] = React.useState(1);
   const [listHasMore, setListHasMore] = React.useState(false);
-  const period = { from: filters.from, to: filters.to };
+  const period = { from: filters.from, to: filters.to, scope: filters.scope || 'all_outstanding', as_of: filters.as_of || filters.to };
 
   React.useEffect(() => {
-    if (focusContractorId) setActive(focusContractorId);
+    if (focusContractorId) { setDetailId(focusContractorId); setDetailTab('statement'); }
   }, [focusContractorId]);
 
-  React.useEffect(() => { setListPage(1); }, [period.from, period.to, currencyFilter, statusFilter]);
+  React.useEffect(() => { setListPage(1); }, [period.from, period.to, period.scope, currencyFilter, statusFilter, searchQ]);
 
-  // Live client-balance list. Re-runs on ↻ Refresh (refreshKey).
   React.useEffect(() => {
     let gone = false;
     setClients(null); setListErr(null);
     const params = {
       limit: LDG_LIST_LIMIT,
       start: (listPage - 1) * LDG_LIST_LIMIT,
-      from: period.from,
-      to: period.to,
+      scope: period.scope || 'all_outstanding',
+      to: period.as_of || period.to,
     };
+    if (period.scope === 'activity') {
+      params.from = period.from;
+      params.to = period.to;
+    }
     if (currencyFilter) params.currency = currencyFilter;
     if (statusFilter) params.status = statusFilter;
-    // Cache entry is keyed by the resolved query string, so a period change is
-    // already a distinct entry — force is only for the manual ↻ Refresh.
+    if (searchQ.trim()) params.q = searchQ.trim();
     window.PzApi.listClientBalancesShared(params, { force: refreshKey > 0 })
-      .then(r => {
+      .then((r) => {
         if (gone) return;
         const rows = (r && r.rows) || [];
         setClients(rows);
         setListHasMore(rows.length >= LDG_LIST_LIMIT);
         onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
-        const prefer = focusContractorId && rows.some(x => x.contractor_id === focusContractorId)
-          ? focusContractorId : null;
-        if (prefer) setActive(prefer);
-        else if (rows.length && !rows.some(x => x.contractor_id === active)) {
-          setActive(rows[0].contractor_id);
-        }
       })
-      .catch(e => {
+      .catch((e) => {
         if (gone) return;
         setClients([]);
         setListErr((e && e.message) || 'wFirma read failed');
         onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: (e && e.message) || '' });
       });
     return () => { gone = true; };
-  }, [refreshKey, period.from, period.to, currencyFilter, statusFilter, listPage]);
+  }, [refreshKey, period.from, period.to, period.scope, period.as_of, currencyFilter, statusFilter, searchQ, listPage]);
 
-  const c = (clients || []).find(x => x.contractor_id === active) || null;
+  const detailClient = (clients || []).find((x) => x.contractor_id === detailId) || null;
 
-  // Live per-client statement (entries + totals + aging). On-demand per
-  // selection — same authority the statement PDF uses.
+  // Lazy statement — only when detail panel open (not for every visible roster row).
   React.useEffect(() => {
-    if (!active) { setStmt({ status: 'idle', data: null, err: null }); return; }
+    if (!detailId) { setStmt({ status: 'idle', data: null, err: null }); return; }
+    if (detailTab === 'info') { setStmt({ status: 'idle', data: null, err: null }); return; }
     let gone = false;
     setStmt({ status: 'loading', data: null, err: null });
     const w = period;
-    window.EstrellaShared.apiFetch(`/api/v1/ledgers/clients/${encodeURIComponent(active)}/statement.json?from=${w.from}&to=${w.to}`)
-      .then(r => { if (!gone) setStmt({ status: 'ok', data: r, err: null }); })
-      .catch(e => { if (!gone) setStmt({ status: 'error', data: null, err: (e && e.message) || 'statement read failed' }); });
+    window.EstrellaShared.apiFetch(`/api/v1/ledgers/clients/${encodeURIComponent(detailId)}/statement.json?from=${w.from}&to=${w.to}`)
+      .then((r) => { if (!gone) setStmt({ status: 'ok', data: r, err: null }); })
+      .catch((e) => { if (!gone) setStmt({ status: 'error', data: null, err: (e && e.message) || 'statement read failed' }); });
     return () => { gone = true; };
-  }, [active, refreshKey, period.from, period.to]);
+  }, [detailId, detailTab, refreshKey, period.from, period.to]);
 
   if (clients === null) {
     return <div data-testid="ldg-clients-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading client balances from wFirma…</div>;
@@ -473,57 +472,141 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
       </div>
     );
   }
-  if (clients.length === 0) {
-    return <div data-testid="ldg-clients-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>No customers in Customer Master yet.</div>;
-  }
+
+  const moneyCell = (v, ccy, avail) => {
+    if (!avail) return <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-3)' }}>—</td>;
+    return <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(v, ccy)}</td>;
+  };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
-      <div>
-        <LdgFilterPanel
-          title="Clients"
-          searchPlaceholder="Search clients…"
-          extraFilters={[
-            {
-              id: 'currency',
-              label: 'Currency',
-              value: currencyFilter,
-              onChange: setCurrencyFilter,
-              options: ['', 'PLN', 'EUR', 'USD', 'GBP'],
-            },
-            {
-              id: 'status',
-              label: 'Status',
-              value: statusFilter,
-              onChange: setStatusFilter,
-              options: ['', 'outstanding', 'clear', 'unknown'],
-            },
-          ]}
-          items={clients.map(x => ({
-            id: x.contractor_id, label: x.name || x.contractor_id,
-            sub: [x.country, x.vat_id].filter(Boolean).join(' · '),
-            value: x.balance_available === false ? '—'
-                 : x.currency === 'multi' ? 'multi-ccy'
-                 : LDG_FMT.money(x.open, x.currency),
-            alert: (Number(x.overdue_invoice_age) || 0) > 0,
-          }))}
-          activeId={active}
-          onSelect={setActive}
-        />
-        <div data-testid="ldg-clients-pager" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-          <button type="button" data-testid="ldg-clients-prev" disabled={listPage <= 1}
-            onClick={() => setListPage(p => Math.max(1, p - 1))}
-            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: listPage <= 1 ? 'not-allowed' : 'pointer', opacity: listPage <= 1 ? 0.45 : 1 }}>Previous</button>
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Page {listPage} · {LDG_LIST_LIMIT}/page</span>
-          <button type="button" data-testid="ldg-clients-next" disabled={!listHasMore}
-            onClick={() => setListPage(p => p + 1)}
-            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: !listHasMore ? 'not-allowed' : 'pointer', opacity: !listHasMore ? 0.45 : 1 }}>Next</button>
-        </div>
+    <div data-testid="ldg-clients-root">
+      <div data-testid="ldg-clients-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+        <input data-testid="ldg-filter-search" type="search" placeholder="Search clients…" value={searchQ}
+          onChange={(e) => setSearchQ(e.target.value)}
+          style={{ padding: '6px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', minWidth: 180 }} />
+        <select data-testid="ldg-clients-currency" value={currencyFilter} onChange={(e) => setCurrencyFilter(e.target.value)}
+          style={{ padding: '6px 8px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)' }}>
+          {['', 'PLN', 'EUR', 'USD', 'GBP'].map((c) => <option key={c || 'all'} value={c}>{c || 'All currencies'}</option>)}
+        </select>
+        <select data-testid="ldg-clients-status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+          style={{ padding: '6px 8px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)' }}>
+          {['', 'outstanding', 'clear', 'unknown'].map((s) => <option key={s || 'all'} value={s}>{s || 'All statuses'}</option>)}
+        </select>
+        <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 'auto' }}>Sorted: overdue → largest → outstanding → clear · {LDG_LIST_LIMIT}/page</span>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {c && <ClientHeaderCard client={c} stmt={stmt} period={period} />}
-        {c && <ClientStatementTable client={c} stmt={stmt} period={period} onRowClick={onSelectRow} selectedId={selectedRow && selectedRow.id} />}
+      <window.Card style={{ padding: 0, overflow: 'auto', marginBottom: detailId ? 14 : 0 }}>
+        <table data-testid="ldg-clients-balance-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
+              {['Client', 'Open', 'Overdue', 'YTD', 'Cur', 'State', ''].map((h) => (
+                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Open', 'Overdue', 'YTD'].includes(h) ? 'right' : 'left' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {clients.length === 0 && (
+              <tr><td colSpan={7} data-testid="ldg-clients-empty" style={{ padding: 28, textAlign: 'center', color: 'var(--text-3)' }}>No clients match filters.</td></tr>
+            )}
+            {clients.map((x) => (
+              <tr key={x.contractor_id} data-testid="acc-balance-row" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                <td style={{ padding: '8px 10px', fontWeight: 600 }}>{x.name || x.contractor_id}</td>
+                {moneyCell(x.open, x.currency, x.balance_available !== false)}
+                {moneyCell(x.overdue_invoice_age, x.currency, x.balance_available !== false && x.overdue_invoice_age != null)}
+                {moneyCell(x.ytd_invoiced, x.currency, x.balance_available !== false && x.ytd_invoiced != null)}
+                <td style={{ padding: '8px 10px' }}>{x.currency || '—'}</td>
+                <td style={{ padding: '8px 10px' }}>{x.balance_available ? <LdgStatusPill status={x.state === 'outstanding' ? 'Outstanding' : x.state === 'clear' ? 'Clear' : x.state} /> : 'unknown'}</td>
+                <td style={{ padding: '8px 10px' }}>
+                  <window.Btn small variant="outline" data-testid={`ldg-client-open-${x.contractor_id}`}
+                    onClick={() => { setDetailId(x.contractor_id); setDetailTab('statement'); }}>
+                    Open
+                  </window.Btn>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div data-testid="ldg-clients-pager" style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', padding: '10px 12px', borderTop: '1px solid var(--border-subtle)' }}>
+          <button type="button" data-testid="ldg-clients-prev" disabled={listPage <= 1} onClick={() => setListPage((p) => Math.max(1, p - 1))}
+            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: listPage <= 1 ? 'not-allowed' : 'pointer', opacity: listPage <= 1 ? 0.45 : 1 }}>Previous</button>
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Page {listPage} · {LDG_LIST_LIMIT}/page</span>
+          <button type="button" data-testid="ldg-clients-next" disabled={!listHasMore} onClick={() => setListPage((p) => p + 1)}
+            style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: !listHasMore ? 'not-allowed' : 'pointer', opacity: !listHasMore ? 0.45 : 1 }}>Next</button>
+        </div>
+      </window.Card>
+
+      {detailClient && (
+        <ClientDetailPanel
+          client={detailClient}
+          stmt={stmt}
+          period={period}
+          tab={detailTab}
+          onTab={setDetailTab}
+          onClose={() => setDetailId('')}
+          onRowClick={onSelectRow}
+          selectedId={selectedRow && selectedRow.id}
+        />
+      )}
+    </div>
+  );
+}
+
+function ClientDetailPanel({ client, stmt, period, tab, onTab, onClose, onRowClick, selectedId }) {
+  const tabs = [
+    { id: 'statement', label: 'Statement' },
+    { id: 'invoices', label: 'Invoices' },
+    { id: 'payments', label: 'Payments' },
+    { id: 'aging', label: 'Aging' },
+    { id: 'info', label: 'Client Information' },
+  ];
+  return (
+    <div data-testid="ldg-client-detail" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>{client.name || client.contractor_id}</div>
+        <div style={{ flex: 1 }} />
+        <button type="button" data-testid="ldg-client-detail-close" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: 18 }}>×</button>
+      </div>
+      <div data-testid="ldg-client-tabs" style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', overflowX: 'auto' }}>
+        {tabs.map((t) => (
+          <button key={t.id} type="button" data-testid={`ldg-client-tab-${t.id}`} onClick={() => onTab(t.id)}
+            style={{
+              padding: '8px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11.5, fontWeight: tab === t.id ? 700 : 500,
+              borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent', color: tab === t.id ? 'var(--text)' : 'var(--text-2)',
+            }}>{t.label}</button>
+        ))}
+      </div>
+      <div style={{ padding: '12px 14px' }}>
+        {tab === 'info' && (
+          <div data-testid="ldg-client-info">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, fontSize: 11.5 }}>
+              <div><span style={{ color: 'var(--text-3)' }}>Contractor</span><div style={{ fontFamily: 'monospace' }}>{client.contractor_id}</div></div>
+              <div><span style={{ color: 'var(--text-3)' }}>Country</span><div>{client.country || '—'}</div></div>
+              <div><span style={{ color: 'var(--text-3)' }}>VAT / Tax ID</span><div style={{ fontFamily: 'monospace' }}>{client.vat_id || '—'}</div></div>
+              <div><span style={{ color: 'var(--text-3)' }}>Default currency</span><div>{client.currency || '—'}</div></div>
+            </div>
+          </div>
+        )}
+        {tab === 'aging' && (
+          stmt.status === 'ok' && stmt.data ? (
+            (stmt.data.currencies || []).map((ccy) => (
+              <LdgAgingStrip key={ccy} testid={`ldg-client-aging-${ccy}`} buckets={agingStripBuckets((stmt.data.aging_per_currency || {})[ccy])} />
+            ))
+          ) : stmt.status === 'loading' ? (
+            <div data-testid="ldg-stmt-loading" style={{ padding: 20, color: 'var(--text-3)' }}>Loading aging…</div>
+          ) : (
+            <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Aging unavailable — open Statement tab or refresh.</div>
+          )
+        )}
+        {(tab === 'statement' || tab === 'invoices' || tab === 'payments') && (
+          <ClientStatementTable
+            client={client}
+            stmt={stmt}
+            period={period}
+            onRowClick={onRowClick}
+            selectedId={selectedId}
+            entryFilter={tab === 'invoices' ? 'invoice' : tab === 'payments' ? 'payment' : null}
+          />
+        )}
       </div>
     </div>
   );
@@ -617,12 +700,119 @@ function LdgAgingStrip({ buckets, testid }) {
   );
 }
 
+// ── Management Analysis / CFO MIS helpers ─────────────────────────────
+const MA_CFO_BADGE_TONES = {
+  local:   { bg: 'var(--badge-blue-bg)',   tx: 'var(--badge-blue-text)',   bd: 'var(--badge-blue-border)' },
+  live:    { bg: 'var(--badge-green-bg)',  tx: 'var(--badge-green-text)',  bd: 'var(--badge-green-border)' },
+  fresh:   { bg: 'var(--badge-green-bg)',  tx: 'var(--badge-green-text)',  bd: 'var(--badge-green-border)' },
+  stale:   { bg: 'var(--badge-amber-bg)',  tx: 'var(--badge-amber-text)',  bd: 'var(--badge-amber-border)' },
+  empty:   { bg: 'var(--badge-neutral-bg)', tx: 'var(--badge-neutral-text)', bd: 'var(--badge-neutral-border)' },
+  unknown: { bg: 'var(--badge-neutral-bg)', tx: 'var(--badge-neutral-text)', bd: 'var(--badge-neutral-border)' },
+  warn:    { bg: 'var(--badge-red-bg)',    tx: 'var(--badge-red-text)',    bd: 'var(--badge-red-border)' },
+  ok:      { bg: 'var(--badge-green-bg)',  tx: 'var(--badge-green-text)',  bd: 'var(--badge-green-border)' },
+};
+
+function MaCfoBadge({ label, tone }) {
+  const t = MA_CFO_BADGE_TONES[tone] || MA_CFO_BADGE_TONES.unknown;
+  return (
+    <span data-testid={`ldg-ma-badge-${String(label || '').toLowerCase().replace(/\s+/g, '-')}`} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '2px 8px', borderRadius: 4, fontSize: 9.5, fontWeight: 700,
+      letterSpacing: '0.04em', textTransform: 'uppercase',
+      background: t.bg, color: t.tx, border: `1px solid ${t.bd}`,
+    }}>{label}</span>
+  );
+}
+
+function MaSection({ testid, title, subtitle, children }) {
+  return (
+    <section data-testid={testid} style={{ marginBottom: 20 }}>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{title}</div>
+        {subtitle && <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{subtitle}</div>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function MaCompactEmpty({ testid, msg }) {
+  return (
+    <div data-testid={testid} style={{
+      padding: '14px 16px', borderRadius: 8, border: '1px dashed var(--border)',
+      background: 'var(--bg-subtle)', fontSize: 11.5, color: 'var(--text-3)',
+    }}>{msg}</div>
+  );
+}
+
+function MaAgingBars({ buckets, testid, currency }) {
+  const nums = buckets.map((b) => Math.max(0, Number(b.value) || 0));
+  const max = Math.max(...nums, 1);
+  return (
+    <div data-testid={testid} style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(72px, 1fr))',
+      gap: 10, padding: '12px 14px',
+      border: '1px solid var(--border-subtle)', borderRadius: 8, background: 'var(--card)',
+    }}>
+      {buckets.map((b, i) => {
+        const pct = Math.round((nums[i] / max) * 100);
+        const barColor = b.tone === 'red'
+          ? 'var(--badge-red-text)'
+          : b.tone === 'amber'
+            ? 'var(--badge-amber-text)'
+            : 'var(--accent)';
+        return (
+          <div key={b.label}>
+            <div style={{ fontSize: 9.5, color: 'var(--text-3)', marginBottom: 4 }}>{b.label}</div>
+            <div style={{ height: 8, background: 'var(--bg-subtle)', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ width: `${pct}%`, minWidth: nums[i] > 0 ? 2 : 0, height: '100%', background: barColor, borderRadius: 4 }} />
+            </div>
+            <div style={{ fontSize: 10.5, fontFamily: 'monospace', marginTop: 4, color: 'var(--text-2)' }}>
+              {LDG_FMT.money(b.value, currency)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const maFreshnessTone = (v) => {
+  const k = String(v || '').toLowerCase();
+  if (k === 'fresh' || k === 'live') return 'fresh';
+  if (k === 'stale') return 'stale';
+  if (k === 'empty') return 'empty';
+  return 'unknown';
+};
+
+const maSourceTone = (v) => (String(v || '').toLowerCase() === 'live' ? 'live' : 'local');
+
+const maReconTone = (v) => {
+  const k = String(v || '').toLowerCase();
+  if (k === 'projection_ok' || k === 'live_wfirma') return 'ok';
+  if (k === 'stale_projection' || k === 'unverified' || k === 'unavailable') return 'warn';
+  return 'unknown';
+};
+
+const maSumTreasuryByCurrency = (rows) => {
+  const out = {};
+  (rows || []).forEach((r) => {
+    const ccy = String(r.currency || '').trim().toUpperCase();
+    if (!ccy) return;
+    const n = Number(r.closing_balance);
+    if (Number.isNaN(n)) return;
+    out[ccy] = (out[ccy] || 0) + n;
+  });
+  return out;
+};
+
 // ── Compact ERP statement table — LIVE (statement.json entries) ────────
 // LDG-1: renders entries_per_currency / totals_per_currency /
 // aging_per_currency from GET /ledgers/clients/{id}/statement.json. The old
 // synthetic rows and the fabricated aging strip are gone; every state
 // (loading / error / empty) is honest.
-function ClientStatementTable({ client, stmt, onRowClick, selectedId, period }) {
+function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, entryFilter }) {
   if (stmt.status === 'loading' || stmt.status === 'idle') {
     return <window.Card><div data-testid="ldg-stmt-loading" style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>Loading statement from wFirma…</div></window.Card>;
   }
@@ -645,10 +835,27 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period }) 
   const TYPE_LABEL = { invoice: 'Invoice', correction: 'Correction', payment: 'Payment', proforma: 'Proforma' };
   const agingBuckets = (a) => {
     if (!a) return [];
-    const order = ['current', 'd1_30', '1_30', 'd31_60', '31_60', 'd61_90', '61_90', 'd90_plus', '90_plus', 'over_90'];
-    const label = (k) => ({ current: 'Current', d1_30: '1–30', '1_30': '1–30', d31_60: '31–60', '31_60': '31–60',
-                            d61_90: '61–90', '61_90': '61–90', d90_plus: '90+', '90_plus': '90+', over_90: '90+' }[k] || k);
-    const tone = (k) => (/90|61/.test(k) ? 'red' : /30|60/.test(k) ? 'amber' : null);
+    const order = [
+      'not_due', 'current',
+      'b_1_30', '1_30', 'd1_30',
+      'b_31_60', '31_60', 'd31_60',
+      'b_61_90', '61_90', 'd61_90',
+      'b_91_180',
+      'b_181_365',
+      'b_365_plus', '90_plus', 'd90_plus', 'over_90',
+      'due_date_unavailable',
+    ];
+    const label = (k) => ({
+      not_due: 'Not Due', current: 'Not Due',
+      b_1_30: '1–30', '1_30': '1–30', d1_30: '1–30',
+      b_31_60: '31–60', '31_60': '31–60', d31_60: '31–60',
+      b_61_90: '61–90', '61_90': '61–90', d61_90: '61–90',
+      b_91_180: '91–180',
+      b_181_365: '181–365',
+      b_365_plus: '365+', '90_plus': '365+', d90_plus: '365+', over_90: '365+',
+      due_date_unavailable: 'due n/a',
+    }[k] || k);
+    const tone = (k) => (/365|181|91|90|61/.test(k) ? 'red' : /30|60/.test(k) ? 'amber' : null);
     const seen = Object.keys(a).filter(k => k !== 'method' && k !== 'total');
     seen.sort((x, y) => order.indexOf(x) - order.indexOf(y));
     const out = seen.map(k => ({ label: label(k), value: a[k], tone: tone(k) }));
@@ -680,7 +887,12 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period }) 
       )}
 
       {currencies.map(ccy => {
-        const entries = entriesBy[ccy] || [];
+        let entries = entriesBy[ccy] || [];
+        if (entryFilter === 'invoice') {
+          entries = entries.filter((r) => r.type === 'invoice' || r.type === 'correction' || r.type === 'proforma');
+        } else if (entryFilter === 'payment') {
+          entries = entries.filter((r) => r.type === 'payment');
+        }
         const totals = totalsBy[ccy] || {};
         return (
           <div key={ccy} data-testid={`ldg-stmt-ccy-${ccy}`}>
@@ -754,8 +966,11 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
   const [q, setQ] = React.useState('');
   const [apQ, setApQ] = React.useState('');
   const [localRefresh, setLocalRefresh] = React.useState(0);
+  const liveFetchRef = React.useRef(false);
   const [data, setData] = React.useState(null);
   const [apData, setApData] = React.useState(null);
+  const [treasury, setTreasury] = React.useState(null);
+  const [treasuryErr, setTreasuryErr] = React.useState(null);
   const [err, setErr] = React.useState(null);
   const [apErr, setApErr] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -778,9 +993,11 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
     const params = scopeParams();
     if (currency) params.currency = currency;
     if (status) params.status = status;
+    if (liveFetchRef.current) params.refresh = 1;
     const apParams = scopeParams();
     if (currency) apParams.currency = currency;
     if (apStatus) apParams.status = apStatus;
+    if (liveFetchRef.current) apParams.refresh = 1;
     Promise.all([
       window.PzApi.getManagementAnalysis(params),
       window.PzApi.getPayablesAnalysis(apParams),
@@ -800,6 +1017,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
           setApErr(null);
         }
         setLoading(false);
+        liveFetchRef.current = false;
         const nAr = (body && body.customers && body.customers.length) || 0;
         const nAp = (apRes && (apRes.data || apRes).suppliers && (apRes.data || apRes).suppliers.length) || 0;
         onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: nAr + nAp, error: null });
@@ -809,12 +1027,30 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         setData(null);
         setApData(null);
         setLoading(false);
+        liveFetchRef.current = false;
         const msg = (e && e.message) || 'portfolio read failed';
         setErr(msg);
         onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: msg });
       });
     return () => { gone = true; };
   }, [scope, period.from, period.to, asOf, currency, status, apStatus, refreshKey, localRefresh]);
+
+  React.useEffect(() => {
+    let gone = false;
+    setTreasury(null);
+    setTreasuryErr(null);
+    if (!asOf) return () => { gone = true; };
+    window.EstrellaShared.apiFetch(`/api/v1/treasury/balances?as_of=${encodeURIComponent(asOf)}`)
+      .then((body) => {
+        if (gone) return;
+        setTreasury(body || null);
+      })
+      .catch((e) => {
+        if (gone) return;
+        setTreasuryErr((e && e.message) || 'treasury read failed');
+      });
+    return () => { gone = true; };
+  }, [asOf, refreshKey, localRefresh]);
 
   const reset = () => {
     onFilters({
@@ -831,7 +1067,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
   React.useEffect(() => { setApTablePage(1); }, [apQ, scope, currency, apStatus, period.from, period.to]);
 
   if (loading && !data) {
-    return <div data-testid="ldg-ma-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading receivables portfolio from wFirma…</div>;
+    return <div data-testid="ldg-ma-loading" style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 12.5 }}>Loading CFO portfolio…</div>;
   }
   if (err && !data) {
     return (
@@ -873,12 +1109,71 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
     </td>
   );
 
+  const apSummaries = (apData && apData.currency_summaries) || [];
+  const apCov = (apData && apData.due_date_coverage) || {};
+  const apQs = (apData && apData.query_stats) || {};
+  const apDq = (apData && apData.data_quality) || {};
+  const apHealth = (apData && apData.source_health) || {};
+  const apQLower = (apQ || '').trim().toLowerCase();
+  const apRowsAll = ((apData && apData.suppliers) || []).filter((r) => {
+    if (!apQLower) return true;
+    return String(r.supplier_name || '').toLowerCase().includes(apQLower);
+  });
+  const apTotalPages = Math.max(1, Math.ceil(apRowsAll.length / MA_TABLE_LIMIT) || 1);
+  const apPageSafe = Math.min(apTablePage, apTotalPages);
+  const apRows = apRowsAll.slice((apPageSafe - 1) * MA_TABLE_LIMIT, apPageSafe * MA_TABLE_LIMIT);
+
+  const arSource = data.source || qs.source || 'local';
+  const arFreshness = data.freshness || 'unknown';
+  const arRecon = data.reconciliation_status || 'unknown';
+  const projection = data.projection || {};
+  const liquidityByCcy = maSumTreasuryByCurrency(treasury && treasury.rows);
+  const treasuryHasRows = Boolean(treasury && (treasury.rows || []).length > 0);
+  const arNetByCcy = Object.fromEntries(summaries.map((s) => [s.currency, Number(s.net_position)]));
+  const apNetByCcy = Object.fromEntries(apSummaries.map((s) => [s.currency, Number(s.net_payable)]));
+  const wcCurrencies = [...new Set([...Object.keys(arNetByCcy), ...Object.keys(apNetByCcy)])].sort();
+
+  const exceptionItems = [];
+  if (health.ok === false || health.note) {
+    exceptionItems.push({ key: 'ar-source-health', text: health.note || 'AR source health incomplete (cap/stall)' });
+  }
+  if (apHealth.ok === false || apHealth.note) {
+    exceptionItems.push({ key: 'ap-source-health', text: apHealth.note || 'AP source health incomplete' });
+  }
+  if (arFreshness === 'stale') {
+    exceptionItems.push({ key: 'ar-stale', text: 'AR local projection is stale — use Refresh (live) for reconciliation' });
+  }
+  if ((apData && apData.freshness) === 'stale') {
+    exceptionItems.push({ key: 'ap-stale', text: 'AP local projection is stale — use Refresh (live) for reconciliation' });
+  }
+  if (arRecon && arRecon !== 'projection_ok' && arRecon !== 'live_wfirma') {
+    exceptionItems.push({ key: 'ar-recon', text: `AR reconciliation: ${arRecon}` });
+  }
+  if (apData && apData.reconciliation_status && apData.reconciliation_status !== 'projection_ok' && apData.reconciliation_status !== 'live_wfirma') {
+    exceptionItems.push({ key: 'ap-recon', text: `AP reconciliation: ${apData.reconciliation_status}` });
+  }
+  Object.entries(dq).forEach(([k, v]) => {
+    exceptionItems.push({ key: `ar-dq-${k}`, text: `AR data quality · ${k}: ${v}` });
+  });
+  Object.entries(apDq).forEach(([k, v]) => {
+    exceptionItems.push({ key: `ap-dq-${k}`, text: `AP data quality · ${k}: ${v}` });
+  });
+  summaries.filter((s) => s.reconciliation_ok === false).forEach((s) => {
+    exceptionItems.push({ key: `ar-aging-${s.currency}`, text: `${s.currency} AR aging does not reconcile to net position` });
+  });
+  apSummaries.filter((s) => s.reconciliation_ok === false).forEach((s) => {
+    exceptionItems.push({ key: `ap-aging-${s.currency}`, text: `${s.currency} AP aging does not reconcile to net payable` });
+  });
+  if (treasuryErr) {
+    exceptionItems.push({ key: 'treasury-read', text: `Treasury balances unavailable: ${treasuryErr}` });
+  }
+
   return (
     <div data-testid="ldg-ma-root">
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>Management Analysis</div>
         <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
-          Receivables and Payables from wFirma — shared remaining math, no FX merge, read-only.
+          CFO portfolio — local projection by default, currencies stay separate, read-only.
         </div>
       </div>
 
@@ -943,7 +1238,7 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
             style={{ display: 'block', width: '100%', marginTop: 4, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }} />
         </label>
         <window.Btn small variant="outline" data-testid="ldg-ma-reset" onClick={reset}>Reset</window.Btn>
-        <window.Btn small data-testid="ldg-ma-refresh" onClick={() => setLocalRefresh((n) => n + 1)}>Refresh</window.Btn>
+        <window.Btn small data-testid="ldg-ma-refresh" onClick={() => { liveFetchRef.current = true; setLocalRefresh((n) => n + 1); }}>Refresh (live)</window.Btn>
         {/* Read-only projection of exactly these filters — the PDF route calls
             the same builders as the JSON above, so it cannot show a different
             number than the screen. */}
@@ -954,51 +1249,187 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         </a>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12, fontSize: 11, color: 'var(--text-3)' }}>
-        <span data-testid="ldg-ma-asof-label">Data as of {data.generated_at || '—'}</span>
-        <span>·</span>
-        <span data-testid="ldg-ma-health">
-          Source {health.ok === false ? '⚠️ incomplete (cap/stall)' : 'healthy'}
-          {qs.duration_ms != null ? ` · ${qs.duration_ms} ms` : ''}
-          {qs.invoice_api_calls != null ? ` · inv calls ${qs.invoice_api_calls}` : ''}
-          {qs.payment_api_calls != null ? ` · pay calls ${qs.payment_api_calls}` : ''}
-          {qs.per_customer_wfirma_calls === 0 ? ' · no N+1' : ''}
+      <div data-testid="ldg-ma-meta-badges" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 14 }}>
+        <MaCfoBadge label={`Source · ${arSource}`} tone={maSourceTone(arSource)} />
+        <MaCfoBadge label={`Freshness · ${arFreshness}`} tone={maFreshnessTone(arFreshness)} />
+        <MaCfoBadge label={`Reconciliation · ${arRecon}`} tone={maReconTone(arRecon)} />
+        <span data-testid="ldg-ma-asof-label" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          Generated {data.generated_at || '—'}
+          {data.as_of ? ` · as-of ${data.as_of}` : ''}
         </span>
-        <span>·</span>
-        <span data-testid="ldg-ma-due-coverage">
-          Due-date coverage {cov.open_coverage_pct == null ? '—' : `${cov.open_coverage_pct}%`}
-          {cov.open_with_paymentdate != null ? ` (${cov.open_with_paymentdate}/${(cov.open_with_paymentdate || 0) + (cov.open_missing_paymentdate || 0)} open)` : ''}
-        </span>
+        {projection && (projection.ar_invoice_rows != null || projection.ap_expense_rows != null) && (
+          <span data-testid="ldg-ma-projection" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+            · projection AR {projection.ar_invoice_rows ?? '—'} / AP {projection.ap_expense_rows ?? '—'} rows
+          </span>
+        )}
       </div>
 
-      {summaries.map((s) => (
-        <div key={s.currency} data-testid={`ldg-ma-ccy-${s.currency}`} style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>{s.currency} portfolio</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
-            <LdgStatTile label="Receivable" value={LDG_FMT.money(s.total_receivable, s.currency)} />
-            <LdgStatTile label="Overdue" value={LDG_FMT.money(s.overdue, s.currency)} tone="red" alert={Number(s.overdue) > 0} />
-            <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
-            <LdgStatTile label="Customer Credits" value={LDG_FMT.money(s.customer_credits, s.currency)} tone="green" />
-            <LdgStatTile label="Customers Outstanding" value={String(s.customers_outstanding)} sub={`${s.customers_overdue} overdue`} />
-            <LdgStatTile label="Net position" value={LDG_FMT.money(s.net_position, s.currency)}
-              sub={s.reconciliation_ok ? 'aging reconciles' : '⚠️ aging mismatch'} />
+      <MaSection testid="ldg-ma-liquidity" title="1 · Liquidity" subtitle="Cash and bank balances from treasury.sqlite — per currency only.">
+        {treasuryHasRows ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+            {Object.entries(liquidityByCcy).sort(([a], [b]) => a.localeCompare(b)).map(([ccy, total]) => (
+              <LdgStatTile key={ccy} label={`${ccy} cash & bank`} value={LDG_FMT.money(total, ccy)}
+                sub={`${(treasury.rows || []).filter((r) => String(r.currency || '').toUpperCase() === ccy).length} account(s) · as of ${treasury.as_of || asOf}`} />
+            ))}
           </div>
-          <LdgAgingStrip testid={`ldg-ma-ar-aging-${s.currency}`} buckets={agingStripBuckets(s.aging)} />
-        </div>
-      ))}
+        ) : (
+          <MaCompactEmpty testid="ldg-ma-liquidity-empty"
+            msg={treasuryErr
+              ? `Treasury balances could not be loaded (${treasuryErr}). Use Accounting → Treasury to capture balances.`
+              : 'No treasury balance snapshots for this as-of date. Capture via Accounting → Treasury (manual entry or bank import).'} />
+        )}
+      </MaSection>
 
+      <MaSection testid="ldg-ma-receivables" title="2 · Receivables" subtitle="Outstanding customer receivables — each currency reported separately.">
+        {summaries.length === 0 ? (
+          <MaCompactEmpty testid="ldg-ma-receivables-empty" msg="No receivable currency summaries for current filters." />
+        ) : summaries.map((s) => (
+          <div key={s.currency} data-testid={`ldg-ma-ccy-${s.currency}`} style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8, color: 'var(--text-2)' }}>{s.currency}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+              <LdgStatTile label="Receivable" value={LDG_FMT.money(s.total_receivable, s.currency)} />
+              <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
+              <LdgStatTile label="Customer Credits" value={LDG_FMT.money(s.customer_credits, s.currency)} tone="green" />
+              <LdgStatTile label="Net position" value={LDG_FMT.money(s.net_position, s.currency)}
+                sub={`${s.customers_outstanding} outstanding`} />
+            </div>
+          </div>
+        ))}
+      </MaSection>
+
+      <MaSection testid="ldg-ma-overdue-ar" title="3 · Overdue Receivables" subtitle="Past-due customer balances — currency-safe.">
+        {summaries.length === 0 ? (
+          <MaCompactEmpty testid="ldg-ma-overdue-ar-empty" msg="No overdue receivable data for current filters." />
+        ) : summaries.map((s) => (
+          <div key={s.currency} data-testid={`ldg-ma-overdue-${s.currency}`} style={{ marginBottom: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+              <LdgStatTile label={`${s.currency} overdue`} value={LDG_FMT.money(s.overdue, s.currency)} tone="red" alert={Number(s.overdue) > 0} />
+              <LdgStatTile label="Customers overdue" value={String(s.customers_overdue)} sub={`of ${s.customers_outstanding} outstanding`} />
+            </div>
+          </div>
+        ))}
+      </MaSection>
+
+      <MaSection testid="ldg-ma-payables" title="4 · Payables" subtitle="Supplier payables and creditor aging — credits stay outside overdue buckets.">
+        {apErr && !apData && (
+          <div data-testid="ldg-ma-ap-error" style={{ padding: 16, border: '1px solid var(--badge-red-border)', background: 'var(--badge-red-bg)', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+            {apErr}
+          </div>
+        )}
+        {!apData && !apErr && (
+          <MaCompactEmpty testid="ldg-ma-payables-empty" msg="Payables portfolio not loaded." />
+        )}
+        {apData && apSummaries.map((s) => (
+          <div key={s.currency} data-testid={`ldg-ma-ap-ccy-${s.currency}`} style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8, color: 'var(--text-2)' }}>{s.currency}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+              <LdgStatTile label="Supplier Payable" value={LDG_FMT.money(s.gross_payable, s.currency)} />
+              <LdgStatTile label="Overdue Payable" value={LDG_FMT.money(s.overdue, s.currency)} tone="red" alert={Number(s.overdue) > 0} />
+              <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
+              <LdgStatTile label="Supplier Credits" value={LDG_FMT.money(s.supplier_credits, s.currency)} tone="green" />
+              <LdgStatTile label="Net Payable" value={LDG_FMT.money(s.net_payable, s.currency)}
+                sub={`${s.suppliers_outstanding} outstanding · ${s.suppliers_overdue} overdue`} />
+            </div>
+          </div>
+        ))}
+      </MaSection>
+
+      <MaSection testid="ldg-ma-aging" title="5 · Aging / Collections" subtitle="Due-date buckets — bar width is relative within each currency (not cross-currency).">
+        {summaries.length === 0 && apSummaries.length === 0 ? (
+          <MaCompactEmpty testid="ldg-ma-aging-empty" msg="No aging buckets for current filters." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {summaries.map((s) => (
+              <div key={`ar-${s.currency}`}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>{s.currency} receivables</div>
+                <MaAgingBars testid={`ldg-ma-ar-aging-bars-${s.currency}`} currency={s.currency} buckets={agingStripBuckets(s.aging)} />
+              </div>
+            ))}
+            {apSummaries.map((s) => (
+              <div key={`ap-${s.currency}`}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>{s.currency} payables</div>
+                <MaAgingBars testid={`ldg-ma-ap-aging-bars-${s.currency}`} currency={s.currency} buckets={agingStripBuckets(s.aging)} />
+              </div>
+            ))}
+          </div>
+        )}
+      </MaSection>
+
+      <MaSection testid="ldg-ma-treasury-trend" title="6 · Treasury trend" subtitle="Historical balance trend requires multiple as-of snapshots.">
+        <MaCompactEmpty testid="ldg-ma-treasury-trend-empty"
+          msg="No treasury trend series on this screen yet — only point-in-time balances as of the selected date. Trend API / Treasury tab UI pending." />
+      </MaSection>
+
+      <MaSection testid="ldg-ma-working-capital" title="7 · Working Capital" subtitle="Net receivable position minus net payables — per currency only (no FX merge).">
+        {wcCurrencies.length === 0 ? (
+          <MaCompactEmpty testid="ldg-ma-working-capital-empty" msg="Need both AR and AP summaries in the same currency to show working capital." />
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+            {wcCurrencies.map((ccy) => {
+              const arNet = arNetByCcy[ccy];
+              const apNet = apNetByCcy[ccy];
+              const hasAr = arNet != null && !Number.isNaN(arNet);
+              const hasAp = apNet != null && !Number.isNaN(apNet);
+              const wc = hasAr && hasAp ? arNet - apNet : null;
+              return (
+                <LdgStatTile key={ccy} label={`${ccy} working capital`}
+                  value={wc != null ? LDG_FMT.money(wc, ccy) : '—'}
+                  sub={hasAr && hasAp
+                    ? `AR net ${LDG_FMT.money(arNet, ccy)} − AP net ${LDG_FMT.money(apNet, ccy)}`
+                    : hasAr ? `AR net only (${LDG_FMT.money(arNet, ccy)})` : hasAp ? `AP net only (${LDG_FMT.money(apNet, ccy)})` : '—'} />
+              );
+            })}
+          </div>
+        )}
+      </MaSection>
+
+      <MaSection testid="ldg-ma-exceptions" title="8 · Exceptions" subtitle="Source health, data quality, stale projection, and reconciliation flags.">
+        {exceptionItems.length === 0 ? (
+          <MaCompactEmpty testid="ldg-ma-exceptions-none" msg="No exceptions flagged for the current portfolio." />
+        ) : (
+          <ul data-testid="ldg-ma-exceptions-list" style={{ margin: 0, padding: '12px 16px 12px 32px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card)', fontSize: 11.5, color: 'var(--text-2)' }}>
+            {exceptionItems.map((item) => (
+              <li key={item.key} data-testid={`ldg-ma-exception-${item.key}`}>{item.text}</li>
+            ))}
+          </ul>
+        )}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          <span data-testid="ldg-ma-health">
+            AR {health.ok === false ? '⚠️ incomplete' : 'healthy'}
+            {qs.duration_ms != null ? ` · ${qs.duration_ms} ms` : ''}
+            {qs.invoice_api_calls != null ? ` · inv ${qs.invoice_api_calls}` : ''}
+            {qs.payment_api_calls != null ? ` · pay ${qs.payment_api_calls}` : ''}
+          </span>
+          {apData && (
+            <span data-testid="ldg-ma-ap-health">
+              AP {apHealth.ok === false ? '⚠️ incomplete' : 'healthy'}
+              {apQs.expense_api_calls != null ? ` · exp ${apQs.expense_api_calls}` : ''}
+            </span>
+          )}
+          <span data-testid="ldg-ma-due-coverage">
+            Due-date coverage {cov.open_coverage_pct == null ? '—' : `${cov.open_coverage_pct}%`}
+          </span>
+          {apData && (
+            <span data-testid="ldg-ma-ap-due-coverage">
+              AP due coverage {apCov.open_coverage_pct == null ? '—' : `${apCov.open_coverage_pct}%`}
+            </span>
+          )}
+        </div>
+      </MaSection>
+
+      <MaSection testid="ldg-ma-ar-table-section" title="Receivables detail" subtitle="Drill-down to Client Ledger. KPIs above = full filtered portfolio.">
       <window.Card style={{ padding: 0, overflow: 'auto' }}>
         <table data-testid="ldg-ma-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 960 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
-              {['Customer', 'Ccy', 'Credit', 'Not Due', '1–30', '31–90', '91–180', '>180', 'Outstanding', 'Oldest Due', 'Last Payment', ''].map((h) => (
+              {['Customer', 'Ccy', 'Credit', 'Not Due', '1–30', '31–60', '61–90', '91–180', '181–365', '365+', 'Outstanding', 'Oldest Due', 'Last Payment', ''].map((h) => (
                 <th key={h} style={{ padding: '8px 8px', borderBottom: '1px solid var(--border)', fontSize: 10, color: 'var(--text-3)', fontWeight: 600, textAlign: h === 'Customer' || h === '' ? 'left' : 'right' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={12} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>No customers match filters.</td></tr>
+              <tr><td colSpan={14} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>No customers match filters.</td></tr>
             )}
             {rows.map((r) => (
               <tr key={`${r.contractor_id}-${r.currency}`} data-testid={`ldg-ma-row-${r.contractor_id}-${r.currency}`}
@@ -1008,9 +1439,11 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
                 {moneyCell(r.credit_balance, r.currency)}
                 {moneyCell(r.not_due, r.currency)}
                 {moneyCell(r.b_1_30, r.currency)}
-                {moneyCell(r.b_31_90, r.currency)}
+                {moneyCell(r.b_31_60, r.currency)}
+                {moneyCell(r.b_61_90, r.currency)}
                 {moneyCell(r.b_91_180, r.currency)}
-                {moneyCell(r.b_180_plus, r.currency)}
+                {moneyCell(r.b_181_365, r.currency)}
+                {moneyCell(r.b_365_plus, r.currency)}
                 {moneyCell(r.outstanding, r.currency)}
                 <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.oldest_due_date || '—'}</td>
                 <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.last_payment_date || '—'}</td>
@@ -1033,133 +1466,65 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
             style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: arPageSafe >= arTotalPages ? 'not-allowed' : 'pointer', opacity: arPageSafe >= arTotalPages ? 0.45 : 1 }}>Next</button>
         </div>
       </window.Card>
+      </MaSection>
 
-      {Object.keys(dq).length > 0 && (
-        <details data-testid="ldg-ma-dq" style={{ marginTop: 14 }}>
-          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>AR data quality</summary>
-          <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 11.5, color: 'var(--text-3)' }}>
-            {Object.entries(dq).map(([k, v]) => (
-              <li key={k}>{k}: {v}</li>
-            ))}
-          </ul>
-        </details>
-      )}
-
-      {/* ── PAYABLES / CREDITOR AGING ── */}
-      <div data-testid="ldg-ma-payables" style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid var(--border)' }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Payables</div>
-        <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }}>
-          Supplier payables and creditor aging from wFirma expenses and linked payments.
-          Credits / advances stay outside overdue buckets. Currencies stay separate.
-        </div>
+      <MaSection testid="ldg-ma-ap-table-section" title="Payables detail" subtitle="Drill-down to Supplier Ledger.">
         {apErr && !apData && (
-          <div data-testid="ldg-ma-ap-error" style={{ padding: 16, border: '1px solid var(--badge-red-border)', background: 'var(--badge-red-bg)', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+          <div data-testid="ldg-ma-ap-error-inline" style={{ padding: 16, border: '1px solid var(--badge-red-border)', background: 'var(--badge-red-bg)', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
             {apErr}
           </div>
         )}
-        {apData && (() => {
-          const apSummaries = apData.currency_summaries || [];
-          const apCov = apData.due_date_coverage || {};
-          const apQs = apData.query_stats || {};
-          const apDq = apData.data_quality || {};
-          const apHealth = apData.source_health || {};
-          const apQLower = (apQ || '').trim().toLowerCase();
-          const apRowsAll = (apData.suppliers || []).filter((r) => {
-            if (!apQLower) return true;
-            return String(r.supplier_name || '').toLowerCase().includes(apQLower);
-          });
-          const apTotalPages = Math.max(1, Math.ceil(apRowsAll.length / MA_TABLE_LIMIT) || 1);
-          const apPageSafe = Math.min(apTablePage, apTotalPages);
-          const apRows = apRowsAll.slice((apPageSafe - 1) * MA_TABLE_LIMIT, apPageSafe * MA_TABLE_LIMIT);
-          return (
-            <div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12, fontSize: 11, color: 'var(--text-3)' }}>
-                <span data-testid="ldg-ma-ap-health">
-                  AP source {apHealth.ok === false ? '⚠️ incomplete' : 'healthy'}
-                  {apQs.expense_api_calls != null ? ` · exp calls ${apQs.expense_api_calls}` : ''}
-                  {apQs.payment_api_calls != null ? ` · pay calls ${apQs.payment_api_calls}` : ''}
-                  {apQs.per_supplier_wfirma_calls === 0 ? ' · no N+1' : ''}
-                </span>
-                <span>·</span>
-                <span data-testid="ldg-ma-ap-due-coverage">
-                  Due-date coverage {apCov.open_coverage_pct == null ? '—' : `${apCov.open_coverage_pct}%`}
-                </span>
-              </div>
-              {apSummaries.map((s) => (
-                <div key={s.currency} data-testid={`ldg-ma-ap-ccy-${s.currency}`} style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>{s.currency} payables</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
-                    <LdgStatTile label="Supplier Payable" value={LDG_FMT.money(s.gross_payable, s.currency)} />
-                    <LdgStatTile label="Overdue Payable" value={LDG_FMT.money(s.overdue, s.currency)} tone="red" alert={Number(s.overdue) > 0} />
-                    <LdgStatTile label="Not Due" value={LDG_FMT.money(s.not_due, s.currency)} />
-                    <LdgStatTile label="Supplier Credits" value={LDG_FMT.money(s.supplier_credits, s.currency)} tone="green" />
-                    <LdgStatTile label="Suppliers Outstanding" value={String(s.suppliers_outstanding)} sub={`${s.suppliers_overdue} overdue`} />
-                    <LdgStatTile label="Net Payable" value={LDG_FMT.money(s.net_payable, s.currency)}
-                      sub={s.reconciliation_ok ? 'aging reconciles' : '⚠️ aging mismatch'} />
-                  </div>
-                  <LdgAgingStrip testid={`ldg-ma-ap-aging-${s.currency}`} buckets={agingStripBuckets(s.aging)} />
-                </div>
-              ))}
-              <window.Card style={{ padding: 0, overflow: 'auto' }}>
-                <table data-testid="ldg-ma-ap-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 960 }}>
-                  <thead>
-                    <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
-                      {['Supplier', 'Ccy', 'Credit', 'Not Due', '1–30', '31–90', '91–180', '>180', 'Net Payable', 'Oldest Due', 'Last Payment', ''].map((h) => (
-                        <th key={h} style={{ padding: '8px 8px', borderBottom: '1px solid var(--border)', fontSize: 10, color: 'var(--text-3)', fontWeight: 600, textAlign: h === 'Supplier' || h === '' ? 'left' : 'right' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {apRows.length === 0 && (
-                      <tr><td colSpan={12} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>No suppliers match filters.</td></tr>
-                    )}
-                    {apRows.map((r) => (
-                      <tr key={`${r.contractor_id}-${r.currency}`} data-testid={`ldg-ma-ap-row-${r.contractor_id}-${r.currency}`}
-                        style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                        <td style={{ padding: '7px 8px', fontWeight: 600 }}>{r.supplier_name}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right' }}>{r.currency}</td>
-                        {moneyCell(r.credit_balance, r.currency)}
-                        {moneyCell(r.not_due, r.currency)}
-                        {moneyCell(r.b_1_30, r.currency)}
-                        {moneyCell(r.b_31_90, r.currency)}
-                        {moneyCell(r.b_91_180, r.currency)}
-                        {moneyCell(r.b_180_plus, r.currency)}
-                        {moneyCell(r.net_payable, r.currency)}
-                        <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.oldest_due_date || '—'}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.last_payment_date || '—'}</td>
-                        <td style={{ padding: '7px 8px' }}>
-                          <window.Btn small variant="outline" data-testid={`ldg-ma-ap-open-${r.contractor_id}-${r.currency}`}
-                            onClick={() => onOpenSupplierLedger && onOpenSupplierLedger(r.contractor_id, r.currency)}>
-                            Open Supplier Ledger
-                          </window.Btn>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div data-testid="ldg-ma-ap-pager" style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', padding: '10px 12px', borderTop: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-3)' }}>
-                  <span>AP KPIs = full portfolio · table {MA_TABLE_LIMIT}/page</span>
-                  <button type="button" data-testid="ldg-ma-ap-prev" disabled={apPageSafe <= 1} onClick={() => setApTablePage(p => Math.max(1, p - 1))}
-                    style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: apPageSafe <= 1 ? 'not-allowed' : 'pointer', opacity: apPageSafe <= 1 ? 0.45 : 1 }}>Previous</button>
-                  <span data-testid="ldg-ma-ap-page-label">Page {apPageSafe} of {apTotalPages}</span>
-                  <button type="button" data-testid="ldg-ma-ap-next" disabled={apPageSafe >= apTotalPages} onClick={() => setApTablePage(p => p + 1)}
-                    style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: apPageSafe >= apTotalPages ? 'not-allowed' : 'pointer', opacity: apPageSafe >= apTotalPages ? 0.45 : 1 }}>Next</button>
-                </div>
-              </window.Card>
-              {Object.keys(apDq).length > 0 && (
-                <details data-testid="ldg-ma-ap-dq" style={{ marginTop: 14 }}>
-                  <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>AP data quality</summary>
-                  <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 11.5, color: 'var(--text-3)' }}>
-                    {Object.entries(apDq).map(([k, v]) => (
-                      <li key={k}>{k}: {v}</li>
-                    ))}
-                  </ul>
-                </details>
-              )}
+        {apData && (
+          <window.Card style={{ padding: 0, overflow: 'auto' }}>
+            <table data-testid="ldg-ma-ap-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 960 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
+                  {['Supplier', 'Ccy', 'Credit', 'Not Due', '1–30', '31–60', '61–90', '91–180', '181–365', '365+', 'Net Payable', 'Oldest Due', 'Last Payment', ''].map((h) => (
+                    <th key={h} style={{ padding: '8px 8px', borderBottom: '1px solid var(--border)', fontSize: 10, color: 'var(--text-3)', fontWeight: 600, textAlign: h === 'Supplier' || h === '' ? 'left' : 'right' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {apRows.length === 0 && (
+                  <tr><td colSpan={14} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>No suppliers match filters.</td></tr>
+                )}
+                {apRows.map((r) => (
+                  <tr key={`${r.contractor_id}-${r.currency}`} data-testid={`ldg-ma-ap-row-${r.contractor_id}-${r.currency}`}
+                    style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '7px 8px', fontWeight: 600 }}>{r.supplier_name}</td>
+                    <td style={{ padding: '7px 8px', textAlign: 'right' }}>{r.currency}</td>
+                    {moneyCell(r.credit_balance, r.currency)}
+                    {moneyCell(r.not_due, r.currency)}
+                    {moneyCell(r.b_1_30, r.currency)}
+                    {moneyCell(r.b_31_60, r.currency)}
+                    {moneyCell(r.b_61_90, r.currency)}
+                    {moneyCell(r.b_91_180, r.currency)}
+                    {moneyCell(r.b_181_365, r.currency)}
+                    {moneyCell(r.b_365_plus, r.currency)}
+                    {moneyCell(r.net_payable, r.currency)}
+                    <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.oldest_due_date || '—'}</td>
+                    <td style={{ padding: '7px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.last_payment_date || '—'}</td>
+                    <td style={{ padding: '7px 8px' }}>
+                      <window.Btn small variant="outline" data-testid={`ldg-ma-ap-open-${r.contractor_id}-${r.currency}`}
+                        onClick={() => onOpenSupplierLedger && onOpenSupplierLedger(r.contractor_id, r.currency)}>
+                        Open Supplier Ledger
+                      </window.Btn>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div data-testid="ldg-ma-ap-pager" style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', padding: '10px 12px', borderTop: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-3)' }}>
+              <span>AP KPIs = full portfolio · table {MA_TABLE_LIMIT}/page</span>
+              <button type="button" data-testid="ldg-ma-ap-prev" disabled={apPageSafe <= 1} onClick={() => setApTablePage(p => Math.max(1, p - 1))}
+                style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: apPageSafe <= 1 ? 'not-allowed' : 'pointer', opacity: apPageSafe <= 1 ? 0.45 : 1 }}>Previous</button>
+              <span data-testid="ldg-ma-ap-page-label">Page {apPageSafe} of {apTotalPages}</span>
+              <button type="button" data-testid="ldg-ma-ap-next" disabled={apPageSafe >= apTotalPages} onClick={() => setApTablePage(p => p + 1)}
+                style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: apPageSafe >= apTotalPages ? 'not-allowed' : 'pointer', opacity: apPageSafe >= apTotalPages ? 0.45 : 1 }}>Next</button>
             </div>
-          );
-        })()}
-      </div>
+          </window.Card>
+        )}
+      </MaSection>
     </div>
   );
 }
@@ -1201,7 +1566,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
           ? focusSupplierId
           : (activeId && ids.includes(activeId) ? activeId : '');
         if (prefer) setActiveId(prefer);
-        else if (rows.length) setActiveId(supplierFinancialRowId(rows[0].contractor_id, rows[0].currency));
+        // Do not auto-open first supplier — lazy detail on operator click.
       })
       .catch((e) => {
         if (gone) return;
@@ -1263,43 +1628,57 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
 
   const active = suppliers.find(
     (s) => supplierFinancialRowId(s.contractor_id, s.currency) === activeId,
-  ) || suppliers[0];
-  const activeRowId = supplierFinancialRowId(active.contractor_id, active.currency);
+  ) || null;
+  const activeRowId = active ? supplierFinancialRowId(active.contractor_id, active.currency) : '';
   const supTotalPages = Math.max(1, Math.ceil(suppliers.length / SUP_LIST_LIMIT) || 1);
   const supPageSafe = Math.min(supListPage, supTotalPages);
-  const filterItems = suppliers
-    .slice((supPageSafe - 1) * SUP_LIST_LIMIT, supPageSafe * SUP_LIST_LIMIT)
-    .map((s) => ({
-      id: supplierFinancialRowId(s.contractor_id, s.currency),
-      label: s.supplier_name || s.contractor_id,
-      sub: `${s.currency} · net ${s.net_payable}`,
-      testid: `ldg-sup-row-${s.contractor_id}-${s.currency}`,
-    }));
+  const pageRows = suppliers.slice((supPageSafe - 1) * SUP_LIST_LIMIT, supPageSafe * SUP_LIST_LIMIT);
   // Statement/PDF are requested with the selected currency — never render a
   // sibling currency block for the same contractor from a multi-ccy payload.
-  const stmtCurrencies = ((stmt && stmt.currencies) || []).filter(
-    (ccy) => ccy === active.currency,
-  );
+  const stmtCurrencies = active && stmt && stmt.currencies
+    ? ((stmt.currencies || []).filter((ccy) => ccy === active.currency))
+    : [];
 
   return (
-    <div data-testid="ldg-suppliers-root" style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
-      <div>
-        <LdgFilterPanel
-          title="Suppliers"
-          searchPlaceholder="Search supplier…"
-          items={filterItems}
-          activeId={activeRowId}
-          onSelect={setActiveId}
-        />
-        <div data-testid="ldg-suppliers-pager" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-          <button type="button" data-testid="ldg-suppliers-prev" disabled={supPageSafe <= 1} onClick={() => setSupListPage(p => Math.max(1, p - 1))}
+    <div data-testid="ldg-suppliers-root">
+      <window.Card style={{ padding: 0, overflow: 'auto', marginBottom: active ? 14 : 0 }}>
+        <table data-testid="ldg-suppliers-balance-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ background: 'var(--bg-subtle)' }}>
+              {['Supplier', 'Currency', 'Net payable', 'Overdue', 'Not due', ''].map((h) => (
+                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: h && h !== 'Supplier' && h !== 'Currency' && h !== '' ? 'right' : 'left' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.map((s) => {
+              const rid = supplierFinancialRowId(s.contractor_id, s.currency);
+              return (
+                <tr key={rid} data-testid={`ldg-sup-row-${s.contractor_id}-${s.currency}`} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <td style={{ padding: '8px 10px', fontWeight: 600 }}>{s.supplier_name || s.contractor_id}</td>
+                  <td style={{ padding: '8px 10px' }}>{s.currency}</td>
+                  <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(s.net_payable, s.currency)}</td>
+                  <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: 'var(--badge-red-text)' }}>{LDG_FMT.money(s.overdue, s.currency)}</td>
+                  <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{LDG_FMT.money(s.not_due, s.currency)}</td>
+                  <td style={{ padding: '8px 10px' }}>
+                    <window.Btn small variant="outline" data-testid={`ldg-sup-open-${rid}`} onClick={() => setActiveId(rid)}>Open</window.Btn>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div data-testid="ldg-suppliers-pager" style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', padding: '10px 12px', borderTop: '1px solid var(--border-subtle)' }}>
+          <button type="button" data-testid="ldg-suppliers-prev" disabled={supPageSafe <= 1} onClick={() => setSupListPage((p) => Math.max(1, p - 1))}
             style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: supPageSafe <= 1 ? 'not-allowed' : 'pointer', opacity: supPageSafe <= 1 ? 0.45 : 1 }}>Previous</button>
-          <span data-testid="ldg-suppliers-page-label" style={{ fontSize: 11, color: 'var(--text-3)' }}>Page {supPageSafe}/{supTotalPages} · {filterItems.length}/{suppliers.length}</span>
-          <button type="button" data-testid="ldg-suppliers-next" disabled={supPageSafe >= supTotalPages} onClick={() => setSupListPage(p => p + 1)}
+          <span data-testid="ldg-suppliers-page-label" style={{ fontSize: 11, color: 'var(--text-3)' }}>Page {supPageSafe}/{supTotalPages} · {SUP_LIST_LIMIT}/page</span>
+          <button type="button" data-testid="ldg-suppliers-next" disabled={supPageSafe >= supTotalPages} onClick={() => setSupListPage((p) => p + 1)}
             style={{ padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: supPageSafe >= supTotalPages ? 'not-allowed' : 'pointer', opacity: supPageSafe >= supTotalPages ? 0.45 : 1 }}>Next</button>
         </div>
-      </div>
-      <div>
+      </window.Card>
+
+      {active && (
+      <div data-testid="ldg-supplier-detail">
         <div style={{ marginBottom: 12, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700 }} data-testid="ldg-supplier-name">{active.supplier_name}</div>
@@ -1307,9 +1686,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
               Period {period.from} → {period.to} · <span data-testid="ldg-supplier-active-currency">{active.currency}</span> · open expenses {active.open_expense_count}
             </div>
           </div>
-          {/* Same AP authority as the statement below — the PDF route calls the
-              same builder, so it cannot print a different total. Currency is a
-              query param so USD selection cannot print the EUR section. */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <a href={window.PzApi.supplierStatementPdfUrl(active.contractor_id, {
                 from: period.from, to: period.to, as_of: period.to,
                 currency: active.currency,
@@ -1318,6 +1695,8 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
              style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none', flexShrink: 0 }}>
             ↓ Statement PDF
           </a>
+          <button type="button" data-testid="ldg-supplier-close" onClick={() => setActiveId('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: 18 }}>×</button>
+          </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
           <LdgStatTile label="Gross Payable" value={LDG_FMT.money(active.gross_payable, active.currency)} />
@@ -1336,8 +1715,6 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
               <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 700 }}>
                 {ccy} · outstanding {tot.outstanding} · net {tot.net_payable}
               </div>
-              {/* Aging comes from the statement DTO itself — the PDF prints
-                  these exact figures rather than reading a second endpoint. */}
               {ag && (
                 <div data-testid={`ldg-supplier-aging-${ccy}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 14, padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', fontSize: 11 }}>
                   <span style={{ color: 'var(--text-3)' }}>Aging · due date</span>
@@ -1377,6 +1754,7 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
           );
         })}
       </div>
+      )}
     </div>
   );
 }

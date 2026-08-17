@@ -1187,6 +1187,7 @@ def register_external_shipment_route(
     x_operator: Optional[str] = Header(None, alias="X-Operator"),
 ) -> JSONResponse:
     """Persist provider + tracking on carrier_shipments. Never calls DHL/FedEx/UPS."""
+    from ..core.config import settings
     if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
         raise HTTPException(status_code=422, detail="Invalid batch_id")
     from ..services.carrier.models.shipment import normalize_tracking_ref
@@ -1206,6 +1207,7 @@ def register_external_shipment_route(
             client_ref=body.client_ref,
             operator=operator,
             service_product=body.service_product,
+            master_data_db_path=settings.storage_root / "master_data.sqlite",
         )
     except CarrierGateError as exc:
         msg = str(exc)

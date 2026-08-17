@@ -48,6 +48,7 @@ const ACC_SECTIONS = [
   // Supplier strip. A second rail entry mounted it twice (PR-005 violation).
   { id: 'clientLedger',   label: 'Ledgers',          icon: '☷', group: 'live', code: 'STM', color: 'var(--badge-green-text)', grp: 'ledger' },
   { id: 'insuranceExport',label: 'Insurance Export', icon: '⛨', group: 'live', code: 'INS', color: 'var(--badge-blue-text)',  grp: 'ledger' },
+  { id: 'treasury',       label: 'Treasury',         icon: '₿', group: 'live', code: 'TSY', color: 'var(--badge-green-text)', grp: 'ledger' },
   // SYSTEM
   { id: 'wfirma',         label: 'wFirma Sync',      icon: '↻', group: 'live', code: null,  color: null,                      grp: 'system' },
   // EJ EXTENSIONS — existing capabilities absent from the HTML; preserved (never deleted), relocated here.
@@ -987,9 +988,68 @@ const _ACC_DOC_TITLES = {
   mm:  { t: 'MM — Transfer', c: 'MM', color: 'var(--badge-neutral-text)', wh: true, blocked: true },
 };
 // Live reads: Invoice/CN + warehouse WZ/PZ/PW/RW. MM blocked (controller not found).
-// Shared register contract: year + page + limit=15 + sort=date_desc (backend-authoritative).
+// Shared register contract: year/month/custom + page + limit=20 + sort=date_desc.
 const _ACC_DOC_LIVE = { inv: 'invoice', cn: 'credit_note', wz: 'wz', pz: 'pz', pw: 'pw', rw: 'rw' };
-const _ACC_PAGE_LIMIT = 15;
+const _ACC_PAGE_LIMIT = 20;
+
+function AccAwbCell({ docType, wfirmaId }) {
+  const [st, setSt] = React.useState({ loading: false, awbs: null, err: null });
+  React.useEffect(() => {
+    if (!docType || !wfirmaId || !window.PzApi.getAccountingDocAwbs) return;
+    let cancelled = false;
+    setSt({ loading: true, awbs: null, err: null });
+    window.PzApi.getAccountingDocAwbs(docType, wfirmaId).then((res) => {
+      if (cancelled) return;
+      if (!res || !res.ok) {
+        setSt({ loading: false, awbs: [], err: (res && res.error) || 'AWB unavailable' });
+        return;
+      }
+      setSt({ loading: false, awbs: (res.data && res.data.awbs) || [], err: null });
+    }).catch((e) => {
+      if (!cancelled) setSt({ loading: false, awbs: [], err: (e && e.message) || String(e) });
+    });
+    return () => { cancelled = true; };
+  }, [docType, wfirmaId]);
+
+  if (st.loading) return <span style={{ color: 'var(--text-3)', fontSize: 10 }}>…</span>;
+  if (!st.awbs || st.awbs.length === 0) {
+    return <span style={{ color: 'var(--text-3)', fontSize: 10 }} title={st.err || 'No AWB'}>—</span>;
+  }
+  const runAction = (awb, action) => {
+    const a = (awb || '').trim();
+    if (!a) return;
+    if (action === 'Open Shipment' || action === 'Resolve in Logistics') {
+      window.location.hash = `#logistics/${encodeURIComponent(a)}`;
+      return;
+    }
+    if (action === 'Track') {
+      window.location.hash = `#logistics/${encodeURIComponent(a)}?tab=track`;
+      return;
+    }
+    if (action === 'Waybill' || action === 'Label') {
+      window.location.hash = `#logistics/${encodeURIComponent(a)}?tab=documents`;
+    }
+  };
+  return (
+    <div data-testid={`acc-awb-cell-${wfirmaId}`} style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 120 }}>
+      {st.awbs.map((a) => (
+        <div key={a.awb} style={{ fontSize: 10, lineHeight: 1.3 }}>
+          <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{a.awb}</span>
+          <span style={{ color: 'var(--text-3)', marginLeft: 4 }}>{a.carrier}</span>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
+            {(a.actions || []).map((act) => (
+              <button key={act} type="button" data-testid={`acc-awb-action-${act.replace(/\s+/g, '-').toLowerCase()}`}
+                onClick={() => runAction(a.awb, act)}
+                style={{ padding: '1px 5px', fontSize: 9, borderRadius: 3, border: '1px solid var(--border)', background: 'var(--card)', cursor: 'pointer' }}>
+                {act}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 function _accDefaultYear() { return String(new Date().getFullYear()); }
 function AccRegisterPager({ page, hasMore, loading, onPrev, onNext, year, years, onYear, testId }) {
   const btn = {
@@ -1019,23 +1079,37 @@ function AccRegisterPager({ page, hasMore, loading, onPrev, onNext, year, years,
 function AccDocGrid({ sectionId, onNav }) {
   const m = _ACC_DOC_TITLES[sectionId] || { t: sectionId, c: null, wh: false };
   const cols = m.wh
-    ? ['Type', 'Number', 'Date', 'Party', 'Net', 'Gross', 'AWB', 'Actions']
+    ? ['Type', 'Number', 'Date', 'Party', 'Net', 'Gross', 'AWB / Logistics', 'Actions']
     : ['Number', 'Date', 'Party', 'Net', 'Tax', 'Gross', 'Cur', 'Payment', 'Due', 'Actions'];
   const docType = m.blocked ? null : _ACC_DOC_LIVE[sectionId];
-  const [year, setYear] = React.useState(_accDefaultYear);
-  const [page, setPage] = React.useState(1);
+  const RegFilter = window.AccountingRegisterFilter;
+  const [filter, setFilter] = React.useState(null);
   const [years, setYears] = React.useState(() => {
     const y = new Date().getFullYear();
     return Array.from({ length: 11 }, (_, i) => y - i);
   });
   const [st, setSt] = React.useState({ loading: !!docType, error: null, rows: null, hasMore: false });
+
+  const yearParam = React.useMemo(() => {
+    if (!filter || !filter.period) return _accDefaultYear();
+    const y = (filter.year != null ? filter.year : new Date(filter.period.from).getFullYear());
+    if (String(y) === 'all') return 'all';
+    return String(y);
+  }, [filter]);
+
   React.useEffect(() => {
-    if (!docType) return;
+    if (!docType || !filter) return;
     let cancelled = false;
-    setSt(s => ({ ...s, loading: true, error: null }));
-    window.PzApi.listAccountingDocs(docType, {
-      page, limit: _ACC_PAGE_LIMIT, year, sort: 'date_desc',
-    }).then(res => {
+    setSt((s) => ({ ...s, loading: true, error: null }));
+    const params = {
+      page: filter.page || 1,
+      limit: _ACC_PAGE_LIMIT,
+      year: yearParam,
+      sort: 'date_desc',
+      date_from: filter.period.from,
+      date_to: filter.period.to,
+    };
+    window.PzApi.listAccountingDocs(docType, params).then((res) => {
       if (cancelled) return;
       if (!res || !res.ok) {
         setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, hasMore: false });
@@ -1051,12 +1125,32 @@ function AccDocGrid({ sectionId, onNav }) {
         rows: d.rows || [],
         hasMore: !!d.has_more,
       });
-    }).catch(e => {
+    }).catch((e) => {
       if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null, hasMore: false });
     });
     return () => { cancelled = true; };
-  }, [docType, page, year]);
-  const onYear = (y) => { setYear(y); setPage(1); };
+  }, [docType, filter, yearParam]);
+
+  const filteredRows = React.useMemo(() => {
+    let rows = st.rows || [];
+    const q = ((filter && filter.search) || '').trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((r) => {
+        const hay = [r.number, r.party_name, r.party, r.contractor_id].filter(Boolean).join(' ').toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    const ccy = ((filter && filter.currency) || '').trim().toUpperCase();
+    if (ccy) rows = rows.filter((r) => (r.currency || '').toUpperCase() === ccy);
+    const stf = ((filter && filter.status) || '').trim().toLowerCase();
+    if (stf) {
+      rows = rows.filter((r) => {
+        const ps = (r.payment_state || r.state || '').toLowerCase();
+        return ps.includes(stf) || ps === stf;
+      });
+    }
+    return rows;
+  }, [st.rows, filter]);
   const actions = m.wh
     ? (
         m.c === 'PZ'
@@ -1093,17 +1187,41 @@ function AccDocGrid({ sectionId, onNav }) {
   return (
     <div data-testid={`acc-grid-${sectionId}`} style={{ padding: '20px 28px' }}>
       <_AccGridHeader title={m.t} code={m.c} color={m.color} actions={actions} />
-      {m.blocked && <_AccPendingTable cols={cols} note="MM unavailable — wFirma controller not found (not Backend Pending)" />}
+      {m.blocked && (
+        <div data-testid={`acc-grid-${sectionId}-mm-unsupported`} style={{
+          padding: '20px 16px', marginBottom: 12, borderRadius: 8,
+          background: 'var(--badge-neutral-bg)', border: '1px solid var(--badge-neutral-border)',
+          color: 'var(--badge-neutral-text)', fontSize: 12,
+        }}>
+          MM warehouse transfers are <strong>unsupported</strong> — wFirma controller
+          <code style={{ margin: '0 4px' }}>warehouse_document_m_m</code> was not found in live checks.
+          This is not Backend Pending; do not expect a future MM register here without a new wFirma authority probe.
+        </div>
+      )}
+      {m.blocked && <_AccPendingTable cols={cols} note="MM unavailable — wFirma controller not found (unsupported)" />}
       {!m.blocked && !docType && <_AccPendingTable cols={cols} note="GET /api/v1/accounting/{type}" />}
       {docType && (
         <>
-          <AccRegisterPager
-            page={page} hasMore={st.hasMore} loading={st.loading}
-            year={year} years={years} onYear={onYear}
-            onPrev={() => setPage(p => Math.max(1, p - 1))}
-            onNext={() => setPage(p => p + 1)}
-            testId={`acc-pager-${sectionId}`}
-          />
+          {typeof RegFilter === 'function' ? (
+            <RegFilter
+              testIdPrefix={`acc-pager-${sectionId}`}
+              pageSize={_ACC_PAGE_LIMIT}
+              showSearch
+              showCurrency={!m.wh}
+              showStatus={!m.wh}
+              statusOptions={['', 'Outstanding', 'Paid', 'Not specified']}
+              loading={st.loading}
+              hasMore={st.hasMore}
+              onChange={setFilter}
+            />
+          ) : (
+            <AccRegisterPager
+              page={(filter && filter.page) || 1} hasMore={st.hasMore} loading={st.loading}
+              year={yearParam} years={years} onYear={() => {}}
+              onPrev={() => {}} onNext={() => {}}
+              testId={`acc-pager-${sectionId}`}
+            />
+          )}
           <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', maxHeight: 'calc(100vh - 260px)' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>
@@ -1112,9 +1230,9 @@ function AccDocGrid({ sectionId, onNav }) {
               <tbody>
                 {st.loading && <tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading from wFirma…</td></tr>}
                 {st.error && !st.loading && <tr><td colSpan={cols.length} data-testid={`acc-grid-${sectionId}-error`} style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable: {st.error}</td></tr>}
-                {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={cols.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No {m.t.toLowerCase()} documents.</td></tr>}
-                {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
-                  <tr key={r.wfirma_id || i} data-testid={`acc-grid-${sectionId}-row`} style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
+                {!st.loading && !st.error && filteredRows && filteredRows.length === 0 && <tr><td colSpan={cols.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No {m.t.toLowerCase()} documents.</td></tr>}
+                {!st.loading && !st.error && filteredRows && filteredRows.map((r, i) => (
+                  <tr key={r.wfirma_id || i} data-testid={`acc-grid-${sectionId}-row`} style={{ borderBottom: i < filteredRows.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
                     {m.wh && <td style={{ ...td, color: 'var(--text)', fontWeight: 700 }}>{r.doc_type || m.c}</td>}
                     <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text)' }}>{r.number}</td>
                     <td style={td}>{r.date || '—'}</td>
@@ -1123,7 +1241,11 @@ function AccDocGrid({ sectionId, onNav }) {
                       <>
                         <td style={tdm}>{r.net}</td>
                         <td style={{ ...tdm, color: 'var(--text)' }}>{r.gross}</td>
-                        <td style={{ ...td, color: 'var(--text-3)' }}>{r.awb || '—'}</td>
+                        <td style={{ ...td, color: 'var(--text-3)' }}>
+                          {(m.c === 'WZ' || m.c === 'PZ') && r.wfirma_id
+                            ? <AccAwbCell docType={docType} wfirmaId={r.wfirma_id} />
+                            : (r.awb || '—')}
+                        </td>
                       </>
                     ) : (
                       <>
@@ -1168,7 +1290,7 @@ function AccClientBalance({ onOpenLedger }) {
     // One calendar formula (components.jsx). /ledgers/clients has no scope
     // param, so this tile keeps its quarter window — but no longer derives it.
     const { from, to } = window.resolvePeriod('quarter', null);
-    window.PzApi.listClientBalances({ limit: 15, from, to }).then(res => {
+    window.PzApi.listClientBalances({ limit: 20, from, to }).then(res => {
       if (cancelled) return;
       if (!res || !res.ok) { setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, period: null }); return; }
       const d = res.data || {};
@@ -1332,6 +1454,249 @@ function AccWfirmaSyncInline({ onNav }) {
   );
 }
 
+// ── Treasury — balances, manual entry, bank import, daily CFO close ───────────
+function AccTreasuryPanel() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [asOf, setAsOf] = React.useState(today);
+  const [rows, setRows] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  const [msg, setMsg] = React.useState(null);
+  const [manual, setManual] = React.useState({
+    effective_date: today, account_location: '', currency: 'PLN',
+    closing_balance: '', reference_note: '',
+  });
+  const [preview, setPreview] = React.useState(null);
+  const [closeForm, setCloseForm] = React.useState({
+    close_date: today, status: 'READY_TO_CLOSE',
+    bank_balances_ok: false, cash_captured_ok: false,
+    ar_refreshed_ok: false, ap_refreshed_ok: false,
+    statements_ok: false, exceptions_reviewed: false, notes: '',
+  });
+  const fileRef = React.useRef(null);
+
+  const loadBalances = React.useCallback(() => {
+    if (!window.PzApi || !window.PzApi.getTreasuryBalances) {
+      setErr('PzApi.getTreasuryBalances missing');
+      return;
+    }
+    setLoading(true); setErr(null);
+    window.PzApi.getTreasuryBalances(asOf).then((res) => {
+      setLoading(false);
+      if (!res || res.ok === false) {
+        setErr((res && res.error) || 'treasury balances failed');
+        setRows([]);
+        return;
+      }
+      const body = res.data || res;
+      setRows(body.rows || []);
+    }).catch((e) => {
+      setLoading(false);
+      setErr((e && e.message) || 'treasury balances failed');
+    });
+  }, [asOf]);
+
+  React.useEffect(() => { loadBalances(); }, [loadBalances]);
+
+  const submitManual = () => {
+    setMsg(null); setErr(null);
+    window.PzApi.postTreasuryManualBalance(manual).then((res) => {
+      if (!res || res.ok === false) {
+        setErr((res && res.error) || 'manual balance write failed');
+        return;
+      }
+      setMsg(`Manual balance saved (id=${(res.data || res).id}).`);
+      loadBalances();
+    });
+  };
+
+  const onPickFile = (ev) => {
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    setMsg(null); setErr(null); setPreview(null);
+    window.PzApi.previewTreasuryBankImport(f).then((res) => {
+      if (!res || res.ok === false) {
+        setErr((res && res.error) || 'import preview failed');
+        return;
+      }
+      setPreview(res.data || res);
+    });
+  };
+
+  const confirmImport = () => {
+    if (!preview || !preview.batch_id) return;
+    setMsg(null); setErr(null);
+    window.PzApi.confirmTreasuryBankImport(preview.batch_id).then((res) => {
+      if (!res || res.ok === false) {
+        setErr((res && res.error) || 'import confirm failed');
+        return;
+      }
+      const body = res.data || res;
+      setMsg(`Import confirmed — inserted=${body.inserted}.`);
+      setPreview(null);
+      if (fileRef.current) fileRef.current.value = '';
+      loadBalances();
+    });
+  };
+
+  const submitClose = () => {
+    setMsg(null); setErr(null);
+    window.PzApi.postTreasuryDailyClose(closeForm).then((res) => {
+      if (!res || res.ok === false) {
+        setErr((res && res.error) || 'daily close write failed');
+        return;
+      }
+      setMsg(`Daily close recorded (id=${(res.data || res).id}, status=${closeForm.status}).`);
+    });
+  };
+
+  const inp = {
+    display: 'block', marginTop: 4, padding: '5px 8px', width: '100%',
+    border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', fontSize: 12,
+  };
+  const card = {
+    padding: 14, border: '1px solid var(--border)', borderRadius: 8,
+    background: 'var(--card)', marginBottom: 14,
+  };
+
+  return (
+    <div data-testid="acc-treasury-root" style={{ padding: '20px 24px' }}>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Treasury</div>
+      <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14 }}>
+        Local bank/cash closing balances and Daily CFO Close — not a wFirma authority.
+        Writes require admin/accounts. Currencies stay separate.
+      </div>
+      {err && <div data-testid="acc-treasury-error" style={{ ...card, borderColor: 'var(--badge-red-border)', background: 'var(--badge-red-bg)', color: 'var(--badge-red-text)', fontSize: 12 }}>{err}</div>}
+      {msg && <div data-testid="acc-treasury-msg" style={{ ...card, fontSize: 12, color: 'var(--badge-green-text)' }}>{msg}</div>}
+
+      <div style={card} data-testid="acc-treasury-balances">
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 10, flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 11, color: 'var(--text-3)' }}>As of
+            <input data-testid="acc-treasury-asof" type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} style={inp} />
+          </label>
+          <window.Btn small data-testid="acc-treasury-reload" onClick={loadBalances} disabled={loading}>
+            {loading ? 'Loading…' : 'Reload balances'}
+          </window.Btn>
+        </div>
+        {!rows.length && !loading && (
+          <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No snapshots for this as-of date.</div>
+        )}
+        {!!rows.length && (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-3)' }}>
+                <th style={{ padding: '6px 8px' }}>Account</th>
+                <th style={{ padding: '6px 8px' }}>Ccy</th>
+                <th style={{ padding: '6px 8px', textAlign: 'right' }}>Closing</th>
+                <th style={{ padding: '6px 8px' }}>Source</th>
+                <th style={{ padding: '6px 8px' }}>Effective</th>
+                <th style={{ padding: '6px 8px' }}>Operator</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} data-testid={`acc-treasury-row-${r.id}`}>
+                  <td style={{ padding: '6px 8px' }}>{r.account_location}</td>
+                  <td style={{ padding: '6px 8px' }}>{r.currency}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{r.closing_balance}</td>
+                  <td style={{ padding: '6px 8px' }}>{r.source}</td>
+                  <td style={{ padding: '6px 8px' }}>{r.effective_date}</td>
+                  <td style={{ padding: '6px 8px' }}>{r.operator || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div style={card} data-testid="acc-treasury-manual">
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>1 · Daily bank / cash entry</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
+          <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Effective date
+            <input type="date" value={manual.effective_date} onChange={(e) => setManual({ ...manual, effective_date: e.target.value })} style={inp} data-testid="acc-treasury-manual-date" />
+          </label>
+          <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Account / location
+            <input value={manual.account_location} onChange={(e) => setManual({ ...manual, account_location: e.target.value })} style={inp} data-testid="acc-treasury-manual-account" placeholder="e.g. mBank PLN" />
+          </label>
+          <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Currency
+            <select value={manual.currency} onChange={(e) => setManual({ ...manual, currency: e.target.value })} style={inp} data-testid="acc-treasury-manual-ccy">
+              <option>PLN</option><option>EUR</option><option>USD</option><option>CHF</option>
+            </select>
+          </label>
+          <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Closing balance
+            <input value={manual.closing_balance} onChange={(e) => setManual({ ...manual, closing_balance: e.target.value })} style={inp} data-testid="acc-treasury-manual-balance" />
+          </label>
+          <label style={{ fontSize: 11, color: 'var(--text-3)', gridColumn: '1 / -1' }}>Note
+            <input value={manual.reference_note} onChange={(e) => setManual({ ...manual, reference_note: e.target.value })} style={inp} data-testid="acc-treasury-manual-note" />
+          </label>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <window.Btn small data-testid="acc-treasury-manual-save" onClick={submitManual}>Write manual balance</window.Btn>
+        </div>
+      </div>
+
+      <div style={card} data-testid="acc-treasury-import">
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>2 · Bank statement import (CSV / XLSX)</div>
+        <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" data-testid="acc-treasury-import-file" onChange={onPickFile} />
+        {preview && (
+          <div style={{ marginTop: 10, fontSize: 12 }}>
+            <div data-testid="acc-treasury-import-preview">
+              Preview batch {preview.batch_id} — rows={ (preview.rows || []).length }
+              {preview.valid === false ? ' · INVALID' : ' · valid'}
+              {(preview.errors || []).length ? ` · errors=${preview.errors.length}` : ''}
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <window.Btn small data-testid="acc-treasury-import-confirm" onClick={confirmImport}
+                disabled={preview.valid === false || (preview.errors || []).length > 0}>
+                Confirm import
+              </window.Btn>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={card} data-testid="acc-treasury-daily-close">
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>3 · Daily CFO close</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
+          <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Close date
+            <input type="date" value={closeForm.close_date} onChange={(e) => setCloseForm({ ...closeForm, close_date: e.target.value })} style={inp} data-testid="acc-treasury-close-date" />
+          </label>
+          <label style={{ fontSize: 11, color: 'var(--text-3)' }}>Status
+            <select value={closeForm.status} onChange={(e) => setCloseForm({ ...closeForm, status: e.target.value })} style={inp} data-testid="acc-treasury-close-status">
+              <option value="INCOMPLETE">INCOMPLETE</option>
+              <option value="READY_TO_CLOSE">READY_TO_CLOSE</option>
+              <option value="CLOSED">CLOSED</option>
+              <option value="CORRECTED">CORRECTED</option>
+            </select>
+          </label>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 10, fontSize: 12 }}>
+          {[
+            ['bank_balances_ok', 'Bank balances OK'],
+            ['cash_captured_ok', 'Cash captured OK'],
+            ['ar_refreshed_ok', 'AR refreshed OK'],
+            ['ap_refreshed_ok', 'AP refreshed OK'],
+            ['statements_ok', 'Statements OK'],
+            ['exceptions_reviewed', 'Exceptions reviewed'],
+          ].map(([k, lab]) => (
+            <label key={k} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input type="checkbox" checked={!!closeForm[k]} data-testid={`acc-treasury-close-${k}`}
+                onChange={(e) => setCloseForm({ ...closeForm, [k]: e.target.checked })} />
+              {lab}
+            </label>
+          ))}
+        </div>
+        <label style={{ fontSize: 11, color: 'var(--text-3)', display: 'block', marginTop: 10 }}>Notes
+          <input value={closeForm.notes} onChange={(e) => setCloseForm({ ...closeForm, notes: e.target.value })} style={inp} data-testid="acc-treasury-close-notes" />
+        </label>
+        <div style={{ marginTop: 10 }}>
+          <window.Btn small data-testid="acc-treasury-close-save" onClick={submitClose}>Write daily close</window.Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Insurance Export Statement (read-only; component lives in insurance-export-tab.jsx) ──
 function AccInsuranceExportSection() {
   const InsuranceExportTab = window.InsuranceExportTab;
@@ -1360,7 +1725,7 @@ function AccountingHub({ onNav }) {
     { label: null,                  ids: ['overview'] },
     { label: 'Sales Documents',     ids: ['pi', 'inv', 'cn'] },
     { label: 'Warehouse Documents', ids: ['wz', 'pz', 'pw', 'rw', 'mm'] },
-    { label: 'Ledgers',             ids: ['balance', 'clientLedger', 'insuranceExport'] },
+    { label: 'Ledgers',             ids: ['balance', 'clientLedger', 'insuranceExport', 'treasury'] },
     { label: 'System',              ids: ['wfirma'] },
     { label: 'EJ Extensions',       ids: ['master', 'audit'] },
   ];
@@ -1387,6 +1752,7 @@ function AccountingHub({ onNav }) {
         {section === 'pi'             && <SalesProformaTab />}
         {section === 'clientLedger'   && <LedgersTab />}
         {section === 'insuranceExport' && <AccInsuranceExportSection />}
+        {section === 'treasury'       && <AccTreasuryPanel />}
         {['inv', 'cn', 'wz', 'pz', 'pw', 'rw', 'mm'].includes(section) && <AccDocGrid sectionId={section} onNav={onNav} />}
         {section === 'balance'        && <AccClientBalance onOpenLedger={() => setSection('clientLedger')} />}
         {section === 'wfirma'         && <AccWfirmaSyncInline onNav={onNav} />}

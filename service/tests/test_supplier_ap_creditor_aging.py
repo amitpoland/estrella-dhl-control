@@ -134,7 +134,7 @@ def test_negative_correction_is_credit_not_aged():
     row = out["suppliers"][0]
     assert Decimal(row["credit_balance"]) == Decimal("3368.48")
     assert Decimal(row["gross_payable"]) == Decimal("10000.00")
-    assert Decimal(row["b_180_plus"]) == Decimal("10000.00")
+    assert Decimal(row["b_365_plus"]) == Decimal("10000.00")
     assert Decimal(row["net_payable"]) == Decimal("6631.52")
 
 
@@ -155,9 +155,9 @@ def test_due_date_buckets_payment_date_basis():
     expenses = [
         _exp(eid="1", gross="10.00", due="2021-12-31"),  # not due as of 2021-12-31
         _exp(eid="2", gross="20.00", due="2021-12-01"),  # 30 days → 1-30
-        _exp(eid="3", gross="30.00", due="2021-11-01"),  # 60 days → 31-90
+        _exp(eid="3", gross="30.00", due="2021-11-01"),  # 60 days → 31-60
         _exp(eid="4", gross="40.00", due="2021-08-01"),  # 152 days → 91-180
-        _exp(eid="5", gross="50.00", due="2020-01-01"),  # >180
+        _exp(eid="5", gross="50.00", due="2020-01-01"),  # >365 → 365+
     ]
     out = build_payables_portfolio_from_facts(
         expenses, [], as_of="2021-12-31", period=("2020-01-01", "2021-12-31")
@@ -165,9 +165,9 @@ def test_due_date_buckets_payment_date_basis():
     row = out["suppliers"][0]
     assert Decimal(row["not_due"]) == Decimal("10.00")
     assert Decimal(row["b_1_30"]) == Decimal("20.00")
-    assert Decimal(row["b_31_90"]) == Decimal("30.00")
+    assert Decimal(row["b_31_60"]) == Decimal("30.00")
     assert Decimal(row["b_91_180"]) == Decimal("40.00")
-    assert Decimal(row["b_180_plus"]) == Decimal("50.00")
+    assert Decimal(row["b_365_plus"]) == Decimal("50.00")
     usd = out["currency_summaries"][0]
     assert usd["reconciliation_ok"] is True
     assert Decimal(usd["gross_payable"]) == Decimal("150.00")

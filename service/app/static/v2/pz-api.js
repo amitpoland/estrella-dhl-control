@@ -244,6 +244,10 @@
     accountingDocPdfUrl: (docType, wfirmaId, disposition) =>
       `${BASE}/accounting/documents/${encodeURIComponent(docType)}/${encodeURIComponent(wfirmaId)}/pdf?disposition=${encodeURIComponent(disposition || 'inline')}`,
 
+    // GET /api/v1/accounting/documents/{doc_type}/{id}/awbs — Logistics projection (WZ/PZ)
+    getAccountingDocAwbs: (docType, wfirmaId) =>
+      _get(`${BASE}/accounting/documents/${encodeURIComponent(docType)}/${encodeURIComponent(wfirmaId)}/awbs`),
+
     openAccountingDocPdf: async (docType, wfirmaId, disposition, fallbackName) => {
       const url = window.PzApi.accountingDocPdfUrl(docType, wfirmaId, disposition || 'inline');
       if ((disposition || 'inline') === 'attachment') {
@@ -1619,14 +1623,15 @@
       if (p.status) qs.set('status', p.status);
       if (p.scope) qs.set('scope', p.scope);
       if (p.refresh) qs.set('refresh', '1');
+      if (p.source) qs.set('source', p.source);
       const q = qs.toString();
       return _get(`${BASE}/ledgers/management-analysis.json${q ? `?${q}` : ''}`);
     },
 
     // GET /api/v1/ledgers/payables-analysis.json
-    // Read-only Supplier AP portfolio + creditor aging. Bulk expenses/payments
-    // only — zero per-supplier wFirma calls. Currencies stay separate (no FX).
-    // params: { from, to, as_of?, currency?, contractor_id?, status?, aging_bucket?, refresh? }
+    // Read-only Supplier AP portfolio + creditor aging. Default source=local
+    // (reporting projection). refresh=1 / source=live = controlled live waterfall.
+    // params: { from, to, as_of?, currency?, contractor_id?, status?, aging_bucket?, refresh?, source? }
     getPayablesAnalysis: (params) => {
       const p = params || {};
       const qs = new URLSearchParams();
@@ -1639,6 +1644,7 @@
       if (p.aging_bucket) qs.set('aging_bucket', p.aging_bucket);
       if (p.scope) qs.set('scope', p.scope);
       if (p.refresh) qs.set('refresh', '1');
+      if (p.source) qs.set('source', p.source);
       const q = qs.toString();
       return _get(`${BASE}/ledgers/payables-analysis.json${q ? `?${q}` : ''}`);
     },
@@ -2499,6 +2505,36 @@
       window.URL.revokeObjectURL(objUrl);
       return { ok: true, filename: name };
     },
+
+    // ── Treasury (local projection — not wFirma) ───────────────────────────
+    getTreasuryBalances: (asOf) => {
+      const qs = new URLSearchParams();
+      if (asOf) qs.set('as_of', asOf);
+      return _get(`${BASE}/treasury/balances?${qs}`);
+    },
+    postTreasuryManualBalance: (body) =>
+      _post(`${BASE}/treasury/balances/manual`, body || {}),
+    previewTreasuryBankImport: async (file, defaultAccount) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      if (defaultAccount) fd.append('default_account', defaultAccount);
+      try {
+        const res = await fetch(`${BASE}/treasury/imports/preview`, {
+          method: 'POST', credentials: 'same-origin', body: fd,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          return { ok: false, status: res.status, error: (data && data.detail) || `HTTP ${res.status}` };
+        }
+        return { ok: true, data };
+      } catch (e) {
+        return { ok: false, error: (e && e.message) || 'upload failed' };
+      }
+    },
+    confirmTreasuryBankImport: (batchId) =>
+      _post(`${BASE}/treasury/imports/${encodeURIComponent(batchId)}/confirm`, {}),
+    postTreasuryDailyClose: (body) =>
+      _post(`${BASE}/treasury/daily-close`, body || {}),
 
   });
 })();

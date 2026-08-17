@@ -158,9 +158,10 @@ def _one_currency_statement(*, outstanding="500.00") -> dict:
         },
         "aging_per_currency": {
             "EUR": {"method": "due_date",
-                     "current": "0.00", "1_30": "500.00",
-                     "31_60": "0.00", "61_90": "0.00",
-                     "90_plus": "0.00", "total": "500.00",
+                     "not_due": "0.00", "b_1_30": "500.00",
+                     "b_31_60": "0.00", "b_61_90": "0.00",
+                     "b_91_180": "0.00", "b_181_365": "0.00",
+                     "b_365_plus": "0.00", "total": "500.00",
                      "due_date_unavailable": "0.00"},
         },
         "unmatched_payments_per_currency": {},
@@ -230,8 +231,10 @@ def test_multi_currency_sections_render_separately():
     }
     stmt["aging_per_currency"]["USD"] = {
         "method": "due_date",
-        "current": "0.00", "1_30": "200.00",
-        "31_60": "0.00", "61_90": "0.00", "90_plus": "0.00",
+        "not_due": "0.00", "b_1_30": "200.00",
+        "b_31_60": "0.00", "b_61_90": "0.00",
+        "b_91_180": "0.00", "b_181_365": "0.00",
+        "b_365_plus": "0.00",
         "total": "200.00", "due_date_unavailable": "0.00",
     }
     pdf  = render_statement_pdf(stmt)

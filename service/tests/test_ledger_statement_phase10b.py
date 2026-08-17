@@ -322,7 +322,7 @@ def test_full_payment_zeroes_aging():
     assert out["totals_per_currency"]["EUR"]["received"]    == "100.00"
     assert out["totals_per_currency"]["EUR"]["outstanding"] == "0.00"
     assert out["aging_per_currency"]["EUR"]["total"]        == "0.00"
-    assert out["aging_per_currency"]["EUR"]["1_30"]         == "0.00"
+    assert out["aging_per_currency"]["EUR"]["b_1_30"]       == "0.00"
 
 
 def test_partial_payment_leaves_remaining():
@@ -339,9 +339,9 @@ def test_partial_payment_leaves_remaining():
     )
     assert out["totals_per_currency"]["EUR"]["outstanding"] == "60.00"
     assert out["aging_per_currency"]["EUR"]["total"]        == "60.00"
-    # 2026-04-01 → 2026-05-09 = 38 days → 31_60 bucket
-    assert out["aging_per_currency"]["EUR"]["31_60"]        == "60.00"
-    assert out["aging_per_currency"]["EUR"]["1_30"]         == "0.00"
+    # 2026-04-01 → 2026-05-09 = 38 days → b_31_60 bucket
+    assert out["aging_per_currency"]["EUR"]["b_31_60"]      == "60.00"
+    assert out["aging_per_currency"]["EUR"]["b_1_30"]       == "0.00"
 
 
 def test_overpayment_clamps_aging_emits_warning():
@@ -605,16 +605,19 @@ def test_running_balance_tie_break_invoice_before_same_day_payment():
 
 
 @pytest.mark.parametrize("days_old, expected_bucket", [
-    (-1,  "current"),
-    (0,   "current"),
-    (1,   "1_30"),
-    (30,  "1_30"),
-    (31,  "31_60"),
-    (60,  "31_60"),
-    (61,  "61_90"),
-    (90,  "61_90"),
-    (91,  "90_plus"),
-    (365, "90_plus"),
+    (-1,  "not_due"),
+    (0,   "not_due"),
+    (1,   "b_1_30"),
+    (30,  "b_1_30"),
+    (31,  "b_31_60"),
+    (60,  "b_31_60"),
+    (61,  "b_61_90"),
+    (90,  "b_61_90"),
+    (91,  "b_91_180"),
+    (180, "b_91_180"),
+    (181, "b_181_365"),
+    (365, "b_181_365"),
+    (366, "b_365_plus"),
 ])
 def test_aging_bucket_boundaries(days_old, expected_bucket):
     statement_date = date(2026, 5, 9)
@@ -629,7 +632,8 @@ def test_aging_bucket_boundaries(days_old, expected_bucket):
     bucket = out["aging_per_currency"]["EUR"]
     assert bucket[expected_bucket] == "100.00"
     # All other named buckets are zero.
-    for b in ("current", "1_30", "31_60", "61_90", "90_plus"):
+    for b in ("not_due", "b_1_30", "b_31_60", "b_61_90",
+              "b_91_180", "b_181_365", "b_365_plus"):
         if b != expected_bucket:
             assert bucket[b] == "0.00", (
                 f"days_old={days_old} expected {expected_bucket}, "
@@ -824,23 +828,25 @@ def test_route_happy_path_default_as_of(client, monkeypatch):
 
 
 def test_route_python_side_payment_date_filter(client, monkeypatch):
-    """A payment that wFirma returned outside the requested window
-    must be dropped at the fact-universe layer, never reaching the
-    aggregator."""
+    """Payments after as_of_upper (to) are dropped; pre-window payments stay
+    (POSITION settlements vs ACTIVITY invoices)."""
     _stub_contractor_ok(monkeypatch)
     from app.services import ledger_fact_universe as lfu
     lfu.clear_fact_universe_cache()
     inside  = _payment_xml(payment_id="IN",  invoice_id="X",
                             value="10.00", date="2026-04-15",
                             currency="EUR")
-    outside = _payment_xml(payment_id="OUT", invoice_id="X",
-                            value="999.00", date="2025-01-01",
-                            currency="EUR")
+    early = _payment_xml(payment_id="EARLY", invoice_id="X",
+                          value="999.00", date="2025-01-01",
+                          currency="EUR")
+    after = _payment_xml(payment_id="AFTER", invoice_id="X",
+                          value="50.00", date="2026-06-01",
+                          currency="EUR")
     monkeypatch.setattr(
         wfirma_client, "_http_request",
         _two_endpoint_stub(
             [_envelope_invoices("")],
-            [_envelope_payments(inside + outside)],
+            [_envelope_payments(inside + early + after)],
         ),
     )
     r = client.get(
@@ -851,8 +857,8 @@ def test_route_python_side_payment_date_filter(client, monkeypatch):
     assert r.status_code == 200, r.text
     unm = r.json()["unmatched_payments_per_currency"].get("UNRESOLVED", [])
     ids = {u["wfirma_doc_id"] for u in unm}
-    # Outside-window payment dropped; inside-window unmatched payment kept.
-    assert ids == {"IN"}
+    # Pre-window + in-window unmatched kept; after as_of_upper dropped.
+    assert ids == {"IN", "EARLY"}
 
 
 def test_route_response_carries_no_forbidden_keys(client, monkeypatch):

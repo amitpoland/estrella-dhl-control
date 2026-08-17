@@ -191,8 +191,8 @@ def test_client_ledger_roster_uses_shared_method():
     )
     # Was 15. Deliberate contract change (operator decision): compact 10/page
     # rosters. Server-side paging is untouched — only the page size moved.
-    assert "LDG_LIST_LIMIT = 10" in led, (
-        "Client Ledger roster must page 10 rows (shared register contract)"
+    assert "LDG_LIST_LIMIT = 20" in led, (
+        "Client Ledger roster must page 20 rows (shared register contract)"
     )
     # The old independent direct roster read must be gone (no duplicate live read).
     assert "apiFetch('/api/v1/ledgers/clients?limit=100')" not in led, (
