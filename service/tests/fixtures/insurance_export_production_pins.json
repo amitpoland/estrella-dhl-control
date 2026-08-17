@@ -1,0 +1,120 @@
+{
+  "_": [
+    "Insurance Export — production acceptance pins.",
+    "",
+    "These are MEASURED values from production, not expectations invented in a",
+    "test. They were read from GET /api/v1/accounting/insurance-export on",
+    "2026-08-17 against release 2f04ae1c20ae17cfa72765df76ea3db59268f415, after",
+    "the FX + recovered-premium convergence (PR #1262/#1263) and the",
+    "presentation fix (PR #1264).",
+    "",
+    "Their purpose is the closure gate, not unit coverage: a refactor that keeps",
+    "every unit test green while moving a real published figure must fail",
+    "somewhere, and this is that somewhere. Consumed by",
+    "test_insurance_export_production_smoke.py.",
+    "",
+    "A pin changes ONLY when the underlying business fact changes (a corrected",
+    "invoice, a newly converged premium). Editing a pin to make a run pass is",
+    "the exact failure this file exists to prevent — see",
+    "docs/governance/insurance-export-durability-contract.md."
+  ],
+
+  "measured_at": "2026-08-17",
+  "measured_against_sha": "2f04ae1c20ae17cfa72765df76ea3db59268f415",
+
+  "periods": [
+    {
+      "from": "2026-07-01",
+      "to": "2026-07-31",
+      "documents": 15,
+      "kpi": {
+        "gross_insured_inr": "3699040.26",
+        "net_insured_inr": "3699040.26",
+        "insurance_recovered_rows_without_authority": 0
+      },
+      "rows_without_inr": 0,
+      "rows": {
+        "FV 13/2026": {
+          "currency": "PLN",
+          "sum_insured": "13488.77",
+          "fx_rate_display": "25.0659",
+          "sum_insured_inr": "338107.55",
+          "recovered": {"amount": "0.00", "currency": "PLN"},
+          "charge_authority_on_record": true,
+          "_why": "PLN cross rate — the INR value must survive the 4-dp display cap"
+        },
+        "FV 14/2026": {
+          "currency": "PLN",
+          "sum_insured": "23918.17",
+          "fx_rate_display": "25.2426",
+          "sum_insured_inr": "603757.25",
+          "recovered": {"amount": "0.00", "currency": "PLN"},
+          "charge_authority_on_record": true,
+          "_why": "second PLN row, a different rate — one pin could pass by luck"
+        },
+        "WDT 146/2026": {
+          "currency": "USD",
+          "sum_insured": "6036.80",
+          "fx_rate_display": "96.3172",
+          "sum_insured_inr": "581447.67",
+          "recovered": {"amount": "19.27", "currency": "USD"},
+          "charge_authority_on_record": true,
+          "_why": "a recovered premium that is neither 0.00 nor a round number"
+        }
+      }
+    },
+    {
+      "from": "2026-08-01",
+      "to": "2026-08-31",
+      "documents": 12,
+      "kpi": {
+        "gross_insured_inr": "13953062.94",
+        "net_insured_inr": "13953062.94",
+        "insurance_recovered_rows_without_authority": 0
+      },
+      "rows_without_inr": 0,
+      "rows": {
+        "WDT 153/2026": {
+          "currency": "EUR",
+          "sum_insured": "18057.58",
+          "fx_rate_display": "109.8247",
+          "sum_insured_inr": "1983168.09",
+          "recovered": {"amount": "56.98", "currency": "EUR"},
+          "charge_authority_on_record": true,
+          "_why": "the recovered premium the convergence campaign proved"
+        },
+        "WDT 156/2026": {
+          "currency": "USD",
+          "sum_insured": "195.80",
+          "fx_rate_display": "95.3487",
+          "sum_insured_inr": "18669.28",
+          "recovered": {"amount": "10.00", "currency": "USD"},
+          "charge_authority_on_record": true,
+          "_why": "a flat billed premium, recorded from the issued document"
+        },
+        "WDT 155/2026": {
+          "currency": "USD",
+          "sum_insured": "88645.33",
+          "fx_rate_display": "95.3487",
+          "sum_insured_inr": "8452216.60",
+          "recovered": {"amount": "0.00", "currency": "USD"},
+          "charge_authority_on_record": true,
+          "status": "no_insurance_charged",
+          "_why": "PROVEN zero: the authority was asked and answered 0.00. It must never regress to null/unknown, and never to a fabricated premium."
+        },
+        "FV 16/2026": {
+          "currency": "PLN",
+          "sum_insured": "19228.73",
+          "fx_rate_display": "25.5886",
+          "sum_insured_inr": "492035.55",
+          "recovered": {"amount": "0.00", "currency": "PLN"},
+          "charge_authority_on_record": true,
+          "_why": "the PLN USD-bridge row whose raw rate carries 26 fractional digits"
+        }
+      }
+    }
+  ],
+
+  "forbidden_recovered_amounts": ["362.39"],
+  "_forbidden_why": "362.39 was a draft-derived 'recovery' that no issued document supports. Its reappearance anywhere means the draft has become a premium source again."
+}

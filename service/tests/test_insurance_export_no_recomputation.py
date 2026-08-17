@@ -89,6 +89,53 @@ def test_renderer_never_multiplies_sum_insured():
     assert not re.search(r"inv_cif\S*\s*\*", text)
 
 
+def test_the_pdf_renderer_only_adds_already_quantized_values():
+    """The PDF prints a group subtotal, which means it aggregates. Aggregation
+    of authority-quantized strings is presentation; anything else is a second
+    monetary authority.
+
+    So: ``+`` and ``quantize`` are permitted on Decimal, ``*`` and ``/`` are
+    not, and no money value may pass through ``float`` — which would silently
+    make the printed total disagree with the backend's.
+    """
+    code = _strip_comments(RENDERER, RENDERER.read_text(encoding="utf-8"))
+    assert not re.search(r"Decimal\([^)]*\)\s*[*/]", code)
+    assert not re.search(r"[*/]\s*Decimal\(", code)
+    assert "float(" not in code
+    assert "round(" not in code
+    # The one aggregation is an accumulation of sum_insured_inr, nothing else.
+    accumulated = re.findall(r"total\s*\+=\s*Decimal\((\w+)\)", code)
+    assert accumulated == ["v"], accumulated
+    assert re.search(r'v\s*=\s*r\.get\("sum_insured_inr"\)', code)
+
+
+def test_the_pdf_footer_totals_come_from_the_backend():
+    """ORIGINAL SHIPMENTS / ADJUSTMENTS / PERIOD TOTAL are the declaration
+    totals the backend resolved. The renderer must not re-derive them from the
+    rows it happens to have printed — that is how a PDF starts disagreeing
+    with the screen."""
+    code = _strip_comments(RENDERER, RENDERER.read_text(encoding="utf-8"))
+    for label in ("ORIGINAL SHIPMENTS", "ADJUSTMENTS", "PERIOD TOTAL"):
+        row = re.search(
+            r'_totals_row\(\s*\n?\s*"%s",\s*\n?\s*([^)]+)\)' % label, code)
+        assert row, label
+        assert row.group(1).strip().startswith("declaration_totals.get("), label
+
+
+def test_each_renderer_has_exactly_one_money_formatter():
+    """Two formatters is two rounding policies waiting to diverge."""
+    pdf = _strip_comments(RENDERER, RENDERER.read_text(encoding="utf-8"))
+    assert len(re.findall(r"^def _num_cell\(", pdf, re.M)) == 1
+
+    if not JSX.exists():
+        return
+    jsx = _strip_comments(JSX, JSX.read_text(encoding="utf-8"))
+    assert len(re.findall(r"function InsMoney\(", jsx)) == 1
+    # No locale/number formatting anywhere: the backend string is the value.
+    assert "Intl.NumberFormat" not in jsx
+    assert "toLocaleString" not in jsx
+
+
 def test_frontend_has_no_monetary_math():
     if not JSX.exists():
         return
