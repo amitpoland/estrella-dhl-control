@@ -201,6 +201,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
   // Operator dictionaries — human labels for VAT modes, languages, series.
   const [dicts, setDicts] = React.useState({
     vat_modes: [], currencies: [], languages: [],
+    freight_methods: [],
     invoice_series: [], proforma_series: [],
     incoterms: [],
     source_state: {}, fetched_at: null,
@@ -212,6 +213,7 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
     vat_modes:       d.vat_modes       || [],
     currencies:      d.currencies      || [],
     languages:       d.languages       || [],
+    freight_methods: d.freight_methods || [],
     invoice_series:  d.invoice_series  || [],
     proforma_series: d.proforma_series || [],
     source_state:    d.source_state    || {},
@@ -1251,6 +1253,13 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                           <option key={L.id || '_blank'} value={L.id}>{L.label}</option>
                         ))
                       : <option value="">— Default</option>}
+                    {val('default_language_id') &&
+                     !(dicts.languages || []).some(L => String(L.id) === val('default_language_id')) && (
+                      <option data-testid="cd-language-unresolved"
+                        value={val('default_language_id')}>
+                        Unknown language (#{val('default_language_id')})
+                      </option>
+                    )}
                   </select>
                 </label>
               </div>
@@ -1380,7 +1389,23 @@ function ClientDetailModal({ clientKey, onClose, onSaved }) {
                 {fld('Currency', sel('freight_currency', ['EUR','PLN','USD']))}
                 {fld('Label (PL)', inp('freight_label_pl', { placeholder: 'Fracht' }))}
                 {fld('Label (EN)', inp('freight_label_en', { placeholder: 'Freight' }))}
-                {fld('Freight service ID', inp('freight_service_id'))}
+                {fld('Freight method',
+                  <select data-testid="cd-freight_service_id"
+                    value={val('freight_service_id')}
+                    onChange={e => set('freight_service_id', e.target.value)}
+                    style={_cdInputStyle}>
+                    <option value="">—</option>
+                    {(dicts.freight_methods || []).map(m => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                    {val('freight_service_id') &&
+                     !(dicts.freight_methods || []).some(m => String(m.id) === val('freight_service_id')) && (
+                      <option data-testid="cd-freight-method-unresolved"
+                        value={val('freight_service_id')}>
+                        Unknown freight method (#{val('freight_service_id')})
+                      </option>
+                    )}
+                  </select>)}
               </div>
 
               {/* Insurance defaults — V2 capability, no V1 tab. */}

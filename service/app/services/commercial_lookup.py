@@ -12,14 +12,18 @@ authority (EJ Engineering Constitution).
 
 It FEDERATES existing sources of truth (it does not duplicate them):
 
-  * payment methods / invoice languages / VAT modes → the wFirma-backed
-    dictionary constants (``wfirma_dictionary_cache.PAYMENT_METHODS`` /
-    ``LANGUAGES`` / ``VAT_MODES``) — the same values ``get_dictionaries()``
-    serves to the UI. No network in the validation path (these are baseline
-    enum constants; only the series catalog has a live fetch).
+  * payment methods / VAT modes → the wFirma-backed dictionary constants
+    (``wfirma_dictionary_cache.PAYMENT_METHODS`` / ``VAT_MODES``).
+  * invoice languages (Polish / English) → THIS module's canonical map
+    (Polish = 0, English = 1). ``wfirma_dictionary_cache.LANGUAGES`` labels
+    the same ids for display; it is not a second mapping authority.
   * document currencies → ``nbp_rate_service.CURRENCY_REGISTRY`` (PLN hub FX).
-  * freight / insurance service products → the proforma service-product
-    registry (``proforma_invoice_link_db.get_all_service_product_meta``).
+  * freight / delivery methods (Freight / Fedex Courier) → THIS module's
+    canonical map (Freight = 17833901, Fedex Courier = 13002743). These are
+    distinct wFirma good_ids — never aliases for each other.
+  * freight / insurance service-product *metadata* (name/VAT/unit) → the
+    proforma service-product registry
+    (``proforma_invoice_link_db.get_all_service_product_meta``).
 
 Validation helpers accept ints or strings and normalise before comparison so a
 caller cannot be tripped by a typed value (e.g. VAT mode as int ``228``).
@@ -35,12 +39,29 @@ from . import wfirma_dictionary_cache as _wdc
 # Charge types that carry a wFirma service-product mapping.
 SERVICE_CHARGE_TYPES = ("freight", "insurance")
 
-# wFirma translation_language ids (account base language is Polish).
-# Commercial documents are intended as Polish + English — never accidental German.
-WFIRMA_LANG_POLISH = "1"
-WFIRMA_LANG_ENGLISH = "2"
+# Canonical language map (operator-confirmed). Polish = 0, English = 1.
+# Do not invert. "0" is a real language id (Polish), not a drop-sentinel.
+WFIRMA_LANG_POLISH = "0"
+WFIRMA_LANG_ENGLISH = "1"
 WFIRMA_LANG_GERMAN = "3"
 INTENDED_TRANSLATION_LANGUAGE_ID = WFIRMA_LANG_ENGLISH
+
+LANGUAGE_CHOICES: List[Dict[str, str]] = [
+    {"id": "", "code": "", "label": "— Default (use account language)"},
+    {"id": WFIRMA_LANG_POLISH, "code": "PL", "label": "Polish"},
+    {"id": WFIRMA_LANG_ENGLISH, "code": "EN", "label": "English"},
+]
+
+# Canonical freight / delivery method map. These ids are NOT aliases.
+FREIGHT_METHOD_FREIGHT = "17833901"
+FREIGHT_METHOD_FEDEX_COURIER = "13002743"
+FREIGHT_METHOD_DEFAULT = FREIGHT_METHOD_FEDEX_COURIER  # D2: default stays Fedex Courier
+FREIGHT_METHOD_IDS = frozenset({FREIGHT_METHOD_FREIGHT, FREIGHT_METHOD_FEDEX_COURIER})
+
+FREIGHT_METHOD_CHOICES: List[Dict[str, str]] = [
+    {"id": FREIGHT_METHOD_FREIGHT, "code": "freight", "label": "Freight"},
+    {"id": FREIGHT_METHOD_FEDEX_COURIER, "code": "fedex_courier", "label": "Fedex Courier"},
+]
 
 
 # ── List authorities (label + id) ─────────────────────────────────────────────
@@ -50,12 +71,15 @@ def payment_methods() -> List[Dict[str, Any]]:
 
 
 def invoice_languages() -> List[Dict[str, Any]]:
-    """Human-readable language list. Raw wFirma ids remain the stored value."""
-    return [dict(x) for x in _wdc.LANGUAGES]
+    """Operator-selectable languages. Canonical ids: Polish=0, English=1."""
+    return [dict(x) for x in LANGUAGE_CHOICES]
 
 
 def invoice_language_label(language_id: Any) -> str:
     lid = str(language_id if language_id is not None else "").strip()
+    for row in LANGUAGE_CHOICES:
+        if str(row.get("id", "")).strip() == lid:
+            return str(row.get("label") or lid)
     for row in _wdc.LANGUAGES:
         if str(row.get("id", "")).strip() == lid:
             return str(row.get("label") or lid)
@@ -109,7 +133,7 @@ def resolve_translation_language_id(
     if cm == WFIRMA_LANG_GERMAN:
         warning = (
             "Customer Master default_language_id is German (3); "
-            "commercial documents default to English (2) unless the operator "
+            "commercial documents default to English (1) unless the operator "
             "explicitly saves German on the draft"
         )
 
@@ -128,7 +152,10 @@ def payment_method_ids() -> frozenset:
 
 def invoice_language_ids() -> frozenset:
     # "" (use account default language) is a valid selection.
-    return frozenset(str(x["id"]).strip() for x in _wdc.LANGUAGES)
+    # Canonical 0/1 plus legacy catalog ids remain valid stored values.
+    selectable = frozenset(str(x["id"]).strip() for x in LANGUAGE_CHOICES)
+    legacy = frozenset(str(x["id"]).strip() for x in _wdc.LANGUAGES)
+    return selectable | legacy
 
 
 def vat_mode_ids() -> frozenset:
@@ -155,6 +182,115 @@ def validate_currency(value: Any) -> bool:
 
 def validate_charge_type(value: Any) -> bool:
     return str(value if value is not None else "").strip().lower() in SERVICE_CHARGE_TYPES
+
+
+# ── Canonical language / freight-method resolvers ─────────────────────────────
+
+_LANG_BY_TOKEN = {
+    "0": WFIRMA_LANG_POLISH,
+    "pl": WFIRMA_LANG_POLISH,
+    "polish": WFIRMA_LANG_POLISH,
+    "polski": WFIRMA_LANG_POLISH,
+    "1": WFIRMA_LANG_ENGLISH,
+    "en": WFIRMA_LANG_ENGLISH,
+    "english": WFIRMA_LANG_ENGLISH,
+}
+
+_FREIGHT_BY_TOKEN = {
+    FREIGHT_METHOD_FREIGHT: FREIGHT_METHOD_FREIGHT,
+    "freight": FREIGHT_METHOD_FREIGHT,
+    "fracht": FREIGHT_METHOD_FREIGHT,
+    FREIGHT_METHOD_FEDEX_COURIER: FREIGHT_METHOD_FEDEX_COURIER,
+    "fedex courier": FREIGHT_METHOD_FEDEX_COURIER,
+    "fedex": FREIGHT_METHOD_FEDEX_COURIER,
+    "fedex_courier": FREIGHT_METHOD_FEDEX_COURIER,
+}
+
+
+def map_language_selection(selection: Any) -> Optional[str]:
+    """Map a semantic language choice to the canonical numeric id.
+
+    Polish/PL/0 → 0. English/EN/1 → 1. Unknown values are not guessed.
+    """
+    token = str(selection if selection is not None else "").strip().lower()
+    if not token:
+        return None
+    return _LANG_BY_TOKEN.get(token)
+
+
+def resolve_language_id(
+    selection: Any = None,
+    customer_override: Any = None,
+) -> Optional[str]:
+    """Pick the outgoing translation_language id.
+
+    Precedence: explicit selected language wins, then a stored customer
+    value (including legacy catalog ids), else None (omit / account default).
+    Never inverts 0/1.
+    """
+    mapped = map_language_selection(selection)
+    if mapped is not None:
+        return mapped
+    raw = str(selection if selection is not None else "").strip()
+    if raw:
+        return raw
+    cust = str(customer_override if customer_override is not None else "").strip()
+    return cust or None
+
+
+def freight_method_choices() -> List[Dict[str, Any]]:
+    return [dict(x) for x in FREIGHT_METHOD_CHOICES]
+
+
+def freight_method_label(method_id: Any) -> str:
+    mid = str(method_id if method_id is not None else "").strip()
+    for row in FREIGHT_METHOD_CHOICES:
+        if row["id"] == mid:
+            return row["label"]
+    return mid or "—"
+
+
+def map_freight_method_selection(selection: Any) -> Optional[str]:
+    """Map a semantic freight/delivery choice to the canonical good_id.
+
+    Freight → 17833901. Fedex Courier → 13002743. Never translates one
+    canonical id into the other.
+    """
+    token = str(selection if selection is not None else "").strip().lower()
+    if not token:
+        return None
+    return _FREIGHT_BY_TOKEN.get(token)
+
+
+def resolve_freight_method_id(
+    selection: Any = None,
+    customer_override: Any = None,
+    default: Optional[str] = FREIGHT_METHOD_DEFAULT,
+) -> Optional[str]:
+    """Pick the outgoing freight/delivery-method good_id.
+
+    Precedence:
+      1. explicit operator/customer-specific configured method (stored as-is)
+      2. canonical mapped id for the selected semantic method
+      3. existing safe fallback (Fedex Courier) only when nothing is selected
+
+    17833901 and 13002743 are never rewritten into each other.
+    """
+    cust = str(customer_override if customer_override is not None else "").strip()
+    if cust:
+        return cust
+    mapped = map_freight_method_selection(selection)
+    if mapped is not None:
+        return mapped
+    raw = str(selection if selection is not None else "").strip()
+    if raw:
+        return raw
+    fallback = str(default).strip() if default is not None else ""
+    return fallback or None
+
+
+def is_canonical_freight_method_id(good_id: Any) -> bool:
+    return str(good_id if good_id is not None else "").strip() in FREIGHT_METHOD_IDS
 
 
 # ── Freight / insurance service products (from the registry) ───────────────────

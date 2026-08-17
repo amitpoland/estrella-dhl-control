@@ -227,9 +227,9 @@ class ProformaRequest:
     # payment_terms_days: when set (≥0), emits <paymentdays>N</paymentdays>.
     # None → omit; let wFirma use its contractor default.
     payment_terms_days: Optional[int] = None
-    # translation_language_id: when non-empty, emits
+    # translation_language_id: when set (including "0" = Polish), emits
     # <translation_language><id>X</id></translation_language>.
-    # Empty or "0" → omit; let wFirma use its contractor default.
+    # Empty → omit; let wFirma use its contractor default.
     translation_language_id: str = ""
 
 
@@ -835,11 +835,10 @@ def fetch_contractor_by_id(contractor_id: str) -> "ContractorFetchResult":
         account_number            = (_find_text(node, "account_number") or
                                      (node.findtext(".//contractor_account/number") or "")).strip(),
         # Language id is nested: <translation_language><id>X</id></translation_language>.
-        # We pick "0" out (the documented "no preference" sentinel) and surface
-        # only real ids.
-        translation_language_id   = (lambda tid: tid if (tid and tid != "0") else "")(
-            (node.findtext("translation_language/id") or "").strip()
-        ),
+        # "0" is Polish (canonical map) — keep it. Empty/missing stays empty.
+        translation_language_id   = (
+            node.findtext("translation_language/id") or ""
+        ).strip(),
         buyer                     = _find_text(node, "buyer") or "",
         seller                    = _find_text(node, "seller") or "",
         receiver                  = _find_text(node, "receiver") or "",
@@ -2494,10 +2493,11 @@ def _build_proforma_xml(req: ProformaRequest) -> str:
     )
 
     # ADR-027 D6 — document language (<translation_language><id>…</id></translation_language>)
+    # "0" is Polish and MUST be emitted; only a blank id is omitted.
     _lang = (getattr(req, "translation_language_id", None) or "").strip()
     lang_xml = (
         f"<translation_language><id>{_esc(_lang)}</id></translation_language>"
-        if _lang and _lang != "0" else ""
+        if _lang else ""
     )
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>

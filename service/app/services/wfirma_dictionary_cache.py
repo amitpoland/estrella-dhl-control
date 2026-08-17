@@ -203,7 +203,8 @@ def get_currencies() -> List[Dict[str, Any]]:
 
 LANGUAGES: List[Dict[str, Any]] = [
     {"id": "",   "label": "— Default (use account language)"},
-    {"id": "1",  "label": "Polish (Polski)"},
+    {"id": "0",  "label": "Polish"},
+    {"id": "1",  "label": "English"},
     {"id": "2",  "label": "English"},
     {"id": "3",  "label": "German (Deutsch)"},
     {"id": "4",  "label": "French (Français)"},
@@ -524,11 +525,17 @@ def get_dictionaries() -> Dict[str, Any]:
         except Exception:
             pass
 
+    # Operator-selectable languages come from commercial_lookup (Polish=0,
+    # English=1). Full LANGUAGES catalog above remains for label_for_language
+    # of legacy stored ids. Lazy import avoids a module-level cycle.
+    from . import commercial_lookup as _clook
+
     return {
         "vat_modes":        list(VAT_MODES),
         "payment_methods":  list(PAYMENT_METHODS),
         "currencies":       get_currencies(),
-        "languages":        list(LANGUAGES),
+        "languages":        _clook.invoice_languages(),
+        "freight_methods":  _clook.freight_method_choices(),
         "invoice_series":   invoice_series,
         "proforma_series":  proforma_series,
         "source":           "baseline" if not (inv_live or pro_live) else "merged",

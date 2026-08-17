@@ -187,7 +187,7 @@ def test_commercial_lookup_blocks_accidental_german_from_cm():
     r = cl.resolve_translation_language_id(
         draft_language_id=None, cm_language_id="3",
     )
-    assert r["language_id"] == "2"
+    assert r["language_id"] == "1"
     assert r["source"] == "intended_commercial_default"
     assert r["warning"]
     # Explicit draft German is honoured.
