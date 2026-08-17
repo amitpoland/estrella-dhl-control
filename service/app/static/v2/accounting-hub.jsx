@@ -1342,8 +1342,9 @@ function AccDocGrid({ sectionId, onNav }) {
   );
 }
 // Client Balance roster — GET /api/v1/ledgers/clients (local portfolio default).
-// Open / Overdue(due-date) / Cur / State from Management Analysis portfolio.
-// Last 30d + YTD activity metrics remain on Client Ledger statement.
+// Open / Overdue(due-date) / Last 30d receipts / YTD invoiced / Cur / State
+// from Management Analysis portfolio. Last 30d is applied receipts in the
+// 30 calendar days ending as-of — not a second outstanding formula.
 const _ACC_BAL_COLS = ['Client', 'Open', 'Overdue', 'Last 30d', 'YTD', 'Cur', 'State'];
 function AccClientBalance({ onOpenLedger }) {
   const [st, setSt] = React.useState({ loading: true, error: null, rows: null, asOf: null, source: null, freshness: null });
@@ -1388,13 +1389,13 @@ function AccClientBalance({ onOpenLedger }) {
       </div>
       {st.asOf && (
         <div style={{ fontSize: 10.5, color: 'var(--text-3)', margin: '-6px 0 10px' }}>
-          Position as of {st.asOf} · source {st.source || 'local'}{st.freshness ? ` · ${st.freshness}` : ''} · overdue = due-date aging · YTD / last 30d on Client Ledger
+          Position as of {st.asOf} · source {st.source || 'local'}{st.freshness ? ` · ${st.freshness}` : ''} · overdue = due-date aging · Last 30d = applied receipts
         </div>
       )}
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-            {_ACC_BAL_COLS.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: ['Open', 'Overdue', 'YTD'].includes(c) ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
+            {_ACC_BAL_COLS.map(c => <th key={c} style={{ padding: '10px 12px', textAlign: ['Open', 'Overdue', 'Last 30d', 'YTD'].includes(c) ? 'right' : 'left', fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{c}</th>)}
           </tr></thead>
           <tbody>
             {st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading client position…</td></tr>}
@@ -1407,8 +1408,8 @@ function AccClientBalance({ onOpenLedger }) {
                 <td style={{ ...td, color: 'var(--text)' }}>{r.name || r.contractor_id || '—'}</td>
                 <td style={tdm}>{r.balance_available !== false ? (r.open != null ? r.open : <span title="Multi-currency — expand in Client Ledger" style={{ color: 'var(--text-3)' }}>multi</span>) : dash}</td>
                 <td style={tdm} title="Due-date aging">{r.balance_available !== false && (r.overdue_due_date != null || r.overdue_invoice_age != null) ? (r.overdue_due_date != null ? r.overdue_due_date : r.overdue_invoice_age) : dash}</td>
-                <td style={td} title="Activity view — open Client Ledger">{dash}</td>
-                <td style={td} title="Activity view — open Client Ledger">{dash}</td>
+                <td style={tdm} title="Applied receipts in last 30 calendar days ending as-of">{r.balance_available !== false ? (r.last_30d != null ? r.last_30d : (r.currency === 'multi' ? <span style={{ color: 'var(--text-3)' }}>multi</span> : dash)) : dash}</td>
+                <td style={tdm} title="Gross invoiced in the activity window">{r.balance_available !== false ? (r.ytd_invoiced != null ? r.ytd_invoiced : (r.currency === 'multi' ? <span style={{ color: 'var(--text-3)' }}>multi</span> : dash)) : dash}</td>
                 <td style={td}>{r.currency || '—'}</td>
                 <td style={{ ...td, fontSize: 11 }}>{r.balance_available !== false ? r.state : <span title={r.note || ''} style={{ color: 'var(--text-3)' }}>unknown</span>}</td>
               </tr>

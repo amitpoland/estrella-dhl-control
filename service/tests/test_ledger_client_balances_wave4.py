@@ -59,6 +59,7 @@ def _port_customer(
     gross="1000.00",
     oldest="2026-01-01",
     open_inv=2,
+    receipts="0.00",
 ):
     return {
         "contractor_id": cid,
@@ -69,6 +70,7 @@ def _port_customer(
         "not_due": not_due,
         "credit_balance": credit,
         "gross_invoiced": gross,
+        "receipts_last_30d": receipts,
         "oldest_due_date": oldest,
         "open_invoice_count": open_inv,
         "invoice_count": open_inv,
@@ -115,7 +117,7 @@ def test_reducer_single_currency_maps_documented_fields():
     assert row["overdue_invoice_age"] == "500.00"
     assert row["overdue_due_date"] == "500.00"  # legacy reducer mirrors aged
     assert row["ytd_invoiced"] == "1000.00"
-    assert row["last_30d"] is None
+    assert row["last_30d"] is None  # legacy statement reducer has no receipts window
     assert row["currency"] == "USD"
     assert row["state"] == "outstanding"
 
@@ -160,6 +162,7 @@ def test_portfolio_group_maps_due_date_overdue():
     assert row["overdue_invoice_age"] == "500.00"
     assert row["not_due"] == "100.00"
     assert row["ytd_invoiced"] == "1000.00"
+    assert row["last_30d"] == "0.00"
     assert row["state"] == "outstanding"
 
 
@@ -206,10 +209,10 @@ def test_route_due_date_columns_documented(client):
                return_value=_portfolio()):
         r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
     body = r.json()
-    assert body["rows"][0]["last_30d"] is None
+    assert body["rows"][0]["last_30d"] == "0.00"
     assert body["rows"][0]["overdue_due_date"] == "500.00"
     cs = body["column_status"]
-    assert cs["last_30d"].startswith("backend_pending")
+    assert cs["last_30d"].startswith("documented")
     assert "due-date" in cs["overdue_due_date"]
     assert "portfolio" in cs["open"]
 
@@ -345,3 +348,25 @@ def test_route_zero_per_customer_wfirma_calls(client):
     assert r.status_code == 200
     assert r.json()["query_stats"]["per_customer_wfirma_calls"] == 0
     assert build.call_count == 1
+
+
+def test_roster_maps_receipts_last_30d_from_portfolio(client):
+    customers = [_port_customer(cid="101", receipts="42.50")]
+    with patch.object(R, "_cm_list_customers", return_value=[_cust("101")]), \
+         patch("app.services.accounting_analytics.build_management_analysis",
+               return_value=_portfolio(customers=customers)):
+        r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
+    body = r.json()
+    assert body["rows"][0]["last_30d"] == "42.50"
+    assert body["column_status"]["last_30d"].startswith("documented")
+    assert body["roster_quality"]["unmapped_contractors"] == 0
+
+
+def test_roster_quality_counts_unmapped_orphans(client):
+    with patch.object(R, "_cm_list_customers", return_value=[]), \
+         patch("app.services.accounting_analytics.build_management_analysis",
+               return_value=_portfolio(customers=[
+                   _port_customer(cid="999", name="Orphan Co"),
+               ])):
+        r = client.get("/api/v1/ledgers/clients", headers=_auth_headers())
+    assert r.json()["roster_quality"]["unmapped_contractors"] == 1

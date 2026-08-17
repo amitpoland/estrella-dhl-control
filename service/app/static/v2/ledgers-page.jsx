@@ -491,6 +491,7 @@ function LedgersPage(props) {
 function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, filters, focusContractorId }) {
   const [clients, setClients] = React.useState(null);
   const [listErr, setListErr] = React.useState(null);
+  const [listMeta, setListMeta] = React.useState(null);
   const [detailId, setDetailId] = React.useState('');
   const [detailTab, setDetailTab] = React.useState('statement');
   const [stmt, setStmt] = React.useState({ status: 'idle', data: null, err: null });
@@ -509,7 +510,7 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
 
   React.useEffect(() => {
     let gone = false;
-    setClients(null); setListErr(null);
+    setClients(null); setListErr(null); setListMeta(null);
     const params = {
       limit: LDG_LIST_LIMIT,
       start: (listPage - 1) * LDG_LIST_LIMIT,
@@ -529,12 +530,19 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
         const rows = (r && r.rows) || [];
         setClients(rows);
         setListHasMore(rows.length >= LDG_LIST_LIMIT);
+        setListMeta({
+          source: (r && r.source) || 'local',
+          freshness: (r && r.freshness) || null,
+          reconciliation: (r && r.reconciliation_status) || null,
+          as_of: (r && r.period && (r.period.as_of || r.period.to)) || period.as_of || period.to,
+          unmapped: (r && r.roster_quality && r.roster_quality.unmapped_contractors) || 0,
+        });
         onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
       })
       .catch((e) => {
         if (gone) return;
         setClients([]);
-        setListErr((e && e.message) || 'wFirma read failed');
+        setListErr((e && e.message) || 'Client Balance read failed');
         onLoadInfo && onLoadInfo({ status: 'error', at: new Date(), count: null, error: (e && e.message) || '' });
       });
     return () => { gone = true; };
@@ -588,25 +596,42 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
         </select>
         <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 'auto' }}>Sorted: overdue → largest → outstanding → clear · {LDG_LIST_LIMIT}/page</span>
       </div>
+      {listMeta && (
+        <div data-testid="ldg-clients-authority" style={{ fontSize: 11, color: 'var(--text-3)', margin: '-4px 0 10px' }}>
+          Source · {listMeta.source} · as-of {listMeta.as_of || '—'}
+          {listMeta.freshness ? ` · freshness ${listMeta.freshness}` : ''}
+          {listMeta.reconciliation ? ` · recon ${listMeta.reconciliation}` : ''}
+          {' · Last 30d = applied receipts (not outstanding)'}
+          {listMeta.unmapped ? ` · ${listMeta.unmapped} contractor(s) without Customer Master` : ''}
+        </div>
+      )}
 
       <window.Card style={{ padding: 0, overflow: 'auto', marginBottom: detailId ? 14 : 0 }}>
         <table data-testid="ldg-clients-balance-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
-              {['Client', 'Open (as-of)', 'Overdue (due-date)', 'Invoiced (period)', 'Cur', 'State', ''].map((h) => (
-                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Open (as-of)', 'Overdue (due-date)', 'Invoiced (period)'].includes(h) ? 'right' : 'left' }}>{h}</th>
+              {['Client', 'Open (as-of)', 'Overdue (due-date)', 'Last 30d (receipts)', 'Invoiced (period)', 'Cur', 'State', ''].map((h) => (
+                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Open (as-of)', 'Overdue (due-date)', 'Last 30d (receipts)', 'Invoiced (period)'].includes(h) ? 'right' : 'left' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {clients.length === 0 && (
-              <tr><td colSpan={7} data-testid="ldg-clients-empty" style={{ padding: 28, textAlign: 'center', color: 'var(--text-3)' }}>No clients match filters.</td></tr>
+              <tr><td colSpan={8} data-testid="ldg-clients-empty" style={{ padding: 28, textAlign: 'center', color: 'var(--text-3)' }}>No clients match filters.</td></tr>
             )}
             {clients.map((x) => (
               <tr key={x.contractor_id} data-testid="acc-balance-row" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                <td style={{ padding: '8px 10px', fontWeight: 600 }}>{x.name || x.contractor_id}</td>
+                <td style={{ padding: '8px 10px', fontWeight: 600 }}>
+                  {x.name || x.contractor_id}
+                  {x.identity_note === 'financial_fact_without_customer_master' ? (
+                    <div style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-3)' }}>No Customer Master identity</div>
+                  ) : null}
+                </td>
                 {moneyCell(x.open, x.currency, x.balance_available !== false)}
                 {moneyCell(x.overdue_due_date != null ? x.overdue_due_date : x.overdue_invoice_age, x.currency, x.balance_available !== false && (x.overdue_due_date != null || x.overdue_invoice_age != null))}
+                {x.currency === 'multi' && x.last_30d == null
+                  ? <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-3)' }} title="Native currencies stay separate">multi</td>
+                  : moneyCell(x.last_30d, x.currency, x.balance_available !== false && x.last_30d != null)}
                 {moneyCell(x.ytd_invoiced, x.currency, x.balance_available !== false && x.ytd_invoiced != null)}
                 <td style={{ padding: '8px 10px' }}>{x.currency || '—'}</td>
                 <td style={{ padding: '8px 10px' }}>{x.balance_available ? <LdgStatusPill status={x.state === 'outstanding' ? 'Outstanding' : x.state === 'clear' ? 'Clear' : x.state} /> : 'unknown'}</td>
@@ -1349,46 +1374,111 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
   const pushExc = (item) => {
     if (!item || !item.key || seenExc[item.key]) return;
     seenExc[item.key] = true;
-    exceptionItems.push(item);
+    exceptionItems.push({
+      authority: item.authority || '',
+      action: item.action || '',
+      age: item.age || '',
+      ...item,
+    });
   };
 
   const exceptionItems = [];
   if (health.ok === false || health.note) {
-    pushExc({ key: 'ar-source-health', text: health.note || 'AR source health incomplete (cap/stall)' });
+    pushExc({
+      key: 'ar-source-health',
+      text: health.note || 'AR source health incomplete (cap/stall)',
+      authority: 'AR local projection',
+      action: 'Refresh (live) for reconciliation if the projection is incomplete',
+    });
   }
   if (apHealth.ok === false || apHealth.note) {
-    pushExc({ key: 'ap-source-health', text: apHealth.note || 'AP source health incomplete' });
+    pushExc({
+      key: 'ap-source-health',
+      text: apHealth.note || 'AP source health incomplete',
+      authority: 'AP local projection',
+      action: 'Refresh (live) for reconciliation if the projection is incomplete',
+    });
   }
   if (arFreshness === 'stale') {
-    pushExc({ key: 'ar-stale', text: 'AR local projection is stale — use Refresh (live) for reconciliation' });
+    pushExc({
+      key: 'ar-stale',
+      text: 'AR local projection is stale — use Refresh (live) for reconciliation',
+      authority: 'AR local projection',
+      action: 'Run financial reporting sync or Refresh (live)',
+      age: 'stale',
+    });
   }
   if ((apData && apData.freshness) === 'stale') {
-    pushExc({ key: 'ap-stale', text: 'AP local projection is stale — use Refresh (live) for reconciliation' });
+    pushExc({
+      key: 'ap-stale',
+      text: 'AP local projection is stale — use Refresh (live) for reconciliation',
+      authority: 'AP local projection',
+      action: 'Confirm AP incremental scheduler; Refresh (live) if needed',
+      age: 'stale',
+    });
   }
-  if (arRecon && arRecon !== 'projection_ok' && arRecon !== 'live_wfirma') {
-    pushExc({ key: 'ar-recon', text: `AR reconciliation: ${arRecon}` });
+  if (arRecon && arRecon !== 'projection_ok' && arRecon !== 'live_wfirma' && arRecon !== 'verified') {
+    pushExc({
+      key: 'ar-recon',
+      text: `AR reconciliation: ${arRecon}`,
+      authority: 'AR portfolio',
+      action: 'Investigate reconciliation_status before treating the position as closed',
+    });
   }
-  if (apData && apData.reconciliation_status && apData.reconciliation_status !== 'projection_ok' && apData.reconciliation_status !== 'live_wfirma') {
-    pushExc({ key: 'ap-recon', text: `AP reconciliation: ${apData.reconciliation_status}` });
+  if (apData && apData.reconciliation_status && apData.reconciliation_status !== 'projection_ok' && apData.reconciliation_status !== 'live_wfirma' && apData.reconciliation_status !== 'verified') {
+    pushExc({
+      key: 'ap-recon',
+      text: `AP reconciliation: ${apData.reconciliation_status}`,
+      authority: 'AP portfolio',
+      action: 'Investigate AP reconciliation_status before treating payables as closed',
+    });
   }
   Object.entries(dq).forEach(([k, v]) => {
     if (v == null || v === 0 || v === '0') return;
-    pushExc({ key: `ar-dq-${k}`, text: `AR · ${dqLabel(k)}: ${v}` });
+    const unmatched = k === 'unmatched_payment';
+    pushExc({
+      key: `ar-dq-${k}`,
+      text: `AR · ${dqLabel(k)}: ${v}`,
+      authority: 'AR data quality',
+      action: unmatched
+        ? 'Review Unapplied cash. Known genuine unapplied payments are a documented limitation — do not invent allocation.'
+        : 'Review the named data-quality key; no synthetic correction',
+    });
   });
   Object.entries(apDq).forEach(([k, v]) => {
     if (v == null || v === 0 || v === '0') return;
-    pushExc({ key: `ap-dq-${k}`, text: `AP · ${dqLabel(k)}: ${v}` });
+    pushExc({
+      key: `ap-dq-${k}`,
+      text: `AP · ${dqLabel(k)}: ${v}`,
+      authority: 'AP data quality',
+      action: 'Review the named data-quality key; payment knock-off stays payment/expense/id',
+    });
   });
   summaries.filter((s) => s.reconciliation_ok === false).forEach((s) => {
-    pushExc({ key: `ar-aging-${s.currency}`, text: `${s.currency} AR aging does not reconcile to net position` });
+    pushExc({
+      key: `ar-aging-${s.currency}`,
+      text: `${s.currency} AR aging does not reconcile to net position`,
+      authority: 'AR due-date aging',
+      action: 'Do not release until aging sum equals open portfolio for this currency',
+    });
   });
   apSummaries.filter((s) => s.reconciliation_ok === false).forEach((s) => {
-    pushExc({ key: `ap-aging-${s.currency}`, text: `${s.currency} AP aging does not reconcile to net payable` });
+    pushExc({
+      key: `ap-aging-${s.currency}`,
+      text: `${s.currency} AP aging does not reconcile to net payable`,
+      authority: 'AP due-date aging',
+      action: 'Do not release until aging sum equals open AP for this currency',
+    });
   });
   const agingFlag = (s, key, label, prefix) => {
     const n = Number(s[key] || 0);
     if (!n) return;
-    pushExc({ key: `${prefix}-aged-${key}-${s.currency}`, text: `${s.currency} ${prefix} ${label}: ${LDG_FMT.money(s[key], s.currency)}` });
+    pushExc({
+      key: `${prefix}-aged-${key}-${s.currency}`,
+      text: `${s.currency} ${prefix} ${label}: ${LDG_FMT.money(s[key], s.currency)}`,
+      authority: `${prefix} due-date aging`,
+      action: `Open ${prefix === 'AR' ? 'Client' : 'Supplier'} Ledger for this currency`,
+    });
   };
   summaries.forEach((s) => {
     agingFlag(s, 'b_91_180', 'aged >90', 'AR');
@@ -1401,10 +1491,21 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
     agingFlag(s, 'b_365_plus', 'critical >365', 'AP');
   });
   if (treasuryErr) {
-    pushExc({ key: 'treasury-read', text: `Treasury balances unavailable: ${treasuryErr}` });
+    pushExc({
+      key: 'treasury-read',
+      text: `Treasury balances unavailable: ${treasuryErr}`,
+      authority: 'Treasury',
+      action: 'Capture balances on Accounting → Treasury; do not invent cash figures',
+    });
   }
   if (treasury && treasury.as_of && asOf && String(treasury.as_of) < String(asOf)) {
-    pushExc({ key: 'treasury-stale-close', text: `Bank/cash close as-of ${treasury.as_of} is older than MA as-of ${asOf}` });
+    pushExc({
+      key: 'treasury-stale-close',
+      text: `Bank/cash close as-of ${treasury.as_of} is older than MA as-of ${asOf}`,
+      authority: 'Treasury',
+      action: 'Recapture treasury close for the current as-of date',
+      age: `close ${treasury.as_of}`,
+    });
   }
   const apSync = (opsStatus && (opsStatus.ap_reporting_sync || (opsStatus.service && opsStatus.service.ap_reporting_sync))) || null;
   if (apSync) {
@@ -1412,12 +1513,17 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
       pushExc({
         key: 'ap-sync-stale-watchdog',
         text: `AP incremental sync lag ${apSync.lag_hours != null ? apSync.lag_hours + 'h' : 'unknown'} exceeds freshness threshold — scheduler should catch up`,
+        authority: 'AP incremental scheduler',
+        action: 'Confirm PZService scheduler tick; do not rebuild AP databases',
+        age: apSync.lag_hours != null ? `${apSync.lag_hours}h lag` : '',
       });
     }
     if (apSync.last_error || String(apSync.status || '').toLowerCase() === 'error') {
       pushExc({
         key: 'ap-sync-error',
         text: `AP incremental sync error: ${String(apSync.last_error || apSync.detail || 'unknown').slice(0, 160)}`,
+        authority: 'AP incremental scheduler',
+        action: 'Inspect last_error; keep payment/expense/id allocation unchanged',
       });
     }
   }
@@ -1426,18 +1532,45 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
     pushExc({
       key: 'wh009-events-without-processing',
       text: `Webhook WH-009: ${recon.events_without_processing} durable event(s) without processing row`,
+      authority: 'webhook processing DB',
+      action: 'Inspect events_without_processing; do not fabricate consumers',
     });
   }
   if (Number(recon.stale_pending || 0) > 0) {
     pushExc({
       key: 'webhook-stale-pending',
       text: `Webhook: ${recon.stale_pending} stale pending processing row(s)`,
+      authority: 'webhook processing DB',
+      action: 'Inspect stale pending rows; polling remains correctness authority',
     });
   }
   const qDead = (opsStatus && opsStatus.queue && opsStatus.queue.dead_letter) || 0;
   if (Number(qDead) > 0) {
-    pushExc({ key: 'webhook-dead-letters', text: `Webhook dead letters: ${qDead}` });
+    pushExc({
+      key: 'webhook-dead-letters',
+      text: `Webhook dead letters: ${qDead}`,
+      authority: 'webhook queue',
+      action: 'Inspect dead-letter payload (non-secret); do not replay blindly',
+    });
   }
+  pushExc({
+    key: 'wh002-pending',
+    text: 'WH-002 invoice-delete consumer blocked until a genuine Faktury.Usunięcie event is stored',
+    authority: 'webhook event store',
+    action: 'Leave consumer blocked. Do not fabricate a fiscal delete event.',
+  });
+  pushExc({
+    key: 'wh003-pending',
+    text: 'WH-003 payment consumer blocked until a genuine Płatności.Dodanie event is stored; poll remains correctness authority',
+    authority: 'webhook event store',
+    action: 'Leave consumer blocked. Payment knock-off stays payment/expense/id.',
+  });
+  pushExc({
+    key: 'wh004-hard-block',
+    text: 'WH-004 inventory quantity mutation remains HARD BLOCK — ABSOLUTE vs DELTA unproven',
+    authority: 'webhook event store / inventory',
+    action: 'No quantity mutation until product, warehouse, qty, unit, and replay semantics are proven.',
+  });
 
   return (
     <div data-testid="ldg-ma-root">
@@ -1702,13 +1835,22 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         })()}
       </MaSection>
 
-      <MaSection testid="ldg-ma-exceptions" title="9 · Exceptions" subtitle="Source health, data quality, stale projection, AP sync, webhook watchdogs, and reconciliation flags.">
+      <MaSection testid="ldg-ma-exceptions" title="9 · Exceptions" subtitle="What is wrong, which authority detected it, how old it is, and whether action is required. WH-002/003/004 stay blocked without genuine events.">
         {exceptionItems.length === 0 ? (
           <MaCompactEmpty testid="ldg-ma-exceptions-none" msg="No exceptions flagged for the current portfolio." />
         ) : (
           <ul data-testid="ldg-ma-exceptions-list" style={{ margin: 0, padding: '12px 16px 12px 32px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card)', fontSize: 11.5, color: 'var(--text-2)' }}>
             {exceptionItems.map((item) => (
-              <li key={item.key} data-testid={`ldg-ma-exception-${item.key}`}>{item.text}</li>
+              <li key={item.key} data-testid={`ldg-ma-exception-${item.key}`} style={{ marginBottom: 8 }}>
+                <div>{typeof item.text === 'string' ? item.text : (formatLedgerWarning(item.text) || 'Data-quality exception')}</div>
+                {(item.authority || item.action || item.age) ? (
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                    {item.authority ? `Authority: ${item.authority}` : ''}
+                    {item.age ? ` · Age: ${item.age}` : ''}
+                    {item.action ? ` · Action: ${item.action}` : ''}
+                  </div>
+                ) : null}
+              </li>
             ))}
           </ul>
         )}

@@ -766,7 +766,7 @@ def _statement_logo_path() -> str:
 #   Not due                     DOCUMENTED  — portfolio not_due
 #   Credits                     DOCUMENTED  — portfolio credit_balance
 #   Invoiced (period)           DOCUMENTED  — portfolio gross_invoiced (window)
-#   Last 30d (rolling receipts) BACKEND PENDING — no rolling-receipts authority
+#   Last 30d (rolling receipts) DOCUMENTED  — matched payment receipts in 30d ending as_of
 # Legacy ``_roster_row_from_statement`` remains for statement-reducer tests /
 # any explicit legacy reader; default Client Balance does NOT use it.
 from datetime import datetime, timezone   # noqa: E402
@@ -877,6 +877,7 @@ def _roster_row_from_portfolio_group(
     not_due_by_ccy = {c: _q2(by_ccy[c].get("not_due")) for c in ccys}
     credit_by_ccy = {c: _q2(by_ccy[c].get("credit_balance")) for c in ccys}
     invoiced_by_ccy = {c: _q2(by_ccy[c].get("gross_invoiced")) for c in ccys}
+    last30_by_ccy = {c: _q2(by_ccy[c].get("receipts_last_30d")) for c in ccys}
 
     open_total = _sum_ccy(open_by_ccy)
     overdue_total_amt = _sum_ccy(overdue_by_ccy)
@@ -927,7 +928,10 @@ def _roster_row_from_portfolio_group(
         "oldest_overdue_date": oldest_overdue,
         "ytd_invoiced": (invoiced_by_ccy[single] if single else None),
         "ytd_invoiced_by_currency": invoiced_by_ccy,
-        "last_30d": None,  # Backend Pending — no rolling-receipts authority
+        # Applied receipts in the 30 calendar dates ending as_of (inclusive).
+        # Same matched-payment facts as last_payment_date — not a second knock-off.
+        "last_30d": (last30_by_ccy[single] if single else ("0.00" if not ccys else None)),
+        "last_30d_by_currency": last30_by_ccy,
         "open_invoice_count": open_invoice_count,
         "state": state if open_total > 0 or overdue_total_amt > 0 else "clear",
     }
@@ -1219,7 +1223,14 @@ def list_client_balances(
             "overdue_invoice_age":  "documented (alias of due-date overdue)",
             "not_due":              "documented",
             "credit_balance":       "documented",
-            "last_30d":             "backend_pending",
+            "last_30d":             "documented (matched payment receipts, 30 calendar days ending as_of)",
+        },
+        "roster_quality": {
+            "unmapped_contractors": sum(
+                1 for r in rows
+                if r.get("identity_note") == "financial_fact_without_customer_master"
+            ),
+            "total_rows": total,
         },
     })
 

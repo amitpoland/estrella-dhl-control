@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -147,6 +147,7 @@ def build_portfolio_from_facts(
                 "gross_invoiced": Decimal("0"),
                 "credits_docs": Decimal("0"),
                 "payments_applied": Decimal("0"),
+                "receipts_last_30d": Decimal("0"),
             }
         elif name and cust[key]["customer_name"] in ("", "—"):
             cust[key]["customer_name"] = name
@@ -222,7 +223,14 @@ def build_portfolio_from_facts(
             # Excess payment / credit note position — never into aging buckets.
             row["credit_balance"] += -rem
 
-    # Last payment date per customer from matched payments
+    # Last payment date + last-30d applied receipts from matched payments.
+    # Window: 30 calendar dates ending as_of (inclusive). Not a second knock-off.
+    try:
+        receipts_from = (
+            datetime.strptime(as_of[:10], "%Y-%m-%d") - timedelta(days=29)
+        ).strftime("%Y-%m-%d")
+    except ValueError:
+        receipts_from = ""
     inv_by_id = {f["id"]: f for f in invoice_facts if f.get("id")}
     for p in payment_facts:
         if p["id"] not in match["matched_payment_ids"]:
@@ -240,9 +248,13 @@ def build_portfolio_from_facts(
         key = (cid, ccy)
         if key not in cust:
             continue
-        pd = p.get("date") or ""
+        pd = (p.get("date") or "")[:10]
         if pd and (not cust[key]["last_payment_date"] or pd > cust[key]["last_payment_date"]):
             cust[key]["last_payment_date"] = pd
+        if pd and receipts_from and receipts_from <= pd <= as_of[:10]:
+            val = p.get("value")
+            if val is not None:
+                cust[key]["receipts_last_30d"] += val
 
     # Build customer rows + apply status filter
     customers: List[Dict[str, Any]] = []
@@ -280,6 +292,7 @@ def build_portfolio_from_facts(
             # Period gross invoices already accumulated — exposed for Client
             # Balance activity column (not a second formula).
             "gross_invoiced": _q(row["gross_invoiced"]),
+            "receipts_last_30d": _q(row["receipts_last_30d"]),
             "oldest_due_date": row["oldest_due_date"] or None,
             "days_oldest_overdue": int(row["days_oldest_overdue"]),
             "last_invoice_date": row["last_invoice_date"] or None,
