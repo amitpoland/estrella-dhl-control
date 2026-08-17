@@ -50,6 +50,10 @@ from app.services.financial_reporting_db import (  # noqa: E402
     upsert_ap_expense,
     upsert_ar_invoice,
 )
+from app.services.ledger_aggregator import (  # noqa: E402
+    EXPENSE_CLASS_REJECTED,
+    classify_expense_lifecycle,
+)
 from app.services.ledger_fact_universe import FISCAL_AR_INVOICE_TYPES  # noqa: E402
 
 
@@ -135,6 +139,12 @@ def map_expense_node(exp: ET.Element) -> Optional[ApExpenseReportingRow]:
         _t(exp, "contractor_detail/name")
         or _t(exp, "contractor/name")
     )
+    # The expenses module never emits <status>; lifecycle lives in
+    # <draft>/<is_rejected>. Rejected inbox documents are not liabilities and
+    # are excluded from the open-payable universe via open_relevant.
+    lifecycle = classify_expense_lifecycle(
+        _t(exp, "draft"), _t(exp, "is_rejected")
+    )
     return ApExpenseReportingRow(
         expense_id=eid,
         supplier_id=sid,
@@ -148,9 +158,9 @@ def map_expense_node(exp: ET.Element) -> Optional[ApExpenseReportingRow]:
         tax=_dec(_t(exp, "vat", "vat_sum", "tax") or None),
         gross=_expense_gross(exp),
         payment_state=_t(exp, "paymentstate") or None,
-        document_status=_t(exp, "status") or None,
+        document_status=lifecycle,
         correction_of_id=_t(exp, "parent/id") or None,
-        open_relevant=True,
+        open_relevant=lifecycle != EXPENSE_CLASS_REJECTED,
         source_modified=_t(exp, "modified", "modificationdate") or None,
         source_version=_t(exp, "version") or None,
         raw_hash=_hash_node(exp),
