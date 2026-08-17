@@ -992,6 +992,17 @@ const _ACC_DOC_TITLES = {
 const _ACC_DOC_LIVE = { inv: 'invoice', cn: 'credit_note', wz: 'wz', pz: 'pz', pw: 'pw', rw: 'rw' };
 const _ACC_PAGE_LIMIT = 20;
 
+function formatAccUpstreamError(err) {
+  const s = String(err == null ? '' : err);
+  if (!s) return 'Retry shortly.';
+  if (/<!DOCTYPE|<html[\s>]|cloudflare/i.test(s)) {
+    return 'Wait a moment, then retry.';
+  }
+  if (s === '[object Object]') return 'Retry shortly.';
+  const cleaned = s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned.length > 160 ? `${cleaned.slice(0, 157)}…` : cleaned;
+}
+
 function AccAwbCell({ docType, wfirmaId }) {
   const [st, setSt] = React.useState({ loading: false, awbs: null, err: null });
   React.useEffect(() => {
@@ -1112,7 +1123,7 @@ function AccDocGrid({ sectionId, onNav }) {
     window.PzApi.listAccountingDocs(docType, params).then((res) => {
       if (cancelled) return;
       if (!res || !res.ok) {
-        setSt({ loading: false, error: (res && res.error) || 'Load failed', rows: null, hasMore: false });
+        setSt({ loading: false, error: formatAccUpstreamError((res && res.error) || 'Load failed'), rows: null, hasMore: false });
         return;
       }
       const d = res.data || {};
@@ -1126,7 +1137,7 @@ function AccDocGrid({ sectionId, onNav }) {
         hasMore: !!d.has_more,
       });
     }).catch((e) => {
-      if (!cancelled) setSt({ loading: false, error: (e && e.message) || String(e), rows: null, hasMore: false });
+      if (!cancelled) setSt({ loading: false, error: formatAccUpstreamError((e && e.message) || String(e)), rows: null, hasMore: false });
     });
     return () => { cancelled = true; };
   }, [docType, filter, yearParam]);
@@ -1155,12 +1166,12 @@ function AccDocGrid({ sectionId, onNav }) {
     ? (
         m.c === 'PZ'
           ? [{ label: '+ New PZ', nav: '#dashboard', title: 'Open canonical PZ / goods-receipt workflow (navigate only)' }]
-          : [{ label: `+ New ${m.c}`, nav: null, title: `${m.c} create is not owned by Accounting Hub` }]
+          : [{ label: `+ New ${m.c}`, nav: null, title: `${m.c} create is not owned by Accounting Hub — create in wFirma if needed` }]
       )
-    : [
-        { label: '+ New Proforma', nav: '#proforma', title: 'Open canonical Proforma workflow' },
-      ];
-  if (onNav && !m.wh) {
+    : sectionId === 'cn'
+      ? [{ label: 'Create in wFirma', nav: null, title: 'Credit Notes are fiscal wFirma documents. Atlas Accounting has no approved CN write authority — create/correct in wFirma.' }]
+      : [{ label: '+ New Proforma', nav: '#proforma', title: 'Open canonical Proforma workflow' }];
+  if (onNav && !m.wh && sectionId !== 'cn') {
     actions[0] = {
       label: '+ New Proforma',
       nav: null,
@@ -1229,8 +1240,14 @@ function AccDocGrid({ sectionId, onNav }) {
               </tr></thead>
               <tbody>
                 {st.loading && <tr><td colSpan={cols.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading from wFirma…</td></tr>}
-                {st.error && !st.loading && <tr><td colSpan={cols.length} data-testid={`acc-grid-${sectionId}-error`} style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable: {st.error}</td></tr>}
-                {!st.loading && !st.error && filteredRows && filteredRows.length === 0 && <tr><td colSpan={cols.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No {m.t.toLowerCase()} documents.</td></tr>}
+                {st.error && !st.loading && <tr><td colSpan={cols.length} data-testid={`acc-grid-${sectionId}-error`} style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>
+                  {/temporarily unavailable|502|503|unreachable/i.test(String(st.error))
+                    ? `${m.t} temporarily unavailable from wFirma. `
+                    : 'wFirma read unavailable. '}
+                  <button type="button" data-testid={`acc-grid-${sectionId}-retry`} onClick={() => setFilter((f) => (f ? { ...f } : f))} style={{ marginLeft: 8, fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--card)', cursor: 'pointer' }}>Retry</button>
+                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-3)' }}>{formatAccUpstreamError(st.error)}</div>
+                </td></tr>}
+                {!st.loading && !st.error && filteredRows && filteredRows.length === 0 && <tr><td colSpan={cols.length} data-testid={`acc-grid-${sectionId}-empty`} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No {m.t.toLowerCase()} documents found.</td></tr>}
                 {!st.loading && !st.error && filteredRows && filteredRows.map((r, i) => (
                   <tr key={r.wfirma_id || i} data-testid={`acc-grid-${sectionId}-row`} style={{ borderBottom: i < filteredRows.length - 1 ? '1px solid var(--border-subtle)' : 'none' }}>
                     {m.wh && <td style={{ ...td, color: 'var(--text)', fontWeight: 700 }}>{r.doc_type || m.c}</td>}
@@ -1324,7 +1341,7 @@ function AccClientBalance({ onOpenLedger }) {
           </tr></thead>
           <tbody>
             {st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}><span className="spinner" /> Loading balances from wFirma…</td></tr>}
-            {st.error && !st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} data-testid="acc-balance-error" style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable: {st.error}</td></tr>}
+            {st.error && !st.loading && <tr><td colSpan={_ACC_BAL_COLS.length} data-testid="acc-balance-error" style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--badge-red-text)', fontSize: 12 }}>wFirma read unavailable. {formatAccUpstreamError(st.error)}</td></tr>}
             {!st.loading && !st.error && st.rows && st.rows.length === 0 && <tr><td colSpan={_ACC_BAL_COLS.length} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No clients in Customer Master.</td></tr>}
             {!st.loading && !st.error && st.rows && st.rows.map((r, i) => (
               <tr key={r.contractor_id || i} data-testid="acc-balance-row"

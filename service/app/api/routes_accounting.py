@@ -26,6 +26,7 @@ from ..services.accounting_documents import (
     WAREHOUSE_TYPES_BLOCKED,
     WAREHOUSE_TYPES_SUPPORTED,
 )
+from ..services.wfirma_upstream_error import operator_detail_for_exc
 
 router = APIRouter(prefix="/api/v1/accounting", tags=["accounting"])
 
@@ -124,7 +125,13 @@ def list_accounting_documents(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except (RuntimeError, ConnectionError) as exc:
-            raise HTTPException(status_code=502, detail=f"wFirma read failed: {exc}") from exc
+            import logging
+            logging.getLogger(__name__).warning(
+                "accounting documents invoice read failed: %s", exc, exc_info=True
+            )
+            raise HTTPException(
+                status_code=502, detail=operator_detail_for_exc(exc)
+            ) from exc
         years = enrich_years_available(
             paging["years_available"], result.get("rows") or []
         )
@@ -153,7 +160,16 @@ def list_accounting_documents(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except (RuntimeError, ConnectionError) as exc:
-            raise HTTPException(status_code=502, detail=f"wFirma read failed: {exc}") from exc
+            import logging
+            logging.getLogger(__name__).warning(
+                "accounting documents warehouse read failed type=%s: %s",
+                wh_type,
+                exc,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=502, detail=operator_detail_for_exc(exc)
+            ) from exc
         years = enrich_years_available(
             paging["years_available"], result.get("rows") or []
         )

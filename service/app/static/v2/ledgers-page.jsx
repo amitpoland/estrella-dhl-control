@@ -58,26 +58,83 @@ const agingStripBuckets = (aging) =>
     tone: k === 'not_due' || k === 'due_date_unavailable' ? '' : 'red',
   }));
 
-const LDG_PRESETS = [
-  { id: 'this_month', label: 'This Month' },
-  { id: 'prev_month', label: 'Previous Month' },
-  { id: 'quarter', label: 'Quarter' },
-  { id: 'ytd', label: 'YTD' },
-  { id: 'custom', label: 'Custom' },
-];
+// Shared monthly window helper (same formula as AccountingRegisterFilter).
+function ldgMonthlyPeriod(year, month) {
+  if (typeof window !== 'undefined' && typeof window.arfMonthlyPeriod === 'function') {
+    return window.arfMonthlyPeriod(year, month);
+  }
+  const y = Number(year); const m = Number(month);
+  const pad = (n) => String(n).padStart(2, '0');
+  const last = new Date(y, m, 0).getDate();
+  return { from: `${y}-${pad(m)}-01`, to: `${y}-${pad(m)}-${pad(last)}` };
+}
+
+function ldgDefaultActivityPeriod() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  return { year: y, month: m, periodMode: 'monthly', ...ldgMonthlyPeriod(y, m) };
+}
+
+/** Render ledger warning dicts as human text — never String(obj) → [object Object]. */
+function formatLedgerWarning(w) {
+  if (w == null || w === '') return null;
+  if (typeof w === 'string' || typeof w === 'number' || typeof w === 'boolean') {
+    const s = String(w);
+    return s === '[object Object]' ? null : s;
+  }
+  if (typeof w !== 'object') return String(w);
+  const event = w.event || w.code || '';
+  const msg = w.message || w.detail || '';
+  const parts = [];
+  if (event) parts.push(String(event).replace(/_/g, ' '));
+  if (msg && msg !== event) parts.push(String(msg));
+  if (w.wfirma_doc_id) parts.push(`doc ${w.wfirma_doc_id}`);
+  if (w.linked_invoice) parts.push(`invoice ${w.linked_invoice}`);
+  if (w.invoice_id) parts.push(`invoice ${w.invoice_id}`);
+  if (w.source) parts.push(`source ${w.source}`);
+  if (!parts.length) return 'Data-quality exception (see server logs)';
+  return parts.join(' · ');
+}
+
+function dedupeLedgerWarnings(warnings) {
+  const seen = new Set();
+  const out = [];
+  (warnings || []).forEach((w) => {
+    const text = formatLedgerWarning(w);
+    if (!text || text === '[object Object]') return;
+    if (seen.has(text)) return;
+    seen.add(text);
+    out.push(text);
+  });
+  return out;
+}
+
+function formatAccUpstreamError(err) {
+  const s = String(err == null ? '' : err);
+  if (!s) return 'wFirma temporarily unavailable. Retry shortly.';
+  if (/<!DOCTYPE|<html[\s>]|cloudflare/i.test(s)) {
+    return 'wFirma temporarily unavailable. Wait a moment, then retry.';
+  }
+  if (s === '[object Object]') return 'wFirma read failed. Retry shortly.';
+  return s.length > 180 ? `${s.slice(0, 177)}…` : s;
+}
 
 // ── Source / read-only badges ──────────────────────────────────────────
-function LdgSourceBadge() {
+// mode: 'wfirma' = live/lazy wFirma read; 'local' = reporting projection
+function LdgSourceBadge({ mode }) {
+  const local = mode === 'local';
   return (
-    <span style={{
+    <span data-testid={local ? 'ldg-source-local' : 'ldg-source-wfirma'} style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
       padding: '2px 8px', borderRadius: 4, fontSize: 9.5, fontWeight: 700,
       letterSpacing: '0.06em', textTransform: 'uppercase',
-      background: 'var(--badge-blue-bg)', color: 'var(--badge-blue-text)',
-      border: '1px solid var(--badge-blue-border)',
+      background: local ? 'var(--badge-green-bg)' : 'var(--badge-blue-bg)',
+      color: local ? 'var(--badge-green-text)' : 'var(--badge-blue-text)',
+      border: `1px solid ${local ? 'var(--badge-green-border)' : 'var(--badge-blue-border)'}`,
     }}>
-      <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--badge-blue-text)' }} />
-      Source · wFirma
+      <span style={{ width: 5, height: 5, borderRadius: '50%', background: local ? 'var(--badge-green-text)' : 'var(--badge-blue-text)' }} />
+      {local ? 'Source · local' : 'Source · wFirma'}
     </span>
   );
 }
@@ -136,56 +193,71 @@ function LdgStatTile({ label, value, sub, tone, alert }) {
   );
 }
 
-// ── Period bar — the single period control for every ledger surface ────
-// Rendered once, by LedgersPage. Switching to Custom PREFILLS both inputs with
-// the currently resolved window, so the half-filled state that used to fall
-// silently back to a preset the operator never chose cannot occur; an inverted
-// range reports inline and the last valid window is held.
-function LdgPeriodBar({ filters, custom, periodErr, onMode, onCustom, inert, inertNote }) {
-  const dateStyle = {
-    marginLeft: 6, padding: '4px 7px', fontSize: 11,
+// ── Period bar — Year / Month / From / To (Accounting register convention)
+// POSITION as-of is separate from ACTIVITY From→To. Client Balance roster stays
+// all_outstanding as of `as_of`; statement/activity views use From/To.
+function LdgPeriodBar({ filters, custom, periodErr, onPeriodMode, onYear, onMonth, onCustom, onAsOf, inert, inertNote }) {
+  const inputStyle = {
+    marginLeft: 4, padding: '4px 7px', fontSize: 11,
     border: '1px solid var(--border)', borderRadius: 4,
     background: inert ? 'var(--bg-subtle)' : 'var(--bg)', color: 'var(--text)',
   };
+  const yNow = new Date().getFullYear();
+  const years = Array.from({ length: 11 }, (_, i) => yNow - i);
+  const months = [
+    [1, 'Jan'], [2, 'Feb'], [3, 'Mar'], [4, 'Apr'], [5, 'May'], [6, 'Jun'],
+    [7, 'Jul'], [8, 'Aug'], [9, 'Sep'], [10, 'Oct'], [11, 'Nov'], [12, 'Dec'],
+  ];
+  const periodMode = filters.periodMode || 'monthly';
   return (
     <div data-testid="ldg-period-bar" style={{
       display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8,
       padding: '10px 14px', marginBottom: 14, borderRadius: 6,
       border: '1px solid var(--border)', background: 'var(--card)',
     }}>
-      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Period</span>
-      {LDG_PRESETS.map(p => {
-        const active = filters.mode === p.id;
-        return (
-          <button key={p.id} type="button" data-testid={`ldg-preset-${p.id}`}
-            disabled={inert} onClick={() => onMode(p.id)}
-            style={{
-              padding: '4px 10px', fontSize: 11, borderRadius: 4, cursor: inert ? 'not-allowed' : 'pointer',
-              border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-              background: active ? 'var(--bg-subtle)' : 'var(--card)',
-              color: active ? 'var(--text)' : 'var(--text-2)',
-              fontWeight: active ? 700 : 500, opacity: inert ? 0.5 : 1,
-            }}>{p.label}</button>
-        );
-      })}
-      {filters.mode === 'custom' && (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-3)' }}>
-          <label>From
-            <input type="date" data-testid="ldg-from" value={custom.from} disabled={inert}
-              onChange={(e) => onCustom({ ...custom, from: e.target.value })} style={dateStyle} />
+      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Activity</span>
+      <select data-testid="ldg-period-mode" disabled={inert} value={periodMode}
+        onChange={(e) => onPeriodMode(e.target.value)} style={inputStyle}>
+        <option value="monthly">Month</option>
+        <option value="custom">Custom range</option>
+      </select>
+      {periodMode === 'monthly' && (
+        <React.Fragment>
+          <label style={{ fontSize: 10.5, color: 'var(--text-3)' }}>Year
+            <select data-testid="ldg-year" disabled={inert} value={filters.year} onChange={(e) => onYear(Number(e.target.value))} style={inputStyle}>
+              {years.map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
           </label>
-          <label>To
-            <input type="date" data-testid="ldg-to" value={custom.to} disabled={inert}
-              onChange={(e) => onCustom({ ...custom, to: e.target.value })} style={dateStyle} />
+          <label style={{ fontSize: 10.5, color: 'var(--text-3)' }}>Month
+            <select data-testid="ldg-month" disabled={inert} value={filters.month} onChange={(e) => onMonth(Number(e.target.value))} style={inputStyle}>
+              {months.map(([n, lab]) => <option key={n} value={n}>{lab}</option>)}
+            </select>
           </label>
-        </span>
+        </React.Fragment>
       )}
-      <span data-testid="ldg-period-window" style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-2)', marginLeft: 'auto' }}>
+      {periodMode === 'custom' && (
+        <React.Fragment>
+          <label style={{ fontSize: 10.5, color: 'var(--text-3)' }}>From
+            <input type="date" data-testid="ldg-from" value={custom.from} disabled={inert}
+              onChange={(e) => onCustom({ ...custom, from: e.target.value })} style={inputStyle} />
+          </label>
+          <label style={{ fontSize: 10.5, color: 'var(--text-3)' }}>To
+            <input type="date" data-testid="ldg-to" value={custom.to} disabled={inert}
+              onChange={(e) => onCustom({ ...custom, to: e.target.value })} style={inputStyle} />
+          </label>
+        </React.Fragment>
+      )}
+      <span data-testid="ldg-period-window" style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-2)' }}>
         {filters.from} → {filters.to}
       </span>
+      <span style={{ width: 1, height: 18, background: 'var(--border)', margin: '0 4px' }} />
+      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Position as-of</span>
+      <input type="date" data-testid="ldg-as-of" value={filters.as_of || ''}
+        onChange={(e) => onAsOf(e.target.value)}
+        style={{ ...inputStyle, background: 'var(--bg)', opacity: 1 }} />
       {periodErr && (
         <div data-testid="ldg-period-error" style={{ flexBasis: '100%', fontSize: 11, color: 'var(--badge-red-text)' }}>
-          {periodErr} — showing {filters.from} → {filters.to}.
+          {periodErr} — showing activity {filters.from} → {filters.to}.
         </div>
       )}
       {inert && inertNote && (
@@ -193,6 +265,10 @@ function LdgPeriodBar({ filters, custom, periodErr, onMode, onCustom, inert, ine
           {inertNote}
         </div>
       )}
+      <div data-testid="ldg-period-semantics" style={{ flexBasis: '100%', fontSize: 10.5, color: 'var(--text-3)' }}>
+        Client Balance Open / Aged = full outstanding position as of the as-of date (not limited to the activity window).
+        Statement lines = activity in From→To only.
+      </div>
     </div>
   );
 }
@@ -210,16 +286,15 @@ function LedgersPage(props) {
   const [focusSupplierId, setFocusSupplierId] = React.useState('');
 
   // ── THE period authority ──────────────────────────────────────────────
-  // One normalized filter object for every ledger surface on this page. No
-  // child holds its own period state and nothing computes a second default.
-  // Management Analysis opens on the full outstanding portfolio as of today —
-  // a balance-sheet-style exposure, not "documents issued this month" — so its
-  // scope defaults to all_outstanding and the period bar goes inert for it.
+  // Activity From/To (Year/Month or custom) drives statement windows.
+  // Position as-of drives Client Balance Open (scope=all_outstanding).
+  // Management Analysis opens on the full outstanding portfolio as of today.
   const today = LDG_TODAY();
   const [filters, setFilters] = React.useState(() => {
-    const p = window.resolvePeriod('this_month', null, today);
+    const act = ldgDefaultActivityPeriod();
     return {
-      mode: 'this_month', from: p.from, to: p.to, as_of: today,
+      periodMode: act.periodMode, year: act.year, month: act.month,
+      from: act.from, to: act.to, as_of: today,
       scope: 'all_outstanding', currency: '',
       ar_status: 'outstanding', ap_status: 'outstanding',
     };
@@ -228,16 +303,27 @@ function LedgersPage(props) {
   const [periodErr, setPeriodErr] = React.useState('');
   const patch = (p) => setFilters(f => ({ ...f, ...p }));
 
-  const onMode = (mode) => {
+  const onPeriodMode = (periodMode) => {
     setPeriodErr('');
-    if (mode === 'custom') {
-      // Prefill both inputs from the window currently on screen.
+    if (periodMode === 'custom') {
       setCustom({ from: filters.from, to: filters.to });
-      patch({ mode: 'custom' });
+      patch({ periodMode: 'custom' });
       return;
     }
-    const p = window.resolvePeriod(mode, null, today);
-    patch({ mode, from: p.from, to: p.to });
+    const p = ldgMonthlyPeriod(filters.year, filters.month);
+    patch({ periodMode: 'monthly', from: p.from, to: p.to });
+  };
+
+  const onYear = (year) => {
+    setPeriodErr('');
+    const p = ldgMonthlyPeriod(year, filters.month);
+    patch({ year, from: p.from, to: p.to, periodMode: 'monthly' });
+  };
+
+  const onMonth = (month) => {
+    setPeriodErr('');
+    const p = ldgMonthlyPeriod(filters.year, month);
+    patch({ month, from: p.from, to: p.to, periodMode: 'monthly' });
   };
 
   const onCustom = (next) => {
@@ -248,7 +334,12 @@ function LedgersPage(props) {
       return;
     }
     setPeriodErr('');
-    patch({ mode: 'custom', from: p.from, to: p.to });
+    patch({ periodMode: 'custom', from: p.from, to: p.to });
+  };
+
+  const onAsOf = (as_of) => {
+    if (!as_of) return;
+    patch({ as_of });
   };
 
   // HONEST load model (replaces the old fabricated static sync-age chip):
@@ -286,42 +377,45 @@ function LedgersPage(props) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <LdgReadOnlyBadge />
-          <LdgSourceBadge />
+          <LdgSourceBadge mode={tab === 'analysis' ? 'local' : 'wfirma'} />
           <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
-            All balances and movements are pulled from wFirma. No values can be edited here. Posting payments and corrections must be done in wFirma directly.
+            {tab === 'analysis'
+              ? 'Management Analysis reads the local financial reporting projection (SOURCE-LOCAL). Statement drawers remain live wFirma reads.'
+              : 'Client / Supplier balances and statements are live wFirma reads. No values can be edited here. Posting payments and corrections must be done in wFirma.'}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {loadInfo.status === 'loading' && (
             <span data-testid="ldg-load-status" style={{ fontSize: 11, color: 'var(--text-3)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--text-3)' }} />
-              Loading from wFirma…
+              {tab === 'analysis' ? 'Loading local projection…' : 'Loading from wFirma…'}
             </span>
           )}
           {loadInfo.status === 'ok' && (
-            <span data-testid="ldg-load-status" title="Figures are live wFirma reads made at this time — not a background sync" style={{ fontSize: 11, color: 'var(--badge-green-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span data-testid="ldg-load-status" title={tab === 'analysis' ? 'Local projection read' : 'Figures are live wFirma reads made at this time'} style={{ fontSize: 11, color: 'var(--badge-green-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--badge-green-text)' }} />
-              Live wFirma read · loaded {_t(loadInfo.at)}
+              {tab === 'analysis' ? `Local projection · loaded ${_t(loadInfo.at)}` : `Live wFirma read · loaded ${_t(loadInfo.at)}`}
             </span>
           )}
           {loadInfo.status === 'error' && (
             <span data-testid="ldg-load-status" style={{ fontSize: 11, color: 'var(--badge-red-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--badge-red-text)' }} />
-              wFirma read failed{loadInfo.at ? ` · ${_t(loadInfo.at)}` : ''}
+              {tab === 'analysis' ? 'Local projection read failed' : 'wFirma read failed'}{loadInfo.at ? ` · ${_t(loadInfo.at)}` : ''}
             </span>
           )}
           <window.Btn small variant="outline" data-testid="ldg-refresh"
             onClick={() => { setLoadInfo(p => ({ ...p, status: 'loading' })); setSelectedRow(null); setRefreshKey(k => k + 1); }}>
-            ↻ Refresh from wFirma
+            {tab === 'analysis' ? '↻ Refresh projection' : '↻ Refresh from wFirma'}
           </window.Btn>
         </div>
       </div>
 
       <LdgPeriodBar
         filters={filters} custom={custom} periodErr={periodErr}
-        onMode={onMode} onCustom={onCustom}
+        onPeriodMode={onPeriodMode} onYear={onYear} onMonth={onMonth}
+        onCustom={onCustom} onAsOf={onAsOf}
         inert={tab === 'analysis' && filters.scope === 'all_outstanding'}
-        inertNote="Management Analysis is showing the full outstanding portfolio as of today. Switch Scope to Custom Period to apply these dates." />
+        inertNote="Management Analysis is showing the full outstanding portfolio as of the Position as-of date. Switch Scope to Custom Period to apply the activity From/To window." />
 
       {/* Top-level tab strip — clients / analysis / suppliers share LedgersPage.
           Supplier counts come from live AP reads (no synthetic placeholder). */}
@@ -499,8 +593,8 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
         <table data-testid="ldg-clients-balance-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
           <thead>
             <tr style={{ background: 'var(--bg-subtle)', textAlign: 'left' }}>
-              {['Client', 'Open', 'Overdue', 'YTD', 'Cur', 'State', ''].map((h) => (
-                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Open', 'Overdue', 'YTD'].includes(h) ? 'right' : 'left' }}>{h}</th>
+              {['Client', 'Open (as-of)', 'Aged', 'Invoiced (period)', 'Cur', 'State', ''].map((h) => (
+                <th key={h || 'act'} style={{ padding: '10px 12px', fontSize: 10, color: 'var(--text-3)', fontWeight: 700, textAlign: ['Open (as-of)', 'Aged', 'Invoiced (period)'].includes(h) ? 'right' : 'left' }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -576,6 +670,9 @@ function ClientDetailPanel({ client, stmt, period, tab, onTab, onClose, onRowCli
         ))}
       </div>
       <div style={{ padding: '12px 14px' }}>
+        <div style={{ marginBottom: 12 }}>
+          <ClientHeaderCard client={client} stmt={stmt} period={period} />
+        </div>
         {tab === 'info' && (
           <div data-testid="ldg-client-info">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, fontSize: 11.5 }}>
@@ -619,6 +716,7 @@ function ClientHeaderCard({ client: c, stmt, period }) {
   // no ledger authority serves them yet (see backend-pending note below).
   const unavailable = c.balance_available === false;
   const stmtGen = stmt && stmt.status === 'ok' && stmt.data ? (stmt.data.generated_at || '') : '';
+  const asOf = period.as_of || period.to;
   const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(c.contractor_id)}/statement.pdf?from=${period.from}&to=${period.to}`;
   return (
     <window.Card>
@@ -632,6 +730,7 @@ function ClientHeaderCard({ client: c, stmt, period }) {
           <div style={{ fontSize: 11.5, color: 'var(--text-3)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             <span>VAT / Tax ID: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.vat_id || '—'}</span></span>
             <span>wFirma contractor: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{c.contractor_id}</span></span>
+            <span data-testid="ldg-client-asof">Position as-of: <span style={{ fontFamily: 'monospace', color: 'var(--text-2)' }}>{asOf}</span></span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -651,25 +750,17 @@ function ClientHeaderCard({ client: c, stmt, period }) {
       ) : (
         <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
           {c.currency === 'multi' ? (
-            /* Multi-currency contractor: top-line figures are per-currency
-               dicts, not one number — the statement below shows each currency
-               honestly instead of a fabricated cross-currency sum. */
-            <LdgStatTile label="Open (outstanding)" value="multi-currency"
-              sub={`per currency: ${Object.entries(c.open_by_currency || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'see statement'}`} />
+            <LdgStatTile label="Open (position)" value="multi-currency"
+              sub={`as-of ${asOf} · per currency: ${Object.entries(c.open_by_currency || {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'see statement'}`} />
           ) : (
-            <LdgStatTile label="Open (outstanding)" value={LDG_FMT.money(c.open, c.currency)}
-              sub="live wFirma statement" />
+            <LdgStatTile label="Open (position)" value={LDG_FMT.money(c.open, c.currency)}
+              sub={`full outstanding as-of ${asOf} · not period-bounded`} />
           )}
-          {/* aged = aging.total − aging.current (routes_ledgers.py), i.e. any
-              unpaid amount past its INVOICE date — includes 1–30-day invoices
-              that may be well within payment terms. Due-date aging is Backend
-              Pending, so the label must not claim "overdue" or "30+ days". */}
           <LdgStatTile label="Aged (invoice age)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_invoice_age, c.currency)}
-            sub={(Number(c.overdue_invoice_age) || 0) > 0 ? 'unpaid past invoice date — see statement aging' : 'invoice-age basis'}
+            sub={(Number(c.overdue_invoice_age) || 0) > 0 ? 'unpaid past invoice date — as-of position' : 'invoice-age basis · as-of position'}
             tone={(Number(c.overdue_invoice_age) || 0) > 0 ? 'amber' : 'green'} />
-          <LdgStatTile label="Invoiced (period)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.ytd_invoiced, c.currency)} sub="statement window" />
-          {/* last_30d is served as null by routes_ledgers.py (Backend Pending) —
-              say so rather than rendering a dash that implies a live zero. */}
+          <LdgStatTile label="Invoiced (activity)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.ytd_invoiced, c.currency)}
+            sub={`activity window ${period.from} → ${period.to}`} />
           <LdgStatTile label="Last 30 days" value="—" sub="backend pending" />
         </div>
       )}
@@ -868,8 +959,11 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Statement</span>
-          <LdgSourceBadge />
+          <LdgSourceBadge mode="wfirma" />
           <LdgReadOnlyBadge />
+          <span data-testid="ldg-stmt-scope-label" style={{ fontSize: 10.5, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
+            Period activity only
+          </span>
           {d.period && (d.period.from || d.period.to) && (
             <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{d.period.from || '…'} → {d.period.to || '…'}</span>
           )}
@@ -882,7 +976,7 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
 
       {currencies.length === 0 && (
         <div data-testid="ldg-stmt-empty" style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>
-          No invoices or payments on record for this customer in the period.
+          No invoices or payments on record for this customer in the activity period.
         </div>
       )}
 
@@ -931,20 +1025,26 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
               </table>
             </div>
             <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 11.5, background: 'var(--bg-subtle)' }}>
-              <span style={{ color: 'var(--text-3)' }}>{entries.length} entr{entries.length === 1 ? 'y' : 'ies'} · {ccy} · all sourced from wFirma</span>
+              <span style={{ color: 'var(--text-3)' }}>{entries.length} entr{entries.length === 1 ? 'y' : 'ies'} · {ccy} · period activity (not full client open)</span>
               <span style={{ color: 'var(--text)', fontWeight: 700, fontFamily: 'monospace' }} data-testid={`ldg-stmt-outstanding-${ccy}`}>
-                Outstanding: {LDG_FMT.money(totals.outstanding, ccy)}
+                Period closing balance: {LDG_FMT.money(totals.outstanding, ccy)}
               </span>
             </div>
           </div>
         );
       })}
 
-      {(d.warnings || []).length > 0 && (
-        <div data-testid="ldg-stmt-warnings" style={{ padding: '8px 16px', fontSize: 10.5, color: 'var(--badge-amber-text)', borderTop: '1px solid var(--border-subtle)' }}>
-          {(d.warnings || []).map((w, i) => <div key={i}>⚠ {String(w)}</div>)}
-        </div>
-      )}
+      {(() => {
+        const warnTexts = dedupeLedgerWarnings(d.warnings);
+        if (!warnTexts.length) return null;
+        return (
+          <div data-testid="ldg-stmt-warnings" style={{ padding: '8px 16px', fontSize: 10.5, color: 'var(--badge-amber-text)', borderTop: '1px solid var(--border-subtle)' }}>
+            {warnTexts.map((text, i) => (
+              <div key={i} data-testid="ldg-stmt-warning-row">⚠ {text}</div>
+            ))}
+          </div>
+        );
+      })()}
     </window.Card>
   );
 }
@@ -1783,7 +1883,7 @@ function LdgFilterPanel({ title, searchPlaceholder, items, activeId, onSelect, e
       <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
         <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Filters</div>
         {(extraFilters || []).length === 0 && (
-          <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>Search above · period presets at the top of this page</div>
+          <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>Search above · Year / Month / From / To at the top of this page</div>
         )}
         {(extraFilters || []).map(f => (
           <label key={f.id} style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, padding: '4px 0', color: 'var(--text-2)' }}>
@@ -1861,7 +1961,7 @@ function StatementDetailDrawer({ row, onClose }) {
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <LdgSourceBadge />
+              <LdgSourceBadge mode="wfirma" />
               <LdgReadOnlyBadge />
             </div>
           </div>
