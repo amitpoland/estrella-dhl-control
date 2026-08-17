@@ -180,6 +180,79 @@ function ldgByCcyTitle(byCcy) {
   return Object.entries(byCcy || {}).map(([k, v]) => `${k} ${v}`).join(' · ');
 }
 
+function LdgMultiCcyLines({ byCcy, testid, hideZero }) {
+  const entries = Object.entries(byCcy || {})
+    .filter(([, v]) => !hideZero || Number(v) !== 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) {
+    return <span style={{ color: 'var(--text-3)' }}>—</span>;
+  }
+  return (
+    <div data-testid={testid} style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-end' }}>
+      {entries.map(([ccy, amt]) => (
+        <div key={ccy} data-testid={testid ? `${testid}-${ccy}` : undefined}
+          style={{ fontFamily: 'monospace', fontSize: 11, lineHeight: 1.35, whiteSpace: 'nowrap' }}>
+          <span style={{ color: 'var(--text-3)', fontSize: 9, fontWeight: 700, marginRight: 4 }}>{ccy}</span>
+          {LDG_FMT.money(amt, ccy)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LdgMultiCcyLegStates({ presentationStateBy, testid }) {
+  const entries = Object.entries(presentationStateBy || {}).sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return <LdgPresentationPill state="unknown" />;
+  return (
+    <div data-testid={testid} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      {entries.map(([ccy, st]) => (
+        <div key={ccy} data-testid={testid ? `${testid}-${ccy}` : undefined}
+          style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-3)', minWidth: 24 }}>{ccy}</span>
+          <LdgPresentationPill state={st} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LdgMultiCurrencyPositionGrid({ client, asOf }) {
+  const legs = client.currency_legs || [];
+  if (!legs.length) {
+    return (
+      <div data-testid="ldg-client-multi-legs-empty" style={{ gridColumn: '1 / -1', fontSize: 11.5, color: 'var(--text-3)' }}>
+        Multi-currency position — per-currency breakdown unavailable.
+      </div>
+    );
+  }
+  return (
+    <div data-testid="ldg-client-multi-legs" style={{ gridColumn: '1 / -1', display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+      {legs.map((leg) => (
+        <div key={leg.currency} data-testid={`ldg-client-leg-${client.contractor_id}-${leg.currency}`}
+          style={{ padding: '12px 14px', border: '1px solid var(--border-subtle)', borderRadius: 8, background: 'var(--bg-subtle)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>{leg.currency}</span>
+            <LdgPresentationPill state={leg.presentation_state} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 10.5 }}>
+            <span style={{ color: 'var(--text-3)' }}>Gross</span>
+            <span style={{ fontFamily: 'monospace', textAlign: 'right' }}>{LDG_FMT.money(leg.gross_receivable, leg.currency)}</span>
+            <span style={{ color: 'var(--text-3)' }}>Credits</span>
+            <span style={{ fontFamily: 'monospace', textAlign: 'right', color: 'var(--badge-green-text)' }}>{LDG_FMT.money(leg.credit_balance, leg.currency)}</span>
+            <span style={{ color: 'var(--text-3)' }}>Net</span>
+            <span style={{ fontFamily: 'monospace', textAlign: 'right', fontWeight: 700 }}>{LDG_FMT.money(leg.net_receivable, leg.currency)}</span>
+            <span style={{ color: 'var(--text-3)' }}>Overdue</span>
+            <span style={{ fontFamily: 'monospace', textAlign: 'right' }}>{LDG_FMT.money(leg.overdue, leg.currency)}</span>
+            <span style={{ color: 'var(--text-3)' }}>Not due</span>
+            <span style={{ fontFamily: 'monospace', textAlign: 'right' }}>{LDG_FMT.money(leg.not_due, leg.currency)}</span>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 9.5, color: 'var(--text-3)' }}>as-of {asOf} · native currency only</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function LdgPresentationPill({ state, fallback }) {
   const raw = String(state || fallback || '').toLowerCase();
   const labelMap = {
@@ -196,8 +269,9 @@ function LdgMoneyTd({ value, currency, byCcy, available, testid }) {
   }
   if (currency === 'multi') {
     return (
-      <td data-testid={testid} title={ldgByCcyTitle(byCcy) || 'per-currency — not summed'}
-        style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-3)' }}>multi</td>
+      <td data-testid={testid} style={{ padding: '8px 10px', textAlign: 'right', verticalAlign: 'top' }}>
+        <LdgMultiCcyLines byCcy={byCcy} testid={testid} />
+      </td>
     );
   }
   return (
@@ -669,7 +743,9 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
                     <div style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-3)' }}>No Customer Master identity</div>
                   ) : null}
                 </td>
-                <td style={{ padding: '8px 10px' }}>{x.currency || '—'}</td>
+                <td style={{ padding: '8px 10px' }}>{x.currency === 'multi'
+                  ? <span data-testid={`ldg-client-cur-${x.contractor_id}`} style={{ fontSize: 10.5, color: 'var(--text-2)' }}>{(x.currencies || []).join(' · ')}</span>
+                  : (x.currency || '—')}</td>
                 <LdgMoneyTd testid={`ldg-client-net-${x.contractor_id}`} value={x.net_receivable} currency={x.currency}
                   byCcy={x.net_receivable_by_currency} available={x.balance_available !== false} />
                 <LdgMoneyTd testid={`ldg-client-gross-${x.contractor_id}`} value={x.gross_receivable != null ? x.gross_receivable : x.open} currency={x.currency}
@@ -683,11 +759,15 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
                 <LdgMoneyTd testid={`ldg-client-notdue-${x.contractor_id}`} value={x.not_due} currency={x.currency}
                   byCcy={x.not_due_by_currency} available={x.balance_available !== false && (x.not_due != null || x.currency === 'multi')} />
                 {x.currency === 'multi' && x.last_30d == null
-                  ? <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--text-3)' }} title="Native currencies stay separate">multi</td>
+                  ? <td style={{ padding: '8px 10px', textAlign: 'right', verticalAlign: 'top' }}>
+                      <LdgMultiCcyLines byCcy={x.last_30d_by_currency} testid={`ldg-client-last30-${x.contractor_id}`} hideZero />
+                    </td>
                   : moneyCell(x.last_30d, x.currency, x.balance_available !== false && x.last_30d != null)}
                 {moneyCell(x.ytd_invoiced, x.currency, x.balance_available !== false && x.ytd_invoiced != null)}
                 <td style={{ padding: '8px 10px' }}>{x.balance_available
-                  ? <LdgPresentationPill state={x.presentation_state} fallback={x.state} />
+                  ? (x.currency === 'multi'
+                    ? <LdgMultiCcyLegStates presentationStateBy={x.presentation_state_by_currency} testid={`ldg-client-leg-state-${x.contractor_id}`} />
+                    : <LdgPresentationPill state={x.presentation_state} fallback={x.state} />)
                   : 'unknown'}</td>
                 <td style={{ padding: '8px 10px' }}>
                   <window.Btn small variant="outline" data-testid={`ldg-client-open-${x.contractor_id}`}
@@ -890,22 +970,22 @@ function ClientHeaderCard({ client: c, stmt, period }) {
       ) : (
         <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
           {c.currency === 'multi' ? (
-            <LdgStatTile label="Gross Outstanding" value="multi-currency"
-              sub={`as-of ${asOf} · per currency: ${ldgByCcyTitle(c.gross_receivable_by_currency || c.open_by_currency) || 'see statement'}`} />
+            <LdgMultiCurrencyPositionGrid client={c} asOf={asOf} />
           ) : (
-            <LdgStatTile label="Gross Outstanding" value={LDG_FMT.money(c.gross_receivable != null ? c.gross_receivable : c.open, c.currency)}
-              sub={`positive remaining as-of ${asOf} · aged`} />
+            <>
+              <LdgStatTile label="Gross Outstanding" value={LDG_FMT.money(c.gross_receivable != null ? c.gross_receivable : c.open, c.currency)}
+                sub={`positive remaining as-of ${asOf} · aged`} />
+              <LdgStatTile label="Customer Credits" value={LDG_FMT.money(c.credit_balance, c.currency)}
+                sub="unaged credit notes / advances" tone="green" />
+              <LdgStatTile label="Net Position" value={LDG_FMT.money(c.net_receivable, c.currency)}
+                sub="Gross − Customer Credits" />
+              <LdgStatTile label="Overdue (due-date)" value={LDG_FMT.money(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age, c.currency)}
+                sub={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'gross aging — credits are not aged' : 'none overdue on due-date basis'}
+                tone={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'amber' : 'green'} />
+              <LdgStatTile label="Not Due" value={LDG_FMT.money(c.not_due, c.currency)}
+                sub="Canonical due-date not-due · as-of position (gross)" />
+            </>
           )}
-          <LdgStatTile label="Customer Credits" value={c.currency === 'multi' ? 'multi-currency' : LDG_FMT.money(c.credit_balance, c.currency)}
-            sub={c.currency === 'multi' ? ldgByCcyTitle(c.credit_balance_by_currency) : 'unaged credit notes / advances'}
-            tone="green" />
-          <LdgStatTile label="Net Position" value={c.currency === 'multi' ? 'multi-currency' : LDG_FMT.money(c.net_receivable, c.currency)}
-            sub={c.currency === 'multi' ? ldgByCcyTitle(c.net_receivable_by_currency) : 'Gross − Customer Credits'} />
-          <LdgStatTile label="Overdue (due-date)" value={c.currency === 'multi' ? 'see statement' : LDG_FMT.money(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age, c.currency)}
-            sub={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'gross aging — credits are not aged' : 'none overdue on due-date basis'}
-            tone={(Number(c.overdue_due_date != null ? c.overdue_due_date : c.overdue_invoice_age) || 0) > 0 ? 'amber' : 'green'} />
-          <LdgStatTile label="Not Due" value={c.currency === 'multi' ? 'see aging' : LDG_FMT.money(c.not_due, c.currency)}
-            sub="Canonical due-date not-due · as-of position (gross)" />
         </div>
       )}
 
@@ -1582,6 +1662,26 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
       });
     }
   }
+  const arSync = (opsStatus && (opsStatus.ar_reporting_sync || (opsStatus.service && opsStatus.service.ar_reporting_sync))) || null;
+  if (arSync) {
+    if (arSync.stale_watchdog) {
+      pushExc({
+        key: 'ar-sync-stale-watchdog',
+        text: `AR incremental sync lag ${arSync.lag_hours != null ? arSync.lag_hours + 'h' : 'unknown'} exceeds freshness threshold — scheduler should catch up`,
+        authority: 'AR incremental scheduler',
+        action: 'Confirm PZService scheduler tick; do not rebuild AR databases',
+        age: arSync.lag_hours != null ? `${arSync.lag_hours}h lag` : '',
+      });
+    }
+    if (arSync.last_error || String(arSync.status || '').toLowerCase() === 'error') {
+      pushExc({
+        key: 'ar-sync-error',
+        text: `AR incremental sync error: ${String(arSync.last_error || arSync.detail || 'unknown').slice(0, 160)}`,
+        authority: 'AR incremental scheduler',
+        action: 'Inspect last_error; keep invoice/payment allocation unchanged',
+      });
+    }
+  }
   const recon = (opsStatus && opsStatus.reconciliation) || {};
   if (Number(recon.events_without_processing || 0) > 0) {
     pushExc({
@@ -1714,6 +1814,18 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         <MaCfoBadge label={`Reconciliation · ${arRecon}`} tone={maReconTone(arRecon)} />
         <MaCfoBadge label={`AP source · ${(apData && apData.source) || '—'}`} tone={maSourceTone((apData && apData.source) || arSource)} />
         <MaCfoBadge label={`AP freshness · ${(apData && apData.freshness) || '—'}`} tone={maFreshnessTone((apData && apData.freshness) || '')} />
+        {arSync && (
+          <MaCfoBadge
+            label={`AR sync · ${arSync.stale_watchdog ? 'stale' : (arSync.last_success ? 'ok' : (arSync.status || 'unknown'))}${arSync.lag_hours != null ? ` · ${arSync.lag_hours}h` : ''}`}
+            tone={arSync.stale_watchdog ? 'stale' : (arSync.last_error ? 'warn' : 'fresh')}
+          />
+        )}
+        {apSync && (
+          <MaCfoBadge
+            label={`AP sync · ${apSync.stale_watchdog ? 'stale' : (apSync.last_success ? 'ok' : (apSync.status || 'unknown'))}${apSync.lag_hours != null ? ` · ${apSync.lag_hours}h` : ''}`}
+            tone={apSync.stale_watchdog ? 'stale' : (apSync.last_error ? 'warn' : 'fresh')}
+          />
+        )}
         <span data-testid="ldg-ma-asof-label" style={{ fontSize: 11, color: 'var(--text-3)' }}>
           Generated {data.generated_at || '—'}
           {data.as_of ? ` · as-of ${data.as_of}` : ''}

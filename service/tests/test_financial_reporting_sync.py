@@ -276,18 +276,86 @@ def test_cfo_payables_route_does_not_import_ap_incremental_sync():
 
     src = inspect.getsource(routes_ledgers)
     assert "run_ap_incremental_tick" not in src
+    assert "run_ar_incremental_tick" not in src
     assert "financial_reporting_sync" not in src
     assert "sync_financial_reporting" not in src
 
 
-def test_processing_tick_invokes_ap_reporting_before_events_guard():
+def test_processing_tick_invokes_ap_and_ar_reporting_before_events_guard():
     src = inspect.getsource(
         __import__(
             "app.services.wfirma_webhook_scheduler", fromlist=["_run_processing_tick"]
         )._run_processing_tick
     )
     assert "_run_ap_reporting_sync_tick()" in src
-    # Placement: before the early return on missing events DB
+    assert "_run_ar_reporting_sync_tick()" in src
     ap_pos = src.index("_run_ap_reporting_sync_tick()")
+    ar_pos = src.index("_run_ar_reporting_sync_tick()")
     guard_pos = src.index("_events_db_path is None")
     assert ap_pos < guard_pos
+    assert ar_pos < guard_pos
+
+
+def _invoice_xml(
+    invoice_id: str,
+    *,
+    contractor_id: str = "90484280",
+    date_: str = "2026-08-10",
+    currency: str = "USD",
+    brutto: str = "1000.00",
+) -> ET.Element:
+    return ET.fromstring(
+        f"<invoice>"
+        f"<id>{invoice_id}</id>"
+        f"<contractor><id>{contractor_id}</id></contractor>"
+        f"<contractor_detail><name>Diamond Point</name></contractor_detail>"
+        f"<fullnumber>INV/{invoice_id}</fullnumber>"
+        f"<date>{date_}</date>"
+        f"<paymentdate>{date_}</paymentdate>"
+        f"<currency>{currency}</currency>"
+        f"<netto>{brutto}</netto>"
+        f"<brutto>{brutto}</brutto>"
+        f"<type>normal</type>"
+        f"<paymentstate>unpaid</paymentstate>"
+        f"</invoice>"
+    )
+
+
+def test_ar_duplicate_tick_is_idempotent(storage, db, monkeypatch):
+    nodes = [_invoice_xml("900001")]
+
+    def _fetch(date_from, date_to, **_kw):
+        return list(nodes)
+
+    monkeypatch.setattr(
+        "app.services.wfirma_client.fetch_invoices_for_period", _fetch
+    )
+
+    now = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+    s1 = aps.run_ar_incremental_tick(storage, force=True, now=now)
+    assert s1 is not None and s1["ok"] is True
+    assert s1["upserted"] == 1
+
+    s2 = aps.run_ar_incremental_tick(
+        storage,
+        force=True,
+        now=datetime(2026, 8, 17, 12, 5, tzinfo=timezone.utc),
+    )
+    assert s2 is not None and s2["ok"] is True
+    assert s2["upserted"] == 1
+
+
+def test_scheduler_ar_tick_wrapper_calls_shared_entry(monkeypatch):
+    from app.services import wfirma_webhook_scheduler as sched
+
+    called = {"n": 0}
+
+    def _tick(**_kw):
+        called["n"] += 1
+        return {"ok": True, "date_from": "a", "date_to": "b", "fetched": 0, "upserted": 0, "errors": []}
+
+    monkeypatch.setattr(
+        "app.services.financial_reporting_sync.run_ar_incremental_tick", _tick
+    )
+    sched._run_ar_reporting_sync_tick()
+    assert called["n"] == 1

@@ -204,6 +204,7 @@ def _build_service_block() -> dict:
             "last_tick": None,
             "next_tick": None,
             "ap_reporting_sync": {},
+            "ar_reporting_sync": {},
         }
 
     started_at   = sched.get("started_at")
@@ -219,6 +220,7 @@ def _build_service_block() -> dict:
         "next_tick_at":          sched.get("next_tick"),
         "tick_interval_seconds": TICK_INTERVAL_SECONDS,
         "ap_reporting_sync":     sched.get("ap_reporting_sync") or {},
+        "ar_reporting_sync":     sched.get("ar_reporting_sync") or {},
     }
 
 
@@ -330,6 +332,7 @@ def wfirma_webhook_status(
     events_db_path = _get_events_db_path()
 
     ap_reporting = service.get("ap_reporting_sync") or {}
+    ar_reporting = service.get("ar_reporting_sync") or {}
 
     if db_path is None or not db_path.exists():
         return JSONResponse({
@@ -351,10 +354,12 @@ def wfirma_webhook_status(
                 events_db_available=bool(events_db_path and events_db_path.exists())
             ),
             "ap_reporting_sync": ap_reporting,
+            "ar_reporting_sync": ar_reporting,
         })
 
     status = _query_status(db_path)
     status["reconciliation"] = _query_reconciliation(db_path, events_db_path)
     status["service"] = service
     status["ap_reporting_sync"] = ap_reporting
+    status["ar_reporting_sync"] = ar_reporting
     return JSONResponse(status)

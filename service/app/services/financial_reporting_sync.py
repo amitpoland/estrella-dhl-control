@@ -1,11 +1,12 @@
-"""financial_reporting_sync.py — scheduled AP reporting projection sync.
+"""financial_reporting_sync.py — scheduled AR/AP reporting projection sync.
 
-ONE shared incremental capability for local ``financial_reporting.sqlite``
-AP expenses. Reuses ``app.tools.sync_financial_reporting.sync_ap`` (same
-upsert path as the CLI backfill). Callers:
+ONE shared incremental capability per stream for local
+``financial_reporting.sqlite``. Reuses ``app.tools.sync_financial_reporting``
+(``sync_ar`` / ``sync_ap`` — same upsert paths as the CLI backfill). Callers:
 
+  * ``wfirma_webhook_scheduler._run_ar_reporting_sync_tick`` (automation)
   * ``wfirma_webhook_scheduler._run_ap_reporting_sync_tick`` (automation)
-  * operator CLI ``python -m app.tools.sync_financial_reporting --ap-only``
+  * operator CLI ``python -m app.tools.sync_financial_reporting``
     (full/backfill windows — unchanged)
 
 Safety
@@ -44,9 +45,10 @@ DEFAULT_OVERLAP_DAYS = 14
 #: (full historical backfill remains the CLI).
 DEFAULT_LOOKBACK_DAYS = 30
 
-STREAM = "ap_expenses"
+STREAM_AP = "ap_expenses"
+STREAM_AR = "ar_invoices"
 
-#: ``last_reconcile_at`` on the AP stream = last attempt (success or failure).
+#: ``last_reconcile_at`` on each stream = last attempt (success or failure).
 #: Distinct from ``last_incremental_at`` (last successful sync).
 
 
@@ -94,19 +96,16 @@ def resolve_incremental_window(
     return start.isoformat(), date_to
 
 
-def is_ap_sync_due(
+def is_sync_due(
     db_path: Path,
+    stream: str,
     *,
     cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
     error_retry_seconds: int = DEFAULT_ERROR_RETRY_SECONDS,
     now: Optional[datetime] = None,
 ) -> bool:
-    """True when success-cooldown or error-retry window has elapsed.
-
-    Failed runs (status=error) retry after ``error_retry_seconds`` (not every
-    30s tick). Success path waits the full cooldown since last_incremental_at.
-    """
-    st = get_sync_state(db_path, STREAM) or {}
+    """True when success-cooldown or error-retry window has elapsed."""
+    st = get_sync_state(db_path, stream) or {}
     n = now or datetime.now(timezone.utc)
     if n.tzinfo is None:
         n = n.replace(tzinfo=timezone.utc)
@@ -125,7 +124,40 @@ def is_ap_sync_due(
     return (n - last).total_seconds() >= float(cooldown_seconds)
 
 
-def get_ap_sync_status(
+def is_ap_sync_due(
+    db_path: Path,
+    *,
+    cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
+    error_retry_seconds: int = DEFAULT_ERROR_RETRY_SECONDS,
+    now: Optional[datetime] = None,
+) -> bool:
+    return is_sync_due(
+        db_path,
+        STREAM_AP,
+        cooldown_seconds=cooldown_seconds,
+        error_retry_seconds=error_retry_seconds,
+        now=now,
+    )
+
+
+def is_ar_sync_due(
+    db_path: Path,
+    *,
+    cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
+    error_retry_seconds: int = DEFAULT_ERROR_RETRY_SECONDS,
+    now: Optional[datetime] = None,
+) -> bool:
+    return is_sync_due(
+        db_path,
+        STREAM_AR,
+        cooldown_seconds=cooldown_seconds,
+        error_retry_seconds=error_retry_seconds,
+        now=now,
+    )
+
+
+def get_sync_status(
+    stream: str,
     storage_root: Optional[Path] = None,
     *,
     now: Optional[datetime] = None,
@@ -135,7 +167,7 @@ def get_ap_sync_status(
 
     root = Path(storage_root) if storage_root else Path(settings.storage_root)
     db = reporting_db_path(root)
-    st = get_sync_state(db, STREAM) or {}
+    st = get_sync_state(db, stream) or {}
     n = now or datetime.now(timezone.utc)
     if n.tzinfo is None:
         n = n.replace(tzinfo=timezone.utc)
@@ -158,7 +190,7 @@ def get_ap_sync_status(
     ) or (last_ok is None and status != "ok")
 
     return {
-        "stream": STREAM,
+        "stream": stream,
         "status": status,
         "last_success": st.get("last_incremental_at"),
         "last_error": last_error,
@@ -174,11 +206,30 @@ def get_ap_sync_status(
     }
 
 
+def get_ap_sync_status(
+    storage_root: Optional[Path] = None,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    return get_sync_status(STREAM_AP, storage_root, now=now)
+
+
+def get_ar_sync_status(
+    storage_root: Optional[Path] = None,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    return get_sync_status(STREAM_AR, storage_root, now=now)
+
+
 def _attempt_iso(now: datetime) -> str:
     return now.replace(microsecond=0).isoformat()
 
 
-def run_ap_incremental_tick(
+def _run_incremental_tick(
+    stream: str,
+    sync_fn_name: str,
+    log_prefix: str,
     storage_root: Optional[Path] = None,
     *,
     cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
@@ -188,11 +239,7 @@ def run_ap_incremental_tick(
     force: bool = False,
     now: Optional[datetime] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Automation entry — same ``sync_ap`` as the CLI, cooldown-gated.
-
-    Returns ``None`` when cooldown has not elapsed (nothing to do).
-    Returns a summary dict on attempt (success or failure). Never raises.
-    """
+    """Automation entry — same CLI sync authority, cooldown-gated."""
     from ..core.config import settings
     from .financial_reporting_db import set_sync_state
 
@@ -202,15 +249,16 @@ def run_ap_incremental_tick(
     if n.tzinfo is None:
         n = n.replace(tzinfo=timezone.utc)
 
-    if not force and not is_ap_sync_due(
+    if not force and not is_sync_due(
         db,
+        stream,
         cooldown_seconds=cooldown_seconds,
         error_retry_seconds=error_retry_seconds,
         now=n,
     ):
         return None
 
-    st = get_sync_state(db, STREAM) or {}
+    st = get_sync_state(db, stream) or {}
     date_from, date_to = resolve_incremental_window(
         watermark=st.get("last_source_watermark"),
         today=_today_utc(n),
@@ -229,25 +277,19 @@ def run_ap_incremental_tick(
     }
 
     try:
-        # Import the existing CLI sync authority — do not reimplement upsert.
-        from app.tools.sync_financial_reporting import sync_ap
+        from app.tools import sync_financial_reporting as sfr
 
-        fetched, upserted, errors = sync_ap(
-            db, date_from, date_to, dry_run=False
-        )
+        sync_fn = getattr(sfr, sync_fn_name)
+        fetched, upserted, errors = sync_fn(db, date_from, date_to, dry_run=False)
         summary["fetched"] = int(fetched)
         summary["upserted"] = int(upserted)
         summary["errors"] = list(errors or [])
-        # Always record attempt time (success path also keeps last_incremental
-        # from sync_ap). Used as error-retry backoff anchor.
-        set_sync_state(db, STREAM, last_reconcile_at=attempt_at)
+        set_sync_state(db, stream, last_reconcile_at=attempt_at)
         if errors:
-            # Partial write already happened via sync_ap; stamp error for retry
-            # visibility without rolling back successful upserts.
             msg = "; ".join(str(e) for e in errors[:5])
             set_sync_state(
                 db,
-                STREAM,
+                stream,
                 status="error",
                 detail=f"error: partial upsert; {msg}"[:500],
                 last_reconcile_at=attempt_at,
@@ -255,7 +297,8 @@ def run_ap_incremental_tick(
             summary["ok"] = False
             summary["last_error"] = msg
             log.warning(
-                "ap_reporting_sync: partial window=%s..%s upserted=%s errors=%s",
+                "%s: partial window=%s..%s upserted=%s errors=%s",
+                log_prefix,
                 date_from,
                 date_to,
                 upserted,
@@ -264,7 +307,8 @@ def run_ap_incremental_tick(
         else:
             summary["ok"] = True
             log.info(
-                "ap_reporting_sync: ok window=%s..%s fetched=%s upserted=%s",
+                "%s: ok window=%s..%s fetched=%s upserted=%s",
+                log_prefix,
                 date_from,
                 date_to,
                 fetched,
@@ -277,24 +321,73 @@ def run_ap_incremental_tick(
         try:
             set_sync_state(
                 db,
-                STREAM,
+                stream,
                 status="error",
                 detail=f"error: {err}"[:500],
                 last_reconcile_at=attempt_at,
             )
         except Exception as stamp_exc:  # noqa: BLE001
-            log.warning(
-                "ap_reporting_sync: failed to stamp error state: %s", stamp_exc
-            )
+            log.warning("%s: failed to stamp error state: %s", log_prefix, stamp_exc)
         log.warning(
-            "ap_reporting_sync: failed window=%s..%s err=%s",
+            "%s: failed window=%s..%s err=%s",
+            log_prefix,
             date_from,
             date_to,
             err,
         )
 
-    summary["status"] = get_ap_sync_status(root, now=n)
+    summary["status"] = get_sync_status(stream, root, now=n)
     return summary
+
+
+def run_ap_incremental_tick(
+    storage_root: Optional[Path] = None,
+    *,
+    cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
+    error_retry_seconds: int = DEFAULT_ERROR_RETRY_SECONDS,
+    overlap_days: int = DEFAULT_OVERLAP_DAYS,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    force: bool = False,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Automation entry — same ``sync_ap`` as the CLI, cooldown-gated."""
+    return _run_incremental_tick(
+        STREAM_AP,
+        "sync_ap",
+        "ap_reporting_sync",
+        storage_root,
+        cooldown_seconds=cooldown_seconds,
+        error_retry_seconds=error_retry_seconds,
+        overlap_days=overlap_days,
+        lookback_days=lookback_days,
+        force=force,
+        now=now,
+    )
+
+
+def run_ar_incremental_tick(
+    storage_root: Optional[Path] = None,
+    *,
+    cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
+    error_retry_seconds: int = DEFAULT_ERROR_RETRY_SECONDS,
+    overlap_days: int = DEFAULT_OVERLAP_DAYS,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    force: bool = False,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Automation entry — same ``sync_ar`` as the CLI, cooldown-gated."""
+    return _run_incremental_tick(
+        STREAM_AR,
+        "sync_ar",
+        "ar_reporting_sync",
+        storage_root,
+        cooldown_seconds=cooldown_seconds,
+        error_retry_seconds=error_retry_seconds,
+        overlap_days=overlap_days,
+        lookback_days=lookback_days,
+        force=force,
+        now=now,
+    )
 
 
 __all__ = [
@@ -302,8 +395,15 @@ __all__ = [
     "DEFAULT_ERROR_RETRY_SECONDS",
     "DEFAULT_LOOKBACK_DAYS",
     "DEFAULT_OVERLAP_DAYS",
+    "STREAM_AP",
+    "STREAM_AR",
     "get_ap_sync_status",
+    "get_ar_sync_status",
+    "get_sync_status",
     "is_ap_sync_due",
+    "is_ar_sync_due",
+    "is_sync_due",
     "resolve_incremental_window",
     "run_ap_incremental_tick",
+    "run_ar_incremental_tick",
 ]
