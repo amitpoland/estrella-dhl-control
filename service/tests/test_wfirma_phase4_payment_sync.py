@@ -545,7 +545,11 @@ class TestSyncPaymentsForContractor:
         node = _make_payment_node("P1", "C001", expense_id="E9")
         calls = {"n": 0}
 
-        def _fetch(cid, a, b):
+        # Signature mirrors the real fetch_payments_for_contractor, including the
+        # optional stats out-param the sync processor passes to decide whether the
+        # collection was exhausted. Left unpopulated here: an unknown stop reason
+        # must fail closed (no reconciliation), which is what this test wants.
+        def _fetch(cid, a, b, stats=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("payments/find wFirma status=TOTAL REQUESTS LIMIT EXCEEDED: ")
