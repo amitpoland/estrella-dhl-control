@@ -128,6 +128,12 @@ def reporting_row_to_invoice_fact(row: Dict[str, Any]) -> Dict[str, Any]:
         "brutto": _dec(row.get("gross")),
         "contractor_id": str(row.get("contractor_id") or "").strip(),
         "contractor_name": (row.get("contractor_name") or "").strip(),
+        # Already-persisted source columns carried into the fact so the LOCAL
+        # projection derives the same presentation status as the LIVE path.
+        # INTERNAL ONLY — ``payment_state`` is a FORBIDDEN_ENTRY_FIELD and
+        # never reaches the wire; only the derived status string does.
+        "payment_state": (row.get("payment_state") or "").strip(),
+        "correction_of_id": str(row.get("correction_of_id") or "").strip(),
     }
 
 
@@ -149,6 +155,12 @@ def reporting_row_to_expense_fact(row: Dict[str, Any]) -> Dict[str, Any]:
         # synced before the classifier landed — read as booked, which is exactly
         # what list_ap_expenses_as_of already assumed via open_relevant.
         "lifecycle": (row.get("document_status") or "").strip() or "booked",
+        # See reporting_row_to_invoice_fact — internal-only source flag plus
+        # correction linkage, so AP derives the same presentation status.
+        "payment_state": (row.get("payment_state") or "").strip(),
+        "paymentstate": (row.get("payment_state") or "").strip(),
+        "correction_of_id": str(row.get("correction_of_id") or "").strip(),
+        "parent_id": str(row.get("correction_of_id") or "").strip(),
     }
 
 

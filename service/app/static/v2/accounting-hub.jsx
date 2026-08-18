@@ -1039,16 +1039,15 @@ const _ACC_DOC_TITLES = {
 const _ACC_DOC_LIVE = { inv: 'invoice', cn: 'credit_note', wz: 'wz', pz: 'pz', pw: 'pw', rw: 'rw' };
 const _ACC_PAGE_LIMIT = 20;
 
-function formatAccUpstreamError(err) {
-  const s = String(err == null ? '' : err);
-  if (!s) return 'Retry shortly.';
-  if (/<!DOCTYPE|<html[\s>]|cloudflare/i.test(s)) {
-    return 'Wait a moment, then retry.';
-  }
-  if (s === '[object Object]') return 'Retry shortly.';
-  const cleaned = s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  return cleaned.length > 160 ? `${cleaned.slice(0, 157)}…` : cleaned;
-}
+// ``formatAccUpstreamError`` is defined ONCE, in ledgers-page.jsx, and is used
+// here by the register, Client Balance and dead-letter renderers.
+//
+// It is not re-declared in this file. Every text/babel script shares one global
+// scope, so a second top-level declaration of the same name does not shadow —
+// it silently overwrites whichever file the browser evaluated first. This file
+// loads after ledgers-page.jsx (index.html), so a duplicate here would replace
+// the upstream-error formatter for the ledger screens too, and the JSON error
+// envelope would leak back into operator-facing text.
 
 function AccAwbCell({ docType, wfirmaId }) {
   const [st, setSt] = React.useState({ loading: false, awbs: null, err: null });
@@ -1138,7 +1137,7 @@ function AccDocGrid({ sectionId, onNav }) {
   const m = _ACC_DOC_TITLES[sectionId] || { t: sectionId, c: null, wh: false };
   const cols = m.wh
     ? ['Type', 'Number', 'Date', 'Party', 'Net', 'Gross', 'AWB / Logistics', 'Actions']
-    : ['Number', 'Date', 'Party', 'Net', 'Tax', 'Gross', 'Cur', 'Payment', 'Due', 'Actions'];
+    : ['Number', 'Date', 'Party', 'Net', 'Tax', 'Gross', 'Cur', 'wFirma Payment', 'Due', 'Actions'];
   const docType = m.blocked ? null : _ACC_DOC_LIVE[sectionId];
   const RegFilter = window.AccountingRegisterFilter;
   const [filter, setFilter] = React.useState(null);
@@ -1449,7 +1448,12 @@ function AccClientBalance({ onOpenLedger }) {
                 onClick={() => onOpenLedger && onOpenLedger()}
                 style={{ borderBottom: i < st.rows.length - 1 ? '1px solid var(--border-subtle)' : 'none', cursor: onOpenLedger ? 'pointer' : 'default' }}>
                 <td style={{ ...td, color: 'var(--text)' }}>{r.name || r.contractor_id || '—'}</td>
-                <td style={td}>{r.currency === 'multi' ? ((r.currencies || []).join(' · ') || 'multi') : (r.currency || '—')}</td>
+                <td style={td} data-testid={`acc-bal-ccy-${r.contractor_id}`}>{r.currency === 'multi'
+                  // 'multi' is a backend sentinel, never a currency. Name the
+                  // actual legs; each leg keeps its own figures below and is
+                  // never summed across currencies.
+                  ? ((r.currencies || []).join(' · ') || <span style={{ color: 'var(--text-3)' }} title="Per-currency legs not supplied by the balance authority">Multi-currency — legs unavailable</span>)
+                  : (r.currency || '—')}</td>
                 <td style={tdm}>{_accAmtOrMulti(r.net_receivable, r.currency, r.net_receivable_by_currency, r.balance_available !== false, `acc-bal-net-${r.contractor_id}`)}</td>
                 <td style={tdm}>{_accAmtOrMulti(r.gross_receivable != null ? r.gross_receivable : r.open, r.currency, r.gross_receivable_by_currency || r.open_by_currency, r.balance_available !== false, `acc-bal-gross-${r.contractor_id}`)}</td>
                 <td style={tdm} title="Customer credits (unaged)">{_accAmtOrMulti(r.credit_balance, r.currency, r.credit_balance_by_currency, r.balance_available !== false, `acc-bal-credits-${r.contractor_id}`)}</td>

@@ -59,6 +59,9 @@ from ..services.ledger_aggregator import (
     aggregate_supplier_statement,
     _parse_expense_fact,
     _parse_payment_fact,
+    presentation_state,
+    presentation_state_from_maps,
+    _dec_or_zero as _agg_dec_or_zero,
 )
 
 
@@ -791,61 +794,13 @@ def _sum_ccy(m: Dict[str, Any]) -> Decimal:
     return tot
 
 
-def _dec_or_zero(v: Any) -> Decimal:
-    try:
-        return Decimal(str(v or "0"))
-    except Exception:
-        return Decimal("0")
-
-
-def _presentation_state(gross: Any, credits: Any) -> str:
-    """Display state from canonical Gross / Credits. Not a second engine.
-
-    open    = Gross > 0 and Net > 0
-    offset  = Gross > 0 and Net == 0 (credits fully cover gross)
-    credit  = Gross == 0 and Credits > 0
-    clear   = Gross == 0 and Credits == 0
-    """
-    g = _dec_or_zero(gross)
-    cr = _dec_or_zero(credits)
-    net = g - cr
-    if g > 0 and net == 0:
-        return "offset"
-    if g == 0 and cr > 0:
-        return "credit"
-    if g > 0:
-        return "open"
-    return "clear"
-
-
-def _presentation_state_from_maps(
-    gross_by: Dict[str, Any],
-    credit_by: Dict[str, Any],
-) -> str:
-    """Per-currency presentation roll-up. Never FX-sums amounts."""
-    any_open = False
-    any_offset = False
-    any_credit = False
-    keys = set(gross_by or {}) | set(credit_by or {})
-    if not keys:
-        return "clear"
-    for ccy in keys:
-        st = _presentation_state(
-            (gross_by or {}).get(ccy), (credit_by or {}).get(ccy)
-        )
-        if st == "open":
-            any_open = True
-        elif st == "offset":
-            any_offset = True
-        elif st == "credit":
-            any_credit = True
-    if any_open:
-        return "open"
-    if any_offset:
-        return "offset"
-    if any_credit:
-        return "credit"
-    return "clear"
+# Presentation-state helpers live in ledger_aggregator so the statement
+# builder and these roster endpoints cannot drift into two different
+# definitions of "offset". These names stay as module-local aliases only
+# because existing callers (and their tests) import them from here.
+_dec_or_zero = _agg_dec_or_zero
+_presentation_state = presentation_state
+_presentation_state_from_maps = presentation_state_from_maps
 
 
 def _enrich_supplier_presentation(row: Dict[str, Any]) -> Dict[str, Any]:

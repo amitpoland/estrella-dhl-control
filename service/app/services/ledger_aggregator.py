@@ -245,6 +245,14 @@ AGING_METHOD_DUE_DATE = "due_date"
 AGING_METHOD_INVOICE_AGE = "invoice_age"
 _AGING_METHODS = (AGING_METHOD_DUE_DATE, AGING_METHOD_INVOICE_AGE)
 
+# The aging buckets are built from POSITIVE remainings only — credit notes
+# and over-settled documents are never aged (the same rule the receivables
+# and payables portfolios use). The buckets are therefore GROSS, before
+# credits, and the renderer is required to say so. Emitted on every
+# statement as ``aging_basis`` so a UI cannot quietly present a gross
+# overdue figure as if it were the net position.
+AGING_BASIS_GROSS = "gross_before_credits"
+
 # Entry types in chronological output. Numeric tie-break rank below
 # enforces invoice-before-same-day-payment ordering (§5.1 of the spec).
 _ENTRY_TYPE_RANK = {
@@ -269,6 +277,141 @@ def _empty_aging() -> Dict[str, str]:
     out = {b: "0.00" for b in _AGING_BUCKETS}
     out["total"] = "0.00"
     return out
+
+
+# ── Presentation state (display only — never a second accounting engine) ──
+# Canonical identity lives in accounting_analytics.py:545-546:
+#     credit_balance = Σ −remaining where remaining < 0   (never aged)
+#     net            = gross − credit_balance
+# These helpers only NAME the result of that identity for the operator.
+# routes_ledgers delegates to them so there is exactly one implementation.
+
+def presentation_state(gross: Any, credits: Any) -> str:
+    """Display state from canonical Gross / Credits. Not a second engine.
+
+    open    = Gross > 0 and Net > 0
+    offset  = Gross > 0 and Net == 0 (credits fully cover gross)
+    credit  = Gross == 0 and Credits > 0
+    clear   = Gross == 0 and Credits == 0
+    """
+    g = _dec_or_zero(gross)
+    cr = _dec_or_zero(credits)
+    net = g - cr
+    if g > 0 and net == 0:
+        return "offset"
+    if g == 0 and cr > 0:
+        return "credit"
+    if g > 0:
+        return "open"
+    return "clear"
+
+
+def presentation_state_from_maps(
+    gross_by: Dict[str, Any],
+    credit_by: Dict[str, Any],
+) -> str:
+    """Per-currency presentation roll-up. Never FX-sums amounts.
+
+    Each currency leg is evaluated independently and the portfolio state is
+    the most-open leg: a fully offset USD leg does not clear an open EUR leg.
+    """
+    any_open = False
+    any_offset = False
+    any_credit = False
+    keys = set(gross_by or {}) | set(credit_by or {})
+    if not keys:
+        return "clear"
+    for ccy in keys:
+        st = presentation_state(
+            (gross_by or {}).get(ccy), (credit_by or {}).get(ccy)
+        )
+        if st == "open":
+            any_open = True
+        elif st == "offset":
+            any_offset = True
+        elif st == "credit":
+            any_credit = True
+    if any_open:
+        return "open"
+    if any_offset:
+        return "offset"
+    if any_credit:
+        return "credit"
+    return "clear"
+
+
+def _dec_or_zero(v: Any) -> Decimal:
+    if isinstance(v, Decimal):
+        return v
+    try:
+        return Decimal(str(v or "0"))
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
+# Operator-facing row status vocabulary. Emitted as ``presentation_status``
+# alongside the legacy ``status`` key so screen and PDF read ONE backend
+# field and never re-derive status in JavaScript.
+PRESENTATION_STATUS_BF = "B/F"
+PRESENTATION_STATUS_NOT_DUE = "Not Due"
+PRESENTATION_STATUS_OVERDUE = "Overdue"
+PRESENTATION_STATUS_SETTLED = "Settled"
+PRESENTATION_STATUS_CREDIT = "Credit / Offset"
+PRESENTATION_STATUS_APPLIED = "Applied"
+PRESENTATION_STATUS_UNAPPLIED = "Unapplied"
+PRESENTATION_STATUS_DUE_UNAVAILABLE = "Due Date Unavailable"
+PRESENTATION_STATUS_CONFLICT = "Status Conflict"
+
+# wFirma source values that claim the document is settled. The source claim is
+# NEVER displayed; it is only compared against the locally computed economic
+# remaining.
+_SOURCE_CLAIMS_SETTLED = frozenset({"paid", "settled"})
+
+
+def derive_presentation_status(
+    *,
+    entry_type: str,
+    remaining: Optional[Decimal] = None,
+    due_date: str = "",
+    as_of: str = "",
+    is_credit_document: bool = False,
+    is_unmatched: bool = False,
+    source_payment_state: str = "",
+    has_explaining_correction: bool = False,
+) -> str:
+    """Derive the operator-facing row status. Backend authority — never React.
+
+    Economic remaining decides settlement; the source lifecycle flag is only
+    ever used to detect DISAGREEMENT between source and economics.
+
+    ``Status Conflict`` fires when the source claims the document is paid but
+    the economic remaining is still positive AND no correction document
+    explains the difference. The correction check is mandatory: measured
+    against production on 2026-08-18, 47/47 AR and 6/6 AP candidate conflicts
+    were fully explained by a linked correction — a correction-blind rule
+    raises 53 false alarms and zero true ones.
+    """
+    if entry_type == "opening_balance":
+        return PRESENTATION_STATUS_BF
+    if entry_type == "payment":
+        return (
+            PRESENTATION_STATUS_UNAPPLIED if is_unmatched
+            else PRESENTATION_STATUS_APPLIED
+        )
+    if is_credit_document:
+        return PRESENTATION_STATUS_CREDIT
+    rem = _dec_or_zero(remaining)
+    claims_settled = (source_payment_state or "").strip().lower() in _SOURCE_CLAIMS_SETTLED
+    if claims_settled and rem > 0 and not has_explaining_correction:
+        return PRESENTATION_STATUS_CONFLICT
+    if rem <= 0:
+        return PRESENTATION_STATUS_SETTLED
+    due = (due_date or "").strip()
+    if not due:
+        return PRESENTATION_STATUS_DUE_UNAVAILABLE
+    if as_of and due < as_of:
+        return PRESENTATION_STATUS_OVERDUE
+    return PRESENTATION_STATUS_NOT_DUE
 
 
 def _days_between(later: str, earlier: str) -> int:
@@ -348,6 +491,17 @@ def _parse_invoice_fact(inv: ET.Element) -> Dict[str, Any]:
         "brutto":          _decimal_or_none(_invoice_gross_raw(inv)),
         "contractor_id":   (inv.findtext("contractor/id") or "").strip(),
         "contractor_name": name,
+        # Source lifecycle flag — INTERNAL ONLY. ``payment_state`` /
+        # ``paymentstate`` are in FORBIDDEN_ENTRY_FIELDS and must never reach
+        # the wire; they exist here solely so the aggregator can compare the
+        # source claim against the locally computed economic remaining and
+        # derive a "Status Conflict" presentation status. Empty when wFirma
+        # does not emit the tag — the conflict rule then simply never fires.
+        "payment_state":   (inv.findtext("paymentstate") or "").strip(),
+        # Correction linkage. A correction that fully offsets its parent is a
+        # legitimate reason for "source says paid, remaining > 0" — without
+        # this link the conflict rule produces false alarms.
+        "correction_of_id": _normalize_doc_link_id(inv.findtext("parent/id")),
     }
 
 
@@ -446,8 +600,12 @@ def _parse_expense_fact(exp: ET.Element) -> Dict[str, Any]:
         "contractor_id":   (exp.findtext("contractor/id") or "").strip(),
         "contractor_name": name,
         "paymentstate":    (exp.findtext("paymentstate") or "").strip(),
+        # Normalised aliases — same field names as the AR fact so the shared
+        # presentation-status rule reads one key on both sides.
+        "payment_state":   (exp.findtext("paymentstate") or "").strip(),
         "correction":      corr_raw,
         "parent_id":       _normalize_doc_link_id(exp.findtext("parent/id")),
+        "correction_of_id": _normalize_doc_link_id(exp.findtext("parent/id")),
         "lifecycle":       classify_expense_lifecycle(
             exp.findtext("draft") or "", exp.findtext("is_rejected") or ""
         ),
@@ -643,6 +801,17 @@ def aggregate_supplier_statement(
     expense_by_id = {f["id"]: f for f in expense_facts if f.get("id")}
     entries_by_ccy: Dict[str, List[Dict[str, Any]]] = {}
 
+    # Parents that already carry an explaining correction document. The
+    # supplier side needs this for exactly the same reason the client side
+    # does: a source ``paid`` flag against a positive remaining is only a
+    # Status Conflict when nothing explains the difference.
+    corrected_parent_ids = {
+        str(f.get("correction_of_id") or f.get("parent_id") or "")
+        for f in expense_facts
+        if (f.get("correction") or "").strip() not in ("", "0")
+    }
+    corrected_parent_ids.discard("")
+
     for f in expense_facts:
         if not f.get("id") or not f.get("currency"):
             continue
@@ -661,18 +830,37 @@ def aggregate_supplier_statement(
             status = "credit"
         else:
             status = "settled"
+        parent = str(f.get("correction_of_id") or f.get("parent_id") or "")
         entries_by_ccy.setdefault(ccy, []).append({
             "type": typ,
             "wfirma_doc_id": f["id"],
             "doc_number": f.get("fullnumber") or "",
             "date": f.get("date") or "",
             "due_date": f.get("payment_date") or "",
+            "reference": (
+                (expense_by_id.get(parent) or {}).get("fullnumber") or parent
+            ) if parent else "",
             "currency": ccy,
             "debit": _q(debit),
             "credit": _q(credit),
             "running_balance": "0.00",
             "status": status,
-            "remaining": _q(rem),
+            # ``presentation_status`` — the SAME backend authority the client
+            # ledger uses. ``rem`` here is the value the legacy ``status`` above
+            # was already computed from, so this names an existing result; it
+            # opens no second settlement path. ``remaining`` itself is in
+            # FORBIDDEN_ENTRY_FIELDS and never rides on the emitted row.
+            "presentation_status": derive_presentation_status(
+                entry_type="invoice",
+                remaining=rem,
+                due_date=f.get("payment_date") or "",
+                as_of=as_of,
+                is_credit_document=(typ == "credit_note"),
+                source_payment_state=(
+                    f.get("payment_state") or f.get("paymentstate") or ""
+                ),
+                has_explaining_correction=(f["id"] in corrected_parent_ids),
+            ),
             "correction": f.get("correction") or "",
         })
 
@@ -695,12 +883,17 @@ def aggregate_supplier_statement(
             "doc_number": "",
             "date": p.get("date") or "",
             "due_date": "",
+            "reference": (
+                (exp or {}).get("fullnumber") or linked
+            ) if linked else "",
             "currency": ccy,
             "debit": _q(debit),
             "credit": _q(credit),
             "running_balance": "0.00",
             "status": "applied",
-            "remaining": None,
+            "presentation_status": derive_presentation_status(
+                entry_type="payment", is_unmatched=not linked,
+            ),
             "linked_expense": linked,
             "correction": "",
         })
@@ -756,13 +949,15 @@ def aggregate_supplier_statement(
                 "wfirma_doc_id": "",
                 "doc_number": "OPENING BALANCE / B/F",
                 "date": period_from or "",
+                # A carried-forward balance has no due date of its own.
                 "due_date": "",
+                "reference": "",
                 "currency": ccy,
                 "debit": _q(bf_debit),
                 "credit": _q(bf_credit),
                 "running_balance": _q(opening),
                 "status": "B/F",
-                "remaining": None,
+                "presentation_status": PRESENTATION_STATUS_BF,
                 "source": "carried",
                 "is_opening_balance": True,
                 "correction": "",
@@ -790,6 +985,10 @@ def aggregate_supplier_statement(
             "currency": ccy if ccy != "UNRESOLVED" else "",
             "date": p.get("date") or "",
             "linked_expense": "",
+            # See the AR note: unapplied cash is reported, never netted in.
+            "due_date":            "",
+            "reference":           "",
+            "presentation_status": PRESENTATION_STATUS_UNAPPLIED,
         })
 
     totals_by_ccy: Dict[str, Dict[str, Any]] = {}
@@ -877,7 +1076,32 @@ def aggregate_supplier_statement(
         out = {b: _q(v) for b, v in buckets.items()}
         out["total"] = _q(sum(buckets.values(), Decimal("0")))
         out["method"] = "due_date"
+        out["aging_basis"] = AGING_BASIS_GROSS
         aging_by_ccy[ccy] = out
+
+    # ── POSITION per currency (as-of economic position) ────────────────
+    # Same contract as the client statement so ONE renderer serves both.
+    # Nothing is recomputed here: gross / credits / net come straight from
+    # the totals block above, overdue is what the buckets already say.
+    position_by_ccy: Dict[str, Dict[str, Any]] = {}
+    for ccy, tot in totals_by_ccy.items():
+        ag = aging_by_ccy.get(ccy) or {}
+        not_due = Decimal(str(ag.get("not_due") or "0"))
+        unavailable = Decimal(str(ag.get("due_date_unavailable") or "0"))
+        aged_total = Decimal(str(ag.get("total") or "0"))
+        gross_open = Decimal(str(tot["outstanding"]))
+        credit_open = Decimal(str(tot["credit_balance"]))
+        position_by_ccy[ccy] = {
+            "gross_exposure":       tot["outstanding"],
+            "supplier_credits":     tot["credit_balance"],
+            "credit_balance":       tot["credit_balance"],
+            "net_position":         tot["net_payable"],
+            "overdue":              _q(aged_total - not_due - unavailable),
+            "not_due":              _q(not_due),
+            "due_date_unavailable": _q(unavailable),
+            "aging_basis":          AGING_BASIS_GROSS,
+            "presentation_state":   presentation_state(gross_open, credit_open),
+        }
 
     return {
         "contractor": {
@@ -895,8 +1119,14 @@ def aggregate_supplier_statement(
         "currencies": sorted(entries_by_ccy.keys()),
         "entries_per_currency": entries_by_ccy,
         "totals_per_currency": totals_by_ccy,
+        "position_per_currency": position_by_ccy,
         "aging_per_currency": aging_by_ccy,
         "unmatched_payments_per_currency": unmatched_by_ccy,
+        "presentation_state": presentation_state_from_maps(
+            {c: Decimal(str(t["outstanding"])) for c, t in totals_by_ccy.items()},
+            {c: Decimal(str(t["credit_balance"])) for c, t in totals_by_ccy.items()},
+        ),
+        "aging_basis": AGING_BASIS_GROSS,
         "warnings": warnings,
         "query_stats": {"per_supplier_wfirma_calls": 0},
     }
@@ -932,6 +1162,10 @@ def _entry_for_invoice(fact: Dict[str, Any]) -> Dict[str, Any]:
         # Operator-facing due column — derived from verified paymentdate.
         # Raw wFirma spelling ``paymentdate`` stays off the wire (FORBIDDEN).
         "due_date":        (fact.get("paymentdate") or "").strip(),
+        # Operator cross-reference column. Filled by the enrichment walk with
+        # the counterpart document (a correction points at its parent); stays
+        # empty for a plain invoice.
+        "reference":       "",
         "currency":        fact["currency"],
         "debit":           _q(debit),
         "credit":          _q(credit),
@@ -962,6 +1196,11 @@ def _entry_for_payment(
         "doc_number":      "",
         "linked_invoice":  fact["linked_invoice"] if not is_unmatched else "",
         "date":            fact["date"],
+        # A payment has no due date of its own — the column renders as an
+        # em dash. Never substitute the payment date here.
+        "due_date":        "",
+        # Filled by the enrichment walk with the settled invoice number.
+        "reference":       "",
         "currency":        fact["currency"],
         "debit":           _q(debit),
         "credit":          _q(credit),
@@ -1035,6 +1274,15 @@ def aggregate_statement_from_facts(
     # Build invoice index by id for the §6 reconciliation.
     invoice_by_id: Dict[str, Dict[str, Any]] = {f["id"]: f for f in invoice_facts}
 
+    # Parents that a correction document in this universe points at. A parent
+    # in this set has a documented reason for "source says paid while the
+    # economic remaining is still positive", so it is NOT a status conflict.
+    corrected_parent_ids: set = {
+        str(f.get("correction_of_id") or "")
+        for f in invoice_facts
+        if str(f.get("correction_of_id") or "")
+    }
+
     # Classify each payment as matched (linked invoice in window) or
     # unmatched. paid_against_invoice maps id → Decimal sum of matched
     # payments only. Matched payments inherit the invoice ISO currency.
@@ -1107,6 +1355,13 @@ def aggregate_statement_from_facts(
                 "currency_label":  p.get("currency_label") or "",
                 "date":            p["date"],
                 "linked_invoice":  linked,
+                # Unapplied cash. It is NOT an entry — it does not move the
+                # running balance and must not silently reduce the closing
+                # figure. It is reported in its own block, with the same
+                # backend-supplied status vocabulary the rows use.
+                "due_date":            "",
+                "reference":           "",
+                "presentation_status": PRESENTATION_STATUS_UNAPPLIED,
             })
 
     # Detect overpayments per invoice — an invoice whose currency-aligned
@@ -1189,7 +1444,10 @@ def aggregate_statement_from_facts(
                 period_rows.append(e)
             # else: after period_to — ignored for this statement window
         opening_by_ccy[ccy] = opening
-        # Status on invoice/correction rows from settlements through period_to
+        # Status on invoice/correction rows from settlements through period_to.
+        # ``status``              — legacy vocabulary, unchanged (pinned).
+        # ``presentation_status`` — operator vocabulary from the ONE backend
+        #                           authority ``derive_presentation_status``.
         for e in period_rows:
             if e.get("type") in ("invoice", "correction", "normal"):
                 inv_id = e.get("wfirma_doc_id") or ""
@@ -1197,7 +1455,8 @@ def aggregate_statement_from_facts(
                 if inv is not None:
                     paid = paid_against_invoice.get(inv_id, Decimal("0"))
                     rem = remaining_after_payments(inv["brutto"], paid)
-                    if inv.get("type") == "correction":
+                    is_corr = inv.get("type") == "correction"
+                    if is_corr:
                         e["status"] = "Issued"
                     elif rem <= 0:
                         e["status"] = "Paid"
@@ -1205,10 +1464,36 @@ def aggregate_statement_from_facts(
                         e["status"] = "Partial"
                     else:
                         e["status"] = "Open"
+                    e["presentation_status"] = derive_presentation_status(
+                        entry_type="invoice",
+                        remaining=rem,
+                        due_date=e.get("due_date") or "",
+                        as_of=statement_date,
+                        is_credit_document=bool(
+                            is_corr and (inv.get("brutto") or Decimal("0")) < 0
+                        ),
+                        source_payment_state=inv.get("payment_state") or "",
+                        has_explaining_correction=(inv_id in corrected_parent_ids),
+                    )
+                    parent = str(inv.get("correction_of_id") or "")
+                    if parent:
+                        pinv = invoice_by_id.get(parent)
+                        e["reference"] = (
+                            (pinv or {}).get("fullnumber") or parent
+                        )
                 else:
                     e["status"] = e.get("status") or ""
+                    e["presentation_status"] = e.get("presentation_status") or ""
             elif e.get("type") == "payment":
                 e["status"] = "Applied"
+                linked = str(e.get("linked_invoice") or "")
+                e["presentation_status"] = derive_presentation_status(
+                    entry_type="payment",
+                    is_unmatched=not linked,
+                )
+                if linked:
+                    linv = invoice_by_id.get(linked)
+                    e["reference"] = (linv or {}).get("fullnumber") or linked
             e.pop("paymentdate", None)
             e["source"] = "wfirma"
         # Running balance from opening through period movements
@@ -1226,12 +1511,15 @@ def aggregate_statement_from_facts(
                 "wfirma_doc_id": "",
                 "doc_number": "OPENING BALANCE / B/F",
                 "date": period_from or "",
+                # A carried-forward balance has no due date of its own.
                 "due_date": "",
+                "reference": "",
                 "currency": ccy,
                 "debit": _q(bf_debit),
                 "credit": _q(bf_credit),
                 "running_balance": _q(opening),
                 "status": "B/F",
+                "presentation_status": PRESENTATION_STATUS_BF,
                 "source": "carried",
                 "is_opening_balance": True,
             })
@@ -1303,10 +1591,23 @@ def aggregate_statement_from_facts(
     # this is the as-of position view, not the period activity subtotal.
     aging_by_ccy: Dict[str, Dict[str, Any]] = {}
     oldest_overdue_date = ""
+    # POSITION accumulators — the as-of economic position, kept strictly
+    # apart from the ACTIVITY totals above. Gathered on the SAME walk and
+    # the SAME remainings the aging buckets are built from, so the aging
+    # block and the position block can never disagree.
+    gross_by_ccy: Dict[str, Decimal] = {}
+    credit_by_ccy: Dict[str, Decimal] = {}
+    overdue_by_ccy: Dict[str, Decimal] = {}
+    not_due_by_ccy: Dict[str, Decimal] = {}
+    unavailable_by_ccy: Dict[str, Decimal] = {}
     for ccy in sorted(currencies):
         bucket: Dict[str, Decimal] = {b: Decimal("0") for b in _AGING_BUCKETS}
         total = Decimal("0")
         due_unavailable = Decimal("0")
+        gross_open = Decimal("0")
+        credit_open = Decimal("0")
+        overdue_open = Decimal("0")
+        not_due_open = Decimal("0")
         # Walk invoices in this currency only — payments don't age.
         for inv in invoice_facts:
             if (inv["currency"] or "PLN") != ccy:
@@ -1315,8 +1616,16 @@ def aggregate_statement_from_facts(
                 continue
             paid = paid_against_invoice.get(inv["id"], Decimal("0"))
             remaining = remaining_after_payments(inv["brutto"], paid)
-            if remaining <= 0:
+            if remaining < 0:
+                # A credit note / over-settled document. Never aged (same
+                # rule as accounting_analytics credit_balance) — but it MUST
+                # be surfaced, otherwise the operator sees a large overdue
+                # figure with no sign of the credit that offsets it.
+                credit_open += -remaining
                 continue
+            if remaining == 0:
+                continue
+            gross_open += remaining
             if method == AGING_METHOD_DUE_DATE:
                 anchor = (inv.get("paymentdate") or "").strip()
                 if not anchor:
@@ -1334,9 +1643,18 @@ def aggregate_statement_from_facts(
             bucket[b] += remaining
             total += remaining
             # Overdue = days_old > 0 (due date strictly before as-of).
-            if days_old > 0 and anchor:
-                if not oldest_overdue_date or anchor < oldest_overdue_date:
-                    oldest_overdue_date = anchor
+            if days_old > 0:
+                overdue_open += remaining
+                if anchor:
+                    if not oldest_overdue_date or anchor < oldest_overdue_date:
+                        oldest_overdue_date = anchor
+            else:
+                not_due_open += remaining
+        gross_by_ccy[ccy] = gross_open
+        credit_by_ccy[ccy] = credit_open
+        overdue_by_ccy[ccy] = overdue_open
+        not_due_by_ccy[ccy] = not_due_open
+        unavailable_by_ccy[ccy] = due_unavailable
         block: Dict[str, Any] = {
             "method":  method,
             **{k: _q(v) for k, v in bucket.items()},
@@ -1345,6 +1663,37 @@ def aggregate_statement_from_facts(
         if method == AGING_METHOD_DUE_DATE:
             block["due_date_unavailable"] = _q(due_unavailable)
         aging_by_ccy[ccy] = block
+
+    # ── POSITION per currency (as-of economic position) ────────────────
+    # ACTIVITY (totals_per_currency) answers "what moved in the period".
+    # POSITION answers "what is owed as of the as-of date". They are two
+    # different questions and must never be rendered as one number.
+    #
+    # The identity is the canonical one already used by the receivables /
+    # payables portfolio in accounting_analytics (``credit_balance`` is the
+    # sum of negative remainings, never aged; net = gross − credits):
+    #
+    #     GROSS EXPOSURE − CUSTOMER CREDITS = NET POSITION
+    #
+    # ``aging_basis`` is emitted so the renderer is obliged to label the
+    # buckets honestly: they are GROSS, before credits. Showing a net of
+    # zero beside a gross overdue figure without the offsetting credit in
+    # the same block is the exact defect this block exists to prevent.
+    position_by_ccy: Dict[str, Dict[str, Any]] = {}
+    for ccy in sorted(currencies):
+        gross_open = gross_by_ccy.get(ccy, Decimal("0"))
+        credit_open = credit_by_ccy.get(ccy, Decimal("0"))
+        position_by_ccy[ccy] = {
+            "gross_exposure":       _q(gross_open),
+            "customer_credits":     _q(credit_open),
+            "credit_balance":       _q(credit_open),
+            "net_position":         _q(gross_open - credit_open),
+            "overdue":              _q(overdue_by_ccy.get(ccy, Decimal("0"))),
+            "not_due":              _q(not_due_by_ccy.get(ccy, Decimal("0"))),
+            "due_date_unavailable": _q(unavailable_by_ccy.get(ccy, Decimal("0"))),
+            "aging_basis":          AGING_BASIS_GROSS,
+            "presentation_state":   presentation_state(gross_open, credit_open),
+        }
 
     cmeta = contractor_meta or {}
     return {
@@ -1372,8 +1721,13 @@ def aggregate_statement_from_facts(
         "currencies":     sorted(currencies),
         "entries_per_currency":          entries_by_ccy,
         "totals_per_currency":           totals_by_ccy,
+        "position_per_currency":         position_by_ccy,
         "aging_per_currency":            aging_by_ccy,
         "unmatched_payments_per_currency": unmatched_payments_by_ccy,
+        "presentation_state": presentation_state_from_maps(
+            gross_by_ccy, credit_by_ccy
+        ),
+        "aging_basis": AGING_BASIS_GROSS,
         "oldest_overdue_date": oldest_overdue_date or None,
         "warnings":       warnings,
         "aging_method":   method,
