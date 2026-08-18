@@ -446,13 +446,20 @@ def _currency_section_flowables(
         ["Period credits",  _safe(totals.get("period_credits")
                                   or str(Decimal(str(totals.get("credited") or "0"))
                                          + Decimal(str(totals.get("received") or "0"))))],
-        ["Closing balance", _safe(totals.get("closing_balance") or totals.get("outstanding") or "0.00")],
+        # `outstanding` is the aggregator's legacy alias for this same
+        # period closing (ledger_aggregator.py:1583) -- not a position
+        # figure. Reading it keeps an older payload printing its real
+        # number instead of a confident 0.00.
+        ["Closing balance", _safe(totals.get("closing_balance")
+                                  or totals.get("outstanding") or "0.00")],
         ["Entries",         str(totals.get("entry_count") or 0)],
     ]
-    out_amt = _safe(totals.get("closing_balance") or totals.get("outstanding") or "0.00")
+    out_amt = _safe(totals.get("closing_balance")
+                    or totals.get("outstanding") or "0.00")
     is_negative = False
     try:
-        is_negative = Decimal(str(totals.get("closing_balance") or totals.get("outstanding") or "0")) < 0
+        is_negative = Decimal(str(totals.get("closing_balance")
+                                  or totals.get("outstanding") or "0")) < 0
     except Exception:
         is_negative = False
     out_color = "#B91C1C" if is_negative else "#0B3D2E"
@@ -501,7 +508,8 @@ def _currency_section_flowables(
     aging_rows.append(["total", _safe(aging.get("total") or "0.00")])
     aging_t = Table(
         [[Paragraph(f"<b>Aging</b><br/>"
-                     f"<font size='7' color='#B0892F'>method · {method}</font>",
+                     f"<font size='7' color='#B0892F'>method · {method}"
+                     f"<br/>gross · before credits</font>",
                      styles["section_header"])]] + [
             [Paragraph(f"<font color='#475569'>{lbl}</font>",
                         ParagraphStyle("ak", fontName=_FONT_REG, fontSize=9,
@@ -871,13 +879,18 @@ _EXPOSURE_ROWS = 25
 
 
 def _kv_card(title: str, rows: List[Tuple[str, str]], styles, *,
-             rule_above: int = -1, width: float = 85 * mm):
+             rule_above: int = -1, width: float = 85 * mm,
+             subtitle: str = ""):
     """Label/value card — the Totals and Aging cards are both this shape.
 
     *rule_above* draws the brand rule above that body row (0-based over
     *rows*), used to set a total apart from the lines that make it up.
     """
-    data = [[Paragraph(f"<b>{_safe(title)}</b>", styles["section_header"]), ""]]
+    head = f"<b>{_safe(title)}</b>"
+    if subtitle:
+        head += (f"<br/><font size='7' color='#B0892F'>"
+                 f"{_safe(subtitle)}</font>")
+    data = [[Paragraph(head, styles["section_header"]), ""]]
     for lbl, val in rows:
         data.append([
             Paragraph(f"<font color='#475569'>{_safe(lbl)}</font>",
@@ -977,22 +990,41 @@ def _supplier_currency_flowables(stmt: Dict[str, Any], ccy: str, styles) -> List
     totals = (stmt.get("totals_per_currency") or {}).get(ccy) or {}
     aging = (stmt.get("aging_per_currency") or {}).get(ccy) or {}
 
-    totals_card = _kv_card("Period statement", [
+    # Activity and position answer different questions and must not share
+    # a heading. The first card is what moved inside the window; the
+    # second is where the account stands on the as-of date. When closing
+    # balance happens to equal net payable the two are indistinguishable
+    # under one title, which is how a period figure gets read as a
+    # current one.
+    activity_card = _kv_card("Period activity", [
         ("Opening / B/F",    str(totals.get("opening_balance") or "0.00")),
         ("Period debits",    str(totals.get("period_debits") or "0.00")),
         ("Period credits",   str(totals.get("period_credits") or "0.00")),
-        ("Closing balance",  str(totals.get("closing_balance") or totals.get("net_payable") or "0.00")),
-        ("Expenses",         str(totals.get("gross_payable") or "0.00")),
+        ("Closing balance",  str(totals.get("closing_balance") or "0.00")),
+        ("Entries",          str(totals.get("entry_count") or 0)),
+    ], styles, subtitle="movement inside the period", rule_above=3)
+    position_card = _kv_card("Position", [
+        ("Expenses (gross)", str(totals.get("gross_payable") or "0.00")),
         ("Supplier credits", str(totals.get("supplier_credits") or "0.00")),
         ("Payments applied", str(totals.get("payments_applied") or "0.00")),
         ("Outstanding",      str(totals.get("outstanding") or "0.00")),
         ("Net payable",      str(totals.get("net_payable") or "0.00")),
-        ("Entries",          str(totals.get("entry_count") or 0)),
-    ], styles, rule_above=3)
+    ], styles, rule_above=4,
+        subtitle="gross less credits · as of %s" % (stmt.get("as_of") or ""))
+    left_stack = Table([[activity_card], [Spacer(1, 6)], [position_card]],
+                       colWidths=[90 * mm])
+    left_stack.setStyle(TableStyle([
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+        ("TOPPADDING",    (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
     aging_card = _kv_card("Aging · due date", _aging_rows(aging), styles,
+                          subtitle="gross · before credits",
                           rule_above=len(_aging_rows(aging)) - 1)
 
-    cards = Table([[totals_card, aging_card]], colWidths=[90 * mm, 90 * mm])
+    cards = Table([[left_stack, aging_card]], colWidths=[90 * mm, 90 * mm])
     cards.setStyle(TableStyle([
         ("VALIGN",       (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING",  (0, 0), (-1, -1), 0),
@@ -1176,19 +1208,34 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
 
     ar_sum = ar_sum or {}
     ap_sum = ap_sum or {}
-    recv_card = _kv_card("Receivables", [
+    recv_rows = [
         ("Gross receivable", str(ar_sum.get("total_receivable") or "0.00")),
         ("Overdue",          str(ar_sum.get("overdue") or "0.00")),
         ("Not due",          str(ar_sum.get("not_due") or "0.00")),
+    ]
+    # Neither overdue nor not-due: without this line the split above does
+    # not add up to the gross figure. Printed only when it exists, which is
+    # what the per-counterparty aging card already does.
+    if ar_sum.get("due_date_unavailable") not in (None, "", "0.00"):
+        recv_rows.append(
+            ("No due date", str(ar_sum.get("due_date_unavailable"))),
+        )
+    recv_card = _kv_card("Receivables", recv_rows + [
         ("Customer credits", str(ar_sum.get("customer_credits") or "0.00")),
         ("Net receivable",   str(ar_sum.get("net_position") or "0.00")),
         ("Customers open",   str(ar_sum.get("customers_outstanding") or 0)),
         ("Oldest overdue",   f"{ar_sum.get('oldest_overdue_days') or 0} days"),
     ], styles, rule_above=0)
-    pay_card = _kv_card("Payables", [
+    pay_rows = [
         ("Gross payable",    str(ap_sum.get("gross_payable") or "0.00")),
         ("Overdue",          str(ap_sum.get("overdue") or "0.00")),
         ("Not due",          str(ap_sum.get("not_due") or "0.00")),
+    ]
+    if ap_sum.get("due_date_unavailable") not in (None, "", "0.00"):
+        pay_rows.append(
+            ("No due date", str(ap_sum.get("due_date_unavailable"))),
+        )
+    pay_card = _kv_card("Payables", pay_rows + [
         ("Supplier credits", str(ap_sum.get("supplier_credits") or "0.00")),
         ("Net payable",      str(ap_sum.get("net_payable") or "0.00")),
         ("Suppliers open",   str(ap_sum.get("suppliers_outstanding") or 0)),
@@ -1206,7 +1253,10 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
     def _bucket_row(label, src):
         return [label] + [str((src or {}).get(k) or "0.00")
                           for k, _ in _AP_BUCKETS]
-    out.append(Paragraph("<b>Aging · due date basis</b>", styles["section_header"]))
+    out.append(Paragraph(
+        "<b>Aging · due date basis</b> "
+        "<font size='7' color='#B0892F'>gross · before credits</font>",
+        styles["section_header"]))
     out.append(_grid_table(
         bucket_headers,
         [_bucket_row("Receivables", ar_sum.get("aging")),
@@ -1219,12 +1269,15 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
     shown_ar = ar_rows[:_EXPOSURE_ROWS]
     out.extend(_exposure_flowables(
         "Customer exposure",
-        ["Customer", "Gross receivable", "Overdue", "Credits", "Oldest due", "Open"],
+        ["Customer", "Gross receivable", "Overdue", "No due date",
+         "Credits", "Oldest due", "Open"],
         [[r.get("customer_name") or "—", r.get("outstanding") or "0.00",
-          r.get("overdue") or "0.00", r.get("credit_balance") or "0.00",
+          r.get("overdue") or "0.00",
+          r.get("due_date_unavailable") or "0.00",
+          r.get("credit_balance") or "0.00",
           r.get("oldest_due_date") or "—", str(r.get("open_invoice_count") or 0)]
          for r in shown_ar],
-        [58 * mm, 28 * mm, 28 * mm, 26 * mm, 24 * mm, 16 * mm],
+        [46 * mm, 26 * mm, 24 * mm, 22 * mm, 22 * mm, 24 * mm, 16 * mm],
         styles, total_rows=len(ar_rows),
     ))
     out.append(Spacer(1, 8))
@@ -1232,12 +1285,15 @@ def _ma_currency_flowables(ccy: str, ar_sum, ap_sum, ar_rows, ap_rows,
     shown_ap = ap_rows[:_EXPOSURE_ROWS]
     out.extend(_exposure_flowables(
         "Supplier exposure",
-        ["Supplier", "Gross payable", "Overdue", "Credits", "Oldest due", "Open"],
+        ["Supplier", "Gross payable", "Overdue", "No due date",
+         "Credits", "Oldest due", "Open"],
         [[r.get("supplier_name") or "—", r.get("gross_payable") or "0.00",
-          r.get("overdue") or "0.00", r.get("credit_balance") or "0.00",
+          r.get("overdue") or "0.00",
+          r.get("due_date_unavailable") or "0.00",
+          r.get("credit_balance") or "0.00",
           r.get("oldest_due_date") or "—", str(r.get("open_expense_count") or 0)]
          for r in shown_ap],
-        [58 * mm, 28 * mm, 28 * mm, 26 * mm, 24 * mm, 16 * mm],
+        [46 * mm, 26 * mm, 24 * mm, 22 * mm, 22 * mm, 24 * mm, 16 * mm],
         styles, total_rows=len(ap_rows),
     ))
     out.append(Spacer(1, 10))
