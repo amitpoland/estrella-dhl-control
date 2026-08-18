@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from . import wfirma_client
 from .ledger_aggregator import (
+    EXPENSE_CLASS_REJECTED,
     _parse_expense_fact,
     _parse_invoice_fact,
     _parse_payment_fact,
@@ -271,6 +272,14 @@ def load_ap_fact_universe(
         exp_nodes = _python_filter_by_date(exp_nodes, df, dt, "date")
         pay_nodes = _python_filter_by_date(pay_nodes, "", dt, "date")
         expense_facts = [_parse_expense_fact(n) for n in exp_nodes]
+        # wFirma-rejected inbox documents are not liabilities — drop them here
+        # so every live AP consumer sees one already-clean universe.
+        rejected_facts = [
+            f for f in expense_facts if f.get("lifecycle") == EXPENSE_CLASS_REJECTED
+        ]
+        expense_facts = [
+            f for f in expense_facts if f.get("lifecycle") != EXPENSE_CLASS_REJECTED
+        ]
         payment_facts = [_parse_payment_fact(n) for n in pay_nodes]
         ej_normalize_ms = int((time.perf_counter() - t_n0) * 1000)
         duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -279,6 +288,7 @@ def load_ap_fact_universe(
             "period": (df, dt),
             "expense_facts": expense_facts,
             "payment_facts": payment_facts,
+            "excluded_rejected_count": len(rejected_facts),
             "exp_stats": exp_stats,
             "pay_stats": pay_stats,
             "duration_ms": duration_ms,

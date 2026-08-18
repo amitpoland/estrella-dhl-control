@@ -387,12 +387,47 @@ def _expense_gross_raw(exp: ET.Element) -> Optional[str]:
     return None
 
 
+# --- AP document lifecycle classification (single authority) ---------------
+# wFirma expense lifecycle lives in <draft> + <is_rejected>, NOT in <status>
+# (the expenses module never emits <status>). Documents reaching the expense
+# inbox via the UBL 2.1 e-invoice parser start as drafts and are then either
+# accepted into the books (draft=0) or rejected (draft=2, is_rejected=1).
+# A rejected inbox document is not a booked liability and must never enter the
+# AP open-payable universe.
+EXPENSE_CLASS_BOOKED = "booked"
+EXPENSE_CLASS_DRAFT = "draft"
+EXPENSE_CLASS_REJECTED = "rejected"
+
+
+def classify_expense_lifecycle(draft: str, is_rejected: str) -> str:
+    """Classify a wFirma expense by its source lifecycle flags.
+
+    The ONE authority for "is this expense a booked liability?". Both the live
+    universe (``load_ap_fact_universe``) and the local projection mapper
+    (``sync_financial_reporting.map_expense_node``) call this — never their own
+    copy of the rule.
+
+    ``rejected``: wFirma itself rejected the inbound document. Never a payable.
+    ``draft``:    in the inbox, not yet booked. Still a real supplier document,
+                  so it stays in the universe but is disclosed as unbooked.
+    ``booked``:   posted to the books. A payable.
+    """
+    d = (draft or "").strip()
+    r = (is_rejected or "").strip()
+    if r == "1":
+        return EXPENSE_CLASS_REJECTED
+    if d not in ("", "0"):
+        return EXPENSE_CLASS_DRAFT
+    return EXPENSE_CLASS_BOOKED
+
+
 def _parse_expense_fact(exp: ET.Element) -> Dict[str, Any]:
     """Project an <expense> node into the AP ExpenseFact dict.
 
     Live expense schema (2026-08-09 scoped audit): due date is
     ``payment_date`` (underscore), not invoice ``paymentdate``.
     ``correction=1`` credit notes already carry signed negative ``brutto``.
+    ``lifecycle`` carries the ``classify_expense_lifecycle`` verdict.
     """
     name = (
         (exp.findtext("contractor_detail/name") or "").strip()
@@ -413,6 +448,9 @@ def _parse_expense_fact(exp: ET.Element) -> Dict[str, Any]:
         "paymentstate":    (exp.findtext("paymentstate") or "").strip(),
         "correction":      corr_raw,
         "parent_id":       _normalize_doc_link_id(exp.findtext("parent/id")),
+        "lifecycle":       classify_expense_lifecycle(
+            exp.findtext("draft") or "", exp.findtext("is_rejected") or ""
+        ),
     }
 
 

@@ -144,6 +144,11 @@ def reporting_row_to_expense_fact(row: Dict[str, Any]) -> Dict[str, Any]:
         "contractor_id": str(row.get("supplier_id") or "").strip(),
         "contractor_name": (row.get("supplier_name") or "").strip(),
         "correction": "1" if (row.get("correction_of_id") or "") else "0",
+        # ``document_status`` carries the classify_expense_lifecycle verdict for
+        # AP rows, so local facts match the live universe shape. NULL on rows
+        # synced before the classifier landed — read as booked, which is exactly
+        # what list_ap_expenses_as_of already assumed via open_relevant.
+        "lifecycle": (row.get("document_status") or "").strip() or "booked",
     }
 
 
