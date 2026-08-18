@@ -852,7 +852,7 @@ def test_exposure_column_widths_still_fit_the_frame():
 # -- 16. The gross caption and the activity/position split ----------------
 #
 # Both were found by looking at rendered pages, not at JSON. An aging card
-# prints a GROSS split: Orion Casting Works is fully offset -- gross 2000.00
+# prints a GROSS split: a fully offset supplier -- gross 2000.00
 # against credits 2000.00, net payable 0.00 -- and its card read "91-180
 # 2000.00 / Total 2000.00" with nothing on the card saying that figure is
 # before credits. Separately, the supplier statement held ACTIVITY (opening,
