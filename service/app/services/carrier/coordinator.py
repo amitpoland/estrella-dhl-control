@@ -13,9 +13,11 @@ Shadow-mode flow for create_shipment():
        not found → continue
   3. shipment_db.insert_shipment(PENDING)
   4. adapter.create_shipment(request)
-  5. redact_response(raw_result_dict, mode=SHADOW)
-  6. shadow_log_db.append_entry(redacted)
-  7. shipment_db.update_state(COMPLETE)
+  5. shipment_db.update_state(COMPLETE, tracking_ref) — adapter truth is
+     persisted BEFORE any audit work, so a failure in step 6/7 can never
+     leave a real AWB behind a PENDING row that a retry would re-book.
+  6. redact_response(raw_result_dict, mode=SHADOW)
+  7. shadow_log_db.append_entry(redacted)
   8. return COMPLETE result
 
 Retry guarantee: a second call with the same request never reaches the adapter.
@@ -32,6 +34,7 @@ from typing import FrozenSet, Optional
 from .factory import CarrierConfig, get_adapter
 from .models.shipment import (
     CarrierGateError,
+    CarrierProviderStateUnknownError,
     ShipmentMode,
     ShipmentRequest,
     ShipmentResult,
@@ -216,7 +219,9 @@ class CarrierCoordinator:
             raise CarrierGateError(
                 f"Shipment {key[:12]}… previously failed: "
                 f"{row.get('error') or 'unknown error'}. "
-                "Submit a new request with different parameters to retry."
+                "Resolve the recorded cause before retrying. If the provider "
+                "state is unknown, reconcile at the carrier first — changing "
+                "parameters books a NEW shipment, it does not retry this one."
             )
 
         raise CarrierGateError(
@@ -251,8 +256,37 @@ class CarrierCoordinator:
                 provider=provider,
             )
 
-        # Adapter call — pure, deterministic, no side effects.
-        raw_result = self._adapter.create_shipment(request)
+        # Adapter call — THE external provider write. Once this returns,
+        # a real, chargeable AWB may already exist at the carrier.
+        try:
+            raw_result = self._adapter.create_shipment(request)
+        except CarrierProviderStateUnknownError as exc:
+            # The request reached the carrier but the reply was lost, so a real
+            # AWB may exist with no tracking_ref to record. Park the key in a
+            # TERMINAL state: _handle_existing refuses FAILED, where PENDING
+            # would re-enter _execute and book a SECOND chargeable shipment.
+            _db_update(
+                self._config.shipment_db_path,
+                key,
+                ShipmentState.FAILED,
+                error=str(exc),
+            )
+            raise
+
+        # Persist adapter truth FIRST — nothing may run between the provider
+        # write and this update. Everything below is audit enrichment that can
+        # raise (sqlite lock, disk, redaction); if the row were still PENDING at
+        # that moment, _handle_existing would re-enter _execute on the operator's
+        # retry and book a SECOND live AWB for a shipment DHL already created.
+        # Recording the tracking_ref here turns that retry into a replay.
+        _db_update(
+            self._config.shipment_db_path,
+            key,
+            ShipmentState.COMPLETE,
+            tracking_ref=raw_result.tracking_ref,
+            mode=raw_result.mode,
+            simulated=raw_result.simulated,
+        )
 
         # Build a safe request snapshot for the shadow log. operator is part of
         # the booking-attribution audit trail, so it rides along here too.
@@ -292,28 +326,26 @@ class CarrierCoordinator:
         }
         redacted = redact_response(raw_response, ShipmentMode.SHADOW)
 
-        _shadow_log_append(
-            self._config.shadow_log_db_path,
-            request.batch_id,
-            key,
-            log_request,
-            redacted,
-        )
-
-        # Persist adapter-truth fields with COMPLETE so a replay can return
-        # the stored result without touching the adapter (incident fix).
-        _db_update(
-            self._config.shipment_db_path,
-            key,
-            ShipmentState.COMPLETE,
-            tracking_ref=raw_result.tracking_ref,
-            mode=raw_result.mode,
-            simulated=raw_result.simulated,
-        )
-
-        # Booking-time MyDHL shipmentNotification audit (masks only). First
-        # COMPLETE write wins — idempotent replay preserves the original stamp.
-        _db_persist_notify(self._config.shipment_db_path, key, notify_audit)
+        # Audit enrichment, AFTER the COMPLETE write. The booking is already
+        # real and its tracking_ref is already persisted; a locked sqlite file
+        # here must not surface as an HTTP 500 that hides a booked AWB from the
+        # operator. Log loudly and return the booking.
+        try:
+            _shadow_log_append(
+                self._config.shadow_log_db_path,
+                request.batch_id,
+                key,
+                log_request,
+                redacted,
+            )
+            # Booking-time MyDHL shipmentNotification audit (masks only). First
+            # COMPLETE write wins — idempotent replay preserves the original stamp.
+            _db_persist_notify(self._config.shipment_db_path, key, notify_audit)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "carrier audit write failed after COMPLETE for key %s", key[:12]
+            )
 
         # Phase 5 — attach request dimensions so they are captured in the DB
         # via the COMPLETE result. service_product is adapter-provided (None
@@ -554,7 +586,9 @@ def _complete_or_replay_external(
         raise CarrierGateError(
             f"Shipment {key[:12]}… previously failed: "
             f"{row.get('error') or 'unknown error'}. "
-            "Submit a new request with different parameters to retry."
+            "Resolve the recorded cause before retrying. If the provider "
+            "state is unknown, reconcile at the carrier first — changing "
+            "parameters books a NEW shipment, it does not retry this one."
         )
     raise CarrierGateError(
         f"Shipment {key[:12]}… is in unexpected state {row['state']!r}."

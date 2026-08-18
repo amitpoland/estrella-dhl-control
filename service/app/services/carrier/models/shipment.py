@@ -96,6 +96,18 @@ class CarrierAllowlistError(Exception):
     """Raised when a batch_id is not on the live allowlist."""
 
 
+class CarrierProviderStateUnknownError(Exception):
+    """Raised when a provider write may or may not have landed.
+
+    The request left this process but no usable response came back (read
+    timeout, connection reset mid-flight). The carrier may already have
+    created a real, chargeable shipment, so this flow fails CLOSED: the
+    idempotency key is parked in a terminal state and the next attempt is
+    refused rather than re-invoking the adapter. Reconcile at the carrier
+    before booking again.
+    """
+
+
 def compute_idempotency_key(request: ShipmentRequest) -> str:
     """
     Deterministic idempotency key for a shipment request.

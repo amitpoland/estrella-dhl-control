@@ -40,6 +40,7 @@ from ..models.shipment import (
     CarrierAllowlistError,
     CarrierConfigError,
     CarrierGateError,
+    CarrierProviderStateUnknownError,
     ShipmentMode,
     ShipmentRequest,
     ShipmentResult,
@@ -185,7 +186,26 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
             auth=httpx.BasicAuth(self._config.api_key, self._config.api_secret),
             timeout=30.0,
         ) as client:
-            resp = client.post(shipment_url, json=body)
+            try:
+                resp = client.post(shipment_url, json=body)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                # The connection was never established, so the request never
+                # left this host and DHL cannot have created anything. Safe to
+                # retry on the SAME idempotency key.
+                raise CarrierGateError(
+                    "Could not reach DHL to create the shipment "
+                    "(%s). No shipment was created — retry once DHL is "
+                    "reachable." % exc.__class__.__name__
+                ) from exc
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                # The request WAS sent and the reply was lost. DHL may already
+                # have booked a chargeable AWB, so the coordinator must fail
+                # closed rather than let a retry book a second one.
+                raise CarrierProviderStateUnknownError(
+                    "DHL did not return a usable response (%s) after the "
+                    "create-shipment request was sent. An AWB may already exist "
+                    "at DHL for this shipment." % exc.__class__.__name__
+                ) from exc
 
         if not resp.is_success:
             _raise_dhl_error(resp)

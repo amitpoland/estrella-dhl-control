@@ -65,7 +65,13 @@ from ..services.carrier.coordinator import (
 )
 from ..services.carrier.factory import CarrierConfig
 from ..services.carrier.cmr_number import cmr_document_number
-from ..services.carrier.models.shipment import CarrierGateError, ShipmentRequest
+from ..services.carrier.models.shipment import (
+    CarrierAllowlistError,
+    CarrierConfigError,
+    CarrierGateError,
+    CarrierProviderStateUnknownError,
+    ShipmentRequest,
+)
 from ..services.carrier.persistence import shipment_db
 
 router = APIRouter(prefix="/api/v1/carrier", tags=["carrier"])
@@ -1129,6 +1135,63 @@ def create_shipment(
         )
     except CarrierGateError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    except CarrierAllowlistError as exc:
+        # The live-carrier allowlist is an operational configuration gate,
+        # not a server fault. CarrierAllowlistError and CarrierConfigError
+        # are SIBLINGS of CarrierGateError, not subclasses — without
+        # these two handlers they escape as an unexplained HTTP 500 and the
+        # operator is told nothing about why the booking was refused.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": str(exc),
+                "code": "CARRIER_LIVE_ALLOWLIST_BLOCKED",
+                "provider": provider,
+                "guidance": (
+                    "No live carrier request was sent — the allowlist is "
+                    "checked before the provider is contacted, so no AWB was "
+                    "created and nothing was charged. Add this batch to "
+                    "CARRIER_LIVE_ALLOWLIST (or set it to *) and retry."
+                ),
+            },
+        )
+    except CarrierConfigError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": str(exc),
+                "code": "CARRIER_NOT_CONFIGURED",
+                "provider": provider,
+                "guidance": (
+                    "No live carrier request was sent — credentials are "
+                    "resolved before the provider is contacted, so no AWB was "
+                    "created and nothing was charged. Configure this carrier in "
+                    "Carrier Master, then retry. Never book a different carrier "
+                    "as a substitute."
+                ),
+            },
+        )
+
+    except CarrierProviderStateUnknownError as exc:
+        # The request DID reach the carrier and the reply was lost. A real,
+        # chargeable AWB may exist. The idempotency key is already parked in a
+        # terminal state so a retry cannot book a second one — tell the
+        # operator to reconcile at the carrier rather than press the button again.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": str(exc),
+                "code": "CARRIER_PROVIDER_STATE_UNKNOWN",
+                "provider": provider,
+                "guidance": (
+                    "The create-shipment request was SENT and no usable reply "
+                    "came back, so a shipment may already exist at the carrier. "
+                    "This request is now closed to retry on purpose. Check the "
+                    "carrier portal for a shipment matching this batch before "
+                    "booking again — rebooking risks a duplicate chargeable AWB."
+                ),
+            },
+        )
 
     # Document link contract — relative API URLs only, never filesystem paths.
     doc_urls = _shipment_doc_urls(batch_id, result.tracking_ref
