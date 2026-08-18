@@ -545,13 +545,6 @@ def _dhl_express_secrets_present() -> bool:
     return bool((fields.get("api_key") or "").strip() and (fields.get("api_secret") or "").strip())
 
 
-def _track_identity_migrated() -> bool:
-    from .carrier.credentials.migration import is_migrated
-    from .carrier.credentials.models import CredentialIdentity
-
-    return is_migrated(CredentialIdentity("dhl", "production", "track"))
-
-
 def _fedex_track_secrets() -> dict:
     from .carrier.credentials.consumer_bridge import resolve_fedex_secret_fields
 
@@ -685,15 +678,22 @@ def _event_summary(last_event: Dict[str, Any]) -> str:
 
 
 def _call_dhl_legacy(tracking_no: str) -> Dict[str, Any]:
-    """Legacy DHL API call using DHL-API-Key header."""
+    """Legacy DHL API call using DHL-API-Key header.
+
+    Credential source is the canonical resolver (dhl/production/track), never
+    Settings directly: migrated identity -> secure store ONLY, unmigrated ->
+    legacy Settings ONLY (DHL_API_KEY is one of that branch's aliases, see
+    credentials/migration.resolve_legacy_settings). No merge, no fallback.
+    """
     # Hard block — must never be reached when status != active
     if settings.dhl_tracking_api_status != "active":
         raise RuntimeError(
             f"DHL API call blocked: status={settings.dhl_tracking_api_status}"
         )
+    api_key, _ = _resolve_dhl_credentials()
     url = f"https://api-eu.dhl.com/track/shipments?trackingNumber={tracking_no}"
     with httpx.Client(timeout=10) as client:
-        resp = client.get(url, headers={"DHL-API-Key": settings.dhl_api_key or ""})
+        resp = client.get(url, headers={"DHL-API-Key": api_key})
         resp.raise_for_status()
         data = resp.json()
 
@@ -928,26 +928,24 @@ def _call_dhl(tracking_no: str) -> Dict[str, Any]:
         )
 
     has_express = _dhl_express_secrets_present()
+    # One credential authority for the track identity. The former separate
+    # `has_legacy` term (a direct settings.dhl_api_key read) is subsumed:
+    # resolve_legacy_settings already returns DHL_API_KEY as a track alias when
+    # the identity is unmigrated, and returns store-only when it is migrated.
     api_key, _ = _resolve_dhl_credentials()
     has_unified = bool(api_key)
-    has_legacy = (not _track_identity_migrated()) and bool(
-        (settings.dhl_api_key or "").strip()
-    )
 
     if has_express:
         try:
             return _call_dhl_mydhl_express(tracking_no)
         except Exception as exc:
-            if _is_dhl_provider_outage(exc) and (has_unified or has_legacy):
+            if _is_dhl_provider_outage(exc) and has_unified:
                 log.warning(
                     "[tracking] MyDHL Express outage for %s — controlled Unified/legacy fallback: %s",
                     tracking_no,
                     exc,
                 )
-                if has_unified:
-                    result = _call_dhl_unified(tracking_no)
-                else:
-                    result = _call_dhl_legacy(tracking_no)
+                result = _call_dhl_unified(tracking_no)
                 result["tracking_provider"] = "unified_fallback"
                 result["primary_provider_error"] = str(exc)[:400]
                 return result
@@ -1224,10 +1222,7 @@ def get_tracking_status(
         has_express = _dhl_express_secrets_present()
         api_key, _ = _resolve_dhl_credentials()
         has_unified = bool(api_key)
-        has_legacy = (not _track_identity_migrated()) and bool(
-            (settings.dhl_api_key or "").strip()
-        )
-        if not has_express and not has_unified and not has_legacy:
+        if not has_express and not has_unified:
             base["source"] = "no_credentials"
             return base
 
