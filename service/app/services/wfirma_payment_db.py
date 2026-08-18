@@ -6,7 +6,9 @@ Database: C:\\PZ\\storage\\payment_state.db
 
 Tables
 ------
-wfirma_payment_snapshots  — immutable, append-only, keyed by payment_id UNIQUE
+wfirma_payment_snapshots  — append-only, keyed by payment_id UNIQUE. Rows are never
+                            deleted; a payment withdrawn upstream is tombstoned via
+                            source_deleted_at and drops out of the money path only.
 payment_sync_state        — per-contractor sync control (last_synced_at, running count)
 
 Track B constraint: this module does NOT import from or write to
@@ -72,6 +74,22 @@ def init_payment_db(db_path: Path) -> None:
         # Additive upgrades — never DROP. Keep INSERT OR IGNORE working
         # without requiring expense_id in the insert column list.
         _add_column_if_missing(conn, "wfirma_payment_snapshots", "expense_id", "TEXT")
+        # Payment lifecycle. wFirma exposes NO deletion flag on <payment> (the only
+        # ``*_del`` tags are compensation_del / interest_del, which are AMOUNTS).
+        # Deletion is signalled by absence from a COMPLETE contractor fetch, so the
+        # lifecycle has to live locally. Additive and reversible: rows are never
+        # deleted, and a payment that reappears upstream is restored in place.
+        #   source_deleted_at IS NULL      -> ACTIVE, participates in AR/AP
+        #   source_deleted_at IS NOT NULL  -> historical, audit only, no money effect
+        _add_column_if_missing(conn, "wfirma_payment_snapshots", "source_deleted_at", "TEXT")
+        _add_column_if_missing(conn, "wfirma_payment_snapshots", "source_restored_at", "TEXT")
+        # Stamped by reconcile_contractor_payments only. Distinct from
+        # last_synced_at, which the scheduler stamps for snapshot ingestion:
+        # a contractor can be synced without being reconciled (partial fetch),
+        # and conflating the two would report a convergence that never ran.
+        _add_column_if_missing(conn, "payment_sync_state", "last_reconciled_at", "TEXT")
+        _add_column_if_missing(conn, "payment_sync_state", "last_error", "TEXT")
+        _add_column_if_missing(conn, "payment_sync_state", "last_error_at", "TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_wps_payment_date "
             "ON wfirma_payment_snapshots (payment_date)"
@@ -273,6 +291,172 @@ def list_snapshot_contractor_ids(db_path: Path) -> List[str]:
     return [str(r[0]) for r in rows]
 
 
+def reconcile_contractor_payments(
+    db_path: Path,
+    *,
+    contractor_id: str,
+    live_payment_ids: List[str],
+    now_iso: str,
+) -> dict:
+    """Converge local payment EXISTENCE onto a COMPLETE upstream fetch.
+
+    Set reconciliation, because wFirma signals payment deletion only by absence.
+    For one contractor: local rows whose payment_id is not in *live_payment_ids*
+    are tombstoned; rows that reappear upstream are restored. No row is deleted,
+    no amount is touched, and identity is always ``payment_id`` — never a
+    name/amount/date heuristic.
+
+    THE CALLER OWNS THE SAFETY DECISION. Only call this when the fetch both
+    succeeded AND was exhaustive; an empty *live_payment_ids* is then a valid
+    result meaning "this contractor genuinely has no payments" and correctly
+    tombstones the lot. A failed, truncated or partial fetch must never reach
+    here — see ``sync_payments_for_contractor``.
+
+    Idempotent: a replay against the same upstream set is a no-op.
+    """
+    cid = (contractor_id or "").strip()
+    if not cid:
+        raise ValueError("contractor_id is required")
+    live = {str(p).strip() for p in live_payment_ids if str(p).strip()}
+
+    init_payment_db(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT payment_id, source_deleted_at FROM wfirma_payment_snapshots "
+            "WHERE contractor_id = ?",
+            (cid,),
+        ).fetchall()
+
+        to_tombstone = [(r[0],) for r in rows if r[0] not in live and r[1] is None]
+        to_restore = [(r[0],) for r in rows if r[0] in live and r[1] is not None]
+
+        if to_tombstone:
+            conn.executemany(
+                "UPDATE wfirma_payment_snapshots SET source_deleted_at = ? "
+                "WHERE payment_id = ?",
+                [(now_iso, pid) for (pid,) in to_tombstone],
+            )
+            log.warning(
+                "payment_reconcile: tombstoned %d payment(s) absent upstream "
+                "contractor_id=%s payment_ids=%s",
+                len(to_tombstone), cid, [p for (p,) in to_tombstone][:20],
+            )
+        if to_restore:
+            conn.executemany(
+                "UPDATE wfirma_payment_snapshots "
+                "SET source_deleted_at = NULL, source_restored_at = ? "
+                "WHERE payment_id = ?",
+                [(now_iso, pid) for (pid,) in to_restore],
+            )
+            log.info(
+                "payment_reconcile: restored %d payment(s) present again "
+                "contractor_id=%s payment_ids=%s",
+                len(to_restore), cid, [p for (p,) in to_restore][:20],
+            )
+        # Stamped on EVERY successful reconciliation, including a no-op one:
+        # "nothing changed" is exactly the evidence that convergence ran and
+        # found local state already correct.
+        conn.execute(
+            "INSERT OR IGNORE INTO payment_sync_state "
+            "(contractor_id, last_synced_at, snapshot_count) VALUES (?, NULL, 0)",
+            (cid,),
+        )
+        conn.execute(
+            "UPDATE payment_sync_state SET last_reconciled_at = ?, "
+            "last_error = NULL, last_error_at = NULL WHERE contractor_id = ?",
+            (now_iso, cid),
+        )
+        conn.commit()
+
+    return {
+        "contractor_id": cid,
+        "local_rows": len(rows),
+        "upstream_rows": len(live),
+        "tombstoned": len(to_tombstone),
+        "restored": len(to_restore),
+    }
+
+
+def record_reconcile_failure(
+    db_path: Path, *, contractor_id: str, error: str, now_iso: str
+) -> None:
+    """Record why convergence did NOT run for this contractor.
+
+    Both a failed fetch and a fetch that came back incomplete land here — from
+    the operator's side they are the same fact: local payment state for this
+    contractor is not known to be current. Cleared by the next successful
+    reconciliation.
+    """
+    cid = (contractor_id or "").strip()
+    if not cid:
+        return
+    init_payment_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO payment_sync_state "
+            "(contractor_id, last_synced_at, snapshot_count) VALUES (?, NULL, 0)",
+            (cid,),
+        )
+        conn.execute(
+            "UPDATE payment_sync_state SET last_error = ?, last_error_at = ? "
+            "WHERE contractor_id = ?",
+            (str(error)[:300], now_iso, cid),
+        )
+        conn.commit()
+
+
+def list_tombstoned_payments(db_path: Path) -> List[dict]:
+    """Audit view of payments withdrawn upstream. Never feeds a money path."""
+    init_payment_db(db_path)
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(
+            "SELECT payment_id, contractor_id, invoice_id, expense_id, payment_date, "
+            "value, currency_label, source_deleted_at, source_restored_at "
+            "FROM wfirma_payment_snapshots WHERE source_deleted_at IS NOT NULL "
+            "ORDER BY source_deleted_at DESC, payment_id ASC"
+        ).fetchall()]
+
+
+def payment_lifecycle_stats(db_path: Path) -> dict:
+    """Aggregate lifecycle counters. Aggregates only — no customer-identifying
+    payment detail, so this is safe for a general status endpoint."""
+    init_payment_db(db_path)
+    with _connect(db_path) as conn:
+        total, tombstoned, restored = conn.execute(
+            "SELECT COUNT(*), "
+            "       COUNT(source_deleted_at), "
+            "       COUNT(source_restored_at) "
+            "FROM wfirma_payment_snapshots"
+        ).fetchone()
+        last_sync = conn.execute(
+            "SELECT MAX(last_reconciled_at) FROM payment_sync_state"
+        ).fetchone()[0]
+        contractors = conn.execute(
+            "SELECT COUNT(*) FROM payment_sync_state WHERE last_reconciled_at IS NOT NULL"
+        ).fetchone()[0]
+        failing = conn.execute(
+            "SELECT COUNT(*) FROM payment_sync_state WHERE last_error IS NOT NULL"
+        ).fetchone()[0]
+        # Message text only — no contractor_id — so this stays safe to render on
+        # a general status panel.
+        last_error, last_error_at = conn.execute(
+            "SELECT last_error, last_error_at FROM payment_sync_state "
+            "WHERE last_error IS NOT NULL ORDER BY last_error_at DESC LIMIT 1"
+        ).fetchone() or (None, None)
+    return {
+        "payments_total": int(total),
+        "payments_active": int(total) - int(tombstoned),
+        "payments_tombstoned": int(tombstoned),
+        "payments_restored_ever": int(restored),
+        "contractors_reconciled": int(contractors),
+        "contractors_failing": int(failing),
+        "last_reconciled_at": last_sync,
+        "last_error": last_error,
+        "last_error_at": last_error_at,
+    }
+
+
 def get_sync_state(db_path: Path) -> List[dict]:
     """Per-contractor sync state (for diagnostics)."""
     with _connect(db_path) as conn:
@@ -292,9 +476,14 @@ def list_payments_as_of(
 ) -> List[dict]:
     """POSITION settlements: payments with payment_date <= as_of.
 
-    Optional filters narrow to invoice ids and/or a single contractor.
-    Does not apply an activity lower bound — callers that need windowed
-    ACTIVITY should filter invoices separately.
+    THE single shared financial read for payments. Both sides of the ledger reach
+    money through here — ``match_payments_to_invoices`` (AR) and
+    ``match_payments_to_expenses`` (AP) — so the lifecycle predicate belongs here
+    and nowhere else. Do not re-implement it in matchers, routes, analytics or UI.
+
+    Tombstoned payments (``source_deleted_at IS NOT NULL``) are excluded: a payment
+    deleted upstream must stop reducing current AR/AP. The rows are retained for
+    audit; read them with ``list_tombstoned_payments``.
     """
     ao = (as_of or "").strip()
     if not ao:
@@ -305,7 +494,8 @@ def list_payments_as_of(
         "value, value_pln, currency_label, payment_method, payment_type, type, notes, "
         "fetched_at "
         "FROM wfirma_payment_snapshots "
-        "WHERE (payment_date IS NULL OR payment_date = '' OR payment_date <= ?)"
+        "WHERE source_deleted_at IS NULL "
+        "  AND (payment_date IS NULL OR payment_date = '' OR payment_date <= ?)"
     )
     params: list = [ao]
     if contractor_id:

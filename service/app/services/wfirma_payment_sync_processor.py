@@ -9,8 +9,12 @@ For each contractor_id provided:
 
 Called from wfirma_webhook_scheduler._run_payment_sync_tick() and from
 backfill_payment_expense_links (historical converge).
+  3. Reconcile payment EXISTENCE for that contractor, but ONLY when the fetch is
+     provably complete — wFirma signals payment deletion by absence, so a partial
+     or failed fetch that reached the reconciler would delete valid payments.
+
 Never raises. Never writes to customer_master, proforma_drafts, or any
-business table. No Track B stage modifications.
+business table. Never deletes a snapshot row. No Track B stage modifications.
 """
 from __future__ import annotations
 
@@ -92,21 +96,29 @@ def sync_payments_for_contractor(
     now: str,
 ) -> Tuple[int, int, Optional[str]]:
     """
-    Fetch all wFirma payments for one contractor and store immutable snapshots.
+    Fetch all wFirma payments for one contractor, store immutable snapshots, and
+    converge payment EXISTENCE (see ``reconcile_contractor_payments``).
 
     Returns (new_count, existing_count, error_or_None).
     Never raises.
     """
     from .wfirma_client import fetch_payments_for_contractor
 
+    fetch_stats: Dict[str, Any] = {}
     try:
         # Empty date strings → no date filter → fetch all payments
-        payment_nodes = fetch_payments_for_contractor(contractor_id, "", "")
+        payment_nodes = fetch_payments_for_contractor(
+            contractor_id, "", "", stats=fetch_stats
+        )
     except Exception as exc:
         msg = str(exc)[:300]
         log.warning(
             "payment_sync: fetch failed contractor_id=%s: %s",
             contractor_id, msg,
+        )
+        note_reconcile_failure(
+            payment_db, contractor_id=contractor_id,
+            error="fetch failed: %s" % msg, now=now,
         )
         return 0, 0, msg
 
@@ -134,11 +146,94 @@ def sync_payments_for_contractor(
         else:
             existing_count += 1
 
+    _reconcile_if_fetch_was_complete(
+        contractor_id=contractor_id,
+        payment_db=payment_db,
+        payment_nodes=payment_nodes,
+        fetch_stats=fetch_stats,
+        now=now,
+    )
+
     log.info(
         "payment_sync: contractor_id=%s total=%d new=%d existing=%d",
         contractor_id, new_count + existing_count, new_count, existing_count,
     )
     return new_count, existing_count, None
+
+
+# The only two paginator stop reasons that mean "the collection was exhausted".
+# ``safety_cap`` and ``no_new_ids`` return a PARTIAL set WITHOUT raising
+# (wfirma_client._paginate_find_collection), so they must never authorise a
+# tombstone — that is precisely how a transient upstream hiccup would delete
+# valid payments and make AR/AP jump upward.
+_COMPLETE_STOP_REASONS = frozenset({"empty", "short"})
+
+
+def _reconcile_if_fetch_was_complete(
+    *,
+    contractor_id: str,
+    payment_db: Path,
+    payment_nodes: Sequence[ET.Element],
+    fetch_stats: Dict[str, Any],
+    now: str,
+) -> Optional[dict]:
+    """Tombstone/restore gate. FAIL CLOSED: reconcile only on a provably complete
+    fetch, and skip silently otherwise. Returns the reconcile summary, or None
+    when reconciliation was declined.
+
+    An empty ``payment_nodes`` from a COMPLETE fetch is a legitimate result — a
+    contractor whose every payment was deleted upstream reports zero, and that
+    must tombstone. The failure/success distinction therefore comes from the
+    error channel and the stop reason, NEVER from the row count.
+    """
+    from .wfirma_payment_db import reconcile_contractor_payments
+
+    def _decline(reason: str) -> None:
+        log.warning(
+            "payment_sync: reconcile SKIPPED contractor_id=%s — %s",
+            contractor_id, reason,
+        )
+        note_reconcile_failure(payment_db, contractor_id=contractor_id,
+                               error=reason, now=now)
+        return None
+
+    stop_reason = str(fetch_stats.get("stopped_reason") or "")
+    if stop_reason not in _COMPLETE_STOP_REASONS:
+        return _decline(
+            "stopped_reason=%s; fetch may be partial, existing snapshots left "
+            "untouched" % (stop_reason or "<missing>")
+        )
+
+    live_ids = [pid for pid in (_text(n.find("id")) for n in payment_nodes) if pid]
+    if len(live_ids) != len(payment_nodes):
+        return _decline(
+            "%d of %d nodes had no <id>; an unidentifiable node makes the live "
+            "set unreliable" % (len(payment_nodes) - len(live_ids), len(payment_nodes))
+        )
+
+    try:
+        return reconcile_contractor_payments(
+            payment_db,
+            contractor_id=contractor_id,
+            live_payment_ids=live_ids,
+            now_iso=now,
+        )
+    except Exception as exc:  # never break the sync tick over reconciliation
+        return _decline("reconcile error: %s" % exc)
+
+
+def note_reconcile_failure(payment_db: Path, *, contractor_id: str,
+                           error: str, now: str) -> None:
+    """Best-effort observability write. A status counter must never be able to
+    fail a sync tick, so a broken payment_state.db is logged and swallowed."""
+    from .wfirma_payment_db import record_reconcile_failure
+
+    try:
+        record_reconcile_failure(
+            payment_db, contractor_id=contractor_id, error=error, now_iso=now
+        )
+    except Exception as exc:
+        log.warning("payment_sync: could not record failure state: %s", exc)
 
 
 def backfill_payment_expense_links(

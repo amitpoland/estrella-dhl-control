@@ -2985,6 +2985,7 @@ def fetch_payments_for_contractor(
     contractor_id: str,
     date_from:     str,
     date_to:       str,
+    stats:         Optional[Dict[str, Any]] = None,
 ) -> List[ET.Element]:
     """Phase 10B — paginated read-only ``payments/find`` for one contractor.
 
@@ -3000,6 +3001,12 @@ def fetch_payments_for_contractor(
     ``<date>`` on returned nodes.
 
     Returns top-level ``<payment>`` Element nodes (deduped by id).
+
+    Optional *stats* is forwarded to the paginator and mutated in place. Callers
+    that reconcile local state against this result MUST read
+    ``stats["stopped_reason"]``: only ``empty`` / ``short`` mean the collection
+    was exhausted. ``safety_cap`` / ``no_new_ids`` return a PARTIAL set without
+    raising, and treating that as authoritative would delete valid local rows.
 
     Raises:
       ValueError      — empty ``contractor_id``, ``date_from > date_to``.
@@ -3037,6 +3044,7 @@ def fetch_payments_for_contractor(
         collection_tag="payments",
         item_tag="payment",
         conditions_xml=f"{contractor_condition}{date_conditions}",
+        stats=stats,
     )
 
 
