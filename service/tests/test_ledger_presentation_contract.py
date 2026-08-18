@@ -31,6 +31,7 @@ from app.services.ledger_aggregator import (
     PRESENTATION_STATUS_OVERDUE,
     PRESENTATION_STATUS_SETTLED,
     PRESENTATION_STATUS_UNAPPLIED,
+    _normalize_doc_link_id,
     _parse_expense_fact,
     _parse_invoice_fact,
     _parse_payment_fact,
@@ -40,6 +41,10 @@ from app.services.ledger_aggregator import (
     derive_presentation_status,
     presentation_state,
     presentation_state_from_maps,
+)
+from app.services.local_fact_universe import (
+    reporting_row_to_expense_fact,
+    reporting_row_to_invoice_fact,
 )
 
 V2 = Path(__file__).resolve().parents[1] / "app" / "static" / "v2"
@@ -923,3 +928,171 @@ def test_closing_balance_never_falls_back_to_a_position_figure():
             "on the supplier statement every alternative to closing balance "
             "is a position figure"
         )
+
+
+# ---------------------------------------------------------------------------
+# The no-link sentinel, pinned with PRODUCTION-SHAPED rows
+#
+# financial_reporting.sqlite stores ``correction_of_id = '0'`` for "no parent"
+# on the overwhelming majority of rows, where the review fixture stores ``''``.
+# That single character is why fixture-based acceptance was blind to this
+# class: ``'0'`` is truthy, so an unnormalised local fact claims a parent that
+# does not exist. Every pin below therefore feeds ``'0'`` deliberately.
+# ---------------------------------------------------------------------------
+
+_NO_PARENT_SENTINELS = (None, "", "  ", "0")
+
+
+@pytest.mark.parametrize("sentinel", _NO_PARENT_SENTINELS)
+def test_local_facts_treat_the_zero_sentinel_as_no_parent(sentinel):
+    """None / "" / "0" all mean no parent, on both local converters."""
+    inv = reporting_row_to_invoice_fact(
+        {"invoice_id": "800100", "invoice_number": "FV/1", "currency": "EUR",
+         "net": "100.00", "gross": "123.00", "issue_date": "2026-07-01",
+         "due_date": "2026-07-31", "document_type": "normal",
+         "correction_of_id": sentinel}
+    )
+    assert inv["correction_of_id"] == ""
+
+    exp = reporting_row_to_expense_fact(
+        {"expense_id": "900100", "document_number": "EXP/1", "currency": "EUR",
+         "net": "100.00", "gross": "123.00", "issue_date": "2026-07-01",
+         "due_date": "2026-07-31", "document_type": "normal",
+         "document_status": "booked", "correction_of_id": sentinel}
+    )
+    assert exp["correction_of_id"] == ""
+    assert exp["parent_id"] == ""
+    assert exp["correction"] == "0", (
+        "a row with no parent is not a correction; '0' is truthy, so deriving "
+        "this flag from the raw column marks almost every AP row corrected"
+    )
+
+
+def test_local_facts_keep_a_real_parent_link():
+    """Normalising the sentinel must not erase genuine correction linkage."""
+    inv = reporting_row_to_invoice_fact(
+        {"invoice_id": "800101", "invoice_number": "FVK/1", "currency": "EUR",
+         "net": "-30.00", "gross": "-36.90", "issue_date": "2026-07-20",
+         "due_date": "2026-08-19", "document_type": "correction",
+         "correction_of_id": "800100"}
+    )
+    assert inv["correction_of_id"] == "800100"
+
+    exp = reporting_row_to_expense_fact(
+        {"expense_id": "900101", "document_number": "EXP/2", "currency": "EUR",
+         "net": "-20.00", "gross": "-24.60", "issue_date": "2026-07-10",
+         "due_date": "2026-07-31", "document_type": "correction",
+         "document_status": "booked", "correction_of_id": "900100"}
+    )
+    assert exp["correction_of_id"] == "900100"
+    assert exp["parent_id"] == "900100"
+    assert exp["correction"] == "1"
+
+
+def test_local_and_live_agree_on_the_sentinel():
+    """One rule, one implementation - the local adapter defers to the live one."""
+    for sentinel in _NO_PARENT_SENTINELS:
+        assert _normalize_doc_link_id(sentinel) == ""
+        assert reporting_row_to_invoice_fact(
+            {"correction_of_id": sentinel})["correction_of_id"] == ""
+    assert _normalize_doc_link_id("800100") == "800100"
+
+
+@pytest.mark.parametrize("sentinel", ["", "0"])
+def test_no_parent_row_renders_a_blank_reference_on_both_sides(sentinel):
+    """The Reference column must never print the sentinel as a document id.
+
+    Rendered by ``ledgers-page.jsx`` as ``{e.reference || '-'}``, so a literal
+    ``"0"`` reaches the operator as a document reference. Refusing to hide it
+    in the renderer is the point: the repair belongs in the fact adapter.
+    """
+    exp = reporting_row_to_expense_fact(
+        {"expense_id": "900100", "document_number": "EXP/1",
+         "supplier_id": "950001", "supplier_name": "Synthetic Supplier BV",
+         "currency": "EUR", "net": "100.00", "gross": "123.00",
+         "issue_date": "2026-07-01", "due_date": "2026-07-31",
+         "document_type": "normal", "document_status": "booked",
+         "correction_of_id": sentinel}
+    )
+    ap = aggregate_supplier_statement(
+        [exp], [],
+        contractor_meta={"id": "950001", "name": "Synthetic Supplier BV"},
+        period=("2026-07-01", "2026-08-18"), as_of="2026-08-18",
+    )
+    assert [e["reference"] for e in ap["entries_per_currency"]["EUR"]] == [""]
+
+    inv = reporting_row_to_invoice_fact(
+        {"invoice_id": "800100", "invoice_number": "FV/1",
+         "contractor_id": "940001", "contractor_name": "Synthetic Client BV",
+         "currency": "EUR", "net": "200.00", "gross": "246.00",
+         "issue_date": "2026-07-01", "due_date": "2026-07-31",
+         "document_type": "normal", "correction_of_id": sentinel}
+    )
+    ar = aggregate_statement_from_facts(
+        {"wfirma_contractor_id": "940001", "name": "Synthetic Client BV"},
+        [inv], [], "2026-08-18", ("2026-07-01", "2026-08-18"),
+    )
+    assert [e["reference"] for e in ar["entries_per_currency"]["EUR"]] == [""]
+
+
+def test_the_sentinel_moves_no_money():
+    """The repair is presentation-only: no monetary leaf may move.
+
+    Same economic facts, only the stored no-parent sentinel differs. Every
+    total, aging bucket, opening, closing and running balance must be
+    byte-identical between the two runs; if one moves, an accounting authority
+    is reading the correction linkage and the change is no longer cosmetic.
+    """
+    def money(body):
+        out = {}
+
+        def walk(o, path=""):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if k not in ("reference", "correction"):
+                        walk(v, "{}.{}".format(path, k))
+            elif isinstance(o, (list, tuple)):
+                for i, v in enumerate(o):
+                    walk(v, "{}[{}]".format(path, i))
+            elif isinstance(o, (int, float, Decimal)) and not isinstance(o, bool):
+                out[path] = str(o)
+            elif isinstance(o, str) and o.strip() and o.replace(
+                    "-", "").replace(".", "").isdigit():
+                out[path] = o
+
+        walk(body)
+        return out
+
+    def rows(sentinel):
+        return [
+            {"expense_id": "900100", "document_number": "EXP/1",
+             "supplier_id": "950001", "supplier_name": "Synthetic Supplier BV",
+             "currency": "EUR", "net": "1000.00", "gross": "1230.00",
+             "issue_date": "2026-07-02", "due_date": "2026-07-31",
+             "document_type": "normal", "document_status": "booked",
+             "correction_of_id": sentinel},
+            {"expense_id": "900101", "document_number": "EXP/2",
+             "supplier_id": "950001", "supplier_name": "Synthetic Supplier BV",
+             "currency": "EUR", "net": "-200.00", "gross": "-246.00",
+             "issue_date": "2026-07-10", "due_date": "2026-07-31",
+             "document_type": "correction", "document_status": "booked",
+             "correction_of_id": "900100"},
+            {"expense_id": "900102", "document_number": "EXP/3",
+             "supplier_id": "950001", "supplier_name": "Synthetic Supplier BV",
+             "currency": "USD", "net": "500.00", "gross": "500.00",
+             "issue_date": "2026-07-15", "due_date": "",
+             "document_type": "normal", "document_status": "booked",
+             "correction_of_id": sentinel},
+        ]
+
+    def run(sentinel):
+        return aggregate_supplier_statement(
+            [reporting_row_to_expense_fact(r) for r in rows(sentinel)], [],
+            contractor_meta={"id": "950001", "name": "Synthetic Supplier BV"},
+            period=("2026-07-01", "2026-08-18"), as_of="2026-08-18",
+        )
+
+    assert money(run("0")) == money(run("")), (
+        "a no-parent sentinel changed a monetary figure - the correction "
+        "linkage is feeding an accounting authority, not just presentation"
+    )

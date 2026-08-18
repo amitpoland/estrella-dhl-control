@@ -117,6 +117,13 @@ def _freshness_block(
 
 
 def reporting_row_to_invoice_fact(row: Dict[str, Any]) -> Dict[str, Any]:
+    from .ledger_aggregator import _normalize_doc_link_id
+
+    # wFirma sends ``0`` as a no-link sentinel, not a document id. Normalise
+    # through the same helper the LIVE parser uses so both fact universes
+    # agree on "no parent" - see _normalize_doc_link_id (live AP audit
+    # 2026-08-09). financial_reporting.sqlite stores the sentinel verbatim.
+    parent_id = _normalize_doc_link_id(row.get("correction_of_id"))
     return {
         "id": str(row.get("invoice_id") or "").strip(),
         "fullnumber": (row.get("invoice_number") or "").strip(),
@@ -133,11 +140,15 @@ def reporting_row_to_invoice_fact(row: Dict[str, Any]) -> Dict[str, Any]:
         # INTERNAL ONLY — ``payment_state`` is a FORBIDDEN_ENTRY_FIELD and
         # never reaches the wire; only the derived status string does.
         "payment_state": (row.get("payment_state") or "").strip(),
-        "correction_of_id": str(row.get("correction_of_id") or "").strip(),
+        "correction_of_id": parent_id,
     }
 
 
 def reporting_row_to_expense_fact(row: Dict[str, Any]) -> Dict[str, Any]:
+    from .ledger_aggregator import _normalize_doc_link_id
+
+    # See reporting_row_to_invoice_fact - same no-link sentinel rule.
+    parent_id = _normalize_doc_link_id(row.get("correction_of_id"))
     return {
         "id": str(row.get("expense_id") or "").strip(),
         "fullnumber": (row.get("document_number") or "").strip(),
@@ -149,7 +160,7 @@ def reporting_row_to_expense_fact(row: Dict[str, Any]) -> Dict[str, Any]:
         "brutto": _dec(row.get("gross")),
         "contractor_id": str(row.get("supplier_id") or "").strip(),
         "contractor_name": (row.get("supplier_name") or "").strip(),
-        "correction": "1" if (row.get("correction_of_id") or "") else "0",
+        "correction": "1" if parent_id else "0",
         # ``document_status`` carries the classify_expense_lifecycle verdict for
         # AP rows, so local facts match the live universe shape. NULL on rows
         # synced before the classifier landed — read as booked, which is exactly
@@ -159,8 +170,8 @@ def reporting_row_to_expense_fact(row: Dict[str, Any]) -> Dict[str, Any]:
         # correction linkage, so AP derives the same presentation status.
         "payment_state": (row.get("payment_state") or "").strip(),
         "paymentstate": (row.get("payment_state") or "").strip(),
-        "correction_of_id": str(row.get("correction_of_id") or "").strip(),
-        "parent_id": str(row.get("correction_of_id") or "").strip(),
+        "correction_of_id": parent_id,
+        "parent_id": parent_id,
     }
 
 
