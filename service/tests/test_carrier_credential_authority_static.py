@@ -102,3 +102,31 @@ def test_unmigrated_uses_legacy_settings_only(monkeypatch):
 
     configure_credential_store(None)
     configure_migrated_identities(None)
+
+
+def test_single_resolver_single_coordinator_no_vendor_services():
+    app = _APP / "services" / "carrier"
+    names = []
+    for p in app.rglob("*.py"):
+        names.append(p.name.lower())
+    assert "coordinator.py" in names
+    forbidden = (
+        "fedex_credential_service.py",
+        "dhl_credential_service.py",
+        "ups_credential_service.py",
+        "fedex_coordinator.py",
+        "ups_coordinator.py",
+    )
+    for bad in forbidden:
+        assert bad not in names
+    tracking = (_APP / "services" / "tracking_service.py").read_text(encoding="utf-8")
+    assert tracking.count("def _call_fedex(") == 1
+    assert "resolve_fedex_secret_fields" in tracking or "_fedex_track_secrets" in tracking
+
+
+def test_no_fedex_transaction_id_column():
+    db = (
+        _APP / "services" / "carrier" / "persistence" / "shipment_db.py"
+    ).read_text(encoding="utf-8")
+    assert "fedex_transaction_id" not in db
+    assert "carrier_transaction_id" in db

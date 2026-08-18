@@ -79,6 +79,9 @@ class ShipmentResult:
     # booker, not whoever triggered the replay. NULL for legacy rows booked
     # before attribution existed (honest missing).
     booked_by: Optional[str] = None
+    # Neutral carrier transaction / confirmation id (FedEx transactionId, etc).
+    # Never a vendor-prefixed column. Optional; DHL bookings leave this None.
+    carrier_transaction_id: Optional[str] = None
 
 
 class CarrierGateError(Exception):

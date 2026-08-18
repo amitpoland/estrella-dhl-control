@@ -405,6 +405,8 @@ class ShipmentRequestBody(BaseModel):
                                               # two clients in the same batch never share an AWB
     # Optional echo only — server re-resolves from draft → CM; never invents.
     incoterm: Optional[str] = None
+    # Booking provider. Default DHL. UPS is never silently converted to DHL.
+    carrier: Optional[str] = None
 
 
 class ExternalShipmentBody(BaseModel):
@@ -970,6 +972,36 @@ def create_shipment(
     # (carrier_shipments.booked_by). Sanitised untrusted header input.
     operator = _clean_operator(x_operator)
 
+    provider = shipment_db.normalize_provider_code(body.carrier or shipment_db.PROVIDER_DHL)
+    if not provider:
+        provider = shipment_db.PROVIDER_DHL
+    if provider == "UPS":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "UPS is not configured",
+                "code": "UPS_NOT_CONFIGURED",
+                "guidance": "UPS has no adapter. Do not silently book DHL.",
+            },
+        )
+    if provider == "OTHER":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "OTHER is customer-arranged only",
+                "code": "OTHER_IS_EXTERNAL_ONLY",
+            },
+        )
+    if provider not in (shipment_db.PROVIDER_DHL, "FEDEX"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": f"Unknown booking provider {provider}",
+                "code": "UNKNOWN_CARRIER",
+                "guidance": "Never silently routed to DHL.",
+            },
+        )
+
     # ── DHL account resolution (operator ruling 2026-07-20) ──────────────
     #
     #   Selected Client Master account
@@ -980,16 +1012,20 @@ def create_shipment(
     # for legacy callers that supply no sender contractor context at all. Once
     # a sender is selected, the Client Master account is the authority and a
     # missing account blocks — it never silently bills the environment account.
-    shipper_account, billing_resolution = _resolve_shipment_accounts(body, settings)
-    if not shipper_account:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "No DHL Express account number configured",
-                "code": "SHIPPER_ACCOUNT_MISSING",
-                "guidance": "Set DHL_EXPRESS_ACCOUNT_NUMBER in environment or pass shipper_account in request body.",
-            },
-        )
+    if provider == "FEDEX":
+        shipper_account = (body.shipper_account or "FEDEX").strip() or "FEDEX"
+        billing_resolution = None
+    else:
+        shipper_account, billing_resolution = _resolve_shipment_accounts(body, settings)
+        if not shipper_account:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "No DHL Express account number configured",
+                    "code": "SHIPPER_ACCOUNT_MISSING",
+                    "guidance": "Set DHL_EXPRESS_ACCOUNT_NUMBER in environment or pass shipper_account in request body.",
+                },
+            )
 
     # Resolve recipient address via Customer Master authority (Condition 2: feature flag)
     if settings.awb_address_authority_enabled:
@@ -1045,7 +1081,7 @@ def create_shipment(
         client_ref=body.client_ref,
     )
     resolved_incoterm = (incoterm_res.get("value") or "").strip().upper() or None
-    if not resolved_incoterm:
+    if provider == shipment_db.PROVIDER_DHL and not resolved_incoterm:
         raise HTTPException(
             status_code=422,
             detail={
@@ -1088,7 +1124,9 @@ def create_shipment(
         incoterm=resolved_incoterm,
     )
     try:
-        result = coordinator.create_shipment(request, operator=operator)
+        result = coordinator.create_shipment(
+            request, operator=operator, provider=provider,
+        )
     except CarrierGateError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -1124,9 +1162,7 @@ def create_shipment(
         # whether labels exist on the server for this batch anyway.
         "saved_labels_exist": _batch_has_any_label(batch_id),
         # AWB logistics summary — echoes the shipment intent for display.
-        # This route books through the DHL adapter only, so the provider is DHL
-        # by construction; named from the shared constant, not a loose literal.
-        "carrier": shipment_db.PROVIDER_DHL,
+        "carrier": provider,
         "service_code": (result.service_product if isinstance(result.service_product, str)
                          else (body.product_code or "P")),
         "box_type_code": body.box_type_code,

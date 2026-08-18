@@ -107,6 +107,8 @@ _ADDITIVE_COLUMNS = [
     # no other carrier), so NULL resolves to DHL at read time via
     # resolve_provider(). Legacy rows are NOT rewritten on disk.
     ("provider", "TEXT"),
+    # Neutral carrier transaction / confirmation id. Not vendor-prefixed.
+    ("carrier_transaction_id", "TEXT"),
 ]
 
 # Provider vocabulary. DHL is booked through the live adapter; FEDEX/UPS/OTHER
@@ -790,6 +792,7 @@ def update_shipment_fields(
     declared_value: Optional[float] = None,
     currency: Optional[str] = None,
     box_type_code: Optional[str] = None,
+    carrier_transaction_id: Optional[str] = None,
 ) -> None:
     """Persist Phase-5 carrier API response fields on an existing row.
 
@@ -814,6 +817,9 @@ def update_shipment_fields(
     if box_type_code is not None:
         sets.append("box_type_code = ?")
         args.append(box_type_code)
+    if carrier_transaction_id is not None:
+        sets.append("carrier_transaction_id = ?")
+        args.append(carrier_transaction_id)
     if not sets:
         return
     sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")

@@ -527,25 +527,35 @@ def _infer_from_audit(cache_dir: Path) -> Dict[str, Any]:
 # ── DHL pending fallback ──────────────────────────────────────────────────────
 
 def _resolve_dhl_credentials() -> tuple:
-    """Return (api_key, api_secret) treating canonical + alias env names equally.
+    """Return (api_key, api_secret) for Unified Track via the credential resolver.
 
-    Canonical: DHL_TRACKING_API_KEY / DHL_TRACKING_API_SECRET (Settings fields).
-    Aliases:   DHL_CLIENT_ID / DHL_CLIENT_SECRET (read directly from os.environ
-               so existing operator .env files using OAuth-style names work
-               without renaming).
-    Legacy:    DHL_API_KEY (single legacy header credential).
-
-    No values are returned to callers — only used internally to compute mode.
+    Migrated track identity → secure store only. Unmigrated → Settings/.env
+    including DHL_CLIENT_ID / DHL_CLIENT_SECRET aliases (legacy Settings path).
     """
-    import os
-    canonical_key = (settings.dhl_tracking_api_key or "").strip()
-    canonical_sec = (settings.dhl_tracking_api_secret or "").strip()
-    alias_key     = (os.environ.get("DHL_CLIENT_ID")     or "").strip()
-    alias_sec     = (os.environ.get("DHL_CLIENT_SECRET") or "").strip()
-    legacy_key    = (settings.dhl_api_key or "").strip()
-    api_key    = canonical_key or alias_key or legacy_key
-    api_secret = canonical_sec or alias_sec
-    return api_key, api_secret
+    from .carrier.credentials.consumer_bridge import resolve_dhl_secret_fields
+
+    fields = resolve_dhl_secret_fields("track")
+    return (fields.get("api_key") or "").strip(), (fields.get("api_secret") or "").strip()
+
+
+def _dhl_express_secrets_present() -> bool:
+    from .carrier.credentials.consumer_bridge import resolve_dhl_secret_fields
+
+    fields = resolve_dhl_secret_fields("ship")
+    return bool((fields.get("api_key") or "").strip() and (fields.get("api_secret") or "").strip())
+
+
+def _track_identity_migrated() -> bool:
+    from .carrier.credentials.migration import is_migrated
+    from .carrier.credentials.models import CredentialIdentity
+
+    return is_migrated(CredentialIdentity("dhl", "production", "track"))
+
+
+def _fedex_track_secrets() -> dict:
+    from .carrier.credentials.consumer_bridge import resolve_fedex_secret_fields
+
+    return resolve_fedex_secret_fields("track", "production")
 
 
 def get_tracking_mode() -> str:
@@ -740,13 +750,11 @@ def _call_dhl_unified(tracking_no: str) -> Dict[str, Any]:
             f"DHL Unified API call blocked: status={settings.dhl_tracking_api_status}"
         )
 
-    log.debug("[DHL] Unified API call — key=%s", _mask(settings.dhl_tracking_api_key))
-
     from .carrier.credentials.consumer_bridge import resolve_dhl_secret_fields
 
-    # Capability track → Unified/legacy keys via resolver (unmigrated → Settings).
     track_fields = resolve_dhl_secret_fields("track")
     api_key = track_fields.get("api_key") or ""
+    log.debug("[DHL] Unified API call — key=%s", _mask(api_key))
 
     with httpx.Client(timeout=12) as client:
         track_resp = client.get(
@@ -919,12 +927,12 @@ def _call_dhl(tracking_no: str) -> Dict[str, Any]:
             "this is a bug; pending block should have fired earlier"
         )
 
-    has_express = bool(
-        (settings.dhl_express_api_key or "").strip()
-        and (settings.dhl_express_api_secret or "").strip()
+    has_express = _dhl_express_secrets_present()
+    api_key, _ = _resolve_dhl_credentials()
+    has_unified = bool(api_key)
+    has_legacy = (not _track_identity_migrated()) and bool(
+        (settings.dhl_api_key or "").strip()
     )
-    has_unified = bool((settings.dhl_tracking_api_key or "").strip())
-    has_legacy = bool((settings.dhl_api_key or "").strip())
 
     if has_express:
         try:
@@ -1002,13 +1010,16 @@ def _fedex_pending_fallback(tracking_no: str, cache_dir: Optional[Path] = None) 
 
 
 def _call_fedex(tracking_no: str) -> Dict[str, Any]:
+    fields = _fedex_track_secrets()
+    client_id = (fields.get("client_id") or "").strip()
+    client_secret = (fields.get("client_secret") or "").strip()
     with httpx.Client(timeout=10) as client:
         token_resp = client.post(
             "https://apis.fedex.com/oauth/token",
             content=(
                 f"grant_type=client_credentials"
-                f"&client_id={settings.fedex_client_id}"
-                f"&client_secret={settings.fedex_client_secret}"
+                f"&client_id={client_id}"
+                f"&client_secret={client_secret}"
             ),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -1198,8 +1209,9 @@ def get_tracking_status(
             log.debug("[tracking] cache expired for %s (age %.0fs) — refreshing", tracking_no, age if cached_at else -1)
 
     # ── Credential check ──────────────────────────────────────────────────────
-    if carrier == "FedEx" and (
-        not settings.fedex_client_id or not settings.fedex_client_secret
+    fx = _fedex_track_secrets()
+    if carrier == "FedEx" and not (
+        (fx.get("client_id") or "").strip() and (fx.get("client_secret") or "").strip()
     ):
         return _fedex_pending_fallback(tracking_no, cache_dir=cache_dir)
 
@@ -1209,12 +1221,12 @@ def get_tracking_status(
 
     # ── DHL: Express MyDHL credentials OR Unified/legacy tracking key ─────────
     if carrier == "DHL":
-        has_express = bool(
-            (settings.dhl_express_api_key or "").strip()
-            and (settings.dhl_express_api_secret or "").strip()
+        has_express = _dhl_express_secrets_present()
+        api_key, _ = _resolve_dhl_credentials()
+        has_unified = bool(api_key)
+        has_legacy = (not _track_identity_migrated()) and bool(
+            (settings.dhl_api_key or "").strip()
         )
-        has_unified = bool((settings.dhl_tracking_api_key or "").strip())
-        has_legacy = bool((settings.dhl_api_key or "").strip())
         if not has_express and not has_unified and not has_legacy:
             base["source"] = "no_credentials"
             return base

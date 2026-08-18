@@ -170,6 +170,18 @@ def test_fedex_ups_manual_tracking_remains():
     assert "Register external shipment" in src
     assert "selectedCarrier === 'FEDEX'" in src
     assert "selectedCarrier === 'UPS'" in src
+    assert "UPS_NOT_CONFIGURED" in src
+    assert "awb-ups-blocked" in src
+    assert "carrier:            selectedCarrier" in src or "carrier:" in src
+    assert "setCarrierTouched(false)" in src
+    assert "AwbFedexModal" not in src
+
+
+def test_no_silent_dhl_fallback_in_modal():
+    src = _detail()
+    assert "Never silently converted to DHL" in src or "Never silently" in src
+    assert "createCarrierShipment" in src
+    assert "registerExternalShipment" in src
 
 
 def test_dhl_workflow_and_resolver_remain():

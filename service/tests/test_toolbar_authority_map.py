@@ -281,22 +281,70 @@ def test_generate_button_has_reason_title():
 
 
 def test_carrier_is_dhl_only():
-    """Carrier factory must be DHL-only — no FedEx support."""
+    """Approved factory set: DHL + FedEx sandbox + UPS fail-closed.
+
+    Retired the pre-FedEx "DHL only / FedEx forbidden" pin (PR #1280 /
+    ADR-001 addendum). One ``get_adapter`` remains the routing authority.
+    UPS fail-closed is also executed in test_carrier_factory_gate and
+    test_carrier_routes_gate — this pin is the toolbar-map contract that
+    used to forbid FedEx entirely.
+    """
+    factory_path = (
+        Path(_CARRIER).parent.parent / "services" / "carrier" / "factory.py"
+    )
+    factory = factory_path.read_text(encoding="utf-8")
+    assert factory.count("def get_adapter") == 1, \
+        "Exactly one factory get_adapter — no parallel FedEx/UPS factory"
+    assert "DhlExpressLiveAdapter" in factory, \
+        "DHL live adapter must remain the DHL booking path"
+    assert "DhlExpressShadowAdapter" in factory, \
+        "DHL shadow adapter must remain the DHL shadow path"
+    assert "FedExSandboxAdapter" in factory, \
+        "FedEx must route through FedExSandboxAdapter, not a DHL fallback"
+    assert 'raise CarrierGateError("UPS_NOT_CONFIGURED")' in factory, \
+        "UPS must fail closed when unconfigured"
+    assert "Never silently routed to DHL" in factory, \
+        "Unknown booking providers must never silently become DHL"
+    assert "OTHER_IS_EXTERNAL_ONLY" in factory, \
+        "OTHER must not silently use the DHL adapter"
+    assert "from .adapters.fedex import FedExSandboxAdapter" in factory
+    # Still one DHL Express live path — FedEx is additive, not a replacement.
     carrier = _carrier()
-    assert "DhlExpress" in carrier or "DHL" in carrier, \
-        "Carrier system must reference DHL"
-    # No FedEx adapters should be referenced
-    from pathlib import Path
-    factory = (Path(_CARRIER).parent.parent / "services" / "carrier" / "factory.py").read_text(encoding="utf-8")
-    assert "FedEx" not in factory and "fedex" not in factory.lower(), \
-        "Carrier factory must not reference FedEx — DHL Express only"
+    assert "DHL" in carrier, "Carrier actions route must still own DHL booking"
 
 
 def test_no_fedex_in_proforma_detail():
-    """proforma-detail.jsx must not reference FedEx."""
+    """FedEx books through the existing AwbGenerateModal — no second modal.
+
+    Retired the pre-FedEx "FedEx string forbidden" pin. FedEx must appear
+    *inside* AwbGenerateModal and share createCarrierShipment; AwbFedexModal
+    / AwbUpsModal remain forbidden.
+    """
     src = _src()
-    assert "fedex" not in src.lower() and "FedEx" not in src, \
-        "proforma-detail.jsx must not invent FedEx support"
+    assert src.count("function AwbGenerateModal") == 1, \
+        "Exactly one AwbGenerateModal — one booking UX authority"
+    modal_start = src.find("function AwbGenerateModal")
+    modal_end = src.find("\nfunction ProformaActionBar(", modal_start)
+    assert modal_start > 0 and modal_end > modal_start, \
+        "AwbGenerateModal body must be bounded before ProformaActionBar"
+    modal = src[modal_start:modal_end]
+    assert "AwbFedexModal" not in src, "No parallel FedEx booking modal"
+    assert "AwbUpsModal" not in src, "No parallel UPS booking modal"
+    assert '<option value="DHL">' in modal, \
+        "DHL must be selectable in AwbGenerateModal"
+    assert '<option value="FEDEX">' in modal, \
+        "FedEx must be selectable in the SAME AwbGenerateModal"
+    assert '<option value="UPS">' in modal, \
+        "UPS must be represented in the SAME AwbGenerateModal"
+    assert "PzApi.createCarrierShipment(" in modal, \
+        "API booking (DHL and FedEx) must use createCarrierShipment"
+    assert "carrier:" in modal and "selectedCarrier" in modal, \
+        "createCarrierShipment must send the selected carrier — FedEx must not be silently posted as DHL"
+    assert "UPS_NOT_CONFIGURED" in modal, \
+        "UPS API booking must be fail-closed in the same modal"
+    # FedEx must not open a second booking component from this modal.
+    assert "AwbFedexModal" not in modal
+    assert "function AwbFedex" not in src
 
 
 # ── 6. Duplicate — ENABLED_WITH_AUTHORITY ────────────────────────────────────

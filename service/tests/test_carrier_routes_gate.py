@@ -180,9 +180,44 @@ def test_get_shipment_pending_returns_503(test_app):
     assert resp.status_code == 503
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# POST /shipment — shadow mode
-# ═══════════════════════════════════════════════════════════════════════════════
+def test_post_shipment_ups_returns_not_configured(test_app):
+    test_app.dependency_overrides[_get_carrier_config] = _shadow_config
+    client = TestClient(test_app, raise_server_exceptions=False)
+    with _patched_settings(awb_address_authority_enabled=False):
+        resp = client.post(
+            "/api/v1/carrier/BATCH-UPS/shipment",
+            json={
+                "shipper_account": "ACC",
+                "recipient_address": {},
+                "declared_value": 100.0,
+                "currency": "EUR",
+                "weight_kg": 1.0,
+                "dimensions": {},
+                "carrier": "UPS",
+            },
+        )
+    assert resp.status_code == 422
+    assert "UPS_NOT_CONFIGURED" in resp.text
+
+
+def test_post_shipment_unknown_carrier_never_dhl(test_app):
+    test_app.dependency_overrides[_get_carrier_config] = _shadow_config
+    client = TestClient(test_app, raise_server_exceptions=False)
+    with _patched_settings(awb_address_authority_enabled=False):
+        resp = client.post(
+            "/api/v1/carrier/BATCH-X/shipment",
+            json={
+                "shipper_account": "ACC",
+                "recipient_address": {},
+                "declared_value": 100.0,
+                "currency": "EUR",
+                "weight_kg": 1.0,
+                "dimensions": {},
+                "carrier": "TNT",
+            },
+        )
+    assert resp.status_code == 422
+    assert "UNKNOWN_CARRIER" in resp.text or "Never silently" in resp.text
 
 
 def _shadow_result() -> ShipmentResult:

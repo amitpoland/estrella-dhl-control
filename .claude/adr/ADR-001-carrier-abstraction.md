@@ -62,3 +62,30 @@ work would need to start over against a carrier-specific module.
 FedEx and UPS land as new adapter classes only — coordinator, state
 engine, label store, registry, and routes are unchanged. The shadow
 adapter (ADR-004) wraps any adapter that satisfies the Protocol.
+
+---
+
+## Addendum A — Rate is out of the adapter Protocol (2026-08-18)
+
+Status: Accepted
+Campaign: carrier-authority-e2e
+
+RATE is **not** a method on the current `AbstractCarrierAdapter` contract
+(`create_shipment`, `get_shipment`). DHL live adapter may call MyDHL `/rates`
+internally as product discovery before ship; that is adapter-private, not a
+coordinator Rate API.
+
+First FedEx sandbox Ship acceptance does **not** require a public Rate
+capability. Quote price is never booking authority.
+
+Follow-on (same campaign family, separate slice) if a Rate surface is needed:
+
+- request: origin/destination, package, account
+- response: service option, currency, account vs list, surcharges, transit,
+  timestamp
+- unavailable-rate: fail closed / omit option — never invent a price
+- persistence: do not store quote as the booked amount
+
+UPS lands as `UPSAdapter` + credential identity + factory registration only.
+No second coordinator, shipment table, tracking store, or booking modal.
+
