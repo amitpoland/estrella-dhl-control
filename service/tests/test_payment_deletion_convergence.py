@@ -397,3 +397,62 @@ def test_reconcile_refuses_a_blank_contractor(db):
         reconcile_contractor_payments(
             db, contractor_id="  ", live_payment_ids=[], now_iso=NOW
         )
+
+
+# --- Phase P: observability ------------------------------------------------
+# Stale local payment state is invisible unless the reason convergence did not
+# run is durable. These pin that the counters measure what actually happened.
+
+def test_failed_fetch_records_why_convergence_did_not_run(db, monkeypatch):
+    _seed(db, monkeypatch)
+    monkeypatch.setattr(
+        wfirma_client, "fetch_payments_for_contractor",
+        _fake_fetch([], raises=ConnectionError("wFirma unreachable")),
+    )
+    sync_payments_for_contractor(contractor_id=CONTRACTOR, payment_db=db, now=NOW)
+
+    stats = payment_lifecycle_stats(db)
+    assert stats["contractors_failing"] == 1
+    assert "fetch failed" in stats["last_error"]
+    assert stats["last_error_at"] == NOW
+    assert stats["payments_tombstoned"] == 0, "a failure must never tombstone"
+
+
+def test_partial_fetch_records_the_stop_reason(db, monkeypatch):
+    _seed(db, monkeypatch)
+    monkeypatch.setattr(
+        wfirma_client, "fetch_payments_for_contractor",
+        _fake_fetch(ALL_NODES, stop_reason="safety_cap"),
+    )
+    sync_payments_for_contractor(contractor_id=CONTRACTOR, payment_db=db, now=NOW)
+    assert "safety_cap" in payment_lifecycle_stats(db)["last_error"]
+
+
+def test_successful_convergence_clears_a_previous_error(db, monkeypatch):
+    _seed(db, monkeypatch)
+    monkeypatch.setattr(
+        wfirma_client, "fetch_payments_for_contractor",
+        _fake_fetch([], raises=TimeoutError("timed out")),
+    )
+    sync_payments_for_contractor(contractor_id=CONTRACTOR, payment_db=db, now=NOW)
+    assert payment_lifecycle_stats(db)["contractors_failing"] == 1
+
+    monkeypatch.setattr(
+        wfirma_client, "fetch_payments_for_contractor", _fake_fetch(ALL_NODES),
+    )
+    sync_payments_for_contractor(contractor_id=CONTRACTOR, payment_db=db, now=NOW)
+    stats = payment_lifecycle_stats(db)
+    assert stats["contractors_failing"] == 0
+    assert stats["last_error"] is None
+
+
+def test_status_counters_expose_no_identifiers(db, monkeypatch):
+    """This dict is rendered on a general status panel, so it must stay
+    aggregate-only — no contractor, payment, invoice or expense id, ever."""
+    _seed(db, monkeypatch)
+    assert set(payment_lifecycle_stats(db)) == {
+        "payments_total", "payments_active", "payments_tombstoned",
+        "payments_restored_ever", "contractors_reconciled",
+        "contractors_failing", "last_reconciled_at", "last_error",
+        "last_error_at",
+    }

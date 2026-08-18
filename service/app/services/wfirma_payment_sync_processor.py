@@ -116,6 +116,10 @@ def sync_payments_for_contractor(
             "payment_sync: fetch failed contractor_id=%s: %s",
             contractor_id, msg,
         )
+        note_reconcile_failure(
+            payment_db, contractor_id=contractor_id,
+            error="fetch failed: %s" % msg, now=now,
+        )
         return 0, 0, msg
 
     new_count = 0
@@ -184,23 +188,28 @@ def _reconcile_if_fetch_was_complete(
     """
     from .wfirma_payment_db import reconcile_contractor_payments
 
+    def _decline(reason: str) -> None:
+        log.warning(
+            "payment_sync: reconcile SKIPPED contractor_id=%s — %s",
+            contractor_id, reason,
+        )
+        note_reconcile_failure(payment_db, contractor_id=contractor_id,
+                               error=reason, now=now)
+        return None
+
     stop_reason = str(fetch_stats.get("stopped_reason") or "")
     if stop_reason not in _COMPLETE_STOP_REASONS:
-        log.warning(
-            "payment_sync: reconcile SKIPPED contractor_id=%s stopped_reason=%r "
-            "(fetch may be partial; existing snapshots left untouched)",
-            contractor_id, stop_reason or "<missing>",
+        return _decline(
+            "stopped_reason=%s; fetch may be partial, existing snapshots left "
+            "untouched" % (stop_reason or "<missing>")
         )
-        return None
 
     live_ids = [pid for pid in (_text(n.find("id")) for n in payment_nodes) if pid]
     if len(live_ids) != len(payment_nodes):
-        log.warning(
-            "payment_sync: reconcile SKIPPED contractor_id=%s — %d of %d nodes "
-            "had no <id>; an unidentifiable node makes the live set unreliable",
-            contractor_id, len(payment_nodes) - len(live_ids), len(payment_nodes),
+        return _decline(
+            "%d of %d nodes had no <id>; an unidentifiable node makes the live "
+            "set unreliable" % (len(payment_nodes) - len(live_ids), len(payment_nodes))
         )
-        return None
 
     try:
         return reconcile_contractor_payments(
@@ -210,10 +219,21 @@ def _reconcile_if_fetch_was_complete(
             now_iso=now,
         )
     except Exception as exc:  # never break the sync tick over reconciliation
-        log.warning(
-            "payment_sync: reconcile error contractor_id=%s: %s", contractor_id, exc
+        return _decline("reconcile error: %s" % exc)
+
+
+def note_reconcile_failure(payment_db: Path, *, contractor_id: str,
+                           error: str, now: str) -> None:
+    """Best-effort observability write. A status counter must never be able to
+    fail a sync tick, so a broken payment_state.db is logged and swallowed."""
+    from .wfirma_payment_db import record_reconcile_failure
+
+    try:
+        record_reconcile_failure(
+            payment_db, contractor_id=contractor_id, error=error, now_iso=now
         )
-        return None
+    except Exception as exc:
+        log.warning("payment_sync: could not record failure state: %s", exc)
 
 
 def backfill_payment_expense_links(

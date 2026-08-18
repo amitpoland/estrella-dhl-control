@@ -88,6 +88,8 @@ def init_payment_db(db_path: Path) -> None:
         # a contractor can be synced without being reconciled (partial fetch),
         # and conflating the two would report a convergence that never ran.
         _add_column_if_missing(conn, "payment_sync_state", "last_reconciled_at", "TEXT")
+        _add_column_if_missing(conn, "payment_sync_state", "last_error", "TEXT")
+        _add_column_if_missing(conn, "payment_sync_state", "last_error_at", "TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_wps_payment_date "
             "ON wfirma_payment_snapshots (payment_date)"
@@ -360,7 +362,8 @@ def reconcile_contractor_payments(
             (cid,),
         )
         conn.execute(
-            "UPDATE payment_sync_state SET last_reconciled_at = ? WHERE contractor_id = ?",
+            "UPDATE payment_sync_state SET last_reconciled_at = ?, "
+            "last_error = NULL, last_error_at = NULL WHERE contractor_id = ?",
             (now_iso, cid),
         )
         conn.commit()
@@ -372,6 +375,34 @@ def reconcile_contractor_payments(
         "tombstoned": len(to_tombstone),
         "restored": len(to_restore),
     }
+
+
+def record_reconcile_failure(
+    db_path: Path, *, contractor_id: str, error: str, now_iso: str
+) -> None:
+    """Record why convergence did NOT run for this contractor.
+
+    Both a failed fetch and a fetch that came back incomplete land here — from
+    the operator's side they are the same fact: local payment state for this
+    contractor is not known to be current. Cleared by the next successful
+    reconciliation.
+    """
+    cid = (contractor_id or "").strip()
+    if not cid:
+        return
+    init_payment_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO payment_sync_state "
+            "(contractor_id, last_synced_at, snapshot_count) VALUES (?, NULL, 0)",
+            (cid,),
+        )
+        conn.execute(
+            "UPDATE payment_sync_state SET last_error = ?, last_error_at = ? "
+            "WHERE contractor_id = ?",
+            (str(error)[:300], now_iso, cid),
+        )
+        conn.commit()
 
 
 def list_tombstoned_payments(db_path: Path) -> List[dict]:
@@ -404,13 +435,25 @@ def payment_lifecycle_stats(db_path: Path) -> dict:
         contractors = conn.execute(
             "SELECT COUNT(*) FROM payment_sync_state WHERE last_reconciled_at IS NOT NULL"
         ).fetchone()[0]
+        failing = conn.execute(
+            "SELECT COUNT(*) FROM payment_sync_state WHERE last_error IS NOT NULL"
+        ).fetchone()[0]
+        # Message text only — no contractor_id — so this stays safe to render on
+        # a general status panel.
+        last_error, last_error_at = conn.execute(
+            "SELECT last_error, last_error_at FROM payment_sync_state "
+            "WHERE last_error IS NOT NULL ORDER BY last_error_at DESC LIMIT 1"
+        ).fetchone() or (None, None)
     return {
         "payments_total": int(total),
         "payments_active": int(total) - int(tombstoned),
         "payments_tombstoned": int(tombstoned),
         "payments_restored_ever": int(restored),
         "contractors_reconciled": int(contractors),
+        "contractors_failing": int(failing),
         "last_reconciled_at": last_sync,
+        "last_error": last_error,
+        "last_error_at": last_error_at,
     }
 
 

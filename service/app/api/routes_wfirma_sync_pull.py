@@ -12,6 +12,8 @@ Served here (net-new, no existing trigger):
   POST /api/v1/wfirma/sync/payments-pull   {contractor_id}
       → wfirma_payment_sync_processor.sync_payments_for_contractor
         (READ-ONLY wFirma GET payments/find → local payment_state.db snapshot).
+  GET  /api/v1/wfirma/sync/payments-status
+      → wfirma_payment_db.payment_lifecycle_stats (local read, aggregates only).
 
 Reused elsewhere (NOT duplicated here — Item 8 anti-duplication rule):
   customer ← wFirma pull : GET  /api/v1/customer-master/sync-from-wfirma/preview
@@ -51,8 +53,10 @@ def payments_pull(body: PaymentsPullRequest) -> dict:
     """PULL payments for ONE contractor from wFirma into the local
     payment_state.db snapshot store.
 
-    Direction: PULL. wFirma side is READ-ONLY (payments/find GET); the only
-    write is a local, append-only snapshot insert. No wFirma mutation.
+    Direction: PULL. wFirma side is READ-ONLY (payments/find GET); local writes
+    are the snapshot insert plus payment-existence convergence (a payment gone
+    from a COMPLETE upstream fetch is tombstoned locally, never deleted). No
+    wFirma mutation.
 
     Bounded to a single contractor_id (no unbounded fan-out).
 
@@ -82,4 +86,36 @@ def payments_pull(body: PaymentsPullRequest) -> dict:
         "contractor_id": cid,
         "new": new_count,
         "existing": existing_count,
+    }
+
+
+@router.get("/payments-status", dependencies=[_auth])
+def payments_status() -> dict:
+    """Payment-lifecycle convergence status. Local read only — no wFirma call.
+
+    Answers the four operator questions for this sync: is it healthy, when did
+    it last converge, what did it do, and (via payments-pull) can I run it now.
+    Aggregates only: no payment, invoice, or contractor identifier is returned.
+    """
+    from ..services.wfirma_payment_db import payment_lifecycle_stats
+
+    db_path = settings.storage_root / "payment_state.db"
+    stats = payment_lifecycle_stats(db_path)
+
+    age_s = None
+    if stats["last_reconciled_at"]:
+        try:
+            last = datetime.fromisoformat(stats["last_reconciled_at"])
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            age_s = int((datetime.now(timezone.utc) - last).total_seconds())
+        except ValueError:
+            pass
+
+    return {
+        "ok": True,
+        "type": "payments-status",
+        "healthy": stats["contractors_failing"] == 0 and age_s is not None,
+        "seconds_since_reconcile": age_s,
+        **stats,
     }
