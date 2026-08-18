@@ -1697,7 +1697,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [carrierTouched, setCarrierTouched] = React.useState(false);
   const [externalTracking, setExternalTracking] = React.useState('');
   const [awbFile, setAwbFile] = React.useState(null);
-  const isExternal = selectedCarrier === 'FEDEX' || selectedCarrier === 'UPS';
+  const isUps = selectedCarrier === 'UPS';
+  const isFedex = selectedCarrier === 'FEDEX';
+  const isDhl = selectedCarrier === 'DHL';
+  // UPS has no adapter — customer-arranged registration only (not DHL fallback).
+  const isExternal = isUps;
+  const isApiBooking = isDhl || isFedex;
   const [cmAccounts, setCmAccounts] = React.useState([]);
   const [cmAccountsStatus, setCmAccountsStatus] = React.useState('idle');
   const [selectedCmAccountId, setSelectedCmAccountId] = React.useState(null);
@@ -1883,6 +1888,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   }, [legacyProbe]);
 
   React.useEffect(() => {
+    // Customer change / modal reuse must not leak the previous operator selection.
+    setCarrierTouched(false);
+    setSelectedCarrier('DHL');
+  }, [prefill.client_contractor_id]);
+
+  React.useEffect(() => {
     const filtered = _awbFilterCmAccounts(cmAccounts, selectedCarrier);
     const pick = _awbPreselectCmAccount(filtered);
     setSelectedCmAccountId(pick && pick.id != null ? pick.id : null);
@@ -2058,35 +2069,30 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     if (missing.length) { setApiError(`Missing required fields: ${missing.join(', ')}`); return; }
     // DHL rejects receiver contact without a phone (minLength 1) — block
     // locally with the exact reason instead of a DHL 422 round-trip.
-    if (!(form.phone || '').trim()) {
+    if (isDhl && !(form.phone || '').trim()) {
       setApiError('Receiver phone is required by DHL Express.');
       return;
     }
 
-    // Customer Master save-confirmation gate — NO booking until resolved.
-    // FAIL VISIBLE: a missing/unloadable baseline is a blocking panel, not a
-    // silent pass-through (2026-07-06 incident: fail-open booked AWB
-    // 1129315655 uncompared). Booking proceeds ONLY via an explicit operator
-    // choice — matching baseline, No/Yes on the diff panel, or "Continue
-    // without saving" on the baseline panel.
-    if (masterState !== 'loaded' || !master) {
-      setSaveError(null);
-      setSaveConfirm({
-        baselineIssue: masterState === 'missing-id' ? 'missing-id' : 'failed',
-      });
-      return;
-    }
+    // Customer Master save-confirmation gate — DHL only (fiscal AWB risk).
+    if (isDhl) {
+      if (masterState !== 'loaded' || !master) {
+        setSaveError(null);
+        setSaveConfirm({
+          baselineIssue: masterState === 'missing-id' ? 'missing-id' : 'failed',
+        });
+        return;
+      }
 
-    // Differences between modal shipping data and the client's Customer
-    // Master record must be explicitly kept-once, saved, or cancelled.
-    const cmp = computeMasterDiffs();
-    if (cmp && cmp.diffs.length > 0) {
-      const masterPhoneEmpty = !_norm(master.ship_to_phone);
-      const phoneOnly = cmp.diffs.length === 1
-        && cmp.diffs[0].formKey === 'phone' && masterPhoneEmpty;
-      setSaveError(null);
-      setSaveConfirm({ diffs: cmp.diffs, info: cmp.info, phoneOnly });
-      return;
+      const cmp = computeMasterDiffs();
+      if (cmp && cmp.diffs.length > 0) {
+        const masterPhoneEmpty = !_norm(master.ship_to_phone);
+        const phoneOnly = cmp.diffs.length === 1
+          && cmp.diffs[0].formKey === 'phone' && masterPhoneEmpty;
+        setSaveError(null);
+        setSaveConfirm({ diffs: cmp.diffs, info: cmp.info, phoneOnly });
+        return;
+      }
     }
 
     doBooking();
@@ -2098,7 +2104,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     // proceed; 'legacy' / 'failed' / 'loading' HOLD for explicit operator
     // confirmation. Confirming books a NEW shipment record only — it never
     // cancels, replays, or voids the prior one.
-    if (legacyProbe !== 'clear' && legacyProbe !== 'skip' && !legacyApproved) {
+    if (isDhl && legacyProbe !== 'clear' && legacyProbe !== 'skip' && !legacyApproved) {
       setLegacyConfirm(true);
       return;
     }
@@ -2152,6 +2158,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       // idempotency key + carrier row to this client so two clients in the same
       // import batch never collide onto one AWB/CMR (2026-07-16 leak fix).
       client_ref:         prefill.client_name || null,
+      carrier:            selectedCarrier,
     })
       .then(r => {
         // PzApi wraps responses as { ok, data } / { ok:false, error }.
@@ -2376,13 +2383,34 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       <div onClick={e => e.stopPropagation()} style={card}>
         <div style={header}>
           <div style={{ fontSize: 18, fontWeight: 700 }}>
-            {isExternal ? 'Register customer-arranged shipment' : 'Generate DHL Express AWB'}
+            {isUps ? 'Register customer-arranged shipment'
+              : (isFedex ? 'Generate FedEx sandbox shipment' : 'Generate DHL Express AWB')}
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}
             aria-label="Close">×</button>
         </div>
         <div style={{ padding: '20px 24px' }}>
-          {selectedCarrier === 'DHL' && isPending && (
+          {isUps && (
+            <div style={{
+              padding: '10px 14px', background: 'var(--badge-amber-bg, #fef3c7)',
+              borderRadius: 6, border: '1px solid var(--badge-amber-border, #d97706)',
+              color: 'var(--badge-amber-text, #92400e)', fontSize: 12, marginBottom: 16,
+            }} data-testid="awb-ups-blocked">
+              UPS_NOT_CONFIGURED — API booking is blocked. Register a customer-arranged
+              tracking number only. Never silently converted to DHL.
+            </div>
+          )}
+          {isFedex && (
+            <div style={{
+              padding: '10px 14px', background: 'var(--bg-subtle)',
+              borderRadius: 6, border: '1px solid var(--border)',
+              color: 'var(--text-2)', fontSize: 12, marginBottom: 16,
+            }} data-testid="awb-fedex-sandbox-note">
+              FedEx sandbox booking uses the same coordinator as DHL. Production FedEx
+              is blocked. Missing sandbox credentials fail closed (FEDEX_NOT_CONFIGURED).
+            </div>
+          )}
+          {isDhl && isPending && (
             <div style={{
               padding: '10px 14px', background: 'var(--badge-amber-bg, #fef3c7)',
               borderRadius: 6, border: '1px solid var(--badge-amber-border, #d97706)',
@@ -2492,7 +2520,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             </div>
           )}
 
-          {selectedCarrier === 'DHL' && (
+          {isApiBooking && (
           <div data-testid="awb-dhl-form">
           {/* ── DHL Service ── */}
           <div style={sectionHead}>DHL Service</div>
@@ -2853,11 +2881,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
               <Btn variant="primary" onClick={handleSubmit}
-                disabled={loading || (selectedCarrier === 'DHL' && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit))}
+                disabled={loading || (isDhl && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit))}
                 data-testid="awb-submit-btn">
                 {loading
                   ? (isExternal ? 'Saving…' : 'Creating AWB…')
-                  : (isExternal ? 'Register external shipment' : 'Create AWB')}
+                  : (isExternal ? 'Register external shipment'
+                    : (isFedex ? 'Create FedEx sandbox shipment' : 'Create AWB'))}
               </Btn>
             </div>
           </div>

@@ -109,3 +109,23 @@ def test_factory_returns_new_instance_each_call():
     a1 = get_adapter(cfg)
     a2 = get_adapter(cfg)
     assert a1 is not a2
+
+
+def test_ups_never_silently_returns_dhl():
+    with pytest.raises(CarrierGateError, match="UPS_NOT_CONFIGURED"):
+        get_adapter(CarrierConfig(status="live"), "UPS")
+
+
+def test_other_never_silently_returns_dhl():
+    with pytest.raises(CarrierGateError, match="OTHER_IS_EXTERNAL_ONLY"):
+        get_adapter(CarrierConfig(status="shadow"), "OTHER")
+
+
+def test_fedex_returns_sandbox_adapter_not_dhl():
+    from app.services.carrier.adapters.fedex import FedExSandboxAdapter
+    from app.services.carrier.adapters.live import DhlExpressLiveAdapter
+
+    adapter = get_adapter(CarrierConfig(status="live"), "FEDEX")
+    assert isinstance(adapter, FedExSandboxAdapter)
+    assert not isinstance(adapter, DhlExpressLiveAdapter)
+    assert not isinstance(adapter, DhlExpressShadowAdapter)

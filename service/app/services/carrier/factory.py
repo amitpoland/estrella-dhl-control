@@ -32,13 +32,30 @@ class CarrierConfig:
     live_allowlist: str = ""                       # comma-separated batch_ids; empty = no live
 
 
-def get_adapter(config: CarrierConfig) -> AbstractCarrierAdapter:
+def get_adapter(
+    config: CarrierConfig,
+    provider: str = "DHL",
+) -> AbstractCarrierAdapter:
     """
-    Return the carrier adapter for the current status gate.
+    Return the carrier adapter for the selected provider + status gate.
 
     Raises CarrierGateError for "pending" and any unknown status.
-    Never falls back silently to a lower-capability adapter.
+    Never falls back silently to DHL when FedEx/UPS is selected.
     """
+    code = (provider or "DHL").strip().upper() or "DHL"
+    if code == "UPS":
+        raise CarrierGateError("UPS_NOT_CONFIGURED")
+    if code == "FEDEX":
+        from .adapters.fedex import FedExSandboxAdapter
+
+        return FedExSandboxAdapter(config)
+    if code == "OTHER":
+        raise CarrierGateError("OTHER_IS_EXTERNAL_ONLY")
+    if code != "DHL":
+        raise CarrierGateError(
+            f"Unknown booking provider {code!r}. Never silently routed to DHL."
+        )
+
     if config.status == "shadow":
         from .adapters.shadow import DhlExpressShadowAdapter
         return DhlExpressShadowAdapter()

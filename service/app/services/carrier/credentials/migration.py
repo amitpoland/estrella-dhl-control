@@ -11,8 +11,6 @@ from __future__ import annotations
 import os
 from typing import FrozenSet, Optional
 
-from app.core.config import settings
-
 from .exceptions import CarrierCredentialNotConfigured
 from .models import CredentialBundle, CredentialIdentity
 
@@ -28,7 +26,12 @@ def configure_migrated_identities(keys: Optional[FrozenSet[str]]) -> None:
 def migrated_identity_keys() -> FrozenSet[str]:
     if _MIGRATED_OVERRIDE is not None:
         return _MIGRATED_OVERRIDE
-    raw = (getattr(settings, "carrier_credential_migrated", None) or "").strip()
+    # Always read the live Settings singleton. `from app.core.config import settings`
+    # binds the object at import time; helpers that do `config.settings = Settings()`
+    # after writing .env would otherwise leave is_migrated() on a stale instance.
+    from app.core import config as cfg
+
+    raw = (getattr(cfg.settings, "carrier_credential_migrated", None) or "").strip()
     if not raw:
         raw = os.environ.get("CARRIER_CREDENTIAL_MIGRATED", "").strip()
     if not raw:
@@ -42,32 +45,39 @@ def is_migrated(identity: CredentialIdentity) -> bool:
 
 def resolve_legacy_settings(identity: CredentialIdentity) -> CredentialBundle:
     """Map neutral identity → Settings fields. Fail closed when absent."""
+    from app.core import config as cfg
+
+    live = cfg.settings
     fields: dict[str, str] = {}
     c, env, cap = identity.carrier, identity.environment, identity.capability
 
     if c == "dhl" and env == "production" and cap in ("ship", "epod", "documents"):
-        key = (settings.dhl_express_api_key or "").strip()
-        secret = (settings.dhl_express_api_secret or "").strip()
+        key = (live.dhl_express_api_key or "").strip()
+        secret = (live.dhl_express_api_secret or "").strip()
         if not key or not secret:
             raise CarrierCredentialNotConfigured(identity.key)
         fields = {"api_key": key, "api_secret": secret}
-        acct = (settings.dhl_express_account_number or "").strip()
+        acct = (live.dhl_express_account_number or "").strip()
         if acct:
             fields["account_number"] = acct
     elif c == "dhl" and env == "production" and cap == "track":
         key = (
-            (settings.dhl_tracking_api_key or "").strip()
-            or (settings.dhl_api_key or "").strip()
+            (live.dhl_tracking_api_key or "").strip()
+            or (live.dhl_api_key or "").strip()
+            or (os.environ.get("DHL_CLIENT_ID") or "").strip()
         )
-        secret = (settings.dhl_tracking_api_secret or "").strip()
+        secret = (
+            (live.dhl_tracking_api_secret or "").strip()
+            or (os.environ.get("DHL_CLIENT_SECRET") or "").strip()
+        )
         if not key:
             raise CarrierCredentialNotConfigured(identity.key)
         fields = {"api_key": key}
         if secret:
             fields["api_secret"] = secret
     elif c == "fedex" and cap in ("ship_rate", "track"):
-        cid = (settings.fedex_client_id or "").strip()
-        csec = (settings.fedex_client_secret or "").strip()
+        cid = (live.fedex_client_id or "").strip()
+        csec = (live.fedex_client_secret or "").strip()
         if not cid or not csec:
             raise CarrierCredentialNotConfigured(identity.key)
         fields = {"client_id": cid, "client_secret": csec}

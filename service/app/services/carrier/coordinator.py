@@ -128,9 +128,14 @@ class CarrierCoordinator:
 
     def __init__(self, config: CoordinatorConfig) -> None:
         self._config = config
-        self._adapter = get_adapter(config.carrier_config)
+        # Adapter is resolved per booking from the selected provider.
+        # Binding DHL at init would silently ignore FedEx/UPS selection.
+        self._adapter = None
         _init_shipment_db(config.shipment_db_path)
         _init_shadow_log(config.shadow_log_db_path)
+
+    def _adapter_for(self, provider: str):
+        return get_adapter(self._config.carrier_config, provider)
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -139,6 +144,7 @@ class CarrierCoordinator:
         request: ShipmentRequest,
         *,
         operator: Optional[str] = None,
+        provider: str = PROVIDER_DHL,
     ) -> ShipmentResult:
         """Create (or idempotently replay) a shipment.
 
@@ -148,13 +154,19 @@ class CarrierCoordinator:
         it with whoever triggered the replay. None keeps the pre-attribution
         behaviour unchanged.
         """
+        provider = normalize_provider_code(provider) or PROVIDER_DHL
+        self._adapter = self._adapter_for(provider)
         key = compute_idempotency_key(request)
         existing = _db_get(self._config.shipment_db_path, key)
 
         if existing:
-            return self._handle_existing(request, key, existing, operator=operator)
+            return self._handle_existing(
+                request, key, existing, operator=operator, provider=provider,
+            )
 
-        return self._execute(request, key, is_recovery=False, operator=operator)
+        return self._execute(
+            request, key, is_recovery=False, operator=operator, provider=provider,
+        )
 
     # ── private ───────────────────────────────────────────────────────────────
 
@@ -165,6 +177,7 @@ class CarrierCoordinator:
         row: dict,
         *,
         operator: Optional[str] = None,
+        provider: str = PROVIDER_DHL,
     ) -> ShipmentResult:
         state = ShipmentState(row["state"])
 
@@ -195,7 +208,9 @@ class CarrierCoordinator:
             # captured at the first insert; the current caller's operator is
             # forwarded but _execute always restores booked_by from the stored
             # row, so the original attribution wins.
-            return self._execute(request, key, is_recovery=True, operator=operator)
+            return self._execute(
+                request, key, is_recovery=True, operator=operator, provider=provider,
+            )
 
         if state == ShipmentState.FAILED:
             raise CarrierGateError(
@@ -215,7 +230,10 @@ class CarrierCoordinator:
         is_recovery: bool,
         *,
         operator: Optional[str] = None,
+        provider: str = PROVIDER_DHL,
     ) -> ShipmentResult:
+        if self._adapter is None:
+            self._adapter = self._adapter_for(provider)
         if not is_recovery:
             # Write PENDING before the adapter call — crash-safe anchor.
             # operator is written here (and only here) as booked_by.
@@ -230,6 +248,7 @@ class CarrierCoordinator:
                 request.batch_id,
                 getattr(request, "client_ref", None),
                 operator=operator,
+                provider=provider,
             )
 
         # Adapter call — pure, deterministic, no side effects.
@@ -338,7 +357,9 @@ class CarrierCoordinator:
                 tracking_db.record_event(
                     batch_id=request.batch_id,
                     awb=complete.tracking_ref,
-                    carrier=self._adapter.carrier_id if hasattr(self._adapter, 'carrier_id') else 'DHL',
+                    carrier=provider or (
+                        self._adapter.carrier_id if hasattr(self._adapter, 'carrier_id') else 'DHL'
+                    ),
                     stage="outbound_created",
                     status=complete.state.value,
                     event_time=event_time,
@@ -364,6 +385,7 @@ class CarrierCoordinator:
                 declared_value=request.declared_value,
                 currency=request.currency,
                 box_type_code=request.box_type_code,
+                carrier_transaction_id=getattr(complete, "carrier_transaction_id", None),
             )
         except Exception:
             pass  # best-effort — state already COMPLETE above
