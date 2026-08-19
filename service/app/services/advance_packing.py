@@ -118,6 +118,9 @@ def ingest_advance(
     if not is_advance_batch(bid):
         raise ValueError(f"not an advance batch id: {bid!r}")
 
+    file_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+    _reject_second_file(bid, file_hash)
+
     diagnostic = dict(diagnostic or {})
     diagnostic["doc_stage"] = ADVANCE
     diagnostic["ingested_by"] = operator
@@ -126,7 +129,7 @@ def ingest_advance(
         batch_id          = bid,
         invoice_no        = "",          # there is no invoice yet
         source_file_path  = str(file_path),
-        source_file_hash  = hashlib.sha256(file_path.read_bytes()).hexdigest(),
+        source_file_hash  = file_hash,
         parser_name       = parser_name,
         parser_version    = parser_version,
         extraction_status = "extracted" if rows else "empty",
@@ -136,7 +139,7 @@ def ingest_advance(
     )
 
     line_records: List[Dict[str, Any]] = []
-    for row in rows:
+    for ordinal, row in enumerate(rows, start=1):
         line_records.append({
             "packing_document_id": doc_id,
             "batch_id":     bid,
@@ -160,7 +163,15 @@ def ingest_advance(
             "diamond_weight": _f(row.get("diamond_weight")),
             "color_weight": _f(row.get("color_weight")),
             "remarks":      str(row.get("remarks") or ""),
-            "pack_sr":      row.get("pack_sr"),
+            # The dedup key is (batch_id, invoice_no, pack_sr), and an advance
+            # row has no invoice_no, no invoice_line_position and no unit_price
+            # to fall back on -- 402 of 1523 production lines already carry
+            # neither pack_sr nor bag_id.  Without an ordinal, a list that
+            # announces the same design in two bags silently loses the second
+            # row and understates the expected quantity.  The ordinal is the
+            # row's own position in the file, not an invented external id, and
+            # it is stable across re-ingest of the same file.
+            "pack_sr":      ordinal,
             "extracted_confidence": _f(row.get("extracted_confidence")),
             "requires_manual_review": bool(row.get("requires_manual_review", False)),
         })
@@ -184,6 +195,29 @@ def _f(v: Any) -> float:
         return float(v or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _reject_second_file(batch_id: str, file_hash: str) -> None:
+    """One advance batch holds exactly one advance document.
+
+    Line identity within an advance batch is the row's ordinal in its source
+    file, so two different files in one batch would collide on the dedup key.
+    Re-ingesting the SAME file stays idempotent; a different file must get its
+    own advance batch.
+    """
+    if pdb._db_path is None:
+        return
+    with pdb._connect() as con:
+        row = con.execute(
+            "SELECT id, source_file_hash FROM packing_documents "
+            "WHERE batch_id=? AND doc_stage=? LIMIT 1",
+            (batch_id, ADVANCE),
+        ).fetchone()
+    if row is not None and row["source_file_hash"] != file_hash:
+        raise ValueError(
+            f"advance batch {batch_id} already holds document {row['id']}; "
+            "upload a different file as its own advance batch"
+        )
 
 
 def _null_scan_codes(batch_id: str) -> None:

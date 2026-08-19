@@ -292,6 +292,35 @@ def _isolate_ai_gateway():
 # ── Safety fixture: prevent tests from writing to live storage ───────────────
 
 # Paths that tests must NEVER write new files into.
+# -- Deployed-storage write barrier ------------------------------------------
+# _LIVE_ROOTS below covers this checkout's storage only.  C:\PZ\storage is the
+# DEPLOYED service's tree; it is not walked here because that costs a full-tree
+# rglob per test.  The barrier prevents writes to it outright instead.  Armed
+# at conftest import so it also covers module-level code in test files.
+sys.path.insert(0, str(Path(__file__).parent))
+import _deployed_storage_barrier as _dsb  # noqa: E402
+
+_dsb.arm()
+
+
+@pytest.fixture()
+def production_db_snapshot(tmp_path):
+    """Hand a test a throwaway copy of a deployed database.
+
+        db = production_db_snapshot("packing.db")
+
+    Uses sqlite3's online backup API, so the source is opened read-only and a
+    service writing to it concurrently cannot produce a torn copy.  The copy is
+    outside the barrier, so the test may migrate and mutate it freely.
+    """
+    def _snap(name: str) -> Path:
+        src = Path(r"C:\PZ\storage") / name
+        if not src.exists():
+            pytest.skip(f"deployed storage has no {name}")
+        return Path(_dsb.snapshot_db(src, tmp_path / name))
+    return _snap
+
+
 _LIVE_ROOTS = {
     Path(__file__).parent.parent / "app" / "storage",          # default config.py
     Path(__file__).parent.parent / "storage",                  # legacy fallback
