@@ -1046,7 +1046,10 @@ def create_shipment(
             recipient_address = derive_awb_address_authority_with_fallback(
                 batch_id,
                 settings.storage_root,
-                raw_fallback=body.recipient_address
+                raw_fallback=body.recipient_address,
+                # Same outbound commercial scope the Incoterm and description
+                # authorities already use — never a batch-level customer guess.
+                client_ref=body.client_ref,
             )
 
             # Map CM delivery shape (name=company, person=contact, country)
