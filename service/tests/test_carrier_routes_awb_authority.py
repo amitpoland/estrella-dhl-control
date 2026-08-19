@@ -31,11 +31,11 @@ from app.core.security import require_api_key
 from app.services import document_db as ddb
 from app.services import proforma_invoice_link_db as pildb
 
-BATCH = "SHIPMENT_6696117050_2026-08_100ab076"
+BATCH = "SHIPMENT_1234567890_2026-08_abcdef01"
 
 # Two commercial customers on ONE import batch -> batch-level party
 # resolution is AMBIGUOUS; only the client scope disambiguates.
-CLIENT_A, CID_A = "SAGAR SHAH", "182241571"
+CLIENT_A, CID_A = "Alpha Gems Ltd", "700000222"
 CLIENT_B, CID_B = "DG Handels GmbH", "900000111"
 
 # What the operator might type into the modal. It must never ship.
