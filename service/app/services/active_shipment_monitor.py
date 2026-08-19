@@ -3362,6 +3362,7 @@ def list_outbound_tracking_candidates() -> List[Dict[str, Any]]:
             "batch_id": batch_id,
             "state": row.get("state"),
             "client_ref": row.get("client_ref"),
+            "provider": csdb.resolve_provider(row.get("provider")),
             "direction": "outbound",
         })
     return out
@@ -3408,6 +3409,11 @@ def _tracking_refresh_summary(tr: Dict[str, Any]) -> Dict[str, Any]:
 
 _REFRESH_SWEEP_LOCK = threading.Lock()
 
+# Booking provider code -> the carrier name tracking_service polls with.
+# Only providers tracking_service actually implements appear here; UPS has no
+# tracking client yet, so UPS shipments are skipped rather than mis-polled.
+_TRACKABLE_PROVIDERS = {"DHL": "DHL", "FEDEX": "FedEx"}
+
 
 def _collect_refresh_targets() -> Dict[str, Any]:
     """Every active AWB worth polling, deduped across inbound and outbound.
@@ -3417,6 +3423,7 @@ def _collect_refresh_targets() -> Dict[str, Any]:
     """
     targets: Dict[Any, Dict[str, Any]] = {}
     skipped_terminal = 0
+    skipped_untrackable = 0
 
     # Inbound: import batches still open, per the canonical _is_active gate.
     for audit_path in _all_audit_paths():
@@ -3433,27 +3440,49 @@ def _collect_refresh_targets() -> Dict[str, Any]:
         if is_carrier_tracking_terminal(awb, batch_id):
             skipped_terminal += 1
             continue
+        # Same allowlist as outbound: tracking_service dispatches
+        # "DHL -> DHL client, ANYTHING ELSE -> FedEx client", so an audit
+        # carrier of "Other"/"Unknown" would silently query FedEx. NULL still
+        # means DHL (only DHL existed when those audits were written).
+        carrier = _TRACKABLE_PROVIDERS.get(
+            str(audit.get("carrier") or "DHL").strip().upper()
+        )
+        if carrier is None:
+            skipped_untrackable += 1
+            continue
         targets.setdefault((awb, batch_id), {
             "awb": awb,
             "batch_id": batch_id,
-            "carrier": str(audit.get("carrier") or "DHL").strip() or "DHL",
+            "carrier": carrier,
             "direction": "inbound",
         })
 
     # Outbound: booked customer shipments (already excludes terminals).
+    # The booking row's provider is the authority for WHICH carrier to poll —
+    # never the AWB shape, never a DHL default. A provider tracking_service
+    # cannot poll is skipped and counted, never polled as DHL: asking DHL about
+    # a UPS AWB burns quota and answers about a shipment that does not exist.
     for row in list_outbound_tracking_candidates():
         awb = str(row.get("awb") or "").strip()
         batch_id = str(row.get("batch_id") or "").strip()
         if not awb or not batch_id:
             continue
+        carrier = _TRACKABLE_PROVIDERS.get(str(row.get("provider") or "").strip().upper())
+        if carrier is None:
+            skipped_untrackable += 1
+            continue
         targets.setdefault((awb, batch_id), {
             "awb": awb,
             "batch_id": batch_id,
-            "carrier": "DHL",
+            "carrier": carrier,
             "direction": "outbound",
         })
 
-    return {"targets": list(targets.values()), "skipped_terminal": skipped_terminal}
+    return {
+        "targets": list(targets.values()),
+        "skipped_terminal": skipped_terminal,
+        "skipped_untrackable": skipped_untrackable,
+    }
 
 
 def refresh_active_tracking(*, max_workers: int = 4) -> Dict[str, Any]:
@@ -3475,7 +3504,7 @@ def refresh_active_tracking(*, max_workers: int = 4) -> Dict[str, Any]:
         return {
             "running": True,
             "checked": 0, "refreshed": 0, "skipped_fresh": 0,
-            "skipped_terminal": 0, "errors": [],
+            "skipped_terminal": 0, "skipped_untrackable": 0, "errors": [],
             "ran_at": datetime.now(timezone.utc).isoformat(),
         }
     try:
@@ -3517,6 +3546,7 @@ def refresh_active_tracking(*, max_workers: int = 4) -> Dict[str, Any]:
             "refreshed": refreshed,
             "skipped_fresh": skipped_fresh,
             "skipped_terminal": collected["skipped_terminal"],
+            "skipped_untrackable": collected["skipped_untrackable"],
             "errors": errors,
             "ran_at": datetime.now(timezone.utc).isoformat(),
         }

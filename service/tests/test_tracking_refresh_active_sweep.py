@@ -212,3 +212,86 @@ def test_login_bootstrap_calls_refresh_only_endpoint():
     assert "_pzTrackingBootstrapFired" in src
     # never the workflow sweep — that one sends email
     assert "monitor/active-shipments/run" not in src
+
+
+def _seed_carrier_db_with_provider(db_path: Path, rows: list) -> None:
+    """Same table as :func:`_seed_carrier_db` plus the ``provider`` column."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db_path))
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS carrier_shipments (
+            idempotency_key TEXT PRIMARY KEY,
+            batch_id TEXT, mode TEXT, state TEXT, error TEXT,
+            simulated INTEGER, created_at TEXT, updated_at TEXT,
+            tracking_ref TEXT, do_not_use INTEGER DEFAULT 0, client_ref TEXT,
+            shipment_direction TEXT, provider TEXT
+        )
+        """
+    )
+    for i, r in enumerate(rows):
+        con.execute(
+            "INSERT INTO carrier_shipments(idempotency_key, batch_id, mode, state,"
+            " simulated, created_at, updated_at, tracking_ref, do_not_use,"
+            " client_ref, provider) VALUES (?,?,?,?,0,?,?,?,?,?,?)",
+            (f"k{i}", r["batch_id"], "live", "complete",
+             "2026-08-10T10:00:00Z", "2026-08-10T10:00:00Z",
+             r["tracking_ref"], 0, "Client", r.get("provider")),
+        )
+    con.commit()
+    con.close()
+
+
+def test_sweep_polls_each_shipment_with_its_own_booked_provider(
+    tmp_path, monkeypatch
+):
+    """The booking row's provider decides which carrier is polled.
+
+    ``tracking_service`` dispatches "DHL -> DHL client, anything else -> FedEx
+    client", so a provider passed through wrongly does not fail loudly — it
+    quietly asks the wrong carrier about an AWB it has never heard of.
+    """
+    from app.services import active_shipment_monitor as mon
+
+    _isolate(mon, tmp_path, monkeypatch)
+    _seed_carrier_db_with_provider(tmp_path / "carrier" / "carrier_shipments.db", [
+        {"tracking_ref": "1111111111", "batch_id": "B_DHL",   "provider": "DHL"},
+        {"tracking_ref": "222222222222", "batch_id": "B_FDX", "provider": "FEDEX"},
+        # Legacy row written before the provider column existed → DHL.
+        {"tracking_ref": "3333333333", "batch_id": "B_LEGACY", "provider": None},
+    ])
+    seen = {}
+    monkeypatch.setattr(
+        mon, "_poll_awb_tracking",
+        lambda awb, *, batch_id, carrier="DHL": seen.setdefault(awb, carrier) and None
+        or {"status": "in_transit", "source": "api"},
+    )
+    out = mon.refresh_active_tracking()
+
+    assert seen == {
+        "1111111111": "DHL",
+        "222222222222": "FedEx",
+        "3333333333": "DHL",
+    }, seen
+    assert out["checked"] == 3
+
+
+def test_sweep_skips_providers_tracking_service_cannot_poll(tmp_path, monkeypatch):
+    """A UPS AWB must not be polled as DHL/FedEx — it is skipped and counted."""
+    from app.services import active_shipment_monitor as mon
+
+    _isolate(mon, tmp_path, monkeypatch)
+    _seed_carrier_db_with_provider(tmp_path / "carrier" / "carrier_shipments.db", [
+        {"tracking_ref": "1Z999AA10123456784", "batch_id": "B_UPS", "provider": "UPS"},
+        {"tracking_ref": "9999999999", "batch_id": "B_OTHER", "provider": "OTHER"},
+    ])
+    monkeypatch.setattr(
+        mon, "_poll_awb_tracking",
+        lambda awb, *, batch_id, carrier="DHL": (_ for _ in ()).throw(
+            AssertionError(f"{awb} polled as {carrier}; it has no tracking client")
+        ),
+    )
+    out = mon.refresh_active_tracking()
+
+    assert out["checked"] == 0
+    assert out["skipped_untrackable"] == 2, out
