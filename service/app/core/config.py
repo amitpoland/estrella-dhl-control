@@ -207,6 +207,10 @@ class Settings(BaseSettings):
     dhl_api_key:         Optional[str] = Field(default=None)
     fedex_client_id:     Optional[str] = Field(default=None)
     fedex_client_secret: Optional[str] = Field(default=None)
+    # UPS OAuth client credentials (sandbox). Production booking is blocked in
+    # the adapter regardless of what is configured here.
+    ups_client_id:       Optional[str] = Field(default=None)
+    ups_client_secret:   Optional[str] = Field(default=None)
 
     # ── DHL Shipment Tracking Unified API (OAuth2 client-credentials) ─────────
     # Status gate — controls whether live API calls are allowed.

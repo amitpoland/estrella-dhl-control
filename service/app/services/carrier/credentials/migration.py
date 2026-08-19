@@ -81,6 +81,12 @@ def resolve_legacy_settings(identity: CredentialIdentity) -> CredentialBundle:
         if not cid or not csec:
             raise CarrierCredentialNotConfigured(identity.key)
         fields = {"client_id": cid, "client_secret": csec}
+    elif c == "ups" and cap in ("ship", "ship_rate", "track"):
+        cid = (live.ups_client_id or "").strip()
+        csec = (live.ups_client_secret or "").strip()
+        if not cid or not csec:
+            raise CarrierCredentialNotConfigured(identity.key)
+        fields = {"client_id": cid, "client_secret": csec}
     else:
         raise CarrierCredentialNotConfigured(identity.key)
 
