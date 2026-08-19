@@ -12,6 +12,9 @@ pipes the PostToolUse event JSON to this script on stdin.
 
 Behaviour:
   - file_path does not end in .py        -> exit 0 silently (no run).
+  - file_path outside the golden import
+    surface (measured: root-level only)  -> exit 0 silently (no run;
+                                            state left untouched).
   - Suite PASSES (exit 0)                -> exit 0, one short stdout line.
   - Suite FAILS (exit != 0)              -> exit 2, last ~25 lines of
                                             combined output on stderr.
@@ -32,6 +35,7 @@ Test seam:
 """
 import sys
 import json
+import re
 import os
 import subprocess
 import shlex
@@ -123,6 +127,63 @@ def _record_state(token):
         pass
 
 
+def _in_golden_surface(file_path, project_dir):
+    """True when the edited file can possibly change the golden result.
+
+    MEASURED SURFACE.  test_pz_regression.py imports only golden_constants
+    and pz_import_processor; the transitive closure inside this repository
+    is exactly three modules -- golden_constants.py, pz_import_processor.py
+    and description_grammar.py -- all at the repository root, with no
+    function-level import reaching service/ or app/.  An edit under
+    service/ therefore cannot change the golden result, and running the
+    1.46 s suite for it is pure latency.
+
+    The rule implemented here is the safe SUPERSET of that measurement:
+    any root-level .py, plus the golden fixture data.  It is deliberately
+    wider than the true closure so that adding a new root engine module
+    cannot silently fall outside the gate.
+
+    Fail-safe direction: anything this function cannot resolve returns
+    True (run the suite).  A skip happens only on proof.
+
+    The closure is pinned by
+    service/tests/test_delivery_pipeline.py::test_golden_surface_is_root_only,
+    so a future import from service/ into the engine breaks a test instead
+    of silently disarming this gate.
+    """
+    try:
+        rel = os.path.relpath(os.path.abspath(file_path), project_dir)
+    except Exception:
+        return True                       # unresolvable -> run
+    rel = rel.replace(os.sep, "/")
+    if rel.startswith("../"):
+        return True                       # outside the repo -> run
+    if "/" not in rel:
+        return True                       # root-level .py -> run
+    if rel.startswith("reference_batch/"):
+        return True                       # golden fixture data -> run
+    return False
+
+
+_COUNT_RX = re.compile(r"(\d+)\s*/\s*(\d+)\s+tests passed")
+
+
+def _derive_count(stdout_bytes):
+    """Report what the run actually said, never a remembered number.
+
+    Engineering Lesson S: evidence is what the producer emitted.  If the
+    count cannot be read back, say so rather than asserting a stale one.
+    """
+    try:
+        text = (stdout_bytes or b"").decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    m = None
+    for m in _COUNT_RX.finditer(text):
+        pass
+    return "%s/%s" % (m.group(1), m.group(2)) if m else None
+
+
 def main():
     data = _read_stdin_json()
     if data is None:
@@ -131,6 +192,17 @@ def main():
     if not file_path.strip():
         return 0
     if not file_path.lower().endswith(".py"):
+        return 0
+
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
+    if not project_dir:
+        here = os.path.dirname(os.path.abspath(__file__))
+        project_dir = os.path.normpath(os.path.join(here, "..", ".."))
+
+    if not _in_golden_surface(file_path, project_dir):
+        # Deliberately leaves .regression-state untouched: a skip is not a
+        # pass, and must never clear a red state recorded by an earlier
+        # in-surface edit.
         return 0
 
     python = _resolve_python()
@@ -146,12 +218,6 @@ def main():
     # resolves regardless of where the edited file lives. Without this, a Post-edit on
     # service/tests/foo.py inherits the editor's cwd and looks for
     # service/tests/test_pz_regression.py — wrong path, exit 2.
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
-    if not project_dir:
-        # Fall back to the hook's own anchor (.claude/hooks/.. = repo root)
-        here = os.path.dirname(os.path.abspath(__file__))
-        project_dir = os.path.normpath(os.path.join(here, "..", ".."))
-
     argv = [python] + _suite_argv()
     try:
         r = subprocess.run(
@@ -171,7 +237,9 @@ def main():
     _record_state("pass" if r.returncode == 0 else "fail")
 
     if r.returncode == 0:
-        sys.stdout.write("regression: 160 green\n")
+        counted = _derive_count(r.stdout)
+        sys.stdout.write("regression: %s green\n"
+                         % (counted or "green (count not reported)"))
         return 0
 
     combined = (r.stdout or b"").decode("utf-8", errors="replace") + \

@@ -734,7 +734,7 @@ def test_route_404_unknown_contractor(client, monkeypatch):
     )
     r = client.get(
         "/api/v1/ledgers/clients/MISSING/statement.json"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 404
@@ -770,7 +770,7 @@ def test_route_502_universe_fetch_failure(client, monkeypatch):
     monkeypatch.setattr(wfirma_client, "_http_request", _boom)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.json"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 502
@@ -792,7 +792,7 @@ def test_route_502_payments_in_universe_failure(client, monkeypatch):
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.json"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 502
@@ -818,7 +818,7 @@ def test_route_happy_path_default_as_of(client, monkeypatch):
     )
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.json"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 200, r.text
@@ -856,7 +856,7 @@ def test_route_python_side_payment_date_filter(client, monkeypatch):
     )
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.json"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 200, r.text
@@ -884,7 +884,7 @@ def test_route_response_carries_no_forbidden_keys(client, monkeypatch):
     )
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.json"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 200

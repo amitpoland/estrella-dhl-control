@@ -1682,8 +1682,26 @@
       if (p.to) qs.set('to', p.to);
       if (p.as_of) qs.set('as_of', p.as_of);
       if (p.currency) qs.set('currency', p.currency);
+      // `document` selects one of the four statement products the route
+      // validates (soa | monthly | ledger | confirmation). Omitted = soa.
+      if (p.document && p.document !== 'soa') qs.set('document', p.document);
       const q = qs.toString();
       return `${BASE}/ledgers/suppliers/${encodeURIComponent(contractorId)}/statement.pdf${q ? `?${q}` : ''}`;
+    },
+
+    // GET /api/v1/ledgers/clients/{id}/statement.pdf
+    // The receivable twin of supplierStatementPdfUrl. It exists so the page
+    // has ONE URL authority per side instead of template literals inlined at
+    // each download button -- transport only, no figures, no formatting.
+    clientStatementPdfUrl: (contractorId, params) => {
+      const p = params || {};
+      const qs = new URLSearchParams();
+      if (p.from) qs.set('from', p.from);
+      if (p.to) qs.set('to', p.to);
+      if (p.as_of) qs.set('as_of', p.as_of);
+      if (p.document && p.document !== 'soa') qs.set('document', p.document);
+      const q = qs.toString();
+      return `${BASE}/ledgers/clients/${encodeURIComponent(contractorId)}/statement.pdf${q ? `?${q}` : ''}`;
     },
 
     // GET /api/v1/ledgers/management-analysis.pdf

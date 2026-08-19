@@ -216,6 +216,26 @@ def test_statement_reads_unchanged_still_direct():
     """Only the roster read is shared. The per-client statement JSON/PDF reads are
     out of scope and must remain on the existing transport untouched."""
     led = _ledgers()
-    assert "/statement.json" in led and "/statement.pdf" in led, (
-        "Statement JSON + PDF authority reads must remain intact (unchanged scope)"
+    # JSON: still fetched straight from the page, not through the roster cache.
+    assert "/statement.json" in led, (
+        "Statement JSON authority read must remain intact (unchanged scope)"
+    )
+    # PDF: the route string moved into the pz-api.js transport authority when
+    # the four statement products landed, so BOTH sides now build their
+    # download URL through one builder instead of inlining the route. That is
+    # a transport consolidation, not a caching change -- assert the read is
+    # still direct by pinning the builders on the page AND the route in the
+    # transport layer, so a builder pointing somewhere else cannot pass.
+    api = _api()
+    assert "clientStatementPdfUrl" in led and "supplierStatementPdfUrl" in led, (
+        "Statement PDF downloads must go through the PzApi URL builders"
+    )
+    assert api.count("/statement.pdf") >= 2, (
+        "pz-api.js must own the /statement.pdf route for both AR and AP"
+    )
+    # The decisive part of this pin: no statement read may be served from the
+    # shared roster cache.
+    region = _cache_region()
+    assert "statement" not in region, (
+        "The shared roster cache must never serve statement reads"
     )
