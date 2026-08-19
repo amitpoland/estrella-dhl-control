@@ -166,3 +166,17 @@ def test_weight_source_hint_is_honest_when_no_weight_recorded():
     hint = hint[:hint.index("</div>")]
     assert "Weights panel" in hint
     assert not re.search(r"\b\d+(\.\d+)?\s*kg\b", hint)
+
+
+def test_zero_gross_weight_never_prefills_a_booking():
+    """A 0 kg gross must not reach the booking payload.
+
+    `String(0)` is truthy, so a zero prefill sails straight past the modal's own
+    required-field check (`if (!form.weight_kg) missing.push('Weight (kg)')`) and
+    books a 0 kg parcel that only DHL rejects. The prefill therefore gates on
+    `> 0`, not on `!= null`.
+    """
+    block = _prefill_block()
+    weight = block[block.index("weight_kg:"):block.index("weight_source:")]
+    assert "_ew.gross > 0" in weight
+    assert "!= null" not in weight

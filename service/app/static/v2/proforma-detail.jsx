@@ -7888,7 +7888,9 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
             // (_transport.effectiveWeight). 'calculated_net_plus_tare' is
             // DISPLAY-ONLY by contract, so it never prefills a booking: an
             // inferred weight must not become a declared shipment weight.
-            weight_kg:          (_ew.gross != null && _ew.gross_source !== 'calculated_net_plus_tare')
+            // > 0 because String(0) is TRUTHY: a zero gross would sail straight
+            // past the modal's own required-field check and book a 0 kg parcel.
+            weight_kg:          (_ew.gross > 0 && _ew.gross_source !== 'calculated_net_plus_tare')
               ? String(_ew.gross) : '',
             weight_source:      _ew.gross_source || '',
             // Value — Overview total authority (lines + same-currency charges)
