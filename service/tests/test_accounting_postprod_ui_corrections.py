@@ -173,10 +173,29 @@ def test_credit_note_no_atlas_write_authority():
 
 
 def test_source_badges_local_vs_wfirma():
+    """The badge must report the read that happened, not the tab you are on.
+
+    Both modes stay reachable -- `source=live` / `refresh=1` still prints
+    "Source . wFirma" -- but the mode is derived from the provenance the
+    backend puts on the body (routes_ledgers sets `source` on every ledger
+    and statement response), never guessed from the active tab and never
+    hardcoded. The earlier tab-guess mislabelled the Client Ledger as wFirma
+    while it was already reading the local projection.
+    """
     ldg = _read("ledgers-page.jsx")
     assert "ldg-source-local" in ldg
     assert "ldg-source-wfirma" in ldg
-    assert "mode={tab === 'analysis' ? 'local' : 'wfirma'}" in ldg
+    # One helper owns the mapping, and it keys off the body's own field.
+    assert "function ldgSourceMode(source)" in ldg
+    assert "ldgSourceMode(loadInfo.source)" in ldg
+    assert "ldgSourceMode(d.source)" in ldg
+    # ...and the provenance is actually forwarded from the fetch results.
+    assert "source: (r && r.source) || 'local'" in ldg
+    assert "source: (body && body.source) || 'local'" in ldg
+    # No badge may be hardcoded or guessed from the tab again.
+    assert "mode={tab === 'analysis' ? 'local' : 'wfirma'}" not in ldg
+    assert 'LdgSourceBadge mode="wfirma"' not in ldg
+    assert 'LdgSourceBadge mode="local"' not in ldg
     assert "Opening → period movements → Closing" in ldg
 
 

@@ -341,6 +341,34 @@ def _normalize_statement_aging_method(raw: str) -> str:
     return _normalize_aging_method(m)
 
 
+_STATEMENT_DOCUMENTS = ("soa", "monthly", "ledger", "confirmation")
+
+# Filename stem per product. The default stays `statement-...` so existing
+# download links, tests and operator bookmarks keep resolving.
+_STATEMENT_FILE_STEM = {
+    "soa":          "statement",
+    "monthly":      "monthly-statement",
+    "ledger":       "ledger",
+    "confirmation": "balance-confirmation",
+}
+
+
+def _normalize_statement_document(raw: str) -> str:
+    """Validate the statement product name shared by AR and AP.
+
+    The four products are four presentations of ONE statement dict; the
+    renderer owns the layout difference and this route owns nothing but the
+    spelling of the name.
+    """
+    doc = (raw or "soa").strip().lower()
+    if doc not in _STATEMENT_DOCUMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail="document must be one of: %s" % ", ".join(_STATEMENT_DOCUMENTS),
+        )
+    return doc
+
+
 def _contractor_meta_from_customer_master(cid: str, rcv) -> Dict[str, Any]:
     """Postal + identity for Statement: Customer Master first, wFirma
     preflight as fallback for name/country/VAT only."""
@@ -450,9 +478,17 @@ def _build_statement_dict(
     as_of:         str,
     *,
     aging_method: str = "",
+    source: str = "local",
+    refresh: int = 0,
 ) -> Dict[str, Any]:
     """Shared builder used by BOTH ``/statement.json`` and
     ``/statement.pdf`` routes.
+
+    ``source`` selects the fact authority, exactly as the Supplier Ledger
+    does: ``local`` (default) reads the canonical local financial
+    projection, ``live`` reads wFirma directly. Both feed the SAME
+    ``aggregate_statement_from_facts`` -- there is one statement formula and
+    one read model, only two ways to fill it. ``refresh=1`` forces ``live``.
 
     Consumes the shared fiscal AR fact universe (#1172
     ``FISCAL_AR_INVOICE_TYPES`` via ``load_ar_fact_universe``) and the
@@ -493,27 +529,40 @@ def _build_statement_dict(
 
     method = _normalize_statement_aging_method(aging_method)
 
-    # Preflight contractor.
-    try:
-        rcv = _cmd_lookup_contractor(cid)  # C-2b V5
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": f"wFirma contractor preflight failed: {exc}",
-                "code":  "STATEMENT_PREFLIGHT_FAILED",
-                "wfirma_contractor_id": cid,
-            },
-        )
-    if not rcv.ok:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": rcv.error or "contractor not found",
-                "code":  "CONTRACTOR_NOT_FOUND",
-                "wfirma_contractor_id": cid,
-            },
-        )
+    src = (source or "local").strip().lower()
+    if refresh:
+        src = "live"
+    if src not in ("local", "live"):
+        raise HTTPException(status_code=400, detail="source must be local or live")
+
+    # Preflight contractor. On the live path wFirma proves the contractor
+    # exists. The local path makes no wFirma call at all, so existence is
+    # proven the way the Supplier Ledger proves it -- from the master plus
+    # the fact universe (see the CONTRACTOR_NOT_FOUND gate below). Identity
+    # already comes from Customer Master on BOTH paths, so dropping the
+    # preflight drops a round-trip, not an authority.
+    rcv = None
+    if src == "live":
+        try:
+            rcv = _cmd_lookup_contractor(cid)  # C-2b V5
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": f"wFirma contractor preflight failed: {exc}",
+                    "code":  "STATEMENT_PREFLIGHT_FAILED",
+                    "wfirma_contractor_id": cid,
+                },
+            )
+        if not rcv.ok:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": rcv.error or "contractor not found",
+                    "code":  "CONTRACTOR_NOT_FOUND",
+                    "wfirma_contractor_id": cid,
+                },
+            )
 
     contractor_meta = _contractor_meta_from_customer_master(cid, rcv)
 
@@ -537,27 +586,90 @@ def _build_statement_dict(
             },
         )
 
-    try:
-        uni = load_ar_fact_universe(floor, dt)
-    except Exception as exc:
-        log.warning(
-            "[statement %s] load_ar_fact_universe failed: %s",
-            cid, exc,
+    provenance: Dict[str, Any] = {}
+    if src == "local":
+        from ..core.config import settings as _settings
+        from ..services.local_fact_universe import (
+            load_ar_fact_universe_local,
+            local_projection_available,
         )
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": f"wFirma AR fact universe failed: {exc}",
-                "code":  "STATEMENT_INVOICE_FETCH_FAILED",
-                "wfirma_contractor_id": cid,
-            },
-        ) from exc
+
+        root = Path(_settings.storage_root)
+        ok, reason = local_projection_available(root)
+        if not ok:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": f"Local financial projection unavailable: {reason}",
+                    "code": "LOCAL_PROJECTION_UNAVAILABLE",
+                    "hint": (
+                        "Run financial reporting sync, or retry with "
+                        "source=live / refresh=1"
+                    ),
+                },
+            )
+        try:
+            uni = load_ar_fact_universe_local(root, floor, dt)
+        except Exception as exc:
+            log.warning(
+                "[statement %s] load_ar_fact_universe_local failed: %s",
+                cid, exc,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": f"local AR fact universe failed: {exc}",
+                    "code":  "STATEMENT_INVOICE_FETCH_FAILED",
+                    "wfirma_contractor_id": cid,
+                },
+            ) from exc
+        provenance = uni.get("provenance") or {}
+    else:
+        try:
+            uni = load_ar_fact_universe(floor, dt)
+        except Exception as exc:
+            log.warning(
+                "[statement %s] load_ar_fact_universe failed: %s",
+                cid, exc,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": f"wFirma AR fact universe failed: {exc}",
+                    "code":  "STATEMENT_INVOICE_FETCH_FAILED",
+                    "wfirma_contractor_id": cid,
+                },
+            ) from exc
+        provenance = {
+            "source": "wfirma",
+            "freshness": "live",
+            "reconciliation_status": "live_wfirma",
+        }
 
     invoice_facts, payment_facts = _facts_for_contractor(
         uni.get("invoice_facts") or [],
         uni.get("payment_facts") or [],
         cid,
     )
+
+    # Existence gate for the local path -- the same 404 the live preflight
+    # raises. A contractor Customer Master has never heard of, that also owns
+    # no AR fact in the projection, does not exist for statement purposes;
+    # anything softer would return a clean zero statement for a typo.
+    if src == "local" and not invoice_facts and not (
+        (contractor_meta.get("name") or "").strip()
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": (
+                    "contractor is unknown to Customer Master and owns no "
+                    "receivable in the local projection"
+                ),
+                "code":  "CONTRACTOR_NOT_FOUND",
+                "wfirma_contractor_id": cid,
+            },
+        )
 
     body = aggregate_statement_from_facts(
         contractor_meta,
@@ -569,7 +681,12 @@ def _build_statement_dict(
     )
     # Provenance for UI/PDF — same authority, explicit floor disclosure.
     body["history_floor"] = floor
-    body["source"] = "wfirma"
+    body["source"] = provenance.get("source") or (
+        "local" if src == "local" else "wfirma"
+    )
+    body["reconciliation_status"] = provenance.get("reconciliation_status") or (
+        "projection_ok" if src == "local" else "live_wfirma"
+    )
     body["freshness"] = {
         "as_of": ao,
         "period_start": df,
@@ -577,6 +694,7 @@ def _build_statement_dict(
         "history_floor": floor,
         "cache_hit": bool(uni.get("cache_hit")),
         "duration_ms": uni.get("duration_ms"),
+        "source": provenance.get("freshness") or src,
     }
     from datetime import datetime as _dt, timezone as _tz
     body["issued_at"] = _dt.now(_tz.utc).replace(microsecond=0).isoformat()
@@ -601,6 +719,14 @@ def get_client_statement(
         description="Aging basis: due_date (default, paymentdate) or "
                     "invoice_age (explicit opt-in only)",
     ),
+    source: str = Query(
+        "local",
+        description="local (default reporting projection) | live",
+    ),
+    refresh: int = Query(
+        0, ge=0, le=1,
+        description="1 = force the live wFirma read",
+    ),
 ) -> JSONResponse:
     """Read-only Statement of Account for one wFirma contractor.
 
@@ -616,11 +742,13 @@ def get_client_statement(
       200  — JSON Statement (empty per-currency maps when no activity)
       400  — invalid contractor id, invalid date, ``from > to``,
               ``as_of < from``, invalid aging_method
-      404  — contractor not found in wFirma
+      404  — contractor not found
       502  — shared AR fact-universe load failed
+      503  — local financial projection unavailable (source=local)
     """
     body = _build_statement_dict(
         contractor_id, from_, to, as_of, aging_method=aging_method,
+        source=source, refresh=refresh,
     )
     return JSONResponse(body)
 
@@ -667,6 +795,18 @@ def get_client_statement_pdf(
         "",
         description="Aging basis: due_date (default) or invoice_age",
     ),
+    source: str = Query(
+        "local",
+        description="local (default reporting projection) | live",
+    ),
+    refresh: int = Query(
+        0, ge=0, le=1,
+        description="1 = force the live wFirma read",
+    ),
+    document: str = Query(
+        "soa",
+        description="soa (default) | monthly | ledger | confirmation",
+    ),
 ) -> Response:
     """Read-only PDF rendering of the Statement of Account.
 
@@ -678,8 +818,10 @@ def get_client_statement_pdf(
     technical labels; reuses Company Profile seller footer + document
     logo asset when present.
     """
+    doc = _normalize_statement_document(document)
     statement = _build_statement_dict(
         contractor_id, from_, to, as_of, aging_method=aging_method,
+        source=source, refresh=refresh,
     )
 
     seller = _statement_seller_block()
@@ -691,6 +833,7 @@ def get_client_statement_pdf(
             customer_facing=True,
             seller=seller,
             logo_path=logo_path,
+            document=doc,
         )
     except Exception as exc:
         log.warning(
@@ -707,7 +850,8 @@ def get_client_statement_pdf(
         )
 
     safe_id = _safe_filename(contractor_id)
-    filename = f"statement-{safe_id}-{from_}-{to}.pdf"
+    stem = _STATEMENT_FILE_STEM[doc]
+    filename = f"{stem}-{safe_id}-{from_}-{to}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -1741,6 +1885,10 @@ def _restrict_supplier_statement_currency(
         "totals_per_currency",
         "aging_per_currency",
         "unmatched_payments_per_currency",
+        # position_per_currency was missing here: a single-currency filter
+        # that left the position map whole leaked the sibling currency's
+        # net position straight into the PDF header.
+        "position_per_currency",
     ):
         mapping = body.get(key) or {}
         if isinstance(mapping, dict) and ccy in mapping:
@@ -1788,6 +1936,9 @@ def get_supplier_statement_pdf(
     currency: str = Query("", description="Optional ISO filter: USD|EUR|PLN|CHF"),
     refresh: int = Query(0, ge=0, le=1, description="1 = bypass short-TTL AP fact cache"),
     source: str = Query("local", description="local (default reporting projection) | live"),
+    document: str = Query(
+        "soa", description="soa (default) | monthly | ledger | confirmation",
+    ),
 ) -> Response:
     """Read-only PDF rendering of the Supplier Ledger statement.
 
@@ -1798,6 +1949,7 @@ def get_supplier_statement_pdf(
     Business-facing presentation: reuses the Company Profile seller footer and
     document logo; omits wFirma ids, raw metadata and DQ warnings.
     """
+    doc = _normalize_statement_document(document)
     statement = _build_supplier_statement_dict(
         contractor_id, from_, to, as_of, refresh, currency, source,
     )
@@ -1807,6 +1959,7 @@ def get_supplier_statement_pdf(
             statement,
             seller=_statement_seller_block(),
             logo_path=_statement_logo_path(),
+            document=doc,
         )
     except Exception as exc:
         log.warning(
@@ -1822,7 +1975,7 @@ def get_supplier_statement_pdf(
         ) from exc
 
     filename = (
-        f"supplier-statement-{_safe_filename(contractor_id)}"
+        f"supplier-{_STATEMENT_FILE_STEM[doc]}-{_safe_filename(contractor_id)}"
         f"{('-' + currency.strip().upper()) if (currency or '').strip() else ''}"
         f"-{from_}-{to}.pdf"
     )

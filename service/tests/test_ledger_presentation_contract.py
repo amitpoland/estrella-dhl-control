@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services.financial_aging import AGING_BUCKETS_WITH_UNAVAILABLE
 from app.services.ledger_aggregator import (
     AGING_BASIS_GROSS,
     FORBIDDEN_ENTRY_FIELDS,
@@ -67,12 +68,22 @@ def _inv(*, iid, date, brutto, currency="USD", type_="normal", fullnumber="",
     return _parse_invoice_fact(ET.fromstring(xml))
 
 
-def _pay(*, pid, date, value, linked="", currency=""):
+def _pay(*, pid, date, value, linked="", linked_expense="", currency=""):
+    """A payment node in the shape production emits.
+
+    wFirma carries BOTH link elements on every payment and populates at most
+    one; ``linked`` is the receivable link, ``linked_expense`` the payable
+    one. A fixture that sets the same id on both describes a document that
+    cannot exist, and an earlier one did -- which is why the disclosure pins
+    below build the two links separately.
+    """
     inv = f"<invoice><id>{linked}</id></invoice>" if linked else ""
+    exp = (f"<expense><id>{linked_expense}</id></expense>"
+           if linked_expense else "")
     ccy = f"<currency>{currency}</currency>" if currency else ""
     xml = (
         f"<payment><id>{pid}</id><date>{date}</date>"
-        f"<value>{value}</value>{ccy}{inv}</payment>"
+        f"<value>{value}</value>{ccy}{inv}{exp}</payment>"
     )
     return _parse_payment_fact(ET.fromstring(xml))
 
@@ -865,12 +876,79 @@ _MIDDOT = chr(0xB7)
 _GROSS_CAPTION = "gross " + _MIDDOT + " before credits"
 
 
-def test_every_aging_surface_says_the_split_is_before_credits():
-    """Supplier card, client card, management grid -- all three."""
-    src = _PDF.read_text(encoding="utf-8")
-    assert src.count(_GROSS_CAPTION) >= 3, (
-        "aging is a gross split; each surface must say so where it is read"
+def _rendered_text(pdf_bytes):
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return chr(10).join(
+        (p.extract_text() or "") for p in PdfReader(BytesIO(pdf_bytes)).pages
     )
+
+
+def _one_invoice_ar():
+    return aggregate_statement_from_facts(
+        _meta(),
+        [_inv(iid="1", date="2025-11-05", paymentdate="2025-12-05",
+              brutto="900.00", fullnumber="INV 5/2025")],
+        [], "2026-01-31", ("2026-01-01", "2026-01-31"),
+    )
+
+
+def _one_expense_ap():
+    """AP statement whose CLOSING and NET POSITION deliberately differ.
+
+    `as_of` sits a month past the period end, so the February expense counts
+    towards the position but not towards the January closing balance. Any
+    test that substitutes one figure for the other therefore has to fail.
+    """
+    return aggregate_supplier_statement(
+        [_exp(eid="1", date="2026-01-05", brutto="1000.00",
+              fullnumber="EXP 1/2026"),
+         _exp(eid="2", date="2026-02-10", brutto="400.00",
+              fullnumber="EXP 2/2026")],
+        [], contractor_meta=_meta(),
+        period=("2026-01-01", "2026-01-31"), as_of="2026-02-28",
+    )
+
+
+def test_every_aging_surface_says_the_split_is_before_credits():
+    """Client statement, supplier statement, management grid -- all three.
+
+    This was a count of the caption in the renderer source until the two
+    per-currency builders were consolidated into one. Counting copies of a
+    caption measures how many renderers exist, not what a reader sees, so it
+    went red for the RIGHT change. The invariant that actually matters is
+    that the caption reaches every RENDERED surface -- asserted here on real
+    aggregator output rather than a hand-written dict.
+    """
+    from app.services.statement_pdf_renderer import (
+        render_management_analysis_pdf,
+        render_statement_pdf,
+        render_supplier_statement_pdf,
+    )
+
+    # The management grid reads the ANALYTICS bodies, not statement dicts;
+    # its own fixtures are reused so there is one shape authority per surface.
+    from test_management_analysis_pdf import _ap as _ma_ap, _ar as _ma_ar
+
+    ar, ap = _one_invoice_ar(), _one_expense_ap()
+    ma_ar, ma_ap = _ma_ar(), _ma_ap()
+    assert ar["currencies"] and ap["currencies"], "fixture must not be empty"
+    assert ma_ar["currency_summaries"] and ma_ap["currency_summaries"], (
+        "an empty grid would pass vacuously"
+    )
+
+    surfaces = {
+        "client statement":   render_statement_pdf(ar),
+        "supplier statement": render_supplier_statement_pdf(ap),
+        "management grid":    render_management_analysis_pdf(ma_ar, ma_ap),
+    }
+    for name, pdf in surfaces.items():
+        assert _GROSS_CAPTION in _rendered_text(pdf), (
+            "aging is a gross split; the %s must say so where it is read"
+            % name
+        )
 
 
 def test_supplier_statement_separates_activity_from_position():
@@ -921,13 +999,35 @@ def test_closing_balance_never_falls_back_to_a_position_figure():
     assert 'totals.get("closing_balance") or totals.get("net_payable")' \
         not in src, "net payable is a position figure, not a period one"
 
-    start = src.index("def _supplier_currency_flowables")
-    end = src.index("def render_supplier_statement_pdf", start)
+    # The per-currency section is now ONE shared builder serving both sides
+    # (`_supplier_currency_flowables` is gone), so the window is anchored
+    # on the surviving authority instead of the retired copy.
+    start = src.index("def _currency_section_flowables")
+    end = src.index("def _empty_notice_flowables", start)
     assert 'totals.get("closing_balance") or totals.get(' \
         not in src[start:end], (
             "on the supplier statement every alternative to closing balance "
             "is a position figure"
         )
+
+    # Behavioural half: a supplier whose closing balance and net payable
+    # differ must print the CLOSING figure under "Closing balance". A
+    # substitution reads as entirely correct in the source, so the figure
+    # itself is checked on rendered output.
+    from app.services.statement_pdf_renderer import render_supplier_statement_pdf
+
+    ap = _one_expense_ap()
+    ccy = ap["currencies"][0]
+    totals = ap["totals_per_currency"][ccy]
+    position = ap["position_per_currency"][ccy]
+    assert Decimal(totals["closing_balance"]) != Decimal(position["net_position"]), (
+        "fixture must make the two figures differ, else the test is vacuous"
+    )
+    text = _rendered_text(render_supplier_statement_pdf(ap))
+    window = text[text.index("Closing balance"):][:80]
+    assert totals["closing_balance"] in window, (
+        "closing balance must print the period figure, not a position one"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1096,3 +1196,547 @@ def test_the_sentinel_moves_no_money():
         "a no-parent sentinel changed a monetary figure - the correction "
         "linkage is feeding an accounting authority, not just presentation"
     )
+
+
+# ── aging total: ONE meaning across both statements ───────────────────────
+# Measured divergence on identical facts: the supplier statement reported an
+# aging total of 10104.00 and the client statement 9366.00. Both were
+# internally consistent; they simply defined "total" differently, so the
+# client aging column printed a total 738.00 short of its own gross exposure
+# and no reader could tell whether the total was wrong or a lane excluded.
+# financial_aging settles it -- "invariant sum(buckets) == open balance", and
+# due_date_unavailable is "included in open-balance reconciliation".
+
+def _undated_mix_ar():
+    """Overdue + not-yet-due + one document with no due date at all."""
+    return aggregate_statement_from_facts(
+        _meta(),
+        [_inv(iid="6001", date="2026-07-02", paymentdate="2026-07-10",
+              brutto="4200.00", currency="EUR", fullnumber="FV 1"),
+         _inv(iid="6002", date="2026-07-08", paymentdate="2026-08-22",
+              brutto="1230.00", currency="EUR", fullnumber="FV 2"),
+         _inv(iid="6003", date="2026-07-19", paymentdate="",
+              brutto="738.00", currency="EUR", fullnumber="FV 3")],
+        [], "2026-07-31", ("2026-07-01", "2026-07-31"),
+    )
+
+
+def _undated_mix_ap():
+    return aggregate_supplier_statement(
+        [_exp(eid="6001", date="2026-07-02", payment_date="2026-07-10",
+              brutto="4200.00", fullnumber="EXP 1"),
+         _exp(eid="6002", date="2026-07-08", payment_date="2026-08-22",
+              brutto="1230.00", fullnumber="EXP 2"),
+         _exp(eid="6003", date="2026-07-19", payment_date="",
+              brutto="738.00", fullnumber="EXP 3")],
+        [], contractor_meta=_meta(),
+        period=("2026-07-01", "2026-07-31"), as_of="2026-07-31",
+    )
+
+
+@pytest.mark.parametrize("build,side", [(_undated_mix_ar, "client"),
+                                        (_undated_mix_ap, "supplier")])
+def test_aging_column_sums_to_its_own_printed_total(build, side):
+    stmt = build()
+    aging = stmt["aging_per_currency"]["EUR"]
+    # Non-vacuous: the undated lane must actually carry money, or this test
+    # would pass on a fact set that never exercises the divergence.
+    assert Decimal(aging["due_date_unavailable"]) == Decimal("738.00"), aging
+    lanes = sum(
+        (Decimal(str(aging.get(k) or "0")) for k in AGING_BUCKETS_WITH_UNAVAILABLE),
+        Decimal("0"),
+    )
+    assert lanes == Decimal(aging["total"]), (
+        f"{side} aging column does not sum to its own total: "
+        f"lanes={lanes} total={aging['total']}"
+    )
+
+
+@pytest.mark.parametrize("build,side", [(_undated_mix_ar, "client"),
+                                        (_undated_mix_ap, "supplier")])
+def test_aging_total_equals_gross_exposure(build, side):
+    """The aging block and the position block describe the same money."""
+    stmt = build()
+    assert (Decimal(stmt["aging_per_currency"]["EUR"]["total"])
+            == Decimal(stmt["position_per_currency"]["EUR"]["gross_exposure"])
+            == Decimal("6168.00")), side
+
+
+def test_both_statements_define_the_aging_total_the_same_way():
+    """One product, one meaning of 'total' -- on identical facts."""
+    ar = _undated_mix_ar()["aging_per_currency"]["EUR"]
+    ap = _undated_mix_ap()["aging_per_currency"]["EUR"]
+    for key in AGING_BUCKETS_WITH_UNAVAILABLE + ("total",):
+        assert Decimal(str(ar[key])) == Decimal(str(ap[key])), (
+            f"client and supplier disagree on aging '{key}': "
+            f"{ar[key]} vs {ap[key]}"
+        )
+
+
+# ── 14. Unapplied cash is disclosed once, on the side that owns it ────────
+#
+# Measured defect (2026-08-19): the AP bucketing loop dropped its own orphan
+# and currency-mismatched payments as "already in warnings", so cash paid to a
+# supplier appeared on no supplier document; the AR loop had no mirror of AP's
+# guard, so that same supplier-side cash was simultaneously reported to the
+# customer as unapplied CLIENT money. One payment, two statements, two
+# different stories -- and the one the supplier reads was the one missing it.
+# No arithmetic is involved: unapplied cash never touched a running balance,
+# a matched total or a bucket sum, before the fix or after it.
+
+def _expense_linked_payment_facts():
+    """One expense, and cash against an expense id that is not in the window."""
+    return (
+        [_exp(eid="6001", date="2026-03-04", brutto="1000.00",
+              currency="EUR", payment_date="2026-03-18")],
+        [
+            # settles the expense in the window -> matched on AP, silent on AR
+            _pay(pid="8001", date="2026-03-20", value="1000.00",
+                 linked_expense="6001", currency="EUR"),
+            # names an expense nobody can resolve -> disclosed on AP only
+            _pay(pid="8003", date="2026-03-21", value="310.00",
+                 linked_expense="9099", currency="EUR"),
+        ],
+    )
+
+
+def _ap_of(expenses, payments):
+    return aggregate_supplier_statement(
+        expenses, payments, contractor_meta=_meta(),
+        period=("2026-03-01", "2026-03-31"), as_of="2026-03-31",
+    )
+
+
+def _ar_of(payments):
+    return aggregate_statement_from_facts(
+        _meta(),
+        [_inv(iid="1", date="2026-03-05", brutto="500.00", currency="EUR")],
+        payments, "2026-03-31", ("2026-03-01", "2026-03-31"),
+    )
+
+
+def test_supplier_side_cash_is_never_reported_as_unapplied_client_money():
+    expenses, payments = _expense_linked_payment_facts()
+    ar = _ar_of(payments)
+    disclosed = [
+        p["wfirma_doc_id"]
+        for rows in (ar["unmatched_payments_per_currency"] or {}).values()
+        for p in rows
+    ]
+    assert disclosed == [], (
+        "an expense-linked payment is the supplier statement's to disclose; "
+        "listing it here tells the customer we hold money of theirs that we "
+        "do not: %s" % disclosed
+    )
+
+
+def test_supplier_statement_discloses_its_own_unapplied_cash():
+    expenses, payments = _expense_linked_payment_facts()
+    ap = _ap_of(expenses, payments)
+    rows = (ap["unmatched_payments_per_currency"] or {}).get("EUR") or []
+    assert [r["wfirma_doc_id"] for r in rows] == ["8003"], (
+        "cash paid to this supplier that resolved to no expense must still "
+        "appear on the supplier's own statement, not only in warnings"
+    )
+    assert rows[0]["linked_expense"] == "9099", (
+        "disclose the link it names, so the gap is reconcilable"
+    )
+    assert Decimal(rows[0]["value"]) == Decimal("310.00")
+
+
+def test_one_payment_is_disclosed_on_exactly_one_side():
+    expenses, payments = _expense_linked_payment_facts()
+    ar, ap = _ar_of(payments), _ap_of(expenses, payments)
+
+    def ids(stmt):
+        return {p["wfirma_doc_id"]
+                for rows in (stmt["unmatched_payments_per_currency"] or {}).values()
+                for p in rows}
+
+    assert not (ids(ar) & ids(ap)), "a payment disclosed twice is two claims"
+
+
+def test_unapplied_disclosure_moves_no_money():
+    """The fix is a disclosure fix; the balances must be untouched by it."""
+    expenses, payments = _expense_linked_payment_facts()
+    ap = _ap_of(expenses, payments)
+    t = ap["totals_per_currency"]["EUR"]
+    pos = ap["position_per_currency"]["EUR"]
+    # 1000.00 expense, fully settled inside the window by payment 8001.
+    assert Decimal(t["period_debits"]) == Decimal("1000.00")
+    assert Decimal(t["closing_balance"]) == Decimal("0.00")
+    assert Decimal(pos["gross_exposure"]) == Decimal("0.00")
+    # 8003 is disclosed BESIDE the ledger, never inside it. The matched
+    # payment 8001 is a ledger row and always was -- an applied payment is
+    # part of the running balance; unapplied cash is precisely the cash that
+    # is not.
+    ids = [r["wfirma_doc_id"] for r in ap["entries_per_currency"]["EUR"]]
+    assert ids == ["6001", "8001"], ids
+
+
+def test_unapplied_rows_name_themselves_but_ledger_rows_never_do():
+    """The two halves of one rule, asserted on the rendered pages.
+
+    An unapplied payment has no document, so the disclosure prints the only
+    handle it has -- otherwise the statement announces a hole without
+    saying which payment made it. A LEDGER row does have a document, and is
+    identified by that and nothing else: a matched payment whose
+    `doc_number` is empty prints an em dash, not a wFirma object id.
+
+    Measured: the supplier ledger printed `PAY-8001` in its Document column
+    when both tables shared one key set (test_supplier_statement_pdf.py::
+    test_internal_metadata_never_reaches_the_page). The tables want
+    opposite rules, so they read different key sets, and this holds both
+    ends of that at once.
+    """
+    from app.services.statement_pdf_renderer import (
+        render_statement_pdf, render_supplier_statement_pdf,
+    )
+
+    expenses, payments = _expense_linked_payment_facts()
+    ap = _ap_of(expenses, payments)
+    assert [r["wfirma_doc_id"]
+            for rows in ap["unmatched_payments_per_currency"].values()
+            for r in rows] == ["8003"], "fixture must carry unapplied cash"
+    assert [e["wfirma_doc_id"] for e in ap["entries_per_currency"]["EUR"]
+            if e["type"] == "payment"] == ["8001"], (
+        "and a MATCHED payment in the ledger, which is the row that leaked"
+    )
+    ap_text = _rendered_text(render_supplier_statement_pdf(ap))
+    assert "8003" in ap_text, "the unapplied payment must name itself"
+    assert "8001" not in ap_text, (
+        "a wFirma object id has no business on a supplier-facing ledger row"
+    )
+
+    # AR: the same disclosure, the same fallback, the same page.
+    ar = _paginating_ar(3)
+    assert [r["wfirma_doc_id"]
+            for rows in ar["unmatched_payments_per_currency"].values()
+            for r in rows] == ["7777"], "fixture must carry unapplied cash"
+    assert "7777" in _rendered_text(render_statement_pdf(ar))
+
+
+# ── 15. The monthly statement is the balance-forward product ──────────────
+#
+# `soa` and `monthly` carried byte-identical config, so `document=monthly`
+# rendered the SOA with one word changed -- one document wearing two names.
+# The distinction pinned here is the one accountancy draws: an SOA is an
+# open-item statement as of a date; a monthly statement is period-closed and
+# balance-forward for a named calendar month. Presentation only: the flag
+# selects wording, never arithmetic.
+
+def test_only_the_monthly_product_is_period_closed():
+    from app.services.statement_pdf_renderer import _DOC_CFG
+    closed = {k for k, v in _DOC_CFG.items() if v["period_close"]}
+    assert closed == {"monthly"}, (
+        "period-close is what makes the monthly product distinct from the "
+        "SOA; spreading it further would blur them again: %s" % closed
+    )
+
+
+def test_the_month_is_named_only_when_the_period_is_that_whole_month():
+    from app.services.statement_pdf_renderer import statement_title
+    whole = {"period": {"from": "2026-07-01", "to": "2026-07-31"}}
+    part = {"period": {"from": "2026-07-12", "to": "2026-07-31"}}
+    quarter = {"period": {"from": "2026-07-01", "to": "2026-09-30"}}
+    assert statement_title("ar", "monthly", whole).endswith("July 2026")
+    for stmt, why in ((part, "part month"), (quarter, "quarter")):
+        title = statement_title("ar", "monthly", stmt)
+        assert "July" not in title, (
+            "naming a month asserts which window the figures cover (%s)" % why
+        )
+    # …and the open-item product never borrows the month.
+    assert "July" not in statement_title("ar", "soa", whole)
+
+
+def test_a_monthly_statement_over_a_part_month_says_so_on_its_face():
+    from app.services.statement_pdf_renderer import (
+        _period_integrity_flowables, _styles,
+    )
+    styles = _styles()
+    part = {"period": {"from": "2026-07-12", "to": "2026-07-31"}}
+    whole = {"period": {"from": "2026-07-01", "to": "2026-07-31"}}
+    notice = _period_integrity_flowables(part, styles, document="monthly")
+    assert notice, "a part-month monthly statement must disclose its window"
+    text = " ".join(getattr(f, "text", "") for f in notice)
+    assert "2026-07-12" in text and "2026-07-31" in text
+    assert "not a single whole calendar month" in text
+    # Never fires where it would be noise: whole month, or another product.
+    assert _period_integrity_flowables(whole, styles, document="monthly") == []
+    assert _period_integrity_flowables(part, styles, document="soa") == []
+
+
+def test_the_balance_forward_chain_is_labelled_as_a_chain():
+    """opening + debits - credits = closing, readable without a manual."""
+    from app.services.statement_pdf_renderer import _activity_rows
+    totals = {"opening_balance": "100.00", "period_debits": "50.00",
+              "period_credits": "20.00", "closing_balance": "130.00",
+              "entry_count": 3}
+    labels = [k for k, _ in _activity_rows(totals, period_close=True)]
+    assert labels[:4] == ["Opening balance", "+ Period debits",
+                          "- Period credits", "= Closing balance"]
+    # The operators are labels; the SOA keeps the plain wording.
+    plain = [k for k, _ in _activity_rows(totals)]
+    assert plain[:4] == ["Opening balance", "Period debits",
+                         "Period credits", "Closing balance"]
+    values = dict(_activity_rows(totals, period_close=True))
+    assert values["= Closing balance"] == "130.00", (
+        "the renderer prints the aggregator's closing balance; re-deriving "
+        "it here would be a second accounting engine"
+    )
+
+
+# ── 16. One document system: no stranded headings, one vocabulary ─────────
+#
+# Two presentation defects measured on rendered pages (2026-08-19), both in
+# the ONE shared renderer and so fixed once, at it:
+#
+#   (a) "Unapplied payments" printed as the last line of a page, its table
+#       overleaf -- seen on the client monthly and again on the supplier
+#       monthly. A heading with nothing under it reads as a section with
+#       nothing IN it, and this section's subject is cash the counterparty
+#       paid that we could not apply to a document. `_titled_grid` puts a
+#       `CondPageBreak` ahead of every heading that owns a table, so the
+#       heading is only printed where the head of its table can follow.
+#   (b) The client statement headed that block "Unmatched payments" while
+#       the supplier statement -- same renderer, same block, same meaning --
+#       headed it "Unapplied payments". A counterparty who receives both
+#       reasonably asks whether two words describe two different facts.
+#
+# The JSON key `unmatched_payments_per_currency` and the warning event
+# `unmatched_payment` deliberately keep their own names: they are the data
+# authority's, and the data-quality panel labels the event with the event's
+# word so a reader can cross-reference it. Only the captions are shared.
+
+# Every guarded table starts with a "Date" column. The page footers carry
+# "Due date" (lower-case d) and no other, so capital-D "Date" on a page is
+# evidence that a table head actually printed there.
+_TABLE_HEAD_MARK = "Date"
+
+
+def _pages(pdf_bytes):
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return [(p.extract_text() or "")
+            for p in PdfReader(BytesIO(pdf_bytes)).pages]
+
+
+def _paginating_ar(rows):
+    """`rows` invoices in one currency, plus cash that resolves to nothing."""
+    invoices = [
+        _inv(iid=str(3000 + i), date="2026-03-%02d" % (i % 28 + 1),
+             brutto="100.00", currency="EUR",
+             fullnumber="FV %d/2026" % (i + 1))
+        for i in range(rows)
+    ]
+    # Names an invoice id nothing in the window resolves -> disclosed beside
+    # the ledger, which is the block whose heading was being stranded.
+    unapplied = [_pay(pid="7777", date="2026-03-20", value="250.00",
+                      linked="9099", currency="EUR")]
+    return aggregate_statement_from_facts(
+        _meta(), invoices, unapplied, "2026-03-31",
+        ("2026-03-01", "2026-03-31"),
+    )
+
+
+def _guarded_headings():
+    from app.services.statement_pdf_renderer import _SIDE_CFG
+
+    return ["Ledger"] + sorted(
+        {cfg["unmatched_title"] for cfg in _SIDE_CFG.values()}
+    )
+
+
+def test_a_section_heading_never_ends_a_page_without_its_table():
+    """Swept across a page boundary, not sampled at one convenient length.
+
+    A single fixture passes or fails on where its ledger happens to break,
+    which is luck, not coverage. The row count is swept instead, so the
+    unapplied heading is walked through the foot of a page inside the run.
+    The range is not arbitrary: with the guard disabled, this fixture
+    strands the heading at 52 and 53 ledger rows (measured 2026-08-19; it
+    strands again at 97-98, one page further on). A sweep that misses those
+    lengths is a test that cannot fail, so the range brackets them.
+    """
+    from app.services.statement_pdf_renderer import render_statement_pdf
+
+    headings = _guarded_headings()
+    saw_a_second_page = False
+    saw_the_unapplied_block = False
+
+    for rows in range(48, 58):
+        pages = _pages(render_statement_pdf(_paginating_ar(rows)))
+        saw_a_second_page = saw_a_second_page or len(pages) > 1
+        for n, text in enumerate(pages, start=1):
+            for heading in headings:
+                at = text.find(heading)
+                if at < 0:
+                    continue
+                if heading != "Ledger":
+                    saw_the_unapplied_block = True
+                assert _TABLE_HEAD_MARK in text[at + len(heading):], (
+                    "%d rows, page %d: '%s' printed with no table under it. "
+                    "A heading alone at a page break claims a section with "
+                    "nothing in it -- here, about money."
+                    % (rows, n, heading)
+                )
+
+    assert saw_a_second_page, "a one-page sweep cannot strand anything"
+    assert saw_the_unapplied_block, (
+        "the block that was measured stranded must be in the sweep"
+    )
+
+
+def test_the_heading_guard_reserves_a_foothold_rather_than_moving_the_table():
+    """`CondPageBreak`, not `KeepTogether` -- the difference is load-bearing.
+
+    A long ledger must still split across pages and repeat its column header
+    (`repeatRows=1`). `KeepTogether` would try to relocate the whole table,
+    and degrades to no protection at all once it outgrows the frame.
+    """
+    from reportlab.platypus import CondPageBreak
+
+    from reportlab.lib.units import mm
+
+    from app.services.statement_pdf_renderer import (
+        _SECTION_FOOTHOLD, _titled_grid,
+    )
+
+    title, table = object(), object()
+    out = _titled_grid(title, table)
+    assert isinstance(out[0], CondPageBreak), (
+        "the guard is a conditional break placed BEFORE the heading"
+    )
+    assert out[1:] == [title, table], "and it moves neither of them"
+    assert 0 < _SECTION_FOOTHOLD < 40 * mm, (
+        "a foothold is a heading plus a first row; reserving more would "
+        "start pushing whole sections to the next page for no reason"
+    )
+
+
+def test_both_statements_use_one_word_for_cash_we_could_not_apply():
+    from app.services.statement_pdf_renderer import _SIDE_CFG
+
+    titles = {side: cfg["unmatched_title"] for side, cfg in _SIDE_CFG.items()}
+    types = {side: cfg["unmatched_type"] for side, cfg in _SIDE_CFG.items()}
+    assert len(set(titles.values())) == 1, (
+        "one document system, one caption for one fact: %s" % titles
+    )
+    assert len(set(types.values())) == 1, "and one row type: %s" % types
+
+
+def test_the_shared_caption_reaches_both_rendered_documents():
+    """Source agreement is not proof; both PDFs must print the same word."""
+    from app.services.statement_pdf_renderer import (
+        _SIDE_CFG, render_statement_pdf, render_supplier_statement_pdf,
+    )
+
+    caption = _SIDE_CFG["ar"]["unmatched_title"]
+    ar = _paginating_ar(3)
+    expenses, payments = _expense_linked_payment_facts()
+    ap = _ap_of(expenses, payments)
+    assert (ar["unmatched_payments_per_currency"]
+            and ap["unmatched_payments_per_currency"]), (
+        "both fixtures must actually carry unapplied cash, else vacuous"
+    )
+    for name, pdf in (("client", render_statement_pdf(ar)),
+                      ("supplier", render_supplier_statement_pdf(ap))):
+        assert caption in _rendered_text(pdf), (
+            "the %s statement must print '%s'" % (name, caption)
+        )
+
+
+def test_the_data_authority_keeps_its_own_names():
+    """The caption was unified; the API and the warning event were not.
+
+    Renaming `unmatched_payments_per_currency` to match a caption would
+    break every consumer for no reader's benefit, and the data-quality
+    panel labels the warning with the warning's own word so an operator can
+    cross-reference it against the event stream.
+    """
+    ar = _paginating_ar(3)
+    assert "unmatched_payments_per_currency" in ar, (
+        "the JSON key is the data authority's name and does not follow "
+        "presentation vocabulary"
+    )
+    labels = (V2 / "ledgers-page.jsx").read_text(encoding="utf-8")
+    assert "unmatched_payment:" in labels, (
+        "the data-quality panel must still label the event by its own name"
+    )
+
+
+# -- 17. A confirmation discloses the cash it does not deduct --------------
+#
+# Measured on the rendered pages (2026-08-19): one flag gated both the
+# ledger and the unapplied-payments block, so the `confirmation` product --
+# the ONE document whose purpose is "do you agree you owe this" -- was the
+# one document that did not mention the payment we were holding unapplied.
+# Their books show the payment; ours show a position that excludes it;
+# nothing on the page connected the two. That is a NOT AGREED tick caused by
+# our own document. The gates are now separate: no ledger on a confirmation,
+# but unapplied cash is disclosed on every product, with a sentence saying
+# it is disclosed and not deducted so the two numbers reconcile.
+
+
+def _confirmation_of(stmt, side):
+    from app.services.statement_pdf_renderer import (
+        render_statement_pdf, render_supplier_statement_pdf,
+    )
+
+    render = (render_statement_pdf if side == "ar"
+              else render_supplier_statement_pdf)
+    return _rendered_text(render(stmt, document="confirmation"))
+
+
+def test_the_confirmation_discloses_unapplied_cash_and_still_has_no_ledger():
+    """Both halves: the disclosure appears, the ledger does not.
+
+    Asserting only the disclosure would pass a confirmation that had simply
+    grown a full ledger -- which is the other half of what this document is
+    not. A confirmation asks about one number; a document listing takes the
+    reader's eye off it.
+    """
+    from app.services.statement_pdf_renderer import _SIDE_CFG
+
+    ar = _paginating_ar(3)
+    expenses, payments = _expense_linked_payment_facts()
+    ap = _ap_of(expenses, payments)
+    assert (ar["unmatched_payments_per_currency"]
+            and ap["unmatched_payments_per_currency"]), (
+        "both fixtures must carry unapplied cash, else this is vacuous"
+    )
+
+    for side, stmt, ident in (("ar", ar, "7777"), ("ap", ap, "8003")):
+        text = _confirmation_of(stmt, side)
+        assert _SIDE_CFG[side]["unmatched_title"] in text, (
+            "%s confirmation must disclose cash we could not apply" % side
+        )
+        assert ident in text, (
+            "%s confirmation must name the payment, not just its existence"
+            % side
+        )
+        assert _SIDE_CFG[side]["unapplied_sentence"] in " ".join(text.split()), (
+            "%s confirmation must say the cash is disclosed, NOT deducted -- "
+            "otherwise the reader cannot reconcile our position against "
+            "their own ledger" % side
+        )
+        assert "Ledger" not in text, (
+            "%s confirmation must not carry a document listing" % side
+        )
+
+
+def test_the_sentence_is_absent_when_there_is_no_unapplied_cash():
+    """A standing paragraph about cash we do not hold is noise on a form.
+
+    It also weakens the disclosure: a sentence that prints on every
+    confirmation stops being read by the time it matters.
+    """
+    from app.services.statement_pdf_renderer import _SIDE_CFG
+
+    clean = _paginating_ar(3)
+    clean["unmatched_payments_per_currency"] = {}
+    text = _confirmation_of(clean, "ar")
+    assert _SIDE_CFG["ar"]["unapplied_sentence"] not in " ".join(text.split())
+    assert "AGREED" in text, "the confirmation itself must still render"

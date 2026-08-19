@@ -152,9 +152,29 @@ def _one_currency_statement(*, outstanding="500.00") -> dict:
             ],
         },
         "totals_per_currency": {
-            "EUR": {"invoiced": "1500.00", "credited": "0.00",
+            # Production shape: the aggregator emits the ACTIVITY block
+            # (opening / period / closing) alongside the legacy figures, and
+            # `outstanding` is an ALIAS of `closing_balance` -- see
+            # ledger_aggregator.aggregate_statement_from_facts. The fixture
+            # drives both from one parameter so they can never disagree.
+            "EUR": {"opening_balance": "0.00",
+                     "period_debits": "1500.00",
+                     "period_credits": "1000.00",
+                     "closing_balance": outstanding,
+                     "invoiced": "1500.00", "credited": "0.00",
                      "received": "1000.00", "outstanding": outstanding,
                      "entry_count": 2},
+        },
+        # POSITION block -- what is owed as-of, kept apart from activity.
+        "position_per_currency": {
+            "EUR": {"gross_exposure": outstanding,
+                     "customer_credits": "0.00",
+                     "credit_balance": "0.00",
+                     "net_position": outstanding,
+                     "overdue": "500.00", "not_due": "0.00",
+                     "due_date_unavailable": "0.00",
+                     "aging_basis": "gross_before_credits",
+                     "presentation_state": "net_due"},
         },
         "aging_per_currency": {
             "EUR": {"method": "due_date",
@@ -167,6 +187,10 @@ def _one_currency_statement(*, outstanding="500.00") -> dict:
         "unmatched_payments_per_currency": {},
         "warnings": [],
         "aging_method": "due_date",
+        "aging_basis": "gross_before_credits",
+        "presentation_state": "net_due",
+        "statement_model": "opening_period_closing",
+        "as_of": "2026-05-09",
     }
 
 
@@ -251,7 +275,7 @@ def test_unmatched_payments_render_only_when_present():
     no_unm = _one_currency_statement()
     pdf_a  = render_statement_pdf(no_unm)
     text_a = _read_pdf_text(pdf_a)
-    assert "Unmatched payments" not in text_a
+    assert "Unapplied payments" not in text_a
 
     with_unm = _one_currency_statement()
     with_unm["unmatched_payments_per_currency"]["EUR"] = [{
@@ -263,7 +287,7 @@ def test_unmatched_payments_render_only_when_present():
     }]
     pdf_b  = render_statement_pdf(with_unm)
     text_b = _read_pdf_text(pdf_b)
-    assert "Unmatched payments" in text_b
+    assert "Unapplied payments" in text_b
     assert "P-UNM" in text_b
 
 
@@ -447,7 +471,7 @@ def test_route_returns_application_pdf(client, monkeypatch):
     )
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.pdf"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 200, r.text
@@ -464,7 +488,7 @@ def test_route_filename_is_sanitised(client, monkeypatch):
     )
     r = client.get(
         "/api/v1/ledgers/clients/C-9001/statement.pdf"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 200
@@ -481,7 +505,7 @@ def test_route_404_unknown_contractor(client, monkeypatch):
     )
     r = client.get(
         "/api/v1/ledgers/clients/MISSING/statement.pdf"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 404
@@ -519,7 +543,7 @@ def test_route_502_invoices_fetch_failure(client, monkeypatch):
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.pdf"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 502
@@ -541,7 +565,7 @@ def test_route_502_payments_fetch_failure(client, monkeypatch):
     monkeypatch.setattr(wfirma_client, "_http_request", _stub)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.pdf"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 502
@@ -568,7 +592,7 @@ def test_route_502_render_failure(client, monkeypatch):
     monkeypatch.setattr(rl, "render_statement_pdf", _boom)
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.pdf"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 502
@@ -587,7 +611,7 @@ def test_statement_json_route_still_works(client, monkeypatch):
     )
     r = client.get(
         "/api/v1/ledgers/clients/C-1/statement.json"
-        "?from=2026-04-01&to=2026-05-01",
+        "?from=2026-04-01&to=2026-05-01&source=live",
         headers=_auth_headers(),
     )
     assert r.status_code == 200

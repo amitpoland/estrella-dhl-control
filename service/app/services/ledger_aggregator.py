@@ -37,6 +37,7 @@ import xml.etree.ElementTree as ET
 from .financial_aging import (
     AGING_BUCKETS,
     due_bucket as _due_bucket_canonical,
+    open_total as _open_total_canonical,
 )
 
 
@@ -971,20 +972,25 @@ def aggregate_supplier_statement(
     meta_cid = str(meta.get("wfirma_contractor_id") or "")
     for p in match.get("unmatched_payments") or []:
         # AR invoice-linked payments are not supplier unapplied.
-        if p.get("linked_invoice"):
+        if _normalize_doc_link_id(p.get("linked_invoice")):
             continue
         pay_cid = str(p.get("contractor_id") or "")
         if meta_cid and pay_cid and pay_cid != meta_cid:
             continue
-        if _normalize_doc_link_id(p.get("linked_expense")):
-            continue  # orphan / outside-window — already in warnings
+        # An expense link that resolved to nothing (orphan, outside the
+        # window, or a currency the expense contradicts) is still OUR cash,
+        # paid to THIS supplier. It was previously dropped here as "already
+        # in warnings" -- but warnings are a diagnostic stream, so the money
+        # vanished from the only document the supplier actually reads, while
+        # the AR side disclosed the mirror case. Disclosed now, with the link
+        # it names, so the gap is visible and reconcilable rather than silent.
         ccy = (p.get("currency") or "").strip().upper() or "UNRESOLVED"
         unmatched_by_ccy.setdefault(ccy, []).append({
             "wfirma_doc_id": p.get("id") or "",
             "value": _q(p.get("value") or Decimal("0")),
             "currency": ccy if ccy != "UNRESOLVED" else "",
             "date": p.get("date") or "",
-            "linked_expense": "",
+            "linked_expense": _normalize_doc_link_id(p.get("linked_expense")),
             # See the AR note: unapplied cash is reported, never netted in.
             "due_date":            "",
             "reference":           "",
@@ -1291,7 +1297,14 @@ def aggregate_statement_from_facts(
     matched_payment_ids: set = set()
 
     for p in payment_facts:
-        linked = p.get("linked_invoice") or ""
+        linked = _normalize_doc_link_id(p.get("linked_invoice"))
+        if not linked and _normalize_doc_link_id(p.get("linked_expense")):
+            # Supplier-side cash. The AP statement owns it -- matched there,
+            # or disclosed there as unapplied. Reporting it here as well would
+            # show one payment on two statements as two different things, and
+            # would tell the customer we hold money of theirs that we do not.
+            # Exact mirror of the guard in the AP bucketing loop below.
+            continue
         is_unmatched = False
         if not linked:
             is_unmatched = True
@@ -1602,7 +1615,6 @@ def aggregate_statement_from_facts(
     unavailable_by_ccy: Dict[str, Decimal] = {}
     for ccy in sorted(currencies):
         bucket: Dict[str, Decimal] = {b: Decimal("0") for b in _AGING_BUCKETS}
-        total = Decimal("0")
         due_unavailable = Decimal("0")
         gross_open = Decimal("0")
         credit_open = Decimal("0")
@@ -1641,7 +1653,6 @@ def aggregate_statement_from_facts(
                 anchor = (inv.get("date") or "").strip()
             b = _bucket_for_days(days_old)
             bucket[b] += remaining
-            total += remaining
             # Overdue = days_old > 0 (due date strictly before as-of).
             if days_old > 0:
                 overdue_open += remaining
@@ -1655,13 +1666,28 @@ def aggregate_statement_from_facts(
         overdue_by_ccy[ccy] = overdue_open
         not_due_by_ccy[ccy] = not_due_open
         unavailable_by_ccy[ccy] = due_unavailable
+        # ``total`` is the OPEN BALANCE of the block, not the dated
+        # subtotal. financial_aging is the authority and it is explicit:
+        # "invariant sum(buckets) == open balance", with
+        # due_date_unavailable a data-quality lane that is "included in
+        # open-balance reconciliation" -- open_total() and
+        # buckets_reconcile() both default to include_unavailable=True.
+        # The supplier statement already totals that way (it sums
+        # AGING_BUCKETS_WITH_UNAVAILABLE); this one summed only the dated
+        # buckets, so ONE product carried TWO meanings of "total" and the
+        # client aging block did not reconcile to its own gross exposure --
+        # measured 9366.00 printed under a gross of 10104.00, on the same
+        # facts where the supplier block printed 10104.00. The buckets, the
+        # position block and every other figure are untouched; only the
+        # subtotal's definition is brought back to the single authority,
+        # and it is read from that authority rather than re-summed here.
         block: Dict[str, Any] = {
             "method":  method,
             **{k: _q(v) for k, v in bucket.items()},
-            "total":   _q(total),
         }
         if method == AGING_METHOD_DUE_DATE:
             block["due_date_unavailable"] = _q(due_unavailable)
+        block["total"] = _q(_open_total_canonical(block))
         aging_by_ccy[ccy] = block
 
     # ── POSITION per currency (as-of economic position) ────────────────
@@ -1696,6 +1722,15 @@ def aggregate_statement_from_facts(
         }
 
     cmeta = contractor_meta or {}
+    # No ``source`` key here on purpose. This function is a formula over a
+    # fact set; it cannot know WHICH fact universe produced that set, and a
+    # hardcoded "wfirma" was a false provenance claim from the moment the
+    # routes started defaulting to source=local -- the PDF header printed
+    # "Source wfirma" over numbers read from the local projection. The route
+    # that performed the read stamps ``source`` / ``freshness`` /
+    # ``reconciliation_status`` on the body (routes_ledgers), exactly as the
+    # supplier producer already relies on. A reader with no stamp sees an
+    # honest em dash, never a claim nobody verified.
     return {
         "contractor": {
             "wfirma_contractor_id": str(
@@ -1715,7 +1750,6 @@ def aggregate_statement_from_facts(
         "period_start":   str(df or ""),
         "period_end":     str(dt or ""),
         "position_as_of": statement_date,
-        "source":         "wfirma",
         "as_of":          statement_date,
         "statement_model": "opening_period_closing",
         "currencies":     sorted(currencies),

@@ -77,6 +77,67 @@ function ldgMonthlyPeriod(year, month) {
   return { from: `${y}-${pad(m)}-01`, to: `${y}-${pad(m)}-${pad(last)}` };
 }
 
+// The FOUR statement products are ONE statement dict rendered four ways
+// (routes_ledgers.py `document=`). Every figure is computed server-side by
+// aggregate_statement_from_facts; this control chooses a presentation and
+// nothing else. Order is deliberate: the SOA is the default download and the
+// confirmation is last, because a confirmation is NOT a statement of account
+// and must never be handed over as one.
+const LDG_STATEMENT_DOCS = [
+  ['soa', 'Statement of Account',
+   'Opening balance, period movements, closing balance, gross aging and net position'],
+  ['monthly', 'Monthly Statement',
+   'One calendar month, formatted for sending to the counterparty'],
+  ['ledger', 'Detailed Ledger',
+   'Date, due date, document, type, reference, debit, credit, running balance, status'],
+  ['confirmation', 'Balance Confirmation',
+   'Formal agree / disagree document — not a statement of account'],
+];
+
+const LDG_DOC_BTN = {
+  fontSize: 11, fontWeight: 600, padding: '4px 10px',
+  border: '1px solid var(--border)', borderRadius: 6,
+  color: 'var(--text)', textDecoration: 'none', background: 'transparent',
+};
+
+/** Download group: the SOA link plus the other three products.
+ *
+ * `urlFor(document)` is supplied by the caller and must be a PzApi URL
+ * builder — this component never assembles a route itself.
+ */
+function LdgStatementDocs({ urlFor, primaryTestid, label }) {
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <a href={urlFor('soa')} target="_blank" rel="noopener"
+         data-testid={primaryTestid} title={LDG_STATEMENT_DOCS[0][2]}
+         style={LDG_DOC_BTN}>
+        {label || '↓ Statement PDF'}
+      </a>
+      <details data-testid={`${primaryTestid}-more`} style={{ position: 'relative', display: 'inline-block' }}>
+        <summary title="Monthly statement · detailed ledger · balance confirmation"
+                 style={{ ...LDG_DOC_BTN, cursor: 'pointer', listStyle: 'none', display: 'inline-block' }}>
+          More documents ▾
+        </summary>
+        <div style={{
+          position: 'absolute', right: 0, top: '100%', marginTop: 4, zIndex: 30,
+          minWidth: 280, textAlign: 'left', background: 'var(--bg)',
+          border: '1px solid var(--border)', borderRadius: 6, padding: 6,
+          boxShadow: '0 6px 18px rgba(0,0,0,0.18)',
+        }}>
+          {LDG_STATEMENT_DOCS.slice(1).map(([doc, name, hint]) => (
+            <a key={doc} href={urlFor(doc)} target="_blank" rel="noopener"
+               data-testid={`${primaryTestid}-${doc}`}
+               style={{ display: 'block', padding: '6px 8px', borderRadius: 4, textDecoration: 'none', color: 'var(--text)' }}>
+              <div style={{ fontSize: 11.5, fontWeight: 600 }}>{name}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', lineHeight: 1.35 }}>{hint}</div>
+            </a>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function ldgDefaultActivityPeriod() {
   const now = new Date();
   const y = now.getFullYear();
@@ -186,6 +247,17 @@ function formatAccUpstreamError(err) {
     return 'wFirma read failed. Retry shortly.';
   }
   return raw.length > 180 ? `${raw.slice(0, 177)}…` : raw;
+}
+
+// Provenance -> badge mode. The backend is the authority on which fact
+// universe answered the request; `wfirma` / `live` mean the explicit live
+// reconciliation ran, anything else (including a body that predates the
+// field) means the canonical local projection answered. Never guess this
+// from the active tab or hardcode it -- a route default change then silently
+// makes the badge lie.
+function ldgSourceMode(source) {
+  const s = String(source || '').toLowerCase();
+  return (s === 'wfirma' || s === 'live') ? 'wfirma' : 'local';
 }
 
 // ── Source / read-only badges ──────────────────────────────────────────
@@ -544,10 +616,12 @@ function LedgersPage(props) {
   };
 
   // HONEST load model (replaces the old fabricated static sync-age chip):
-  // ledger figures are LIVE on-demand wFirma reads via GET /api/v1/ledgers/*.
-  // The chip reports the LAST ACTUAL fetch outcome, lifted from
-  // ClientLedgerView; Refresh re-runs the real fetch (refreshKey).
-  const [loadInfo, setLoadInfo] = React.useState({ status: 'loading', at: null, count: null, error: null });
+  // ledger figures come from GET /api/v1/ledgers/*, which default to the
+  // canonical LOCAL financial fact projection (`source=local`); `refresh=1`
+  // / `source=live` is the explicit wFirma reconciliation path. The chip
+  // reports the LAST ACTUAL fetch outcome, lifted from ClientLedgerView;
+  // Refresh re-runs the real fetch (refreshKey).
+  const [loadInfo, setLoadInfo] = React.useState({ status: 'loading', at: null, count: null, error: null, source: null });
   const [refreshKey, setRefreshKey] = React.useState(0);
   const _t = (d) => d ? d.toLocaleTimeString('en-GB') : '';
   React.useEffect(() => {
@@ -578,30 +652,30 @@ function LedgersPage(props) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <LdgReadOnlyBadge />
-          <LdgSourceBadge mode={tab === 'analysis' ? 'local' : 'wfirma'} />
+          <LdgSourceBadge mode={ldgSourceMode(loadInfo.source)} />
           <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
             {tab === 'analysis'
-              ? 'Management Analysis reads the local financial reporting projection (SOURCE-LOCAL). Statement drawers remain live wFirma reads.'
-              : 'Client / Supplier balances and statements are live wFirma reads. No values can be edited here. Posting payments and corrections must be done in wFirma.'}
+              ? 'Management Analysis reads the local financial reporting projection (SOURCE-LOCAL), the same authority the balances and statements read.'
+              : 'Client / Supplier balances and statements read the local financial reporting projection (SOURCE-LOCAL) — one fact authority for both sides. ↻ Refresh runs the explicit live wFirma reconciliation. No values can be edited here; posting payments and corrections must be done in wFirma.'}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {loadInfo.status === 'loading' && (
             <span data-testid="ldg-load-status" style={{ fontSize: 11, color: 'var(--text-3)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--text-3)' }} />
-              {tab === 'analysis' ? 'Loading local projection…' : 'Loading from wFirma…'}
+              {ldgSourceMode(loadInfo.source) === 'wfirma' ? 'Loading from wFirma…' : 'Loading local projection…'}
             </span>
           )}
           {loadInfo.status === 'ok' && (
-            <span data-testid="ldg-load-status" title={tab === 'analysis' ? 'Local projection read' : 'Figures are live wFirma reads made at this time'} style={{ fontSize: 11, color: 'var(--badge-green-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span data-testid="ldg-load-status" title="Read from the local financial reporting projection at this time — use ↻ Refresh for the live wFirma reconciliation" style={{ fontSize: 11, color: 'var(--badge-green-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--badge-green-text)' }} />
-              {tab === 'analysis' ? `Local projection · loaded ${_t(loadInfo.at)}` : `Live wFirma read · loaded ${_t(loadInfo.at)}`}
+              {`${ldgSourceMode(loadInfo.source) === 'wfirma' ? 'Live wFirma' : 'Local projection'} · loaded ${_t(loadInfo.at)}`}
             </span>
           )}
           {loadInfo.status === 'error' && (
             <span data-testid="ldg-load-status" style={{ fontSize: 11, color: 'var(--badge-red-text)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--badge-red-text)' }} />
-              {tab === 'analysis' ? 'Local projection read failed' : 'wFirma read failed'}{loadInfo.at ? ` · ${_t(loadInfo.at)}` : ''}
+              {ldgSourceMode(loadInfo.source) === 'wfirma' ? 'wFirma read failed' : 'Local projection read failed'}{loadInfo.at ? ` · ${_t(loadInfo.at)}` : ''}
             </span>
           )}
           <window.Btn small variant="outline" data-testid="ldg-refresh"
@@ -677,6 +751,7 @@ function LedgersPage(props) {
       {selectedRow && (
         <StatementDetailDrawer
           row={selectedRow}
+          source={loadInfo.source}
           onClose={() => setSelectedRow(null)}
         />
       )}
@@ -687,7 +762,8 @@ function LedgersPage(props) {
 // ── CLIENT LEDGER — LIVE (GET /api/v1/ledgers/clients + statement.json) ──
 // LDG-1: the previous view rendered four synthetic clients and a synthetic
 // statement. Every figure below now comes from the canonical ledger read
-// authority (routes_ledgers.py → live wFirma reads). No value is fabricated:
+// authority (routes_ledgers.py → the local financial fact projection, with
+// an explicit live wFirma reconciliation path). No value is fabricated:
 // a failed read renders its own honest state, never a placeholder number.
 function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, filters, focusContractorId }) {
   const [clients, setClients] = React.useState(null);
@@ -738,7 +814,10 @@ function ClientLedgerView({ onSelectRow, selectedRow, refreshKey, onLoadInfo, fi
           as_of: (r && r.period && (r.period.as_of || r.period.to)) || period.as_of || period.to,
           unmapped: (r && r.roster_quality && r.roster_quality.unmapped_contractors) || 0,
         });
-        onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
+        onLoadInfo && onLoadInfo({
+          status: 'ok', at: new Date(), count: rows.length, error: null,
+          source: (r && r.source) || 'local',
+        });
       })
       .catch((e) => {
         if (gone) return;
@@ -1043,7 +1122,9 @@ function ClientHeaderCard({ client: c, stmt, period }) {
   const unavailable = c.balance_available === false;
   const stmtGen = stmt && stmt.status === 'ok' && stmt.data ? (stmt.data.generated_at || '') : '';
   const asOf = period.as_of || period.to;
-  const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(c.contractor_id)}/statement.pdf?from=${period.from}&to=${period.to}`;
+  const pdfFor = (docKind) => window.PzApi.clientStatementPdfUrl(c.contractor_id, {
+    from: period.from, to: period.to, as_of: asOf, document: docKind,
+  });
   return (
     <window.Card>
       <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
@@ -1060,11 +1141,8 @@ function ClientHeaderCard({ client: c, stmt, period }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          {/* Real authority action: the statement PDF route (existing). */}
-          <a href={pdfHref} target="_blank" rel="noopener" data-testid="ldg-statement-pdf"
-             style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none', background: 'transparent' }}>
-            ↓ Statement PDF
-          </a>
+          {/* Real authority action: the statement PDF route, four products. */}
+          <LdgStatementDocs urlFor={pdfFor} primaryTestid="ldg-statement-pdf" />
         </div>
       </div>
 
@@ -1288,7 +1366,7 @@ const maSumTreasuryByCurrency = (rows) => {
 // (loading / error / empty) is honest.
 function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, entryFilter }) {
   if (stmt.status === 'loading' || stmt.status === 'idle') {
-    return <window.Card><div data-testid="ldg-stmt-loading" style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>Loading statement from wFirma…</div></window.Card>;
+    return <window.Card><div data-testid="ldg-stmt-loading" style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--text-3)' }}>Loading statement from the local financial projection…</div></window.Card>;
   }
   if (stmt.status === 'error') {
     return (
@@ -1310,7 +1388,9 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
   const agingBasisLabel = d.aging_basis === 'gross_before_credits'
     ? 'Gross aging before credits'
     : 'Aging';
-  const pdfHref = `/api/v1/ledgers/clients/${encodeURIComponent(client.contractor_id)}/statement.pdf?from=${period.from}&to=${period.to}`;
+  const pdfFor = (docKind) => window.PzApi.clientStatementPdfUrl(client.contractor_id, {
+    from: period.from, to: period.to, as_of: period.as_of || period.to, document: docKind,
+  });
 
   const TYPE_LABEL = {
     opening_balance: 'Opening / B/F',
@@ -1354,7 +1434,7 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Statement</span>
-          <LdgSourceBadge mode="wfirma" />
+          <LdgSourceBadge mode={ldgSourceMode(d.source)} />
           <LdgReadOnlyBadge />
           <span data-testid="ldg-stmt-scope-label" style={{ fontSize: 10.5, color: 'var(--badge-amber-text)', fontWeight: 600 }}>
             Opening → period movements → Closing
@@ -1363,10 +1443,7 @@ function ClientStatementTable({ client, stmt, onRowClick, selectedId, period, en
             <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{d.period.from || '…'} → {d.period.to || '…'}</span>
           )}
         </div>
-        <a href={pdfHref} target="_blank" rel="noopener" data-testid="ldg-stmt-pdf"
-           style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none' }}>
-          ↓ PDF
-        </a>
+        <LdgStatementDocs urlFor={pdfFor} primaryTestid="ldg-stmt-pdf" label="↓ PDF" />
       </div>
 
       {currencies.length === 0 && (
@@ -1532,7 +1609,10 @@ function ManagementAnalysisView({ refreshKey, onLoadInfo, filters, onFilters, on
         liveFetchRef.current = false;
         const nAr = (body && body.customers && body.customers.length) || 0;
         const nAp = (apRes && (apRes.data || apRes).suppliers && (apRes.data || apRes).suppliers.length) || 0;
-        onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: nAr + nAp, error: null });
+        onLoadInfo && onLoadInfo({
+          status: 'ok', at: new Date(), count: nAr + nAp, error: null,
+          source: (body && body.source) || 'local',
+        });
       })
       .catch((e) => {
         if (gone) return;
@@ -2363,7 +2443,10 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
         const body = res.data || res;
         const rows = body.suppliers || [];
         setSuppliers(rows);
-        onLoadInfo && onLoadInfo({ status: 'ok', at: new Date(), count: rows.length, error: null });
+        onLoadInfo && onLoadInfo({
+          status: 'ok', at: new Date(), count: rows.length, error: null,
+          source: (body && body.source) || 'local',
+        });
         const ids = rows.map((r) => supplierFinancialRowId(r.contractor_id, r.currency));
         const prefer = focusSupplierId && ids.includes(focusSupplierId)
           ? focusSupplierId
@@ -2497,14 +2580,12 @@ function SupplierLedgerView({ refreshKey, onLoadInfo, filters, focusSupplierId }
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <a href={window.PzApi.supplierStatementPdfUrl(active.contractor_id, {
-                from: period.from, to: period.to, as_of: asOf,
-                currency: active.currency,
-              })}
-             target="_blank" rel="noopener" data-testid="ldg-supplier-statement-pdf"
-             style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', textDecoration: 'none', flexShrink: 0 }}>
-            ↓ Statement PDF
-          </a>
+          <LdgStatementDocs
+            primaryTestid="ldg-supplier-statement-pdf"
+            urlFor={(docKind) => window.PzApi.supplierStatementPdfUrl(active.contractor_id, {
+              from: period.from, to: period.to, as_of: asOf,
+              currency: active.currency, document: docKind,
+            })} />
           <button type="button" data-testid="ldg-supplier-close" onClick={() => setActiveId('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: 18 }}>×</button>
           </div>
         </div>
@@ -2705,7 +2786,7 @@ function LdgFilterPanel({ title, searchPlaceholder, items, activeId, onSelect, e
 // fabricated document preview (invented file size / page count), invented linked
 // movements (SHP-/PZ-/SMP- ids) and minted "WF-DOC-" ids are removed —
 // cross-links to shipments/PZ are a future backend capability, stated as such.
-function StatementDetailDrawer({ row, onClose }) {
+function StatementDetailDrawer({ row, source, onClose }) {
   const TYPE_LABEL = { invoice: 'Invoice', correction: 'Correction', payment: 'Payment', proforma: 'Proforma' };
   const money = (v) => (v === null || v === undefined || v === '' ? '—' : LDG_FMT.money(v, row.currency || ''));
   return (
@@ -2727,7 +2808,7 @@ function StatementDetailDrawer({ row, onClose }) {
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <LdgSourceBadge mode="wfirma" />
+              <LdgSourceBadge mode={ldgSourceMode(source)} />
               <LdgReadOnlyBadge />
             </div>
           </div>
