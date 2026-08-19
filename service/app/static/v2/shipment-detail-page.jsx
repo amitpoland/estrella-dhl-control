@@ -1975,6 +1975,10 @@ function DocumentsTab({ batchId }) {
 
   return (
     <div data-testid="documents-tab" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Pre-shipment announcement vs what actually shipped. Read-only against
+          the packing authority; mounted here because it answers a question
+          about THIS shipment's documents. */}
+      {window.AdvancePackingCard && <window.AdvancePackingCard batchId={batchId} />}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <SectionLabel>Shipment documents ({rows.length})</SectionLabel>
         <Btn variant="outline" small data-testid="documents-reload" onClick={load} title="Reload manifest">↻ Reload</Btn>

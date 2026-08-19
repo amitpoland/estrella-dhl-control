@@ -260,6 +260,36 @@ def init_packing_db(db_path: Path) -> None:
         # supplier_id on packing_documents links the document to its Supplier Master row.
         _add_column_if_missing(con, "packing_documents", "supplier_id", "INTEGER")
 
+        # ── Advance (pre-shipment) packing lists ───────────────────────────
+        # doc_stage distinguishes the two things a packing document can be:
+        #   'final'    the packing list of a real shipment — goods exist, the
+        #              document is bound to a SHIPMENT_* batch. Every row that
+        #              existed before this column was added is 'final'.
+        #   'advance'  a pre-shipment list the supplier sends BEFORE dispatch.
+        #              No AWB, no purchase invoice, and therefore no
+        #              product_code (ADR-024 mints product identity from
+        #              invoice_no) and no physical goods. Advance documents
+        #              live under an ADVANCE_* batch_id that deliberately has
+        #              NO outputs/ directory, so the shipment list (which is a
+        #              directory scan) never sees them.
+        # linked_batch_id records which real shipment later fulfilled an
+        # advance document. Set once by the operator; it is the anchor for
+        # advance-vs-final reconciliation. Empty on every 'final' row.
+        _add_column_if_missing(con, "packing_documents", "doc_stage",
+                               "TEXT NOT NULL DEFAULT 'final'")
+        _add_column_if_missing(con, "packing_documents", "linked_batch_id",
+                               "TEXT NOT NULL DEFAULT ''")
+        # An operator who uploads the wrong advance list, or links one to the
+        # wrong shipment, has to be able to put it right without a developer.
+        # Withdrawing is that repair: a non-empty reason means withdrawn. The
+        # rows are KEPT -- the supplier really did send that announcement, and
+        # a withdrawn document plus its reason is the honest record of what
+        # happened. Empty on every other row, so nothing historical changes.
+        _add_column_if_missing(con, "packing_documents", "withdrawn_reason",
+                               "TEXT NOT NULL DEFAULT ''")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pd_doc_stage "
+                    "ON packing_documents (doc_stage)")
+
 
 def _add_column_if_missing(con: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -291,6 +321,7 @@ def upsert_packing_document(
     parser_diagnostic: Optional[Dict[str, Any]] = None,
     document_id: Optional[str] = None,
     supplier_id: Optional[int] = None,
+    doc_stage: str = "final",
 ) -> str:
     """Insert or update a packing document record. Returns document id.
 
@@ -377,6 +408,12 @@ def upsert_packing_document(
                  parser_name, parser_version, extraction_status,
                  diag_json or "{}", supplier_id, now, now),
             )
+            # doc_stage is set on INSERT only — a document never changes stage.
+            # An advance list that turns out to describe a real shipment is
+            # LINKED to it (linked_batch_id), never rewritten into a final one.
+            if doc_stage != "final":
+                con.execute("UPDATE packing_documents SET doc_stage=? WHERE id=?",
+                            (doc_stage, doc_id))
             return doc_id
 
 
@@ -762,7 +799,15 @@ def upsert_packing_lines(
                 # populated. Empty bag_id means the packing list doesn't track physical
                 # bags, so design_no IS the unique identifier. Without this guard,
                 # aggregate (N:1) matches collapse to a single row per invoice line.
-                if existing is None and bag_id:
+                #
+                # Only when the row has NO serial of its own. A row that came
+                # with a pack_sr already carries the source list's own identity
+                # statement; falling back to "same bag" contradicts it and
+                # collapses distinct rows. That is what happened to advance
+                # lists, where invoice_line_position is NULL for every row, so
+                # the check below degenerated to "same bag = same row" and a
+                # multi-design bag stored one line.
+                if existing is None and bag_id and pack_sr is None:
                     existing = con.execute(
                         """SELECT id, operator_review_status, product_code,
                                   invoice_line_position FROM packing_lines
@@ -1573,6 +1618,11 @@ def backfill_scan_codes() -> int:
     """
     Populate scan_code for any existing rows where it is NULL.
     Safe to call multiple times (idempotent). Returns count updated.
+
+    Advance-stage rows are skipped: a scan_code is the identity of a physical
+    piece, and advance packing lists describe goods that do not exist yet.
+    Minting one would let an unscoped scan lookup resolve a barcode to goods
+    nobody has ever received.
     """
     if _db_path is None:
         return 0
@@ -1581,7 +1631,9 @@ def backfill_scan_codes() -> int:
         with _connect() as con:
             rows = con.execute(
                 "SELECT id, product_code, bag_id, pack_sr, design_no "
-                "FROM packing_lines WHERE scan_code IS NULL"
+                "FROM packing_lines WHERE scan_code IS NULL "
+                "  AND packing_document_id NOT IN ("
+                "        SELECT id FROM packing_documents WHERE doc_stage='advance')"
             ).fetchall()
             for row in rows:
                 sc = _compute_scan_code(dict(row))

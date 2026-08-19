@@ -180,7 +180,8 @@ def test_pdf_parser_totals_reconcile_after_lenient_split():
 # ── End-to-end: customs row injection from real packing_lines DB ─────────
 
 
-def test_end_to_end_packing_lines_become_audit_rows(monkeypatch):
+def test_end_to_end_packing_lines_become_audit_rows(monkeypatch,
+                                                   production_db_snapshot):
     """When packing.db has rows for a Global batch, _inject_rows_from_sources
     must use them as audit['rows'] — NOT the aggregate synthesizer."""
     import sys
@@ -199,9 +200,14 @@ def test_end_to_end_packing_lines_become_audit_rows(monkeypatch):
     monkeypatch.setattr(_s, "storage_root",
                         Path(r"C:\PZ\storage"), raising=False)
 
-    # Initialise packing_db pointing at production
+    # Read the real packing rows from a SNAPSHOT, never the live file.
+    # init_packing_db runs the schema migration, so pointing it at
+    # C:\PZ\storage\packing.db made this test ALTER the running service's
+    # database.  The snapshot is a throwaway copy taken with sqlite3's online
+    # backup API; the assertions below only read, so a copy proves the same
+    # thing.
     from app.services import packing_db
-    packing_db.init_packing_db(Path(r"C:\PZ\storage\packing.db"))
+    packing_db.init_packing_db(production_db_snapshot("packing.db"))
 
     pkg = packing_db.get_packing_lines_for_batch(
         "SHIPMENT_4789974092_2026-05_999deef1"
