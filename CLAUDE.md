@@ -602,7 +602,15 @@ uncited claim (one that permits proceeding) as the higher-severity
 case. **Lesson Q rule 7 additionally binds every commit-scoped
 reviewer verdict** — a reviewer that reports what a SHA contains must
 name the tree and HEAD it read, and the deploy gate must reject a
-verdict read from a tree whose HEAD is not the reviewed SHA.
+verdict read from a tree whose HEAD is not the reviewed SHA. **Lesson S binds at
+GATE-1 on every PR that adds or modifies a background job, waiter,
+test harness, verification process, or long-running shell
+orchestration** — `reviewer-challenge` must reject unbounded wait
+loops, regex completion checks against human-formatted output,
+background jobs without a timeout, jobs without explicit exit-status
+capture, and long-running jobs carrying no session / worktree / PID
+ownership metadata. A waiter is infrastructure, not evidence; the
+producer's exit code and result artifacts are.
 
 ### Lesson A — Test stubs must match real production return shapes (2026-05-13)
 **GATE 1.** Stubs MUST match the real builder return shape; stub authors must read the real function first. Every coordinator/builder PR MUST include a real-builder regression test (no stub) asserting the type contract. Coordinators MUST normalise polymorphic inputs via `_normalise_X`. Post-merge Lesson-A failure → **GATE 4** salvage (SCHEDULED / ISSUE / REJECTED).
@@ -761,6 +769,36 @@ The lesson recurred in its mirror form three days later, which is why rule 7 exi
 **Where it binds**: every `TASK_STATE.md` / `PROJECT_STATE.md` entry asserting a gate, guard, block, or stop condition; every handoff `next_command` or resume note; every `EXECUTION_BLOCKED` checkpoint validation; and — for rule 7 — every one of the 7 `deploy_*` gate agents, every `reviewer-challenge` on a PR diff, and any finding that a symbol, flag, or guard is absent. `reviewer-challenge` must flag an uncited safety claim in any state-file diff; the deploy gate must reject a verdict whose source tree HEAD ≠ the reviewed SHA.
 
 **Reference**: (rules 1–6) 2026-08-01 register refresh (`b5853935`, PR #1061) — caution recorded 2026-07-31, found wrong 2026-08-01 by reading `.claude/deploy/Deploy-PZ.ps1` (`Read-VersionMarker`, `New-BackupUnit`, `Resolve-RestoredSha`) rather than trusting the register; it had sat wrong for one day, over a HYBRID production runtime, while the only real protection (`Assert-ProductionMatchesRecordedSha`) existed solely in the then-unmerged PR #1062. Observer scorecard: `.claude/memory/scorecards/2026-08-01-pr1062-amendment-register-refresh.md`. (rule 7) 2026-08-03 deploy gate — `deploy-lead-coordinator` HB-1 withdrawn after measurement: `C:\PZ-main` @ `4e9301b6` (main) = 8 `--from-sha` occurrences vs `C:\PZ-verify` @ `cf04f472` (`fix/deploy-production-identity-gate`) = 0; `git merge-base --is-ancestor` confirmed behind, not diverged. Fix landed in the same PR as this lesson: the **Subagent reading rule** in the canonical working-tree registry now carries the commit-scoped exception.
+
+### Lesson S — A waiter is infrastructure, not evidence: background completion is a sentinel plus an exit code, never formatted output (2026-08-19)
+
+**GATE-1 + reviewer-challenge + every background job, waiter, test harness, verification process, and long-running shell orchestration.** Origin: a session stalled ~2h45m over work that had already finished. Two background waiters polled pytest output with `until grep -qE "^(=+ .*(passed|failed|error).* =+|ERROR: )" …; do sleep 15; done` and `until grep -qE "=+ .*(passed|failed|error).* in .*=+" …; do sleep 10; done`. Both patterns require `=` decoration around the summary line; under `-q` pytest emits it **undecorated** — `104 failed, 4403 passed, 34 skipped, 19254 deselected, 180 warnings in 1258.88s` — so `grep -cE "^=+ .*(passed|failed|error).* =+"` over the real output file returned **0**. The condition was unsatisfiable from the first iteration. The runs had completed at 11:19:01 and 11:19:45; the loops then slept for ~8h, and being unbounded they could not report their own failure. The waiters also belonged to a *different* live session, so they read as stale to every other session while their owner was alive. Nothing errored, nothing timed out, and the release sat unclosed over finished, passing work.
+
+**Binding rules:**
+1. **Formatted stdout/stderr is never the authoritative completion signal.** `-q`, `--no-header`, `-p no:cacheprovider`, non-tty stdout and terminal width all change whether pytest pads its summary. Coupling a wait to that is a coin flip lost silently.
+2. **The producer owns an explicit completion sentinel** — a flag file, or equivalent structured status — and writes it in a fixed order: **exit code and completion metadata are durably recorded FIRST; the sentinel is written only after that state is on disk.** The sentinel is therefore the producer's LAST action, so a waiter that observes it is guaranteed to find complete metadata behind it, never a half-written record. Waiters test for the sentinel's existence, never for the shape of its content.
+3. **Capture PID, exit code, start time, finish time, session identity, and worktree identity** for every background job. Exit code is recorded *separately* from command output, and this status metadata is flushed to durable storage **before** the sentinel appears (rule 2). The sentinel is notification only — the exit code plus the result artifacts / status metadata remain the authoritative evidence (rule 10).
+4. **Every waiter has a finite timeout.** No exceptions.
+5. **Unbounded polling loops are prohibited** — `until … ; do sleep … ; done` with no iteration cap is a defect on sight, whatever it polls.
+6. **On timeout, inspect the producer's PID / process tree and artifacts before retrying.** Diagnose by parent chain, command line, creation time and port — never by process name, and never with an image-wide kill.
+7. **Never launch a duplicate test/build/deploy job while the original's PID or completion artifact is unresolved.** That is how duplicate suites and contradictory result files appear.
+8. **Never infer pytest completion from summary-line formatting.** See rule 1; this is the specific form that caused the incident.
+9. **Before release closure, reconcile Desktop / background-task state against actual OS process state.** A required closure step, not an optional tidy-up.
+10. **A waiter is not evidence.** The producer's exit code plus its result artifacts are the evidence. A waiter that returned proves only that a waiter returned.
+11. **Orphaned session-owned processes must not survive a completed campaign** unless the survival is explicitly justified and recorded. A process whose owning session is gone can be claimed by nobody and reconciled by nobody.
+
+**Enforcement — `reviewer-challenge` must REJECT any PR introducing:**
+- an unbounded wait loop;
+- a grep / regex completion check against human-formatted output;
+- a background job with no timeout;
+- a job with no explicit exit-status capture;
+- a long-running job with no session / worktree / PID ownership metadata.
+
+**Prefer reusable helper infrastructure over ad-hoc shell loops.** A waiter hand-rolled per task is a defect surface re-created per task; the safest waiter is the one nobody wrote, so prefer the harness's own completion notification where it exists.
+
+**Where it binds**: GATE-1 on every PR that adds or modifies a background job, waiter, test harness, verification process, or long-running shell orchestration; every `reviewer-challenge` on such a diff; and the release-closure checklist, via rule 9.
+
+**Reference**: 2026-08-19 recovery session — waiters in scratchpad `…/C--PZ-verify--claude-worktrees-eloquent-fermat-7f2f9b/16b803e8-…/scratchpad` (PIDs 8808 / 31176 / 24408 / 5904, owner `claude.exe` PID 16712) polling completed `out_tip.txt` / `out_base.txt`; root cause measured, not inferred, by counting regex matches against the real output files. Operator-ratified as the BACKGROUND TASK SAFETY RULE the same day. Rule 11 was ratified against a live instance: an orphaned `_start_premerge_uvicorn.py` (PID 31488, parent dead, port 8010) had survived ~41h across a completed campaign and was terminated under a six-gate identity check at this lesson's adoption.
 
 ---
 
