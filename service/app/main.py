@@ -84,6 +84,8 @@ from .api.routes_admin_runtime_flags import router as admin_runtime_flags_router
 from .api.routes_admin_dhl_clearance import router as admin_dhl_clearance_router
 from .api.routes_description_admin import router as description_admin_router
 from .api.routes_customer_master import router as customer_master_router
+from .api.routes_customer_enrichment import router as customer_enrichment_router
+from .api.routes_customer_enrichment_mcp import router as customer_enrichment_mcp_router
 from .api.routes_suppliers import router as suppliers_router
 from .api.routes_client_addresses import router as client_addresses_router
 from .api.routes_client_carrier_accounts import router as client_carrier_accounts_router
@@ -558,6 +560,8 @@ app.include_router(inventory_sample_router) # POST /api/v1/inventory/pieces/{id}
 app.include_router(inventory_returns_router)# POST /api/v1/inventory/pieces/{id}/return-from-client + /return-to-producer + /return-from-producer (Phase B.2; precheck-guarded)
 app.include_router(admin_runtime_flags_router)  # W-5 / P0: DHL self-clearance runtime flag admin (X-API-Key)
 app.include_router(admin_dhl_clearance_router)  # W-5 / P2 ignition (Model C): admin override route for proactive dispatch (X-API-Key, ADR-019)
+app.include_router(customer_enrichment_router)      # Client Master external enrichment (flag-gated 503; X-API-Key / role)
+app.include_router(customer_enrichment_mcp_router)  # Cowork MCP research surface (flag+token gated 503/401; JSON-RPC)
 app.include_router(customer_master_router)      # PR 2C.3a: customer master CRUD (X-API-Key)
 app.include_router(client_addresses_router)         # MasterData-1: per-client shipping addresses
 app.include_router(client_carrier_accounts_router)  # MasterData-1: per-client carrier accounts

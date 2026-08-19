@@ -729,6 +729,30 @@
     deleteCarrierAccount: (contractorId, acctId) =>
       _del(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/carrier-accounts/${acctId}`),
 
+    // ── Customer Master — external enrichment (Cowork research) ─────────
+    // Transport only (Lesson F): acceptance/rejection authority lives in
+    // routes_customer_enrichment.py; 503 while the feature flag is off.
+
+    // GET /api/v1/customer-master/{cid}/enrichment — latest task + proposals + evidence
+    getCustomerEnrichment: (contractorId) =>
+      _get(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/enrichment`),
+
+    // POST /api/v1/customer-master/{cid}/enrichment/research — create research task
+    runCustomerEnrichmentResearch: (contractorId) =>
+      _postM(`${BASE}/customer-master/${encodeURIComponent(contractorId)}/enrichment/research`, {}),
+
+    // GET /api/v1/customer-enrichment/status — canonical status contract
+    getCustomerEnrichmentStatus: () =>
+      _get(`${BASE}/customer-enrichment/status`),
+
+    // POST /api/v1/customer-enrichment/proposals/{pid}/accept — the ONLY CM write
+    acceptEnrichmentProposal: (proposalId) =>
+      _postM(`${BASE}/customer-enrichment/proposals/${encodeURIComponent(proposalId)}/accept`, {}),
+
+    // POST /api/v1/customer-enrichment/proposals/{pid}/reject
+    rejectEnrichmentProposal: (proposalId) =>
+      _postM(`${BASE}/customer-enrichment/proposals/${encodeURIComponent(proposalId)}/reject`, {}),
+
     // ── Packing — link-as-sales backfill ─────────────────────────────────
     // GET /api/v1/packing/{batch_id}/packing-documents
     // Returns { ok, data: { batch_id, count, documents: [{ id,
