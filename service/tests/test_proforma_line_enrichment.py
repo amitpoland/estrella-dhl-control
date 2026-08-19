@@ -19,6 +19,8 @@ Coverage:
                                                warning dropped, key removed
  14. test_enrich_description_warning_not_duplicated — repeated passes emit ONE
  15. test_enrich_preserves_foreign_warning  — another producer's _warnings kept
+ 16. test_recompute_line_warning_is_per_producer — the shared helper both
+                                               producers route through
 """
 from __future__ import annotations
 
@@ -690,3 +692,37 @@ def test_enrich_preserves_foreign_warning():
         lines, _lookup_both
     )
     assert enriched[0]["_warnings"] == [_FOREIGN_WARNING]
+
+
+# ── 16. the shared `_warnings` recompute helper ──────────────────────────────
+def test_recompute_line_warning_is_per_producer():
+    """Each producer replaces only its OWN entries and never accumulates.
+
+    Both `_warnings` producers (this module's PD-missing warning and
+    routes_proforma's customs warning) route through this helper, so the
+    per-producer isolation is pinned once here rather than twice downstream.
+    """
+    a, b = pildb.PD_MISSING_WARNING_PREFIX, pildb.CUSTOMS_PL_MISSING_WARNING_PREFIX
+
+    line = {"_warnings": [a + "'X'. old", b + "'X'. old"]}
+
+    # producer A re-emits: its own entry is replaced, B's survives untouched
+    pildb.recompute_line_warning(line, a, a + "'X'. new")
+    assert line["_warnings"] == [b + "'X'. old", a + "'X'. new"]
+
+    # idempotent — a second identical pass does not duplicate
+    pildb.recompute_line_warning(line, a, a + "'X'. new")
+    assert line["_warnings"] == [b + "'X'. old", a + "'X'. new"]
+
+    # producer A resolves: only its entry is dropped
+    pildb.recompute_line_warning(line, a)
+    assert line["_warnings"] == [b + "'X'. old"]
+
+    # last producer resolves: the key disappears entirely
+    pildb.recompute_line_warning(line, b)
+    assert "_warnings" not in line
+
+    # a line that never warned stays clean
+    empty = {}
+    pildb.recompute_line_warning(empty, a)
+    assert empty == {}
