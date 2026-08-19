@@ -406,6 +406,21 @@ def submit_cowork_tracking_result(
     }
 
 
+@router.post("/refresh-active", dependencies=[_auth])
+def refresh_active_tracking_endpoint() -> dict:
+    """Refresh carrier tracking for every active AWB. Tracking only.
+
+    This is NOT the monitor sweep: it queues no email, sends no email, and
+    dispatches no clearance action, so every authenticated operator may run
+    it (the login bootstrap does).  Polling reuses the single tracking
+    authority with its 15-minute TTL, so a sweep over fresh AWBs costs no
+    carrier calls.  A concurrent sweep returns ``running: true`` instead of
+    doubling the work.
+    """
+    from ..services.active_shipment_monitor import refresh_active_tracking
+    return refresh_active_tracking()
+
+
 @router.get("/shipment/{batch_id}/timeline", dependencies=[_auth])
 def get_shipment_timeline(batch_id: str) -> dict:
     """Return the event timeline for a shipment batch."""
