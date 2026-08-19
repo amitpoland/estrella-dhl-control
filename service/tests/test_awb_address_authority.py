@@ -1,9 +1,8 @@
-"""Tests for AWB Address Authority Repair (Campaign 02.5 Workstream 3).
+"""Tests for AWB Address Authority — Customer Master derivation for shipment creation.
 
-Tests the new Customer Master authority derivation for shipment creation,
-including feature flag behavior, error handling, and fallback mechanisms.
-
-Also includes tests for the AWB resolution audit script (Condition 1 implementation).
+The Customer Master derivation is the ONE recipient authority: no feature flag,
+no raw-address fallback, no date-based degradation.  These tests cover the
+derivation itself and the AWB resolution audit script.
 """
 from __future__ import annotations
 
@@ -13,14 +12,12 @@ import time
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from datetime import datetime
 
+import app.services.awb_address_authority as awb_authority
 from app.services.awb_address_authority import (
     derive_awb_address_authority,
-    derive_awb_address_authority_with_fallback,
     CustomerNotFoundError,
     AddressMissingError,
-    _is_historical_batch,
 )
 
 # Import audit script functions for testing
@@ -72,30 +69,6 @@ def mock_incomplete_customer():
     customer.ship_to_street = ""  # Missing required field
     customer.ship_to_city = ""    # Missing required field
     return customer
-
-
-class TestHistoricalBatchDetection:
-    """Test the _is_historical_batch helper function."""
-
-    def test_recent_shipment_batch_not_historical(self):
-        """Current month SHIPMENT batch should not be historical."""
-        current_month = datetime.now().strftime("%Y-%m")
-        batch_id = f"SHIPMENT_1234567890_{current_month}_abcd1234"
-        assert not _is_historical_batch(batch_id)
-
-    def test_old_shipment_batch_is_historical(self):
-        """2025 SHIPMENT batch should be historical."""
-        batch_id = "SHIPMENT_1234567890_2025-01_abcd1234"
-        assert _is_historical_batch(batch_id)
-
-    def test_awb_batch_not_historical(self):
-        """AWB format batches are treated as recent."""
-        assert not _is_historical_batch("AWB_1234567890")
-
-    def test_invalid_shipment_format_not_historical(self):
-        """Invalid SHIPMENT formats treated as recent."""
-        assert not _is_historical_batch("SHIPMENT_invalid_format")
-        assert not _is_historical_batch("SHIPMENT_1234567890_2025-99_abcd1234")
 
 
 class TestAuthorityDerivation:
@@ -159,73 +132,30 @@ class TestAuthorityDerivation:
         assert "city" in error_msg
 
 
-class TestFallbackMechanism:
-    """Test the graceful degradation with fallback."""
+class TestNoBypassExists:
+    """The raw-address escape hatch is gone and must not come back."""
 
-    @patch('app.services.awb_address_authority.derive_awb_address_authority')
-    def test_fallback_for_historical_batch(self, mock_derive, mock_storage_root):
-        """Test raw fallback is used for historical batches."""
-        mock_derive.side_effect = CustomerNotFoundError("Customer not found")
+    def test_no_fallback_or_historical_helper_is_exported(self):
+        """A removed bypass that gets re-added must fail here first."""
+        assert not hasattr(awb_authority, "derive_awb_address_authority_with_fallback")
+        assert not hasattr(awb_authority, "_is_historical_batch")
+        assert awb_authority.__all__ == [
+            "CustomerNotFoundError",
+            "AddressMissingError",
+            "derive_awb_address_authority",
+        ]
 
-        raw_fallback = {
-            "name": "Legacy Customer",
-            "street": "Old Street 1",
-            "city": "Legacy City",
-            "country": "Poland"
-        }
+    @patch("app.services.carrier.doc_package._resolve_customer_from_batch")
+    def test_unresolvable_customer_never_degrades_to_an_address(
+        self, mock_resolve_customer, mock_storage_root
+    ):
+        """No date, no flag, no argument turns a failed resolution into a shipment."""
+        mock_resolve_customer.return_value = None
 
-        # Use a historical batch format
-        historical_batch = "SHIPMENT_1234567890_2025-01_abcd1234"
-
-        result = derive_awb_address_authority_with_fallback(
-            historical_batch, mock_storage_root, raw_fallback
-        )
-
-        assert result["name"] == "Legacy Customer"
-        assert result["source"] == "raw_fallback_historical"
-
-    @patch('app.services.awb_address_authority.derive_awb_address_authority')
-    def test_no_fallback_for_recent_batch(self, mock_derive, mock_storage_root):
-        """Test that recent batches don't get raw fallback."""
-        mock_derive.side_effect = CustomerNotFoundError("Customer not found")
-
-        raw_fallback = {
-            "name": "Should Not Be Used",
-            "street": "Should Not Be Used",
-            "city": "Should Not Be Used",
-            "country": "Poland"
-        }
-
-        # Use a recent batch format
-        recent_batch = "AWB_1234567890"
-
-        with pytest.raises(CustomerNotFoundError):
-            derive_awb_address_authority_with_fallback(
-                recent_batch, mock_storage_root, raw_fallback
-            )
-
-    @patch('app.services.awb_address_authority.derive_awb_address_authority')
-    def test_fallback_with_incomplete_raw_address(self, mock_derive, mock_storage_root):
-        """Test that incomplete fallback address raises error."""
-        mock_derive.side_effect = CustomerNotFoundError("Customer not found")
-
-        incomplete_fallback = {
-            "name": "Incomplete",
-            # Missing street, city, country
-        }
-
-        historical_batch = "SHIPMENT_1234567890_2025-01_abcd1234"
-
-        with pytest.raises(AddressMissingError) as exc_info:
-            derive_awb_address_authority_with_fallback(
-                historical_batch, mock_storage_root, incomplete_fallback
-            )
-
-        error_msg = str(exc_info.value)
-        assert "raw fallback is incomplete" in error_msg
-        assert "street" in error_msg
-        assert "city" in error_msg
-        assert "country" in error_msg
+        for batch_id in ("AWB_1234567890",
+                         "SHIPMENT_1234567890_2025-01_abcd1234"):   # old batch too
+            with pytest.raises(CustomerNotFoundError):
+                derive_awb_address_authority(batch_id, mock_storage_root)
 
 
 class TestIdempotencyKeyPreservation:

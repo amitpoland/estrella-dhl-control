@@ -2136,18 +2136,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         width_cm:  parseFloat(form.width_cm),
         height_cm: parseFloat(form.height_cm),
       },
-      recipient_address: {
-        // Contact full name and company stay separate — never copy company into name.
-        name:         form.name || undefined,
-        person:       form.name || undefined,
-        company:      form.company_name || undefined,
-        street:       form.street,
-        city:         form.city,
-        postal_code:  form.postal_code,
-        country_code: form.country_code.toUpperCase(),
-        phone:        form.phone || undefined,
-        email:        form.email || undefined,
-      },
+      // No recipient_address: the server derives it from Customer Master via
+      // client_ref. Posting the form values would look like an authority the
+      // booking does not have.
       product_code:       form.product_code || 'P',
       // Automatic description is backend-only. Send override ONLY when the
       // operator edited the field — never re-post the canonical display value
@@ -2671,6 +2662,16 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
 
           {/* ── Recipient ── */}
           <div style={sectionHead}>Recipient</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}
+            data-testid="awb-recipient-authority-note">
+            From Customer Master shipping details. Editing here offers to save the
+            change back to Customer Master before booking — the shipped address is
+            always the Customer Master address.{' '}
+            <a href={cmMasterHref} target="_blank" rel="noopener noreferrer"
+              style={{ color: 'var(--accent)' }} data-testid="awb-recipient-cm-link">
+              Open Client Master
+            </a>
+          </div>
           <div style={fieldStyle}>
             <label htmlFor="awb-company_name" style={labelStyle}>Company Name *</label>
             <input id="awb-company_name" value={form.company_name}
@@ -2773,8 +2774,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           )}
 
           {/* Customer Master save-confirmation — booking is HELD until the
-              operator picks Yes (save + continue), No (this AWB only), or
-              Cancel (no save, no booking). Master is never written silently. */}
+              operator picks Yes (save + continue) or Cancel (no save, no
+              booking). Master is never written silently, and there is no
+              "use only for this AWB" escape: the shipped address is always
+              the Customer Master address, so an edit that is not saved is an
+              edit that would not ship. */}
           {selectedCarrier === 'DHL' && saveConfirm && saveConfirm.baselineIssue && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
@@ -2786,7 +2790,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                   : 'Customer Master could not be loaded, so shipping details cannot be compared.'}
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }}>
-                Nothing will be saved to Customer Master. Book only if you are sure the shipping details above are correct.
+                The shipped address always comes from Customer Master, never from this form. Continuing books with whatever the server resolves for this client — and fails with a clear error if it cannot resolve one.
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Btn variant="primary"
@@ -2839,11 +2843,6 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                   data-testid="awb-master-save-yes">
                   {savingMaster ? 'Saving…'
                     : (saveConfirm.phoneOnly ? 'Yes' : 'Yes, save to Customer Master and continue')}
-                </Btn>
-                <Btn variant="ghost" disabled={savingMaster}
-                  onClick={() => { setSaveConfirm(null); doBooking(); }}
-                  data-testid="awb-master-save-no">
-                  {saveConfirm.phoneOnly ? 'No, use only once' : 'No, use only for this AWB'}
                 </Btn>
                 <Btn variant="ghost" disabled={savingMaster}
                   onClick={() => { setSaveConfirm(null); setSaveError(null); }}

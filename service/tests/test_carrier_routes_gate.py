@@ -29,6 +29,18 @@ def _incoterm_resolved_for_shipment_posts(monkeypatch):
         "app.api.routes_carrier_actions._resolve_booking_incoterm",
         lambda **kwargs: {"value": "DAP", "source": "customer_master"},
     )
+    # Recipient address has ONE authority (Customer Master via client_ref) and
+    # resolves BEFORE this route's other checks. These fixtures carry no
+    # Customer Master rows, so stub the derivation the way the Incoterm
+    # authority is stubbed above — the address contract itself is pinned in
+    # test_carrier_routes_awb_authority.py.
+    monkeypatch.setattr(
+        "app.services.awb_address_authority.derive_awb_address_authority",
+        lambda batch_id, storage_root, client_ref=None: {
+            "name": "Stub Customer", "street": "Stub Street 1",
+            "city": "Stub City", "country": "PL", "source": "bill_to",
+        },
+    )
 
 from app.api.routes_carrier_actions import (
     _get_carrier_config,
@@ -139,7 +151,7 @@ def test_post_shipment_pending_returns_503(test_app):
     test_app.dependency_overrides[_get_carrier_config] = _pending_config
     client = TestClient(test_app, raise_server_exceptions=False)
     # Mock settings with AWB authority flag OFF for gate test isolation
-    with _patched_settings(awb_address_authority_enabled=False):
+    with _patched_settings():
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
             json={
@@ -158,7 +170,7 @@ def test_post_shipment_pending_body_mentions_pending(test_app):
     test_app.dependency_overrides[_get_carrier_config] = _pending_config
     client = TestClient(test_app, raise_server_exceptions=False)
     # Mock settings with AWB authority flag OFF for gate test isolation
-    with _patched_settings(awb_address_authority_enabled=False):
+    with _patched_settings():
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
             json={
@@ -183,7 +195,7 @@ def test_get_shipment_pending_returns_503(test_app):
 def test_post_shipment_ups_returns_not_configured(test_app):
     test_app.dependency_overrides[_get_carrier_config] = _shadow_config
     client = TestClient(test_app, raise_server_exceptions=False)
-    with _patched_settings(awb_address_authority_enabled=False):
+    with _patched_settings():
         resp = client.post(
             "/api/v1/carrier/BATCH-UPS/shipment",
             json={
@@ -203,7 +215,7 @@ def test_post_shipment_ups_returns_not_configured(test_app):
 def test_post_shipment_unknown_carrier_never_dhl(test_app):
     test_app.dependency_overrides[_get_carrier_config] = _shadow_config
     client = TestClient(test_app, raise_server_exceptions=False)
-    with _patched_settings(awb_address_authority_enabled=False):
+    with _patched_settings():
         resp = client.post(
             "/api/v1/carrier/BATCH-X/shipment",
             json={
@@ -232,7 +244,7 @@ def _shadow_result() -> ShipmentResult:
 
 def _post_shipment(client: TestClient, batch_id: str = "BATCH-001"):
     # Mock settings with AWB authority flag OFF for shadow mode testing
-    with _patched_settings(awb_address_authority_enabled=False):
+    with _patched_settings():
         return client.post(
             f"/api/v1/carrier/{batch_id}/shipment",
             json={

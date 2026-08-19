@@ -46,6 +46,18 @@ def _incoterm_resolved_for_shipment_posts(monkeypatch):
         "app.api.routes_carrier_actions._resolve_booking_incoterm",
         lambda **kwargs: {"value": "DAP", "source": "customer_master"},
     )
+    # Recipient address has ONE authority (Customer Master via client_ref) and
+    # resolves BEFORE this route's other checks. These fixtures carry no
+    # Customer Master rows, so stub the derivation the way the Incoterm
+    # authority is stubbed above — the address contract itself is pinned in
+    # test_carrier_routes_awb_authority.py.
+    monkeypatch.setattr(
+        "app.services.awb_address_authority.derive_awb_address_authority",
+        lambda batch_id, storage_root, client_ref=None: {
+            "name": "Stub Customer", "street": "Stub Street 1",
+            "city": "Stub City", "country": "PL", "source": "bill_to",
+        },
+    )
 
 
 from app.api.routes_carrier_actions import (
@@ -207,7 +219,6 @@ def _settings(tmp_path):
     mock = MagicMock()
     mock.carrier_storage_root = None
     mock.storage_root = tmp_path
-    mock.awb_address_authority_enabled = False
     mock.dhl_express_account_number = "ACC-TEST"
     with patch("app.core.config.settings", mock):
         yield

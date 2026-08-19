@@ -223,7 +223,7 @@ def test_running_the_repaired_suites_leaves_no_artifact_in_the_cwd(tmp_path):
     """
     module = pytest.importorskip("tests.test_carrier_routes_gate")
     before = set(os.listdir(os.getcwd()))
-    with module._patched_settings(awb_address_authority_enabled=False) as mock_settings:
+    with module._patched_settings() as mock_settings:
         # Force the expression and a string coercion — the coercion is what
         # turned the mock into a filename in the original defect.
         str(_resolved_carrier_root(mock_settings))
@@ -246,7 +246,7 @@ def test_bare_settings_patch_is_the_defect_being_pinned():
     Nothing is written to disk here: the mock is never coerced to a filename.
     """
     with patch("app.core.config.settings") as mock_settings:
-        mock_settings.awb_address_authority_enabled = False
+        mock_settings.carrier_gate_enabled = False
         # Note: storage_root set, carrier_storage_root NOT — exactly what
         # test_carrier_routes_awb_authority.py used to do.
         mock_settings.storage_root = Path("/tmp/test")

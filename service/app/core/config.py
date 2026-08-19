@@ -437,10 +437,6 @@ class Settings(BaseSettings):
     # Outbound tracking registration — records outbound shipment events to tracking_db
     outbound_tracking_registration_enabled: bool = Field(default=False)
 
-    # AWB address authority repair (Campaign 02.5) — gate the Customer Master authority
-    # derivation behind this flag. Default False = raw recipient_address behavior unchanged.
-    awb_address_authority_enabled: bool = Field(default=False)
-
     # Authority drift detection (Campaign 02.5 Phase 4) — enable runtime authority module monitoring
     # Default False = no startup manifest write, endpoint returns 503. True = active monitoring.
     authority_drift_detection: bool = Field(default=False)

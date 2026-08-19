@@ -360,16 +360,20 @@ def test_shipment_request_body_forwards_product_code(client):
         with patch(
             "app.api.routes_carrier_actions._resolve_booking_incoterm",
             return_value={"value": "EXW", "source": "customer_master"},
+        ), patch(
+            # Recipient address has ONE authority (Customer Master via
+            # client_ref) and resolves before the fields under test. This
+            # fixture carries no Customer Master rows; the address contract
+            # itself is pinned in test_carrier_routes_awb_authority.py.
+            "app.services.awb_address_authority.derive_awb_address_authority",
+            return_value={"name": "T", "street": "S", "city": "C",
+                          "country": "PL", "source": "bill_to"},
         ):
             resp = client.post(
                 "/api/v1/carrier/BATCH-001/shipment",
                 headers={"X-API-Key": "test"},
                 json={
                     "shipper_account": "TEST-001",
-                    "recipient_address": {
-                        "name": "T", "street": "S", "city": "C",
-                        "postal_code": "00", "country_code": "PL",
-                    },
                     "declared_value": 100.0,
                     "currency": "USD",
                     "weight_kg": 1.0,

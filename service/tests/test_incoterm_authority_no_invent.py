@@ -189,7 +189,16 @@ def test_booking_route_blocks_when_incoterm_unset(storage, monkeypatch):
     from app.core.config import settings as _settings
 
     monkeypatch.setattr(_settings, "storage_root", storage, raising=False)
-    monkeypatch.setattr(_settings, "awb_address_authority_enabled", False, raising=False)
+    # Address resolves before the Incoterm check; this batch has no Customer
+    # Master row, so stub the address authority to keep the assertion on
+    # INCOTERM_UNSET rather than CUSTOMER_NOT_FOUND.
+    monkeypatch.setattr(
+        "app.services.awb_address_authority.derive_awb_address_authority",
+        lambda batch_id, storage_root, client_ref=None: {
+            "name": "Stub Customer", "street": "Stub Street 1",
+            "city": "Stub City", "country": "PL", "source": "bill_to",
+        },
+    )
 
     _mk_cm(storage, "C-EMPTY", default_incoterm=None)
     pildb.auto_create_draft_from_sales_packing(

@@ -72,7 +72,7 @@ AUTHORITY_REGISTRY = {
         "role": "AWB address resolution authority",
         "path": "app/services/awb_address_authority.py",
         "public_functions": [
-            "derive_awb_address_authority_with_fallback"
+            "derive_awb_address_authority"
         ],
         "forbidden_imports": ["smtplib", "email_service", "queue_email", "requests"],
         "consumers": [

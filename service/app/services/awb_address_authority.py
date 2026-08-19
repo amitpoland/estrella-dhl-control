@@ -7,15 +7,15 @@ authority via the established resolve_delivery_address() pattern.
 Authority rule (operator-mandated):
 - Primary: Customer Master Ship-To (when ship_to_use_alternate=True and populated)
 - Fallback: Customer Master Bill-To
-- NO raw address bypasses permitted
+- NO raw address bypasses permitted — there is no operator-typed, date-based or
+  environment-flag path back to an unvalidated address. Unresolvable or
+  ambiguous customer fails closed.
 
 This module provides pure authority derivation functions following the existing
 derive_*_authority pattern, with no I/O writes in the derivation logic itself.
 """
 from typing import Dict, Optional
 from pathlib import Path
-import re
-from datetime import datetime, timedelta
 
 
 class CustomerNotFoundError(Exception):
@@ -26,38 +26,6 @@ class CustomerNotFoundError(Exception):
 class AddressMissingError(Exception):
     """Customer exists but has no usable delivery address."""
     pass
-
-
-def _is_historical_batch(batch_id: str, cutoff_days: int = 90) -> bool:
-    """Check if a batch is older than the cutoff period (default 90 days).
-
-    Attempts to parse date from common batch_id formats:
-    - "SHIPMENT_XXXXXXXXXX_YYYY-MM_hash" → extract YYYY-MM
-    - Other formats treated as recent (require authority resolution)
-
-    Args:
-        batch_id: The batch identifier
-        cutoff_days: Days before today to consider "historical"
-
-    Returns:
-        True if batch appears to be older than cutoff_days, False otherwise
-    """
-    # Try to extract date from SHIPMENT_XXXXXXXXXX_YYYY-MM_hash format
-    match = re.match(r'SHIPMENT_\d+_(\d{4})-(\d{2})_[a-f0-9]+$', batch_id)
-    if match:
-        year, month = int(match.group(1)), int(match.group(2))
-        try:
-            # Use first day of the month as batch date approximation
-            batch_date = datetime(year, month, 1)
-            cutoff_date = datetime.now() - timedelta(days=cutoff_days)
-            return batch_date < cutoff_date
-        except ValueError:
-            # Invalid date, treat as recent
-            return False
-
-    # For AWB_XXXXXXXXXX and other formats, treat as recent
-    # (requiring authority resolution)
-    return False
 
 
 def derive_awb_address_authority(
@@ -123,64 +91,8 @@ def derive_awb_address_authority(
     return address
 
 
-def derive_awb_address_authority_with_fallback(
-    batch_id: str,
-    storage_root: Path,
-    raw_fallback: Optional[Dict] = None,
-    client_ref: Optional[str] = None,
-) -> Dict[str, str]:
-    """Derive AWB address authority with graceful degradation to raw fallback.
-
-    Used for historical batch support (>90 days) when Customer Master resolution
-    fails but operator needs to process legacy shipments.
-
-    Args:
-        batch_id: The batch identifier to resolve customer from
-        storage_root: Storage root path for database access
-        raw_fallback: Raw address dict to use if authority derivation fails
-        client_ref: Outbound commercial client scope (proforma draft client_name)
-
-    Returns:
-        Dict with address fields + 'source' metadata indicating authority path used
-
-    Raises:
-        AddressMissingError: Both authority derivation and raw fallback inadequate
-    """
-    try:
-        return derive_awb_address_authority(batch_id, storage_root, client_ref=client_ref)
-    except CustomerNotFoundError as exc:
-        # Graceful degradation: use raw fallback only for historical batches
-        if raw_fallback is not None and _is_historical_batch(batch_id):
-            # Validate minimum required fields in raw fallback
-            required_fields = ['name', 'street', 'city', 'country']
-            missing = [f for f in required_fields if not raw_fallback.get(f, '').strip()]
-
-            if missing:
-                raise AddressMissingError(
-                    f"Historical batch authority derivation failed and raw fallback is incomplete. "
-                    f"Missing required fields in fallback: {missing}. "
-                    f"Batch: {batch_id}, Original error: {exc}"
-                )
-
-            # Add source metadata to indicate fallback path
-            result = dict(raw_fallback)
-            result['source'] = 'raw_fallback_historical'
-
-            # Log fallback usage for audit trail
-            import logging
-            logging.warning(
-                f"AWB address authority: Using raw fallback for historical batch {batch_id}. "
-                f"Customer Master resolution failed: {exc}"
-            )
-            return result
-
-        # For recent batches, re-raise the customer resolution error
-        raise
-
-
 __all__ = [
     'CustomerNotFoundError',
     'AddressMissingError',
     'derive_awb_address_authority',
-    'derive_awb_address_authority_with_fallback',
 ]

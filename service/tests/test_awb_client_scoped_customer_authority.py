@@ -156,17 +156,16 @@ def test_awb_address_authority_client_scoped_resolves_per_client(storage: Path):
     assert (b["name"], b["city"], b["country"]) == (CLIENT_B, "Bonn", "DE")
 
 
-def test_awb_address_fallback_passes_client_scope_through(storage: Path):
-    from app.services.awb_address_authority import (
-        derive_awb_address_authority_with_fallback,
-    )
+def test_no_raw_address_path_exists_for_any_batch(storage: Path):
+    """The client scope is what makes resolution succeed — nothing else can.
 
-    # Recent batch: the raw fallback must NOT be reachable, and the client
-    # scope alone is what makes the authority path succeed.
-    out = derive_awb_address_authority_with_fallback(
-        BATCH, storage, raw_fallback={"name": "RAW", "street": "x",
-                                      "city": "y", "country": "PL"},
-        client_ref=CLIENT_A,
-    )
-    assert out["name"] == CLIENT_A
-    assert out.get("source") != "raw_fallback_historical"
+    There is no fallback entry point and no batch age that lets an
+    operator-typed address reach the carrier.
+    """
+    from app.services import awb_address_authority as mod
+
+    assert not hasattr(mod, "derive_awb_address_authority_with_fallback")
+
+    old_batch = "SHIPMENT_1234567890_2020-01_abcdef01"
+    with pytest.raises(mod.CustomerNotFoundError):
+        mod.derive_awb_address_authority(old_batch, storage, client_ref=CLIENT_A)
