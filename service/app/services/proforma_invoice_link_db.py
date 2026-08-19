@@ -608,6 +608,11 @@ class ProformaDraft:
     # manual/missing) is computed by the transport resolver; this column answers
     # "why is this document showing this weight" after the fact.
     weight_override_source: Optional[str]   = None
+    # ── Box Master selection (the CATALOGUE stays in master_data_db) ──
+    # Only the operator's CHOICE is persisted here, as a code reference.
+    # Dimensions are never copied onto the draft: they are read from the
+    # Box Master row, which remains their single authority.
+    box_type_code:          Optional[str]   = None
     # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
     wfirma_issue_date:      Optional[str] = None   # from wFirma invoices/get
     wfirma_payment_due:     Optional[str] = None   # paymentdate from wFirma
@@ -701,6 +706,8 @@ def _ensure_drafts_table(conn: sqlite3.Connection) -> None:
         ("weight_confirmed_by",    "TEXT"),
         ("weight_source_revision", "TEXT"),
         ("weight_override_source", "TEXT"),   # packing | carrier | manual | cleared
+        # ── Box Master selection (code reference only, no dimensions) ────
+        ("box_type_code",          "TEXT"),
         # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
         ("wfirma_issue_date",     "TEXT"),
         ("wfirma_payment_due",    "TEXT"),
@@ -1347,6 +1354,7 @@ def _row_to_draft(row: sqlite3.Row) -> ProformaDraft:
         weight_confirmed_by        = _opt("weight_confirmed_by"),
         weight_source_revision     = _opt("weight_source_revision"),
         weight_override_source     = _opt("weight_override_source"),
+        box_type_code              = _opt("box_type_code"),
         # ── Phase 3 — wFirma post-posting enrichment fields ──────────────
         wfirma_issue_date          = _opt("wfirma_issue_date"),
         wfirma_payment_due         = _opt("wfirma_payment_due"),
@@ -3165,6 +3173,7 @@ def _commit_draft_update(
     new_weight_confirmed_by:        Any                 = _UNCHANGED,
     new_weight_source_revision:     Any                 = _UNCHANGED,
     new_weight_override_source:     Any                 = _UNCHANGED,
+    new_box_type_code:              Any                 = _UNCHANGED,
     # ── Sales price authority ────────────────────────────────────────
     new_sales_price_authority_total_eur: Any            = _UNCHANGED,
     new_sales_price_imported_at:         Any            = _UNCHANGED,
@@ -3295,6 +3304,9 @@ def _commit_draft_update(
     if new_weight_override_source != _UNCHANGED:
         sets.append("weight_override_source=?")
         args.append(new_weight_override_source)
+    if new_box_type_code != _UNCHANGED:
+        sets.append("box_type_code=?")
+        args.append(new_box_type_code)
     # ── Sales price authority ────────────────────────────────────────
     if new_sales_price_authority_total_eur != _UNCHANGED:
         sets.append("sales_price_authority_total_eur=?")
@@ -3720,6 +3732,52 @@ def set_draft_weight_override(
                 "weight_source_revision": refreshed.weight_source_revision,
                 "weight_confirmed_by":    refreshed.weight_confirmed_by,
             },
+            "from_state": d.draft_state,
+            "to_state":   refreshed.draft_state,
+        }, ensure_ascii=False, sort_keys=True, default=str),
+        operator=operator,
+    )
+    return refreshed
+
+
+def set_draft_box_type(
+    db_path:              Path,
+    draft_id:             int,
+    *,
+    box_type_code:        Optional[str],
+    operator:             str,
+    expected_updated_at:  str,
+) -> ProformaDraft:
+    """Persist the operator's Box Master selection on the draft.
+
+    Box Master (``master_data_db.box_types``) stays the sole authority for the
+    catalogue and for every box dimension — this writes only the CODE the
+    operator picked, so reopening the AWB modal (or the projection) can show the
+    intended box before the shipment is booked. ``None`` clears the selection.
+    No dimensions are copied here: copying them would fork the Box Master row
+    into a second, silently-stale authority.
+
+    Same OCC + audit path as the weight override (``_load_for_edit`` →
+    ``_commit_draft_update``): a stale ``expected_updated_at`` raises
+    ``DraftConflict``; a non-editable draft raises ``DraftNotEditable``. Records
+    a ``box_type_set`` audit event with before/after.
+    """
+    if not (operator or "").strip():
+        raise ValueError("operator is required")
+    code = (str(box_type_code).strip() if box_type_code is not None else "") or None
+
+    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    before = {"box_type_code": d.box_type_code}
+    refreshed = _commit_draft_update(
+        db_path, d.id,
+        new_state         = _next_state_after_edit(d.draft_state),
+        new_box_type_code = code,
+    )
+    _record_draft_event(
+        db_path, draft_id=d.id, event="box_type_set",
+        detail_json=json.dumps({
+            "before": before,
+            "after":  {"box_type_code": refreshed.box_type_code},
             "from_state": d.draft_state,
             "to_state":   refreshed.draft_state,
         }, ensure_ascii=False, sort_keys=True, default=str),

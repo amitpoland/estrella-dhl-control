@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os as _os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -1069,7 +1070,49 @@ def _call_fedex(tracking_no: str) -> Dict[str, Any]:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
+_AWB_LOCKS: Dict[str, threading.Lock] = {}
+_AWB_LOCKS_GUARD = threading.Lock()
+
+
+def _awb_lock(tracking_no: str) -> threading.Lock:
+    # ponytail: unbounded dict, one small Lock per AWB ever seen — swap to an
+    # LRU if the active AWB set ever gets large.
+    with _AWB_LOCKS_GUARD:
+        return _AWB_LOCKS.setdefault(tracking_no, threading.Lock())
+
+
 def get_tracking_status(
+    tracking_no: str,
+    carrier: str,
+    cache_dir: Path,
+    refresh: bool = False,
+) -> Dict[str, Any]:
+    """Single-flight wrapper around :func:`_get_tracking_status`.
+
+    Several operators logging in at once sweep the same active AWB set
+    concurrently.  Only the first caller per AWB talks to the carrier; the
+    waiters block, then read the leader's freshly written cache entry instead
+    of making an identical second call against a 250/day quota.
+
+    A waiter is forced onto the cache path even when it asked for
+    ``refresh=True`` — the leader has just refreshed, so a forced second call
+    would return the same data for another unit of quota.
+    """
+    key = (tracking_no or "").strip()
+    if not key:
+        return _get_tracking_status(tracking_no, carrier, cache_dir, refresh)
+
+    lock = _awb_lock(key)
+    if not lock.acquire(blocking=False):
+        lock.acquire()
+        refresh = False
+    try:
+        return _get_tracking_status(tracking_no, carrier, cache_dir, refresh)
+    finally:
+        lock.release()
+
+
+def _get_tracking_status(
     tracking_no: str,
     carrier: str,
     cache_dir: Path,

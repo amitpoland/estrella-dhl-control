@@ -87,7 +87,6 @@ def test_post_shipment_no_key_returns_401(auth_app):
     # Mock settings to prevent any potential import issues during auth failure
     with patch('app.core.config.settings') as mock_settings:
         _pin_storage(mock_settings)
-        mock_settings.awb_address_authority_enabled = False
         resp = client.post(
             "/api/v1/carrier/BATCH-001/shipment",
             json={
@@ -217,7 +216,6 @@ def test_mutation_routes_reject_viewer_with_403(viewer_app, path, body):
     client = TestClient(viewer_app, raise_server_exceptions=False)
     with patch("app.core.config.settings") as mock_settings:
         _pin_storage(mock_settings)
-        mock_settings.awb_address_authority_enabled = False
         resp = client.post(path, json=body)
     # 403 (wrong role) — NOT 200/404/422. The gate fires before the handler,
     # so an unknown batch never reaches shipment/DB logic.

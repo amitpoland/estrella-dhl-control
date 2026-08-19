@@ -134,7 +134,10 @@ def test_no_live_dhl_in_render_or_weight_endpoints():
     assert "getCarrierShipment" in _JSX
     assert re.search(r"const _transport\s*=", _JSX)
     assert "setWeightOverride" in _JSX and "clearWeightOverride" in _JSX
-    _wblock = _PILDB.split("def set_draft_weight_override")[1].split("def update_draft_line")[0]
+    # Slice to the end of set_draft_weight_override itself, not to whatever
+    # function happens to follow it: a neighbour added later must not silently
+    # widen (or narrow) what this pin measures.
+    _wblock = _PILDB.split("def set_draft_weight_override")[1].split("\ndef ")[0]
     assert "adapters.live" not in _wblock
     assert "book" not in _wblock.lower()
 

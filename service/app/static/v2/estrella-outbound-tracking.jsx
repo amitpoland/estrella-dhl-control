@@ -189,8 +189,11 @@
       var alive = true;
       load(false);
       loadDelivery();
+      // Poll on the shared 15-min tracking TTL, not a forced carrier call:
+      // refresh=true bypasses the cache entirely (tracking_service), which burned
+      // 30 carrier calls/hour per open card against a 250/day quota.
       var t = awb ? setInterval(function () {
-        if (alive) { load(true); loadDelivery(); }
+        if (alive) { load(false); loadDelivery(); }
       }, 120000) : null;
       return function () { alive = false; if (t) clearInterval(t); };
     }, [load, loadDelivery, awb, reloadNonce]);

@@ -628,7 +628,7 @@ function ShipmentDetailPage({ shipment, onBack }) {
           <DocumentsTab batchId={shipment && shipment.batch_id} />
         )}
         {activeTab === 'timeline' && (
-          <TimelineTab d={d} detailLoading={detailLoading} />
+          <TimelineTab d={d} detailLoading={detailLoading} batchId={shipment && shipment.batch_id} />
         )}
       </div>
     </div>
@@ -2056,7 +2056,18 @@ const _TIMELINE_MILESTONES = [
   'wfirma_pz_created',
 ];
 
-function TimelineTab({ d, detailLoading }) {
+function TimelineTab({ d, detailLoading, batchId }) {
+  // Carrier events live in the tracking authority, not in audit.timeline. The
+  // unified stream merges both server-side; this tab only renders it.
+  const [unified, setUnified] = React.useState([]);
+  React.useEffect(() => {
+    setUnified([]);
+    if (!batchId || typeof window.PzApi.getShipmentTimeline !== 'function') return;
+    window.PzApi.getShipmentTimeline(batchId)
+      .then((t) => setUnified((t && t.unified_timeline) || []))
+      .catch(() => setUnified([]));
+  }, [batchId]);
+
   const doneEvents = (d.timeline || []).slice().sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
   const doneKeys = new Set(doneEvents.map(e => e.event));
   const milestones = d.timelineMilestones;  // canonical backend read-model, or null
@@ -2064,6 +2075,17 @@ function TimelineTab({ d, detailLoading }) {
   if (detailLoading && doneEvents.length === 0 && !milestones) {
     return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading timeline…</div>;
   }
+
+  const unifiedPanel = (
+    <PanelCard
+      title="Unified stream"
+      subtitle="Workflow and carrier events, chronological"
+    >
+      <div style={{ padding: '18px 28px' }}>
+        <UnifiedTimeline events={unified} />
+      </div>
+    </PanelCard>
+  );
 
   // ── Canonical path: render the backend milestone read-model ─────────────
   // Each milestone's done/ts/source is computed backend-side from the REAL
@@ -2086,6 +2108,8 @@ function TimelineTab({ d, detailLoading }) {
       not_started:    { glyph: '○', dot: 'var(--border)',           bg: 'var(--bg)',              ink: 'var(--text-2)',          label: 'Pending' },
     };
     return (
+      <>
+      {unifiedPanel}
       <PanelCard title="Activity timeline" subtitle={`${doneCount} of ${milestones.length} milestones completed`}>
         <div data-testid="timeline-milestones" style={{ padding: '24px 28px' }}>
           <div style={{ position: 'relative', paddingLeft: 28 }}>
@@ -2119,6 +2143,7 @@ function TimelineTab({ d, detailLoading }) {
           </div>
         </div>
       </PanelCard>
+      </>
     );
   }
   // ── Fallback: legacy raw-event + alias matching (backend read-model absent) ─
@@ -2142,6 +2167,8 @@ function TimelineTab({ d, detailLoading }) {
   const totalMilestones = _TIMELINE_MILESTONES.length;
 
   return (
+    <>
+    {unifiedPanel}
     <PanelCard
       title="Activity timeline"
       subtitle={`${totalEvents} of ${totalMilestones} milestones completed`}
@@ -2207,6 +2234,7 @@ function TimelineTab({ d, detailLoading }) {
         </div>
       )}
     </PanelCard>
+    </>
   );
 }
 

@@ -207,6 +207,10 @@ class Settings(BaseSettings):
     dhl_api_key:         Optional[str] = Field(default=None)
     fedex_client_id:     Optional[str] = Field(default=None)
     fedex_client_secret: Optional[str] = Field(default=None)
+    # UPS OAuth client credentials (sandbox). Production booking is blocked in
+    # the adapter regardless of what is configured here.
+    ups_client_id:       Optional[str] = Field(default=None)
+    ups_client_secret:   Optional[str] = Field(default=None)
 
     # ── DHL Shipment Tracking Unified API (OAuth2 client-credentials) ─────────
     # Status gate — controls whether live API calls are allowed.
@@ -436,10 +440,6 @@ class Settings(BaseSettings):
 
     # Outbound tracking registration — records outbound shipment events to tracking_db
     outbound_tracking_registration_enabled: bool = Field(default=False)
-
-    # AWB address authority repair (Campaign 02.5) — gate the Customer Master authority
-    # derivation behind this flag. Default False = raw recipient_address behavior unchanged.
-    awb_address_authority_enabled: bool = Field(default=False)
 
     # Authority drift detection (Campaign 02.5 Phase 4) — enable runtime authority module monitoring
     # Default False = no startup manifest write, endpoint returns 503. True = active monitoring.

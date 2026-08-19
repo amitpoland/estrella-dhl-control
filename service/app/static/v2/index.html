@@ -574,6 +574,15 @@ function App() {
     }
     setAuthority(auth);
     setAuthorityStatus('ready');
+    // One stale-active tracking refresh per session, fire-and-forget.
+    // Refresh-only endpoint — no email, no workflow. The 15-min TTL means a
+    // session opened next to a fresh sweep costs zero carrier calls.
+    if (!window._pzTrackingBootstrapFired) {
+      window._pzTrackingBootstrapFired = true;
+      fetch('/api/v1/tracking/refresh-active', {
+        method: 'POST', credentials: 'same-origin',
+      }).catch(function () { /* never gates render */ });
+    }
     const loc = parseV2Location();
     const want = AC.resolveGateTarget(auth, loc, { detailBatchId: _initShipmentBatchId });
     if (!want) {

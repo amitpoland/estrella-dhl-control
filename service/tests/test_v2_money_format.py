@@ -136,7 +136,10 @@ def test_fmtmoney2_logic_regression_via_node():
 
     comp_src = COMPONENTS.read_text(encoding="utf-8")
     start = comp_src.index("function fmtMoney2")
-    end = comp_src.index("\nObject.assign(window", start)
+    # End at the next top-level declaration, not at Object.assign(window): anything
+    # added after fmtMoney2 would otherwise be fed to Node, and a JSX component
+    # there fails to parse as plain JS.
+    end = comp_src.index("\n" "function ", start + 1)
     fn_src = comp_src[start:end]
 
     cases = [

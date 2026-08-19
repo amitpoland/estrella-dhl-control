@@ -83,7 +83,6 @@ def _patched_settings(**overrides):
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.carrier_storage_root = None
         mock_settings.storage_root = _MOCK_STORAGE_ROOT
-        mock_settings.awb_address_authority_enabled = False
         for name, value in overrides.items():
             setattr(mock_settings, name, value)
         yield mock_settings
@@ -94,6 +93,18 @@ def _incoterm_resolved(monkeypatch):
     monkeypatch.setattr(
         "app.api.routes_carrier_actions._resolve_booking_incoterm",
         lambda **kwargs: {"value": "DAP", "source": "customer_master"},
+    )
+    # Recipient address has ONE authority (Customer Master via client_ref) and
+    # resolves BEFORE this route's other checks. These fixtures carry no
+    # Customer Master rows, so stub the derivation the way the Incoterm
+    # authority is stubbed above — the address contract itself is pinned in
+    # test_carrier_routes_awb_authority.py.
+    monkeypatch.setattr(
+        "app.services.awb_address_authority.derive_awb_address_authority",
+        lambda batch_id, storage_root, client_ref=None: {
+            "name": "Stub Customer", "street": "Stub Street 1",
+            "city": "Stub City", "country": "PL", "source": "bill_to",
+        },
     )
 
 

@@ -97,6 +97,7 @@ function ShippingOpsPage({ onViewShipment, onNav }) {
   const [detailErr, setDetailErr] = React.useState(null);
   const [returnDraft, setReturnDraft] = React.useState(null);
   const [returnErr, setReturnErr] = React.useState(null);
+  const [unified, setUnified] = React.useState([]);
 
   const rows = (projection && projection.rows) || [];
   const kpis = (projection && projection.kpis) || {};
@@ -144,6 +145,7 @@ function ShippingOpsPage({ onViewShipment, onNav }) {
     setDetailErr(null);
     setReturnDraft(null);
     setReturnErr(null);
+    setUnified([]);
     if (!selected || !window.PzApi) return;
     const batchId = selected.batch_id;
     const awb = selected.awb;
@@ -162,6 +164,12 @@ function ShippingOpsPage({ onViewShipment, onNav }) {
       window.PzApi.getDhlLogisticsShipment(awb)
         .then((d) => setDetail(d || null))
         .catch((e) => { setDetail(null); setDetailErr((e && e.message) || String(e)); });
+    }
+
+    if (batchId && typeof window.PzApi.getShipmentTimeline === 'function') {
+      window.PzApi.getShipmentTimeline(batchId)
+        .then((t) => setUnified((t && t.unified_timeline) || []))
+        .catch(() => setUnified([]));
     }
 
     if (batchId && awb && typeof window.PzApi.getReturnDraft === 'function') {
@@ -267,7 +275,7 @@ function ShippingOpsPage({ onViewShipment, onNav }) {
           />
         )}
         {tab === 'timeline' && (
-          <SOTimeline selected={selected} detail={detail} detailErr={detailErr} />
+          <SOTimeline selected={selected} detail={detail} detailErr={detailErr} unified={unified} />
         )}
         {tab === 'handoff' && <SOHandoff />}
         {tab === 'returns' && (
@@ -377,7 +385,7 @@ function SOQueue({ loading, err, kpis, rows, selectedKey, onSelect, onOpen, onRe
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
             <thead>
               <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-                {['AWB', 'Direction', 'Party', 'Carrier', 'Classification', 'Status', 'Stage', 'Batch', ''].map((h) => (
+                {['AWB', 'Direction', 'Party', 'Carrier', 'Classification', 'Status', 'Stage', 'Location', 'ETA', 'Last Sync', 'Batch', ''].map((h) => (
                   <th key={h} style={{
                     textAlign: 'left', padding: '8px 10px', fontWeight: 700, color: 'var(--text-2)',
                     fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em',
@@ -387,7 +395,7 @@ function SOQueue({ loading, err, kpis, rows, selectedKey, onSelect, onOpen, onRe
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={9} style={{ padding: 16, color: 'var(--text-3)' }}>Loading logistics projection…</td></tr>
+                <tr><td colSpan={12} style={{ padding: 16, color: 'var(--text-3)' }}>Loading logistics projection…</td></tr>
               )}
               {!loading && rows.map((r) => {
                 const key = _rowKey(r);
@@ -410,6 +418,13 @@ function SOQueue({ loading, err, kpis, rows, selectedKey, onSelect, onOpen, onRe
                     <td style={{ padding: '8px 10px' }}>{r.classification || '—'}</td>
                     <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.current_status || '—'}</td>
                     <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.stage_label || r.current_stage || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.current_location || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.expected_delivery_warsaw || r.expected_delivery_utc || '—'}</td>
+                    <td
+                      data-testid="ship-ops-last-sync"
+                      title={r.tracking_stale ? 'Carrier tracking is stale or last refresh errored' : ''}
+                      style={{ padding: '8px 10px', fontSize: 11, color: r.tracking_stale ? 'var(--danger, #c0392b)' : 'var(--text-3)' }}
+                    >{(r.tracking_last_checked_at || '—') + (r.tracking_stale ? ' ⚠' : '')}</td>
                     <td style={{ padding: '8px 10px', fontFamily: 'ui-monospace, monospace', fontSize: 10, color: 'var(--text-3)' }}>
                       {r.batch_id ? String(r.batch_id).slice(0, 28) : '—'}
                     </td>
@@ -658,7 +673,7 @@ function SOLabels({ selected, carrierShipment, carrierShipErr }) {
   );
 }
 
-function SOTimeline({ selected, detail, detailErr }) {
+function SOTimeline({ selected, detail, detailErr, unified }) {
   const milestones = (detail && (detail.milestones || (detail.shipment && detail.shipment.milestones))) || [];
   const rowMilestones = (selected && selected.milestones) || [];
   const events = milestones.length ? milestones : rowMilestones;
@@ -675,6 +690,19 @@ function SOTimeline({ selected, detail, detailErr }) {
           title="Select a queue row"
           detail="Timeline events come from GET /api/v1/dhl/logistics/shipments/{awb} (and projection milestones). This page does not parse Delivered separately."
         />
+      )}
+      {selected && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 8 }}>
+            Unified stream — workflow + carrier, chronological
+          </div>
+          <UnifiedTimeline events={unified} />
+        </div>
+      )}
+      {selected && (
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 8 }}>
+          Projector milestones
+        </div>
       )}
       {selected && detailErr && events.length === 0 && (
         <div data-testid="ship-ops-timeline-error" style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 8 }}>{detailErr}</div>

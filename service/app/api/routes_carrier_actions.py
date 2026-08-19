@@ -391,7 +391,10 @@ class ShipmentRequestBody(BaseModel):
     billing_party: Optional[str] = None            # sender | receiver | third_party
     third_party_contractor_id: Optional[str] = None
     billing_account_id: Optional[int] = None       # operator's explicit pick
-    recipient_address: dict
+    # DISPLAY ONLY — accepted for backward compatibility and ignored. The
+    # shipped address always comes from Customer Master via client_ref;
+    # see the recipient-address block in create_shipment().
+    recipient_address: dict = {}
     declared_value: float
     currency: str
     weight_kg: float
@@ -406,6 +409,11 @@ class ShipmentRequestBody(BaseModel):
     receiver_vat_id: Optional[str] = None     # receiver EU VAT number
     receiver_eori: Optional[str] = None       # receiver EORI number
     box_type_code: Optional[str] = None       # Box Master profile selected in the modal
+    # Multi-package split entered by the operator at booking time. Each entry:
+    # {weight_kg, length_cm, width_cm, height_cm, box_type_code?}. Omitted /
+    # empty means one package from weight_kg + dimensions above. There is no
+    # warehouse carton authority, so the parcel count is never inferred here.
+    packages: Optional[List[dict]] = None
     client_ref: Optional[str] = None          # per-client shipment scope (draft client_name);
                                               # scopes idempotency key + row to one client so
                                               # two clients in the same batch never share an AWB
@@ -552,6 +560,54 @@ def _project_shipment_description_for_client(
         "shipment_description": projected or "",
         "source": "canonical" if projected else "empty",
     }
+
+
+_PACKAGE_DIMS = ("length_cm", "width_cm", "height_cm")
+# ponytail: a flat ceiling, not a carrier-specific piece limit. Raise it when a
+# carrier documents a higher one.
+_MAX_PACKAGES = 50
+
+
+def _validated_packages(packages):
+    """Trust-boundary check on the operator's booking-time package split.
+
+    Returns None for "no split" so the adapters keep their single-package
+    path. Every number must be a real positive measurement: a 0 kg or 0 cm
+    entry is a MISSING measurement, never a physical fact, and booking one
+    would declare a weight nobody put on a scale.
+    """
+    if not packages:
+        return None
+    if len(packages) > _MAX_PACKAGES:
+        raise HTTPException(status_code=422, detail={
+            "error": f"Too many packages ({len(packages)}); maximum is {_MAX_PACKAGES}.",
+            "code": "PACKAGES_TOO_MANY",
+        })
+    cleaned = []
+    for i, pkg in enumerate(packages, start=1):
+        if not isinstance(pkg, dict):
+            raise HTTPException(status_code=422, detail={
+                "error": f"Package {i} is not an object.", "code": "PACKAGE_INVALID"})
+        out = {}
+        for field in ("weight_kg",) + _PACKAGE_DIMS:
+            raw = pkg.get(field)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail={
+                    "error": f"Package {i}: {field} is required and must be a number.",
+                    "code": "PACKAGE_FIELD_INVALID", "package": i, "field": field})
+            if value <= 0:
+                raise HTTPException(status_code=422, detail={
+                    "error": (f"Package {i}: {field} is {value}. A zero or negative "
+                              "value is a missing measurement, not a shipment fact."),
+                    "code": "PACKAGE_FIELD_NOT_MEASURED", "package": i, "field": field})
+            out[field] = value
+        code = (pkg.get("box_type_code") or "").strip()
+        if code:
+            out["box_type_code"] = code
+        cleaned.append(out)
+    return cleaned
 
 
 def _carrier_address_from_delivery_authority(address: dict) -> dict:
@@ -1033,55 +1089,55 @@ def create_shipment(
                 },
             )
 
-    # Resolve recipient address via Customer Master authority (Condition 2: feature flag)
-    if settings.awb_address_authority_enabled:
-        try:
-            from ..services.awb_address_authority import (
-                derive_awb_address_authority_with_fallback,
-                CustomerNotFoundError,
-                AddressMissingError
-            )
+    # ── Recipient address: ONE authority, no environment switch ──────────
+    #
+    #   outbound proforma client (client_ref)
+    #     → client_contractor_id → Customer Master → canonical delivery
+    #
+    # body.recipient_address is DISPLAY DATA ONLY. It is never consulted for a
+    # booking: an operator-typed address must not be able to become a shipped
+    # address behind the Customer Master's back, and no .env flag may switch
+    # which authority answers this question. Unresolvable / ambiguous customer
+    # fails closed with 422 (Lesson R: customer unmatched is a TRUE blocker).
+    try:
+        from ..services.awb_address_authority import (
+            derive_awb_address_authority,
+            CustomerNotFoundError,
+            AddressMissingError,
+        )
 
-            # Use authority derivation with graceful degradation (Condition 3)
-            recipient_address = derive_awb_address_authority_with_fallback(
-                batch_id,
-                settings.storage_root,
-                raw_fallback=body.recipient_address,
-                # Same outbound commercial scope the Incoterm and description
-                # authorities already use — never a batch-level customer guess.
-                client_ref=body.client_ref,
-            )
+        recipient_address = derive_awb_address_authority(
+            batch_id,
+            settings.storage_root,
+            # Same outbound commercial scope the Incoterm and description
+            # authorities already use — never a batch-level customer guess.
+            client_ref=body.client_ref,
+        )
 
-            # Map CM delivery shape (name=company, person=contact, country)
-            # onto carrier recipient_address keys the DHL adapter understands.
-            source = recipient_address.get('source', 'unknown')
-            carrier_address = _carrier_address_from_delivery_authority(
-                {k: v for k, v in recipient_address.items() if k != 'source'}
-            )
+        # Map CM delivery shape (name=company, person=contact, country)
+        # onto carrier recipient_address keys the DHL adapter understands.
+        source = recipient_address.get('source', 'unknown')
+        carrier_address = _carrier_address_from_delivery_authority(
+            {k: v for k, v in recipient_address.items() if k != 'source'}
+        )
 
-            # Log address source for audit trail
-            import logging
-            logging.info(f"AWB {batch_id}: address authority source={source}")
+        import logging
+        logging.info(f"AWB {batch_id}: address authority source={source}")
 
-        except CustomerNotFoundError as exc:
-            # Condition 5: sanitized 422 error response
-            raise HTTPException(status_code=422, detail={
-                "error": "Customer resolution failed",
-                "code": "CUSTOMER_NOT_FOUND",
-                "batch_id": batch_id,
-                "guidance": "Please ensure the batch has valid customer data in Customer Master or use historical batch override for batches older than 90 days"
-            })
-        except AddressMissingError as exc:
-            # Condition 5: sanitized 422 error response
-            raise HTTPException(status_code=422, detail={
-                "error": "Address validation failed",
-                "code": "ADDRESS_INCOMPLETE",
-                "batch_id": batch_id,
-                "guidance": "Please complete the customer address in Customer Master (ship-to or bill-to fields required: name, street, city, country)"
-            })
-    else:
-        # Flag OFF = today's behavior unchanged (Condition 2)
-        carrier_address = body.recipient_address
+    except CustomerNotFoundError:
+        raise HTTPException(status_code=422, detail={
+            "error": "Customer resolution failed",
+            "code": "CUSTOMER_NOT_FOUND",
+            "batch_id": batch_id,
+            "guidance": "Open Client Master and map this batch's outbound client to a contractor with a delivery address, then retry. The AWB never falls back to a typed address.",
+        })
+    except AddressMissingError:
+        raise HTTPException(status_code=422, detail={
+            "error": "Address validation failed",
+            "code": "ADDRESS_INCOMPLETE",
+            "batch_id": batch_id,
+            "guidance": "Please complete the customer address in Customer Master (ship-to or bill-to fields required: name, street, city, country)",
+        })
 
     # Incoterm: draft → Customer Master → unset. Never invent DAP.
     incoterm_res = _resolve_booking_incoterm(
@@ -1129,6 +1185,7 @@ def create_shipment(
         receiver_vat_id=body.receiver_vat_id,
         receiver_eori=body.receiver_eori,
         box_type_code=body.box_type_code,
+        packages=_validated_packages(body.packages),
         client_ref=(body.client_ref or None),
         incoterm=resolved_incoterm,
     )

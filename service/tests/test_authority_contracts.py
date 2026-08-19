@@ -487,7 +487,7 @@ class TestAuthorityContracts:
 
         Two assertions per challenger resolution:
         (a) Import presence of awb_address_authority module
-        (b) Call site presence of derive_awb_address_authority_with_fallback
+        (b) Call site presence of derive_awb_address_authority
         """
         routes_file = Path(__file__).parent.parent / "app" / "api" / "routes_carrier_actions.py"
 
@@ -511,7 +511,7 @@ class TestAuthorityContracts:
         )
 
         # C6(b): Call site presence check (around lines 122-126 per design)
-        function_name = "derive_awb_address_authority_with_fallback"
+        function_name = "derive_awb_address_authority"
         assert function_name in content, (
             f"Missing call site for {function_name} in routes_carrier_actions.py. "
             f"AWB authority must be used for address resolution."

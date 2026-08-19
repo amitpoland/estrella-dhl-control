@@ -817,7 +817,18 @@ def test_epod_extract_and_persist(tmp_path, monkeypatch):
     assert _extract_epod_pdf_bytes({"documents": [{"content": encoded}]}) == _SAMPLE_PDF
     assert _extract_epod_pdf_bytes({"content": "not-pdf"}) is None
 
-    class _Fake:
+    # Subclasses the real base so it inherits the optional-capability declines
+    # (fetch_electronic_pod_outcome, get-image). A bare duck type here would
+    # stop matching the production adapter contract.
+    from app.services.carrier.adapters.base import AbstractCarrierAdapter
+
+    class _Fake(AbstractCarrierAdapter):
+        def create_shipment(self, request):
+            raise AssertionError("booking is not part of this test")
+
+        def get_shipment(self, tracking_ref):
+            raise AssertionError("booking is not part of this test")
+
         def fetch_electronic_pod(self, tracking_ref, content="epod-summary"):
             return _SAMPLE_PDF
 

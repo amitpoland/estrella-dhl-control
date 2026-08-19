@@ -27,6 +27,7 @@
 
 const CARRIER_TABS = [
   { id: 'config',      label: 'Config Registry' },
+  { id: 'readiness',   label: 'Readiness' },
   { id: 'dhl_ops',     label: 'DHL Operations' },
   { id: 'gaps',        label: 'Integration Gaps' },
   { id: 'audit',       label: 'Config Audit' },
@@ -63,14 +64,14 @@ const DHL_ROUTES = [
 
 // -- Integration gaps (from Sprint 39 audit) ---------------------------------
 const INTEGRATION_GAPS = [
-  { id: 'GAP-C01', api: 'GET /api/v1/carriers',              label: 'Unified carrier list with connection state', severity: 'critical', note: 'carriers-config provides config metadata; connection state tracking does not exist' },
+  { id: 'GAP-C01', api: 'GET /api/v1/carriers',              label: 'Unified carrier list with connection state', severity: 'critical', note: 'Readiness tab derives per-carrier state from the credential resolver + carrier factory. Persistent connection-state tracking still does not exist.' },
   { id: 'GAP-C02', api: 'POST /api/v1/carriers/{id}/test',   label: 'Test connection / health-check',              severity: 'medium',   note: 'No per-carrier ping/health endpoint' },
   { id: 'GAP-C03', api: 'POST /api/v1/carriers/{id}/credentials', label: 'Credential rotation / editing',          severity: 'high',     note: 'Credentials in .env only; no UI management API' },
   { id: 'GAP-C04', api: 'POST /api/v1/carriers/{id}/disconnect',  label: 'Disconnect / revoke carrier session',    severity: 'high',     note: 'No connection-state machine exists' },
-  { id: 'GAP-C05', api: 'POST /api/v1/carriers/{id}/oauth/start', label: 'OAuth flow initiation',                  severity: 'high',     note: 'No OAuth infrastructure (FedEx, UPS)' },
+  { id: 'GAP-C05', api: 'POST /api/v1/carriers/{id}/oauth/start', label: 'OAuth flow initiation',                  severity: 'high',     note: 'FedEx and UPS OAuth clients exist in their adapters; the Readiness tab shows whether their credentials resolve. Operator-facing OAuth initiation does not exist.' },
   { id: 'GAP-C06', api: 'GET /api/v1/carriers/{id}/webhooks',     label: 'Webhook registry (list/manage)',         severity: 'medium',   note: 'DHL webhook receiver exists; no registry endpoint to list/manage' },
   { id: 'GAP-C07', api: 'GET /api/v1/carriers/{id}/sessions',     label: 'Session / token tracking',              severity: 'medium',   note: 'No session tracking backend' },
-  { id: 'GAP-C08', api: 'POST /api/v1/carriers/{id}/env',         label: 'Per-carrier env management (prod/sandbox)', severity: 'high',  note: 'carrier_api_status is global, not per-carrier' },
+  { id: 'GAP-C08', api: 'POST /api/v1/carriers/{id}/env',         label: 'Per-carrier env management (prod/sandbox)', severity: 'high',  note: 'carrier_api_status is still global. The Readiness tab now reports credential state per carrier AND per environment.' },
   { id: 'GAP-C09', api: 'GET /api/v1/carriers/{id}/quota',        label: 'Quota / rate-limit tracking',            severity: 'low',      note: 'No quota instrumentation' },
   { id: 'GAP-C10', api: 'POST /api/v1/carriers/onboard',          label: 'Carrier onboarding workflow',            severity: 'high',     note: 'OAuth callback, key entry, integration setup does not exist' },
 ];
@@ -106,6 +107,15 @@ const stateChip = (s) => {
     missing:  { label: 'Missing', bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
     gated:    { label: 'Gated',   bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
     error:    { label: 'Error',   bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+    // Derived readiness states (CapabilityState + the ready roll-up)
+    ready:              { label: 'Ready',        bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   border: 'var(--badge-green-border)' },
+    not_ready:          { label: 'Not ready',    bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
+    not_configured:     { label: 'No credential',bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+    not_provisioned:    { label: 'Not sold',     bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+    disabled:           { label: 'Disabled',     bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' },
+    auth_failed:        { label: 'Auth failed',  bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+    blocked_global:     { label: 'Blocked',      bg: 'var(--badge-red-bg)',     text: 'var(--badge-red-text)',     border: 'var(--badge-red-border)' },
+    stored_unvalidated: { label: 'Unvalidated',  bg: 'var(--badge-yellow-bg)',  text: 'var(--badge-yellow-text)',  border: 'var(--badge-yellow-border)' },
   };
   const v = m[s] || { label: s || '?', bg: 'var(--badge-neutral-bg)', text: 'var(--badge-neutral-text)', border: 'var(--badge-neutral-border)' };
   return (
@@ -126,6 +136,7 @@ function CarriersPage() {
   const [tab, setTab] = React.useState('config');
   const [carriers, setCarriers] = React.useState(null);
   const [carrierStatus, setCarrierStatus] = React.useState(null);
+  const [readiness, setReadiness] = React.useState(null);
   const [loadErr, setLoadErr] = React.useState(null);
 
   // Load carrier config + gate status on mount
@@ -133,11 +144,15 @@ function CarriersPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [cfgRes, statusRes] = await Promise.all([
+        const [cfgRes, statusRes, readyRes] = await Promise.all([
           PzApi.listCarriersConfig(),
           PzApi.getCarrierStatus(),
+          PzApi.getCarriersReadiness(),
         ]);
         if (cancelled) return;
+        // Readiness is derived and best-effort: a failure leaves the tab
+        // saying so rather than blanking the page.
+        setReadiness(readyRes.ok ? (readyRes.data || null) : { error: readyRes.error || 'unavailable' });
         // PzApi._call returns { ok, data } — body is cfgRes.data ({ count, carriers }).
         if (!cfgRes.ok) {
           setLoadErr(cfgRes.error || 'Failed to load carrier configs');
@@ -199,7 +214,8 @@ function CarriersPage() {
         ))}
       </div>
 
-      {tab === 'config'  && <ConfigRegistryTab carriers={carriers} />}
+      {tab === 'config'    && <ConfigRegistryTab carriers={carriers} />}
+      {tab === 'readiness' && <ReadinessTab readiness={readiness} />}
       {tab === 'dhl_ops' && <DhlOperationsTab carrierStatus={carrierStatus} />}
       {tab === 'gaps'    && <IntegrationGapsTab />}
       {tab === 'audit'   && <ConfigAuditTab />}
@@ -569,6 +585,76 @@ function ApiBtn({ children, variant, small, title }) {
     }}>{children}</button>
   );
 }
+
+// ============================================================================
+// Tab: Readiness — GET /api/v1/carriers-config/readiness
+//
+// Every value here is derived at read time from the credential resolver, the
+// carrier factory and the global gate. Nothing is stored, so nothing can go
+// stale, and no credential value is ever sent to the browser. A carrier that
+// cannot be resolved reads as not-ready with the exact backend reason — never
+// as a blank row and never as ready.
+// ============================================================================
+
+function ReadinessTab({ readiness }) {
+  if (!readiness) {
+    return <div data-testid="readiness-loading" style={{ padding: 20, color: 'var(--text-2)', fontSize: 12 }}>Loading carrier readiness...</div>;
+  }
+  if (readiness.error) {
+    return (
+      <div data-testid="readiness-error" style={{
+        background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)',
+        color: 'var(--badge-red-text)', padding: '12px 16px', borderRadius: 6, fontSize: 12,
+      }}>Readiness unavailable: {readiness.error}</div>
+    );
+  }
+
+  const rows = (readiness.carriers || []).map(c => {
+    const ad = c.adapter || {};
+    const optional = Object.keys(ad.optional_capabilities || {})
+      .filter(k => ad.optional_capabilities[k]);
+    return [
+      <span data-testid={'readiness-carrier-' + c.carrier_code + '-' + c.environment}
+            style={{ fontWeight: 700, fontSize: 12 }}>{c.carrier_code}</span>,
+      <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.environment}</span>,
+      <div>
+        {ad.available
+          ? <span style={{ fontSize: 11, fontFamily: 'ui-monospace, monospace' }}>{ad.adapter}</span>
+          : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{ad.reason || 'unavailable'}</span>}
+      </div>,
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+        {(c.credentials || []).map(cr => (
+          <span key={cr.capability} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 10, color: 'var(--text-2)' }}>{cr.capability}</span>
+            {stateChip(cr.state)}
+          </span>
+        ))}
+      </div>,
+      <span style={{ fontSize: 10.5, color: 'var(--text-2)' }}>
+        {optional.length ? optional.join(', ') : '—'}
+      </span>,
+      stateChip(c.ready ? 'ready' : 'not_ready'),
+    ];
+  });
+
+  return (
+    <div data-testid="readiness-tab">
+      <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 10 }}>
+        Derived live from the credential resolver, the carrier factory and the
+        global gate (<code>carrier_api_status = {readiness.carrier_api_status}</code>).
+        Not stored, never cached, no credential values leave the server.
+      </div>
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+        <Tbl
+          cols={['Carrier', 'Environment', 'Adapter', 'Credentials', 'Optional capabilities', 'Readiness']}
+          widths={['80px', '110px', '1.2fr', '1.6fr', '1fr', '100px']}
+          rows={rows}
+        />
+      </div>
+    </div>
+  );
+}
+
 
 function Tbl({ cols, widths, rows }) {
   const grid = widths.join(' ');

@@ -167,7 +167,10 @@ class TestFailVisibleGate:
         baseline branch in front of it."""
         src = _modal_src()
         assert "These shipping details are different from Customer Master" in src
-        assert "awb-master-save-yes" in src and "awb-master-save-no" in src
+        # save-and-continue survives; the one-off "No" escape was removed when
+        # Customer Master became the only recipient authority.
+        assert "awb-master-save-yes" in src and "awb-master-save-cancel" in src
+        assert "awb-master-save-no" not in src
 
 
 # ── Safety ─────────────────────────────────────────────────────────────────────

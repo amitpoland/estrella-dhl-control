@@ -44,7 +44,13 @@ def get_adapter(
     """
     code = (provider or "DHL").strip().upper() or "DHL"
     if code == "UPS":
-        raise CarrierGateError("UPS_NOT_CONFIGURED")
+        from .adapters.ups import UpsSandboxAdapter, ups_credentials_present
+
+        # Fail closed and loudly: an unconfigured UPS is never substituted
+        # with DHL, and no adapter is handed back that looks bookable.
+        if not ups_credentials_present():
+            raise CarrierGateError("UPS_NOT_CONFIGURED")
+        return UpsSandboxAdapter(config)
     if code == "FEDEX":
         from .adapters.fedex import FedExSandboxAdapter
 

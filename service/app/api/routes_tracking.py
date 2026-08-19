@@ -406,9 +406,30 @@ def submit_cowork_tracking_result(
     }
 
 
+@router.post("/refresh-active", dependencies=[_auth])
+def refresh_active_tracking_endpoint() -> dict:
+    """Refresh carrier tracking for every active AWB. Tracking only.
+
+    This is NOT the monitor sweep: it queues no email, sends no email, and
+    dispatches no clearance action, so every authenticated operator may run
+    it (the login bootstrap does).  Polling reuses the single tracking
+    authority with its 15-minute TTL, so a sweep over fresh AWBs costs no
+    carrier calls.  A concurrent sweep returns ``running: true`` instead of
+    doubling the work.
+    """
+    from ..services.active_shipment_monitor import refresh_active_tracking
+    return refresh_active_tracking()
+
+
 @router.get("/shipment/{batch_id}/timeline", dependencies=[_auth])
 def get_shipment_timeline(batch_id: str) -> dict:
-    """Return the event timeline for a shipment batch."""
+    """Return the event timeline for a shipment batch.
+
+    ``timeline`` is the raw workflow stream and is unchanged.
+    ``unified_timeline`` additionally merges carrier events into one
+    chronological, source-attributed stream; it degrades to ``[]`` rather than
+    failing the response.
+    """
     from ..core.timeline import get_timeline
     from ..services.batch_service import get_output_dir
     if "/" in batch_id or ".." in batch_id:
@@ -416,4 +437,17 @@ def get_shipment_timeline(batch_id: str) -> dict:
     audit_path = get_output_dir(batch_id) / "audit.json"
     if not audit_path.exists():
         raise HTTPException(status_code=404, detail="Shipment not found.")
-    return {"batch_id": batch_id, "timeline": get_timeline(audit_path)}
+    workflow = get_timeline(audit_path)
+    unified: list = []
+    try:
+        import json
+        from ..services.dhl_logistics_projector import assemble_shipment_timeline
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        unified = assemble_shipment_timeline(batch_id, audit)
+    except Exception:
+        unified = []
+    return {
+        "batch_id": batch_id,
+        "timeline": workflow,
+        "unified_timeline": unified,
+    }

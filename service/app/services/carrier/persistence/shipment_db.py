@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS carrier_shipments (
 _ADDITIVE_COLUMNS = [
     ("service_product", "TEXT"),       # carrier service code (e.g. EXPRESS_WORLDWIDE)
     ("dimensions_json", "TEXT"),       # JSON snapshot of ShipmentRequest.dimensions
+    # JSON snapshot of the booking-time multi-package split. NULL means the
+    # shipment was booked as one package from the scalar weight/dimensions —
+    # it is NOT a missing parcel count, and nothing infers one.
+    ("packages_json", "TEXT"),
     # Per-client shipment ownership.  One import batch is split into several
     # per-client proforma drafts (draft identity = (batch_id, client_name)); a
     # shipment belongs to exactly one client.  Nullable: legacy rows predate
@@ -793,6 +797,7 @@ def update_shipment_fields(
     currency: Optional[str] = None,
     box_type_code: Optional[str] = None,
     carrier_transaction_id: Optional[str] = None,
+    packages_json: Optional[str] = None,
 ) -> None:
     """Persist Phase-5 carrier API response fields on an existing row.
 
@@ -820,6 +825,9 @@ def update_shipment_fields(
     if carrier_transaction_id is not None:
         sets.append("carrier_transaction_id = ?")
         args.append(carrier_transaction_id)
+    if packages_json is not None:
+        sets.append("packages_json = ?")
+        args.append(packages_json)
     if not sets:
         return
     sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")

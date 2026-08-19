@@ -1,27 +1,56 @@
-"""Tests for shipment creation route with AWB address authority feature.
+"""POST /api/v1/carrier/{batch_id}/shipment — ONE recipient authority.
 
-Tests the feature flag behavior, error handling, and integration with the
-existing carrier route infrastructure for Campaign 02.5 Workstream 3.
+The shipped address is always derived as
+
+    outbound proforma client (client_ref)
+      -> client_contractor_id -> Customer Master -> canonical delivery
+
+There is no feature flag, no raw-address fallback and no batch-age escape
+hatch.  The operator-typed modal address is display data: it is accepted for
+backward compatibility and never consulted.  A customer that cannot be
+resolved unambiguously fails closed with 422 (Lesson R: customer unmatched is
+a TRUE blocker).
+
+Real SQLite fixtures, synthetic parties. No live MyDHL / wFirma / email writes.
 """
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from contextlib import contextmanager
-
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes_carrier_actions import router as actions_router
 from app.auth.dependencies import get_current_user
 from app.core.security import require_api_key
+from app.services import document_db as ddb
+from app.services import proforma_invoice_link_db as pildb
+
+BATCH = "SHIPMENT_1234567890_2026-08_abcdef01"
+
+# Two commercial customers on ONE import batch -> batch-level party
+# resolution is AMBIGUOUS; only the client scope disambiguates.
+CLIENT_A, CID_A = "Alpha Gems Ltd", "700000222"
+CLIENT_B, CID_B = "DG Handels GmbH", "900000111"
+
+# What the operator might type into the modal. It must never ship.
+TYPED_ADDRESS = {
+    "name": "TYPED IN THE MODAL",
+    "street": "Typed Street 1",
+    "city": "Typedville",
+    "postal_code": "00-000",
+    "country": "PL",
+}
 
 
 @pytest.fixture(autouse=True)
 def _incoterm_resolved_for_shipment_posts(monkeypatch):
-    """AWB authority tests — supply resolved Incoterm so INCOTERM_UNSET does not mask address tests."""
+    """Supply a resolved Incoterm so INCOTERM_UNSET does not mask address tests."""
     monkeypatch.setattr(
         "app.api.routes_carrier_actions._resolve_booking_incoterm",
         lambda **kwargs: {"value": "DAP", "source": "customer_master"},
@@ -66,329 +95,260 @@ def _patched_settings(**overrides):
         yield mock_settings
 
 
-# ── Test setup ─────────────────────────────────────────────────────────────────
+# ── Fixtures: a real two-client batch ────────────────────────────────────────
 
 
-@pytest.fixture
-def app_with_authority_flag_off():
-    """FastAPI app with AWB address authority flag OFF."""
+def _register(document_type: str, contractor_id: str, file_hash: str) -> None:
+    ddb.register_document(
+        batch_id=BATCH,
+        document_type=document_type,
+        file_name=f"{document_type}-{file_hash}.pdf",
+        file_hash=file_hash,
+        supplier_contractor_id="",
+        client_contractor_id=contractor_id,
+    )
+
+
+def _draft(storage: Path, client_name: str, contractor_id: str) -> None:
+    pf = storage / "proforma_links.db"
+    pildb.upsert_pending_draft(
+        pf,
+        batch_id=BATCH,
+        client_name=client_name,
+        currency="EUR",
+        exchange_rate=None,
+        source_lines_json="[]",
+    )
+    with sqlite3.connect(str(pf)) as con:
+        con.execute(
+            "UPDATE proforma_drafts SET client_contractor_id=? "
+            "WHERE batch_id=? AND client_name=?",
+            (contractor_id, BATCH, client_name),
+        )
+
+
+def _customer_master(root: Path, rows) -> None:
+    with sqlite3.connect(str(root / "customer_master.sqlite")) as con:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS customer_master ("
+            "bill_to_contractor_id TEXT PRIMARY KEY, bill_to_name TEXT, "
+            "bill_to_street TEXT, bill_to_city TEXT, bill_to_postal_code TEXT, "
+            "country TEXT, ship_to_name TEXT, ship_to_street TEXT, "
+            "ship_to_city TEXT, ship_to_zip TEXT, ship_to_country TEXT, "
+            "ship_to_phone TEXT, ship_to_email TEXT, ship_to_person TEXT, "
+            "ship_to_use_alternate INTEGER)"
+        )
+        con.executemany(
+            "INSERT OR REPLACE INTO customer_master (bill_to_contractor_id, "
+            "bill_to_name, bill_to_street, bill_to_city, bill_to_postal_code, "
+            "country) VALUES (?,?,?,?,?,?)",
+            rows,
+        )
+
+
+@pytest.fixture()
+def storage(tmp_path: Path) -> Path:
+    root = tmp_path / "storage"
+    root.mkdir()
+    ddb.init_document_db(root / "documents.db")
+    _register("sales_packing_list", CID_A, "spl-a")
+    _register("sales_invoice", CID_B, "si-b")
+    _customer_master(root, [
+        (CID_A, CLIENT_A, "12 Marine Drive", "Mumbai", "400020", "IN"),
+        (CID_B, CLIENT_B, "5 Bahnhofstrasse", "Pforzheim", "75172", "DE"),
+    ])
+    _draft(root, CLIENT_A, CID_A)
+    _draft(root, CLIENT_B, CID_B)
+    return root
+
+
+@contextmanager
+def _booking_client(storage: Path, **settings_overrides):
+    """Yield (TestClient, captured_requests) with the carrier coordinator mocked."""
+    captured: list = []
+
     app = FastAPI()
     app.include_router(actions_router)
-
-    # Mock dependencies
-    def _no_auth():
-        return None
-
-    def _mock_coordinator():
-        mock_coord = MagicMock()
-        mock_result = MagicMock()
-        mock_result.idempotency_key = "test-key-123"
-        mock_result.mode.value = "shadow"
-        mock_result.state.value = "completed"
-        mock_result.tracking_ref = "TEST123456789"
-        mock_result.simulated = True
-        mock_coord.create_shipment.return_value = mock_result
-        return mock_coord
-
-    app.dependency_overrides[require_api_key] = _no_auth
+    app.dependency_overrides[require_api_key] = lambda: None
     app.dependency_overrides[get_current_user] = _logistics_user
 
-    # Mock settings with flag OFF
-    with _patched_settings(awb_address_authority_enabled=False):
-        from app.api.routes_carrier_actions import _get_coordinator
-        app.dependency_overrides[_get_coordinator] = _mock_coordinator
-
-        yield app
-
-
-@pytest.fixture
-def app_with_authority_flag_on():
-    """FastAPI app with AWB address authority flag ON."""
-    app = FastAPI()
-    app.include_router(actions_router)
-
-    # Mock dependencies
-    def _no_auth():
-        return None
-
     def _mock_coordinator():
-        mock_coord = MagicMock()
-        mock_result = MagicMock()
-        mock_result.idempotency_key = "test-key-456"
-        mock_result.mode.value = "shadow"
-        mock_result.state.value = "completed"
-        mock_result.tracking_ref = "AUTH789012345"
-        mock_result.simulated = True
-        mock_coord.create_shipment.return_value = mock_result
-        return mock_coord
+        coord = MagicMock()
 
-    app.dependency_overrides[require_api_key] = _no_auth
-    app.dependency_overrides[get_current_user] = _logistics_user
+        def _create(request, **_kwargs):
+            captured.append(request)
+            result = MagicMock()
+            result.idempotency_key = "test-key-123"
+            result.mode.value = "shadow"
+            result.state.value = "completed"
+            result.tracking_ref = "TEST123456789"
+            result.simulated = True
+            return result
 
-    # Mock settings with flag ON
-    with _patched_settings(awb_address_authority_enabled=True):
+        coord.create_shipment = _create
+        return coord
+
+    with _patched_settings(storage_root=storage, **settings_overrides):
         from app.api.routes_carrier_actions import _get_coordinator
         app.dependency_overrides[_get_coordinator] = _mock_coordinator
-
-        yield app
-
-
-# ── Feature Flag OFF Tests ──────────────────────────────────────────────────────
+        yield TestClient(app), captured
 
 
-class TestFeatureFlagOff:
-    """Test behavior when awb_address_authority_enabled = False."""
-
-    def test_flag_off_preserves_raw_recipient_address(self, app_with_authority_flag_off):
-        """Test that raw recipient_address is used when flag is OFF."""
-        client = TestClient(app_with_authority_flag_off)
-
-        raw_address = {
-            "name": "Raw Customer Name",
-            "street": "Raw Street 123",
-            "city": "Raw City",
-            "country": "Poland"
-        }
-
-        response = client.post(
-            "/api/v1/carrier/AWB_1234567890/shipment",
-            json={
-                "shipper_account": "TEST_ACC",
-                "recipient_address": raw_address,
-                "declared_value": 100.0,
-                "currency": "USD",
-                "weight_kg": 1.0,
-                "dimensions": {"length": 10, "width": 10, "height": 10}
-            }
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["batch_id"] == "AWB_1234567890"
-        assert data["idempotency_key"] == "test-key-123"
-
-    def test_flag_off_accepts_empty_recipient_address(self, app_with_authority_flag_off):
-        """Test that empty recipient_address is accepted when flag is OFF."""
-        client = TestClient(app_with_authority_flag_off)
-
-        response = client.post(
-            "/api/v1/carrier/BATCH_TEST/shipment",
-            json={
-                "shipper_account": "TEST_ACC",
-                "recipient_address": {},  # Empty address - should work with flag OFF
-                "declared_value": 50.0,
-                "currency": "EUR",
-                "weight_kg": 0.5,
-                "dimensions": {"length": 5, "width": 5, "height": 5}
-            }
-        )
-
-        assert response.status_code == 200
+@pytest.fixture()
+def booked(storage: Path):
+    with _booking_client(storage) as ctx:
+        yield ctx
 
 
-# ── Feature Flag ON Tests ────────────────────────────────────────────────────────
+def _post(client, *, client_ref=None, recipient_address=TYPED_ADDRESS):
+    body = {
+        "shipper_account": "TEST_ACC",
+        "recipient_address": recipient_address,
+        "declared_value": 10733.21,
+        "currency": "EUR",
+        "weight_kg": 1.0,
+        "dimensions": {"length_cm": 10, "width_cm": 10, "height_cm": 10},
+    }
+    if client_ref is not None:
+        body["client_ref"] = client_ref
+    return client.post(f"/api/v1/carrier/{BATCH}/shipment", json=body)
 
 
-class TestFeatureFlagOn:
-    """Test behavior when awb_address_authority_enabled = True."""
-
-    @patch('app.services.awb_address_authority.derive_awb_address_authority_with_fallback')
-    def test_flag_on_uses_customer_master_authority(self, mock_derive, app_with_authority_flag_on):
-        """Test that Customer Master authority is used when flag is ON."""
-        # Mock successful authority derivation
-        mock_derive.return_value = {
-            "name": "Customer Master Name",
-            "street": "Authority Street 456",
-            "city": "Authority City",
-            "country": "Poland",
-            "source": "ship_to"
-        }
-
-        client = TestClient(app_with_authority_flag_on)
-
-        response = client.post(
-            "/api/v1/carrier/AWB_9876543210/shipment",
-            json={
-                "shipper_account": "AUTH_ACC",
-                "recipient_address": {
-                    "name": "Ignored Raw Name",
-                    "city": "Ignored Raw City"
-                },
-                "declared_value": 200.0,
-                "currency": "USD",
-                "weight_kg": 2.0,
-                "dimensions": {"length": 20, "width": 15, "height": 10}
-            }
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["batch_id"] == "AWB_9876543210"
-
-        # Verify authority derivation was called
-        mock_derive.assert_called_once()
-        args = mock_derive.call_args[0]
-        assert args[0] == "AWB_9876543210"  # batch_id
-        # raw_fallback should be the original recipient_address
-        kwargs = mock_derive.call_args[1]
-        assert "raw_fallback" in kwargs
-
-    @patch('app.services.awb_address_authority.derive_awb_address_authority_with_fallback')
-    def test_customer_not_found_returns_422(self, mock_derive, app_with_authority_flag_on):
-        """Test 422 response when customer cannot be found."""
-        from app.services.awb_address_authority import CustomerNotFoundError
-
-        mock_derive.side_effect = CustomerNotFoundError("Test customer not found")
-
-        client = TestClient(app_with_authority_flag_on)
-
-        response = client.post(
-            "/api/v1/carrier/INVALID_BATCH/shipment",
-            json={
-                "shipper_account": "TEST_ACC",
-                "recipient_address": {"name": "Test"},
-                "declared_value": 100.0,
-                "currency": "USD",
-                "weight_kg": 1.0,
-                "dimensions": {"length": 10, "width": 10, "height": 10}
-            }
-        )
-
-        assert response.status_code == 422
-        error = response.json()["detail"]
-        assert error["error"] == "Customer resolution failed"
-        assert error["code"] == "CUSTOMER_NOT_FOUND"
-        assert error["batch_id"] == "INVALID_BATCH"
-        assert "Customer Master" in error["guidance"]
-
-    @patch('app.services.awb_address_authority.derive_awb_address_authority_with_fallback')
-    def test_address_missing_returns_422(self, mock_derive, app_with_authority_flag_on):
-        """Test 422 response when address is incomplete."""
-        from app.services.awb_address_authority import AddressMissingError
-
-        mock_derive.side_effect = AddressMissingError("Missing required fields: street, city")
-
-        client = TestClient(app_with_authority_flag_on)
-
-        response = client.post(
-            "/api/v1/carrier/INCOMPLETE_BATCH/shipment",
-            json={
-                "shipper_account": "TEST_ACC",
-                "recipient_address": {"name": "Incomplete"},
-                "declared_value": 100.0,
-                "currency": "USD",
-                "weight_kg": 1.0,
-                "dimensions": {"length": 10, "width": 10, "height": 10}
-            }
-        )
-
-        assert response.status_code == 422
-        error = response.json()["detail"]
-        assert error["error"] == "Address validation failed"
-        assert error["code"] == "ADDRESS_INCOMPLETE"
-        assert error["batch_id"] == "INCOMPLETE_BATCH"
-        assert "complete the customer address" in error["guidance"]
-
-    @patch('app.services.awb_address_authority.derive_awb_address_authority_with_fallback')
-    def test_source_metadata_removed_from_carrier_request(self, mock_derive, app_with_authority_flag_on):
-        """Test that 'source' metadata is removed before sending to carrier."""
-        # Mock authority result with source metadata
-        authority_address = {
-            "name": "Authority Customer",
-            "street": "Authority Street",
-            "city": "Authority City",
-            "country": "Poland",
-            "source": "ship_to"  # This should be removed
-        }
-        mock_derive.return_value = authority_address
-
-        # Mock the coordinator to capture the request
-        def _mock_coordinator_with_capture():
-            mock_coord = MagicMock()
-
-            def capture_request(request):
-                # Verify recipient_address doesn't contain 'source'
-                assert "source" not in request.recipient_address
-                assert request.recipient_address["name"] == "Authority Customer"
-
-                # Return mock result
-                mock_result = MagicMock()
-                mock_result.idempotency_key = "captured-key"
-                mock_result.mode.value = "shadow"
-                mock_result.state.value = "completed"
-                mock_result.tracking_ref = "CAPTURED123"
-                mock_result.simulated = True
-                return mock_result
-
-            mock_coord.create_shipment = capture_request
-            return mock_coord
-
-        client = TestClient(app_with_authority_flag_on)
-
-        with patch('app.api.routes_carrier_actions._get_coordinator', _mock_coordinator_with_capture):
-            response = client.post(
-                "/api/v1/carrier/TEST_SOURCE_REMOVAL/shipment",
-                json={
-                    "shipper_account": "TEST_ACC",
-                    "recipient_address": {"name": "Original"},
-                    "declared_value": 100.0,
-                    "currency": "USD",
-                    "weight_kg": 1.0,
-                    "dimensions": {"length": 10, "width": 10, "height": 10}
-                }
-            )
-
-        assert response.status_code == 200
+# ── The client-scoped Customer Master is the only recipient authority ────────
 
 
-# ── Backward Compatibility Tests ──────────────────────────────────────────────────
+def test_client_scoped_booking_resolves_that_clients_contractor(booked):
+    client, captured = booked
+    resp = _post(client, client_ref=CLIENT_A)
+
+    assert resp.status_code == 200, resp.text
+    addr = captured[-1].recipient_address
+    assert addr["company"] == CLIENT_A          # CM name -> carrier company
+    assert addr["street"] == "12 Marine Drive"
+    assert addr["city"] == "Mumbai"
+    assert addr["country_code"] == "IN"
 
 
-class TestBackwardCompatibility:
-    """Test that existing functionality is preserved."""
+def test_second_client_on_the_same_batch_resolves_its_own_contractor(booked):
+    """Scope must not leak: the other client's own Customer Master record ships."""
+    client, captured = booked
+    resp = _post(client, client_ref=CLIENT_B)
 
-    def test_existing_request_body_structure_preserved(self, app_with_authority_flag_off):
-        """Test that the ShipmentRequestBody model still accepts original fields."""
-        client = TestClient(app_with_authority_flag_off)
+    assert resp.status_code == 200, resp.text
+    addr = captured[-1].recipient_address
+    assert addr["company"] == CLIENT_B
+    assert addr["city"] == "Pforzheim"
+    assert addr["country_code"] == "DE"
 
-        # This is the exact structure that existing callers would send
-        original_request = {
-            "shipper_account": "EXISTING_ACC",
-            "recipient_address": {
-                "name": "Existing Customer",
-                "street": "Existing Street 789",
-                "city": "Existing City",
-                "postal_code": "12345",
-                "country": "Poland",
-                "phone": "+48987654321"
-            },
-            "declared_value": 500.0,
-            "currency": "USD",
-            "weight_kg": 3.0,
-            "dimensions": {
-                "length": 30,
-                "width": 20,
-                "height": 15
-            },
-            "special_instructions": "Fragile items"
-        }
 
-        response = client.post(
-            "/api/v1/carrier/EXISTING_BATCH/shipment",
-            json=original_request
-        )
+def test_multiparty_batch_without_client_scope_fails_closed(booked):
+    """No client scope on an ambiguous batch -> 422, never a batch-level guess."""
+    client, captured = booked
+    resp = _post(client, client_ref=None)
 
-        assert response.status_code == 200
-        data = response.json()
-        assert "idempotency_key" in data
-        assert "tracking_ref" in data
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["code"] == "CUSTOMER_NOT_FOUND"
+    assert detail["batch_id"] == BATCH
+    assert captured == []          # nothing reached the carrier
 
-    def test_carrier_gate_behavior_unchanged(self):
-        """Test that carrier gate (503 when pending) still works."""
-        # This would require setting up the actual carrier gate config
-        # For now, verify the gate logic is not modified by checking imports
-        from app.api.routes_carrier_actions import _get_carrier_config
 
-        # The gate check should still be in place
-        # (Full integration test would require actual config setup)
-        assert _get_carrier_config is not None
+def test_unknown_client_ref_fails_closed(booked):
+    client, captured = booked
+    resp = _post(client, client_ref="Client With No Draft")
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "CUSTOMER_NOT_FOUND"
+    assert captured == []
+
+
+# ── The typed modal address is never an authority ────────────────────────────
+
+
+def test_typed_recipient_address_is_ignored(booked):
+    """The operator can type anything; Customer Master is what ships."""
+    client, captured = booked
+    resp = _post(client, client_ref=CLIENT_A, recipient_address=TYPED_ADDRESS)
+
+    assert resp.status_code == 200, resp.text
+    shipped = captured[-1].recipient_address
+    assert TYPED_ADDRESS["name"] not in shipped.values()
+    assert shipped["city"] != TYPED_ADDRESS["city"]
+    assert shipped["street"] != TYPED_ADDRESS["street"]
+    assert shipped["company"] == CLIENT_A
+
+
+def test_omitted_recipient_address_still_books(booked):
+    """Display-only field: callers may stop sending it entirely."""
+    client, captured = booked
+    resp = client.post(
+        f"/api/v1/carrier/{BATCH}/shipment",
+        json={
+            "shipper_account": "TEST_ACC",
+            "client_ref": CLIENT_A,
+            "declared_value": 10733.21,
+            "currency": "EUR",
+            "weight_kg": 1.0,
+            "dimensions": {"length_cm": 10, "width_cm": 10, "height_cm": 10},
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert captured[-1].recipient_address["company"] == CLIENT_A
+
+
+def test_incomplete_customer_master_never_degrades_to_typed_address(
+    booked, storage: Path
+):
+    """A complete typed address does not rescue an incomplete master record."""
+    client, captured = booked
+    with sqlite3.connect(str(storage / "customer_master.sqlite")) as con:
+        con.execute(
+            "UPDATE customer_master SET bill_to_street='', bill_to_city='' "
+            "WHERE bill_to_contractor_id=?", (CID_A,))
+
+    resp = _post(client, client_ref=CLIENT_A, recipient_address=TYPED_ADDRESS)
+
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["code"] == "ADDRESS_INCOMPLETE"
+    assert "complete the customer address" in detail["guidance"]
+    assert captured == []
+
+
+def test_source_metadata_is_not_forwarded_to_the_carrier(booked):
+    client, captured = booked
+    assert _post(client, client_ref=CLIENT_A).status_code == 200
+    assert "source" not in captured[-1].recipient_address
+
+
+# ── No environment switch may re-open the raw path ───────────────────────────
+
+
+@pytest.mark.parametrize("flag_value", [False, True])
+def test_no_environment_flag_can_switch_recipient_authority(storage: Path, flag_value):
+    """The retired flag, set either way, changes nothing about what ships."""
+    with _booking_client(storage,
+                         awb_address_authority_enabled=flag_value) as (client, captured):
+        resp = _post(client, client_ref=CLIENT_A)
+
+        assert resp.status_code == 200, resp.text
+        assert captured[-1].recipient_address["company"] == CLIENT_A
+        assert captured[-1].recipient_address["city"] == "Mumbai"
+
+
+def test_settings_exposes_no_awb_address_authority_flag():
+    """The rollout flag is gone from the settings model, not merely defaulted."""
+    from app.core.config import Settings
+
+    assert "awb_address_authority_enabled" not in Settings.model_fields
+
+
+def test_route_source_has_no_flag_branch_around_the_derivation():
+    """Source pin: re-introducing a config branch here must fail the suite."""
+    src = (Path(__file__).parent.parent / "app" / "api"
+           / "routes_carrier_actions.py").read_text(encoding="utf-8")
+
+    assert "awb_address_authority_enabled" not in src
+    assert "derive_awb_address_authority_with_fallback" not in src
+    assert "carrier_address = body.recipient_address" not in src

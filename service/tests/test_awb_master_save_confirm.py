@@ -56,16 +56,23 @@ class TestConfirmationUx:
     def test_phone_prompt_text_exact(self):
         assert PHONE_TEXT in JSX
 
-    def test_three_buttons_general_labels(self):
+    def test_two_buttons_general_labels(self):
         src = _modal_src()
         assert "'Yes, save to Customer Master and continue'" in src
-        assert "'No, use only for this AWB'" in src
         assert "awb-master-save-cancel" in src
 
-    def test_three_buttons_phone_labels(self):
+    def test_phone_confirm_label(self):
         src = _modal_src()
-        assert "'No, use only once'" in src
         assert "phoneOnly ? 'Yes'" in src
+
+    def test_no_one_off_override_escape(self):
+        """The shipped address is the Customer Master address, so a
+        'use only for this AWB' choice would promise something the booking
+        cannot deliver. Save-and-continue or Cancel are the only exits."""
+        src = _modal_src()
+        assert "'No, use only for this AWB'" not in src
+        assert "'No, use only once'" not in src
+        assert "awb-master-save-no" not in src
 
     def test_saved_note_text(self):
         assert "Shipping details saved to Customer Master" in JSX
@@ -73,8 +80,7 @@ class TestConfirmationUx:
 
     def test_panel_testids(self):
         for tid in ("awb-master-save-confirm", "awb-master-save-yes",
-                    "awb-master-save-no", "awb-master-save-cancel",
-                    "awb-master-save-error"):
+                    "awb-master-save-cancel", "awb-master-save-error"):
             assert tid in JSX, tid
 
 

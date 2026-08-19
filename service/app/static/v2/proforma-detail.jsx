@@ -1664,8 +1664,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [form, setForm] = React.useState({
     // Service
     product_code:  prefill.product_code || 'P',
-    // Package
-    box_type_code: '',
+    // Package — the selection persisted on the draft, so reopening the modal
+    // keeps it. Box Master still owns the catalogue and the dimensions.
+    box_type_code: prefill.box_type_code || '',
     // Packed gross weight — the page's canonical weight authority, already
     // resolved by _transport.effectiveWeight (manual → carrier → packing).
     // The operator records it ONCE in the Weights panel; the booking reads it.
@@ -1705,6 +1706,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
+  // OCC token for persisting the box selection; refreshed from each response.
+  const [boxUpdatedAt, setBoxUpdatedAt] = React.useState(prefill.draft_updated_at || '');
+  const [boxSaveErr,   setBoxSaveErr]   = React.useState(null);
   const [selectedCarrier, setSelectedCarrier] = React.useState('DHL');
   const [carrierTouched, setCarrierTouched] = React.useState(false);
   const [externalTracking, setExternalTracking] = React.useState('');
@@ -2001,9 +2005,24 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
+  // Persist the selection on the draft so it survives closing the modal.
+  // Booking is unaffected either way — the payload still carries the form
+  // value; this only stops the operator having to re-pick the box.
+  const persistBoxSelection = (code) => {
+    if (!prefill.draft_id || typeof window.PzApi.setDraftBoxType !== 'function') return;
+    setBoxSaveErr(null);
+    window.PzApi.setDraftBoxType(prefill.draft_id, code, boxUpdatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && (r.error || r.detail)) || 'Could not save the box selection');
+        if (r && r.draft && r.draft.updated_at) setBoxUpdatedAt(r.draft.updated_at);
+      })
+      .catch(e => setBoxSaveErr((e && e.message) || 'Could not save the box selection'));
+  };
+
   // When a box profile is selected, auto-fill dimensions and flag override state
   const handleBoxSelect = (code) => {
     set('box_type_code', code);
+    persistBoxSelection(code);
     if (!code) return;
     const box = boxTypes.find(b => b.code === code);
     if (!box) return;
@@ -2136,18 +2155,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         width_cm:  parseFloat(form.width_cm),
         height_cm: parseFloat(form.height_cm),
       },
-      recipient_address: {
-        // Contact full name and company stay separate — never copy company into name.
-        name:         form.name || undefined,
-        person:       form.name || undefined,
-        company:      form.company_name || undefined,
-        street:       form.street,
-        city:         form.city,
-        postal_code:  form.postal_code,
-        country_code: form.country_code.toUpperCase(),
-        phone:        form.phone || undefined,
-        email:        form.email || undefined,
-      },
+      // No recipient_address: the server derives it from Customer Master via
+      // client_ref. Posting the form values would look like an authority the
+      // booking does not have.
       product_code:       form.product_code || 'P',
       // Automatic description is backend-only. Send override ONLY when the
       // operator edited the field — never re-post the canonical display value
@@ -2570,6 +2580,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                 No active box profiles found in Box Master.
               </div>
             )}
+            {boxSaveErr && (
+              <div style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: 4 }}
+                   data-testid="awb-box-save-error">
+                {boxSaveErr} — the selection still applies to this booking, it was not remembered on the draft.
+              </div>
+            )}
             {boxOverridden && (
               <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }}>
                 Dimensions overridden from box profile — will be sent as entered
@@ -2671,6 +2687,16 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
 
           {/* ── Recipient ── */}
           <div style={sectionHead}>Recipient</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}
+            data-testid="awb-recipient-authority-note">
+            From Customer Master shipping details. Editing here offers to save the
+            change back to Customer Master before booking — the shipped address is
+            always the Customer Master address.{' '}
+            <a href={cmMasterHref} target="_blank" rel="noopener noreferrer"
+              style={{ color: 'var(--accent)' }} data-testid="awb-recipient-cm-link">
+              Open Client Master
+            </a>
+          </div>
           <div style={fieldStyle}>
             <label htmlFor="awb-company_name" style={labelStyle}>Company Name *</label>
             <input id="awb-company_name" value={form.company_name}
@@ -2773,8 +2799,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
           )}
 
           {/* Customer Master save-confirmation — booking is HELD until the
-              operator picks Yes (save + continue), No (this AWB only), or
-              Cancel (no save, no booking). Master is never written silently. */}
+              operator picks Yes (save + continue) or Cancel (no save, no
+              booking). Master is never written silently, and there is no
+              "use only for this AWB" escape: the shipped address is always
+              the Customer Master address, so an edit that is not saved is an
+              edit that would not ship. */}
           {selectedCarrier === 'DHL' && saveConfirm && saveConfirm.baselineIssue && (
             <div style={{
               padding: '14px 16px', background: 'var(--bg-subtle)', borderRadius: 8,
@@ -2786,7 +2815,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                   : 'Customer Master could not be loaded, so shipping details cannot be compared.'}
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }}>
-                Nothing will be saved to Customer Master. Book only if you are sure the shipping details above are correct.
+                The shipped address always comes from Customer Master, never from this form. Continuing books with whatever the server resolves for this client — and fails with a clear error if it cannot resolve one.
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Btn variant="primary"
@@ -2839,11 +2868,6 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                   data-testid="awb-master-save-yes">
                   {savingMaster ? 'Saving…'
                     : (saveConfirm.phoneOnly ? 'Yes' : 'Yes, save to Customer Master and continue')}
-                </Btn>
-                <Btn variant="ghost" disabled={savingMaster}
-                  onClick={() => { setSaveConfirm(null); doBooking(); }}
-                  data-testid="awb-master-save-no">
-                  {saveConfirm.phoneOnly ? 'No, use only once' : 'No, use only for this AWB'}
                 </Btn>
                 <Btn variant="ghost" disabled={savingMaster}
                   onClick={() => { setSaveConfirm(null); setSaveError(null); }}
@@ -7934,6 +7958,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               || (draft && draft.sender_contractor_id) || '',
             client_name:        (liveDraft && liveDraft.client_name)
               || (draft && draft.client_name) || '',
+            // Box Master selection persisted on the draft (code only — the
+            // dimensions are read from Box Master, never copied onto a draft).
+            box_type_code:      (liveDraft && liveDraft.box_type_code)
+              || (draft && draft.box_type_code) || '',
+            draft_id:           (liveDraft && liveDraft.id) || (draft && draft.id) || null,
+            draft_updated_at:   (liveDraft && liveDraft.updated_at)
+              || (draft && draft.updated_at) || '',
           }}
           onClose={() => setShowAwbModal(false)}
           onSuccess={() => { setShowAwbModal(false); loadCarrierShipment(); }}

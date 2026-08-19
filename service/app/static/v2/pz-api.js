@@ -1278,6 +1278,11 @@
       return _get(`${BASE}/carriers-config${qs}`);
     },
 
+    // GET /api/v1/carriers-config/readiness
+    // Derived, never stored: credential resolver + carrier factory + the
+    // global gate. Returns { carrier_api_status, count, carriers: [...] }.
+    getCarriersReadiness: () => _get(`${BASE}/carriers-config/readiness`),
+
     // GET /api/v1/carrier/status
     // Returns { carrier_api_status, carrier_plt_status }
     getCarrierStatus: () =>
@@ -1767,6 +1772,17 @@
     setWeightOverride: (draftId, fields, updatedAt) =>
       _postM(`${BASE}/proforma/draft/${draftId}/weight-override`, {
         ...(fields || {}),
+        expected_updated_at: updatedAt || '',
+      }),
+
+    // POST /api/v1/proforma/draft/{id}/box-type (X-Operator).
+    // Persists the operator's Box Master SELECTION on the draft so reopening
+    // the booking modal keeps it. Box Master stays the authority for which
+    // codes exist and what they measure — an unknown code is rejected 422.
+    // Empty string clears the selection.
+    setDraftBoxType: (draftId, boxTypeCode, updatedAt) =>
+      _postM(`${BASE}/proforma/draft/${draftId}/box-type`, {
+        box_type_code: boxTypeCode || '',
         expected_updated_at: updatedAt || '',
       }),
 

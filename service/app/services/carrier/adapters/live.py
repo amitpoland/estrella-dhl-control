@@ -46,6 +46,7 @@ from ..models.shipment import (
     ShipmentResult,
     ShipmentState,
     compute_idempotency_key,
+    resolve_packages,
 )
 from ..notification_audit import build_shipment_notifications
 from ..notification_audit import build_shipment_notifications as _build_shipment_notifications  # noqa: F401 — test re-export
@@ -749,15 +750,19 @@ def _build_shipment_body(
             "receiverDetails": receiver_details,
         },
         "content": {
+            # resolve_packages() derives a single package from the scalar
+            # weight + dimensions when no split was entered, so the
+            # single-package payload is unchanged.
             "packages": [
                 {
-                    "weight": request.weight_kg,
+                    "weight": pkg.get("weight_kg"),
                     "dimensions": {
-                        "length": request.dimensions.get("length_cm", 1),
-                        "width":  request.dimensions.get("width_cm",  1),
-                        "height": request.dimensions.get("height_cm", 1),
+                        "length": pkg.get("length_cm", 1),
+                        "width":  pkg.get("width_cm",  1),
+                        "height": pkg.get("height_cm", 1),
                     },
                 }
+                for pkg in resolve_packages(request)
             ],
             "isCustomsDeclarable": is_dutiable,
             "declaredValue": request.declared_value,

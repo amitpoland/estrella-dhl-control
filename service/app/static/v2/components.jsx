@@ -671,9 +671,71 @@ function resolvePeriod(mode, custom, today) {
   return { from: iso(y, m, 1), to: t };         // this_month — the default
 }
 
+// ── Unified shipment timeline ───────────────────────────────────────────────
+// Presentation only. Renders the already-merged, already-ordered stream from
+// GET /api/v1/tracking/shipment/{batch_id}/timeline -> unified_timeline.
+// It owns no facts: no customer, weight, box, customs, warehouse or booking
+// knowledge lives here, and it never re-orders or re-classifies an event.
+const UNIFIED_SOURCE_LABEL = {
+  audit_timeline: 'Workflow',
+  tracking_db: 'Carrier (normalised)',
+  tracking_cache: 'Carrier (raw cache)',
+};
+
+function UnifiedTimeline({ events }) {
+  const rows = events || [];
+  if (!rows.length) {
+    return (
+      <div
+        data-testid="unified-timeline-empty"
+        style={{
+          padding: '20px 18px', textAlign: 'center', fontSize: 12,
+          color: 'var(--text-2)', background: 'var(--card)',
+          border: '1px solid var(--border)', borderRadius: 8,
+        }}
+      >
+        No workflow or carrier events recorded for this shipment yet.
+      </div>
+    );
+  }
+  return (
+    <div
+      data-testid="unified-timeline"
+      style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px' }}
+    >
+      {rows.map(function (e, i) {
+        return (
+          <div
+            key={i}
+            data-testid="unified-timeline-event"
+            data-source={e.source || ''}
+            style={{
+              display: 'flex', gap: 12, padding: '8px 0',
+              borderBottom: i < rows.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+            }}
+          >
+            <div style={{ width: 170, flexShrink: 0, fontSize: 11, color: 'var(--text-3)', fontFamily: 'ui-monospace, monospace' }}>
+              {e.ts || '—'}
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+                {e.label || e.event || 'Event'}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                {[UNIFIED_SOURCE_LABEL[e.source] || e.source, e.location, e.actor].filter(Boolean).join(' · ')}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 Object.assign(window, {
   Badge, Sidebar, TopBar, PageHeader, Card, Btn, Modal,
   FormField, Input, Select, SectionHeader, InfoRow, fmtMoney2,
   STATUS_MAP, GOLD, DARK_BG, NAV_TREE, NAV_INDEX, SubTabStrip,
   resolvePeriod, filterNavTreeByAllowedPages,
+  UnifiedTimeline,
 });

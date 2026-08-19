@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .models.shipment import CarrierCapabilityUnsupported
+
 log = logging.getLogger(__name__)
 
 _SAFE_REF = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
@@ -92,9 +94,6 @@ def ensure_waybill_persisted(
     except Exception as exc:
         return DocumentImageResult("error", detail=f"adapter:{exc}")
 
-    fetch = getattr(adapter, "fetch_document_image", None)
-    if not callable(fetch):
-        return DocumentImageResult("skipped", detail="adapter_has_no_get_image")
 
     # pickupYearAndMonth: prefer caller; else YYYY-MM from tracking_ref booking row
     # is left to the caller. Default: current UTC month is wrong for historical —
@@ -105,8 +104,14 @@ def ensure_waybill_persisted(
     if not ym:
         return DocumentImageResult("skipped", detail="missing_pickup_year_month")
 
+    # Optional adapter capability (adapters/base.py) — a carrier without a
+    # document-image service is skipped, not an error.
     try:
-        outcome = fetch(tracking_ref, type_code="waybill", pickup_year_month=ym)
+        outcome = adapter.fetch_document_image(
+            tracking_ref, type_code="waybill", pickup_year_month=ym
+        )
+    except CarrierCapabilityUnsupported:
+        return DocumentImageResult("skipped", detail="adapter_has_no_get_image")
     except Exception as exc:
         log.warning("get-image raised for awb=%s: %s", tracking_ref, exc)
         return DocumentImageResult("error", detail=str(exc))

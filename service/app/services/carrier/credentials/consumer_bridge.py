@@ -35,6 +35,18 @@ def resolve_fedex_secret_fields(
     return {str(k): str(v) for k, v in (bundle.fields or {}).items()}
 
 
+def resolve_ups_secret_fields(
+    capability: str = "ship",
+    environment: str = "sandbox",
+) -> dict[str, str]:
+    """Return UPS secret fields via the single resolver; empty on soft-miss."""
+    try:
+        bundle = resolve_carrier_credentials("ups", capability, environment)
+    except CarrierCredentialNotConfigured:
+        return {}
+    return {str(k): str(v) for k, v in (bundle.fields or {}).items()}
+
+
 def express_carrier_config_kwargs(capability: str) -> dict:
     """Build CarrierConfig kwargs: secrets from resolver, gate/URL from Settings."""
     fields: Mapping[str, str] = resolve_dhl_secret_fields(capability)
