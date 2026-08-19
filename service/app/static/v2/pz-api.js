@@ -1278,6 +1278,11 @@
       return _get(`${BASE}/carriers-config${qs}`);
     },
 
+    // GET /api/v1/carriers-config/readiness
+    // Derived, never stored: credential resolver + carrier factory + the
+    // global gate. Returns { carrier_api_status, count, carriers: [...] }.
+    getCarriersReadiness: () => _get(`${BASE}/carriers-config/readiness`),
+
     // GET /api/v1/carrier/status
     // Returns { carrier_api_status, carrier_plt_status }
     getCarrierStatus: () =>

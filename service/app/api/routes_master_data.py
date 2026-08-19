@@ -911,6 +911,99 @@ def list_carriers_endpoint(active: Optional[str] = Query(None,
                          "carriers": [_carrier_dict(c) for c in recs]})
 
 
+# ── Derived carrier readiness ─────────────────────────────────────────────────
+#
+# Composed at read time from the three authorities that already own it: the
+# credential resolver (is a secret provisioned?), the carrier factory (does a
+# bookable adapter exist?) and the global carrier_api_status gate. Nothing is
+# stored: a readiness column would go stale the moment a credential rotates,
+# and a second copy of a fact is a second authority. No secret values are
+# returned — the resolver hands back CredentialMeta, its own safe-for-GET
+# projection.
+
+_READINESS_MATRIX = (
+    ("DHL",   "production", ("ship", "track", "epod", "documents")),
+    ("FEDEX", "sandbox",    ("ship_rate",)),
+    ("FEDEX", "production", ("track",)),
+    ("UPS",   "sandbox",    ("ship",)),
+)
+
+# Optional capabilities every adapter inherits from AbstractCarrierAdapter.
+# "Implemented" means the method is overridden — never self-reported.
+_OPTIONAL_CAPABILITIES = (
+    "track_shipment", "fetch_electronic_pod", "fetch_document_image",
+)
+
+
+def _readiness_credential_row(carrier: str, environment: str, capability: str) -> dict:
+    from ..services.carrier.credentials.resolver import resolve_carrier_capability
+
+    try:
+        meta = resolve_carrier_capability(carrier.lower(), capability, environment)
+    except Exception as exc:   # unresolvable is not-ready, never a 500
+        log.warning("readiness %s/%s/%s unresolved: %s",
+                    carrier, environment, capability, exc)
+        return {"capability": capability, "environment": environment,
+                "state": "not_configured", "configured": False, "active": False,
+                "masked_suffix": None, "last_validated_at": None,
+                "reason": type(exc).__name__}
+    return {
+        "capability": capability,
+        "environment": environment,
+        "state": meta.state.value,
+        "configured": bool(meta.configured),
+        "active": bool(meta.active),
+        "masked_suffix": meta.masked_suffix,
+        "last_validated_at": meta.last_validated_at,
+        "reason": None,
+    }
+
+
+def _readiness_adapter_row(carrier_code: str) -> dict:
+    from ..services.carrier.adapters.base import AbstractCarrierAdapter
+    from ..services.carrier.factory import CarrierConfig as _AdapterConfig, get_adapter
+
+    try:
+        adapter = get_adapter(
+            _AdapterConfig(status=settings.carrier_api_status), carrier_code,
+        )
+    except Exception as exc:   # CarrierGateError and anything else read as not-ready
+        return {"available": False, "adapter": None,
+                "reason": str(exc)[:200], "optional_capabilities": {}}
+    return {
+        "available": True,
+        "adapter": type(adapter).__name__,
+        "reason": None,
+        "optional_capabilities": {
+            name: getattr(type(adapter), name) is not getattr(AbstractCarrierAdapter, name)
+            for name in _OPTIONAL_CAPABILITIES
+        },
+    }
+
+
+# Registered before /{carrier_code} — the path param would otherwise swallow it.
+@carriers_config_router.get("/readiness", dependencies=[_auth],
+                            summary="Derived carrier readiness (never stored)")
+def carriers_readiness_endpoint() -> JSONResponse:
+    carriers = []
+    for code, environment, capabilities in _READINESS_MATRIX:
+        creds = [_readiness_credential_row(code, environment, cap)
+                 for cap in capabilities]
+        adapter = _readiness_adapter_row(code)
+        carriers.append({
+            "carrier_code": code,
+            "environment": environment,
+            "ready": adapter["available"] and all(c["configured"] for c in creds),
+            "adapter": adapter,
+            "credentials": creds,
+        })
+    return JSONResponse({
+        "carrier_api_status": settings.carrier_api_status,
+        "count": len(carriers),
+        "carriers": carriers,
+    })
+
+
 @carriers_config_router.get("/{carrier_code}", dependencies=[_auth],
                             summary="Get carrier config")
 def get_carrier_endpoint(carrier_code: str) -> JSONResponse:
