@@ -12,8 +12,9 @@ adding a lesson, grep **both** files for the next free letter. A letter that lab
 lessons makes every "per Lesson X" reference ambiguous, and the ambiguity stays invisible until
 someone reads the wrong entry. On collision the *later-published* entry is relettered — content,
 date, and file position preserved, with a letter note naming its former letter. Never renumber to
-close a gap; never reuse a retired letter. Not every letter appears in both files: F, M, O, P and R
-live in `CLAUDE.md` only; H and L live here only.
+close a gap; never reuse a retired letter. Not every letter appears in both files: H and L live here only;
+F, M, O, P, R and S keep their binding rules in `CLAUDE.md` and their narratives in the
+backfill section at the end of this file (added 2026-08-19).
 
 **Letter corrections (2026-08-04):** `CLAUDE.md` carried two `### Lesson N` entries. The
 advisory-vs-blocker lesson (2026-06-23) — the one recorded below — keeps **N**. The authority-
@@ -884,3 +885,150 @@ rule 6 routes optimistic safety claims to `reviewer-challenge` rather than leavi
 Rule 7 was added on the opposite evidence: a gate that *did* dispatch all seven reviewers still
 produced a false blocker, because every one of them was pointed at the same wrong tree. Redundant
 reviewers do not correct a shared-input error — only naming the input does.
+
+**Reference (rules 1–6).** The 2026-08-01 register refresh, commit `b5853935` (PR #1061):
+the caution was recorded 2026-07-31 and found wrong 2026-08-01 by reading the deploy script
+(`Read-VersionMarker`, `New-BackupUnit`, `Resolve-RestoredSha`) rather than trusting the register.
+It had stood wrong for one day over a HYBRID production runtime, while the only real protection
+(`Assert-ProductionMatchesRecordedSha`) existed solely on the then-unmerged branch
+`fix/deploy-production-identity-gate` (PR #1062). Observer scorecard:
+`.claude/memory/scorecards/2026-08-01-pr1062-amendment-register-refresh.md`.
+
+---
+
+---
+
+## Narrative backfill — Lessons F, M, O, P, R, S (2026-08-19)
+
+The letter registry above recorded that F, M, O, P and R lived in `CLAUDE.md` only;
+Lesson S (2026-08-19) was added there the same way. When `CLAUDE.md` was thinned to a
+binding layer, those six lessons needed a narrative home in this file so that no lesson
+letter is narrated in only one place and no pointer dangles.
+
+The text below is reproduced **verbatim** from the `CLAUDE.md` entries as they stood at
+that thinning. Two consequences are worth stating plainly:
+
+- For **F** and **M** this is the only narrative that has ever existed. Their `CLAUDE.md`
+  entries said "Full detail: invoke `/engineering-lessons`", but that command's detail
+  stops at Lesson E, so the pointer resolved to nothing for F and M. Reproducing the text
+  here is what makes it resolve.
+- **N** and **Q** are deliberately absent from this backfill: both already have full
+  narratives above, and duplicating them would create a second lesson authority.
+
+`CLAUDE.md` retains the compact MANDATORY form of every rule below. **Where the two ever
+disagree on a rule's wording, `CLAUDE.md` governs and this file is corrected to match.**
+
+---
+
+## Lesson F — V2 frontend migration requires frozen V1 and strict authority isolation (2026-05-20)
+**GATE 1 + V1-FREEZE.** V1 frozen (critical fixes only). ONE PAGE = ONE DOMAIN AUTHORITY. Layer rules: `pz-api.js` = transport only; `pz-state.js` = normalize/cache (FORBIDDEN: decide workflow legality, redefine accounting readiness); `pz-components.js` = stateless rendering; `dashboard-shared.js` = visual atoms only (zero domain knowledge). Dashboard-v2 built last. Danger phrases: "temporarily" / "reuse this renderer" / "copy this state logic". Full detail: invoke `/engineering-lessons`.
+
+## Lesson M — Planned operator-visible capability must not be removed, hidden, collapsed, replaced, or silently relocated (2026-06-07)
+**GATE 1 + reviewer-challenge + frontend-flow-reviewer.** Five-state UI truth model: `available` / `unavailable` / `planned` / `backend-pending` / `deprecated`. Removal only when formal cancellation is recorded in PROJECT_STATE.md DECISIONS (date + reason + capability named). Capability suppression without cancellation record = incomplete PR. Full detail: invoke `/engineering-lessons`.
+
+## Lesson O — Tightening a route's auth breaks every test that authenticated the old way; migrate the tests in the same PR, never weaken the route (2026-07-22)
+
+**GATE 1 + security-permissions + reviewer-challenge.** When a route's auth dependency is tightened — `require_api_key` → `require_admin` (session/cookie only), or `require_role(...)` added on top of `require_api_key` — every existing test that authenticated via `X-API-Key` starts returning **401 "Not authenticated"**, because `require_admin` / `require_role` both flow through `get_current_user`, which raises 401 with no `pz_session` cookie. This is a **stale-test signal, not a route bug**.
+
+**Binding rules:**
+1. **Same-PR test migration.** Any PR that changes a route's auth dependency MUST, in the same PR, migrate every test exercising that route to the new mechanism. Grep the route path across `tests/` before merging — `X-API-Key`-only tests against a now-session-guarded route are incomplete by this lesson.
+2. **Diagnose 401 correctly.** A route-test 401 after an auth change is triaged by reading the route's current dependency + its `git log -S`, not by assuming a regression. If the tightening was intentional (destructive deletes, operator-explicit actions), the **test** is stale.
+3. **Never downgrade the route to make a test pass.** Fixing a stale-auth test means giving the test an admin session, not relaxing the endpoint. Weakening auth to green a test is a security regression.
+4. **Canonical test fix:** override the session dependency, with cleanup so it cannot leak —
+   `app.dependency_overrides[require_admin] = lambda: {"role": "admin", ...}` (or `get_current_user` for `require_role` routes), popped in a `finally`. Verify leak-free by interleaving with an auth-denial suite (e.g. `test_hr5_privileged_auth`).
+
+**Where it binds**: every PR that adds/changes a route `dependencies=[...]` auth guard; every route test that sends `X-API-Key`.
+
+**Reference**: PR #1004 `fix/dashboard-auth-tests-stale` (2026-07-22) — `test_dashboard_polish_desc_delete` (route hardened `require_api_key`→`require_admin` since introduction `3046186f`) and `test_dashboard_repair` (dhl-followup routes gained `require_role("admin","logistics")`); +10 tests recovered. Related recurring class: X-API-Key automation vs `require_api_key_privileged` (Issue #502 / `test_hr5_privileged_auth`).
+
+## Lesson P — robocopy `/XO` from a fresh git worktree re-copies the whole tree (mtime, not content); verify the deployed content diff, never trust the "blast radius" (2026-07-23)
+
+**7-AGENT GATE + Step 5 sync.** `robocopy /XO` ("exclude older") decides what to copy by **file timestamp**, not content. A `git worktree add` checkout stamps **every** file's mtime to the moment of checkout, so a deploy run from a *fresh* worktree makes robocopy see the entire `service/app` tree as "newer" and re-copy all of it — even when only 1–2 files differ in content. Origin `C:\PZ-verify` is a *persistent* checkout where only pulled files get fresh mtimes, which is why the standard `/XO` command is incremental there; a throwaway worktree defeats that.
+
+**Binding rules:**
+1. **Content, not the copy list, is the deploy truth.** Before declaring a blast radius, diff by hash: `Get-FileHash` (or `diff -rq`) between `C:\PZ\app` and the source `service/app`. State the **content** delta to the gate, and re-verify **content diff == 0** (source-identical) after the sync — do not report robocopy's copied-file count as the blast radius.
+2. **A whole-tree re-copy is acceptable only when content-verified.** If the post-sync content diff is 0, production == the deploy SHA and the over-copy is a functional no-op. If it is non-zero and unexplained, STOP — the source diverged from what was reviewed.
+3. **Prefer an incremental source, or copy the changed files explicitly.** Deploy from the persistent `C:\PZ-verify` checkout when it is clean and on-SHA; when it is not (and a worktree is used), either scope robocopy to the explicit changed files or accept the whole-tree copy *after* the hash-diff proof.
+
+**Where it binds**: every Step 5 robocopy sync, especially any deploy run from a `C:\PZ-wt\*` worktree instead of `C:\PZ-verify`.
+
+**Reference**: PR #1006 deploy (2026-07-23) — deployed from worktree `C:\PZ-wt\deploy1006` because `C:\PZ-verify` was detached/dirty; `/XO` re-copied the full app tree though only 2 CSV-writer files differed. Caught by the post-sync `Get-FileHash` parity check (content diff = 0 → correct), not by the copy log.
+
+## Lesson R — Import, product master, proforma, warehouse receipt, barcode traceability, and sales linkage are SEPARATE authorities (2026-06-22)
+
+> **Letter note (2026-08-04).** This lesson was published as **Lesson N** and carried that letter
+> until 2026-08-04, when it was found to collide with the advisory-vs-blocker Lesson N above
+> (2026-06-23). Content, date, and position are unchanged; only the letter moved, to the next free
+> letter **R**. The advisory lesson keeps `N` because `.claude/memory/engineering_lessons.md` and
+> `.engineering-os/07_BUSINESS_OPERABILITY.md` already bind that letter to it.
+> **Resolving a historical reference:** "Lesson N" meaning *authority separation* / *six separate
+> authorities* / *single-authority rule* / *wrong authority* — including the docstrings in
+> `service/tests/**` and the dated records under `reports/**`, which are historical and were left
+> as written — means **this** lesson, Lesson R. "Lesson N" meaning *advisory vs blocker* or the
+> *true-blocker list* means Lesson N above.
+
+**GATE 1 + reviewer-challenge + frontend-flow-reviewer + backend-safety-reviewer.**
+Origin: recurring defect on AWB 9158478722 (batch `SHIPMENT_9158478722_2026-06_924c4e59`,
+Draft #38) — 31 "products unmapped", 84 pcs "PURCHASE_TRANSIT / not scanned", sales linkage
+"action-needed", "PZ preview blocked". Root cause: purchase-domain **warehouse scan counts**
+and sales-domain **SKU linkage** were promoted into hard blockers on product creation,
+proforma readiness, and the wFirma reservation gate, conflating six distinct authorities.
+
+**Binding rule — six separate authorities, each owns its own gates:**
+
+| Authority | Source of truth | May hard-block on | Must NOT block on |
+|---|---|---|---|
+| **PRODUCT** | supplier invoice / import rows | missing product code, duplicate conflict, invalid accounting fields, live-create approval (`WFIRMA_CREATE_PRODUCT_ALLOWED`) | stock, scan, sales packing, PZ status, SAD, proforma |
+| **PROFORMA** | customer + product master + pricing | customer unmatched/ambiguous, missing price, design ambiguity, over-bill, WDT EU-VAT, margin-mask | inventory / stock / PZ / scan (advisory only) |
+| **IMPORT_PZ** | import invoice/packing + customs evidence + mapped products + confirmed received qty | unmapped products, no SAD/customs evidence, duplicate PZ, price conflict, live-write approval (`WFIRMA_CREATE_PZ_ALLOWED`) | sales packing list, customer allocation, per-piece barcode scan |
+| **WAREHOUSE** | operator quantity confirmation by line/batch (`warehouse_receipt` service) | (advisory; quantity-risk only) | mandatory per-piece scan unless `serial_controlled` |
+| **SALES** | sales packing / allocation / reservation | final dispatch / sales posting; reservation: customer matched + product mapped + stock dispatched per billed line | product creation, proforma, product adoption, import qty confirmation, import PZ |
+
+**Enforcement:**
+1. **Every guard must declare its authority.** Structured blockers carry an `authority`
+   field ∈ {PRODUCT, PROFORMA, IMPORT_PZ, WAREHOUSE, SALES}; guard functions name it in the docstring.
+2. **A warning may NOT be promoted into a hard blocker** without (a) an explicit business
+   rule naming a real accounting / customs / duplicate-write / quantity-risk reason, AND
+   (b) a regression test pinning it. Default for missing information is an ADVISORY.
+3. **Warehouse receipt = operator quantity confirmation**, not per-piece scan. Scan stays
+   optional traceability unless the shipment is `serial_controlled` (read from `audit.json`).
+4. Fiscal writes (`WFIRMA_CREATE_PRODUCT/PZ/PROFORMA/INVOICE`) remain hard-gated and
+   operator-approved regardless of any advisory demotion.
+
+**Where it binds**: every readiness/blocker producer (`routes_proforma`, `wfirma_reservation`,
+`sales_linkage`, `routes_wfirma` product-resolve + pz_preview, `warehouse_receipt`); every PR
+that adds or moves a readiness gate. A new guard that blocks across authority boundaries without
+a named business rule + test is incomplete by this lesson.
+
+**Reference**: PR `fix/authority-model-separation` (2026-06-22); `service/tests/test_authority_separation.py`; PROJECT_STATE.md DECISIONS section.
+
+## Lesson S — A waiter is infrastructure, not evidence: background completion is a sentinel plus an exit code, never formatted output (2026-08-19)
+
+**GATE-1 + reviewer-challenge + every background job, waiter, test harness, verification process, and long-running shell orchestration.** Origin: a session stalled ~2h45m over work that had already finished. Two background waiters polled pytest output with `until grep -qE "^(=+ .*(passed|failed|error).* =+|ERROR: )" …; do sleep 15; done` and `until grep -qE "=+ .*(passed|failed|error).* in .*=+" …; do sleep 10; done`. Both patterns require `=` decoration around the summary line; under `-q` pytest emits it **undecorated** — `104 failed, 4403 passed, 34 skipped, 19254 deselected, 180 warnings in 1258.88s` — so `grep -cE "^=+ .*(passed|failed|error).* =+"` over the real output file returned **0**. The condition was unsatisfiable from the first iteration. The runs had completed at 11:19:01 and 11:19:45; the loops then slept for ~8h, and being unbounded they could not report their own failure. The waiters also belonged to a *different* live session, so they read as stale to every other session while their owner was alive. Nothing errored, nothing timed out, and the release sat unclosed over finished, passing work.
+
+**Binding rules:**
+1. **Formatted stdout/stderr is never the authoritative completion signal.** `-q`, `--no-header`, `-p no:cacheprovider`, non-tty stdout and terminal width all change whether pytest pads its summary. Coupling a wait to that is a coin flip lost silently.
+2. **The producer owns an explicit completion sentinel** — a flag file, or equivalent structured status — and writes it in a fixed order: **exit code and completion metadata are durably recorded FIRST; the sentinel is written only after that state is on disk.** The sentinel is therefore the producer's LAST action, so a waiter that observes it is guaranteed to find complete metadata behind it, never a half-written record. Waiters test for the sentinel's existence, never for the shape of its content.
+3. **Capture PID, exit code, start time, finish time, session identity, and worktree identity** for every background job. Exit code is recorded *separately* from command output, and this status metadata is flushed to durable storage **before** the sentinel appears (rule 2). The sentinel is notification only — the exit code plus the result artifacts / status metadata remain the authoritative evidence (rule 10).
+4. **Every waiter has a finite timeout.** No exceptions.
+5. **Unbounded polling loops are prohibited** — `until … ; do sleep … ; done` with no iteration cap is a defect on sight, whatever it polls.
+6. **On timeout, inspect the producer's PID / process tree and artifacts before retrying.** Diagnose by parent chain, command line, creation time and port — never by process name, and never with an image-wide kill.
+7. **Never launch a duplicate test/build/deploy job while the original's PID or completion artifact is unresolved.** That is how duplicate suites and contradictory result files appear.
+8. **Never infer pytest completion from summary-line formatting.** See rule 1; this is the specific form that caused the incident.
+9. **Before release closure, reconcile Desktop / background-task state against actual OS process state.** A required closure step, not an optional tidy-up.
+10. **A waiter is not evidence.** The producer's exit code plus its result artifacts are the evidence. A waiter that returned proves only that a waiter returned.
+11. **Orphaned session-owned processes must not survive a completed campaign** unless the survival is explicitly justified and recorded. A process whose owning session is gone can be claimed by nobody and reconciled by nobody.
+
+**Enforcement — `reviewer-challenge` must REJECT any PR introducing:**
+- an unbounded wait loop;
+- a grep / regex completion check against human-formatted output;
+- a background job with no timeout;
+- a job with no explicit exit-status capture;
+- a long-running job with no session / worktree / PID ownership metadata.
+
+**Prefer reusable helper infrastructure over ad-hoc shell loops.** A waiter hand-rolled per task is a defect surface re-created per task; the safest waiter is the one nobody wrote, so prefer the harness's own completion notification where it exists.
+
+**Where it binds**: GATE-1 on every PR that adds or modifies a background job, waiter, test harness, verification process, or long-running shell orchestration; every `reviewer-challenge` on such a diff; and the release-closure checklist, via rule 9.
+
+**Reference**: 2026-08-19 recovery session — waiters in scratchpad `…/C--PZ-verify--claude-worktrees-eloquent-fermat-7f2f9b/16b803e8-…/scratchpad` (PIDs 8808 / 31176 / 24408 / 5904, owner `claude.exe` PID 16712) polling completed `out_tip.txt` / `out_base.txt`; root cause measured, not inferred, by counting regex matches against the real output files. Operator-ratified as the BACKGROUND TASK SAFETY RULE the same day. Rule 11 was ratified against a live instance: an orphaned `_start_premerge_uvicorn.py` (PID 31488, parent dead, port 8010) had survived ~41h across a completed campaign and was terminated under a six-gate identity check at this lesson's adoption.
+

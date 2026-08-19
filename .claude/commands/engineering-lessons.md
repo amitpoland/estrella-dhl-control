@@ -1,13 +1,15 @@
 ---
 name: engineering-lessons
 description: >
-  Binding engineering lessons from real production campaigns (A–E).
+  Binding engineering lessons from real production campaigns (A–S).
   Each lesson states what broke, why, the permanent rule that prevents
   recurrence, and where in the governance gates it binds. These are
   append-only. Invoke when writing test stubs, wiring coordinators to
   builders, adding new agent files, producing scorecard artefacts,
   preparing LOCAL-COMMIT-ONLY deploys, or building background email
-  automation.
+  automation. Detailed write-ups here cover A–E; the compact binding form of
+  every lesson A–S is in CLAUDE.md and the full narratives are in
+  .claude/memory/engineering_lessons.md.
 triggers:
   - "test stub"
   - "builder wiring"
@@ -23,6 +25,20 @@ triggers:
   - "lesson C"
   - "lesson D"
   - "lesson E"
+  - "lesson F"
+  - "lesson G"
+  - "lesson H"
+  - "lesson I"
+  - "lesson J"
+  - "lesson K"
+  - "lesson L"
+  - "lesson M"
+  - "lesson N"
+  - "lesson O"
+  - "lesson P"
+  - "lesson Q"
+  - "lesson R"
+  - "lesson S"
   - "background email"
   - "email automation"
   - "scheduler"
@@ -38,6 +54,12 @@ should prevent recurrence. Full text + detection signals + work-
 arounds live in `.claude/memory/engineering_lessons.md`. The
 summaries below are the binding-rule layer that every implementing
 agent and reviewer must apply.
+
+**Coverage.** The detailed write-ups in this file cover Lessons A–E. The
+binding set is A–S: every lesson's mandatory form is inline in `CLAUDE.md`
+(§ Engineering Lessons), and the full narratives — origin, detection signals,
+worked examples — are in `.claude/memory/engineering_lessons.md`, which since
+2026-08-19 also carries the F / M / O / P / R / S backfill.
 
 This section is append-only. Do not delete prior lessons; supersede
 with a new dated entry instead. Cross-reference: see also
