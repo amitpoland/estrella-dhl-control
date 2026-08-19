@@ -308,6 +308,32 @@ def _load_customer(contractor_id: str, storage_root: Path) -> Optional[_Customer
         return None
 
 
+def _draft_client_contractor_id(batch_id: str, client_name: str,
+                                storage_root: Path) -> Optional[str]:
+    """Contractor id named by THIS client's own outbound proforma draft.
+
+    The proforma draft is the commercial document that scopes an outbound
+    shipment to one client, so when the caller supplies a client scope the
+    draft outranks batch-level party resolution — an import batch may carry
+    several commercial customers, but a draft carries exactly one.  Reuses
+    ``proforma_invoice_link_db.get_draft`` (the same chain the booking Incoterm
+    resolver reads); no second customer authority is introduced.  Never raises.
+    """
+    try:
+        pf_db = storage_root / "proforma_links.db"
+        if not pf_db.exists():
+            return None
+        from ..proforma_invoice_link_db import get_draft
+        draft = get_draft(pf_db, batch_id, client_name)
+        if draft is None:
+            return None
+        return (getattr(draft, "client_contractor_id", None) or "").strip() or None
+    except Exception as exc:
+        log.debug("_draft_client_contractor_id failed for %r/%r: %s",
+                  batch_id, client_name, exc)
+        return None
+
+
 def _resolve_customer_from_batch(batch_id: str, client_name: Optional[str],
                                    storage_root: Path) -> Optional[Any]:
     """
@@ -315,10 +341,14 @@ def _resolve_customer_from_batch(batch_id: str, client_name: Optional[str],
 
     Priority:
       1. Document-party client ID on sales_* slots (SINGLE only)
-      2. Name match via wfirma_customers — only when party status is NONE
-      3. None on AMBIGUOUS (fail closed; never LIMIT 1 / first row)
+      2. Client-scoped proforma draft ``client_contractor_id`` — the outbound
+         commercial document, used whenever *client_name* is supplied
+      3. Name match via wfirma_customers — only when party status is NONE
+      4. None when nothing above resolves (fail closed; never LIMIT 1 /
+         first row, and never a batch-level guess on an AMBIGUOUS batch)
     """
     docs_db = storage_root / "documents.db"
+    allow_name_match = True          # no readable party authority → name match ok
     try:
         from ..document_party_authority import (
             ROLE_CLIENT,
@@ -329,22 +359,26 @@ def _resolve_customer_from_batch(batch_id: str, client_name: Optional[str],
         )
 
         party = resolve_party_id(docs_db, batch_id, ROLE_CLIENT)
-        if party.status == STATUS_AMBIGUOUS:
-            log.warning(
-                "[%s] _resolve_customer_from_batch: AMBIGUOUS client "
-                "candidates=%s — fail closed",
-                batch_id, party.candidates,
-            )
-            return None
+        allow_name_match = (party.status == STATUS_NONE)
         if party.status == STATUS_SINGLE and party.contractor_id:
             return _load_customer(party.contractor_id, storage_root)
-        # STATUS_NONE — fall through to optional name match
-        if party.status != STATUS_NONE:
-            return None
+        if party.status == STATUS_AMBIGUOUS:
+            # Still fail closed for an unscoped caller; a client-scoped caller
+            # names the customer through its own commercial document below.
+            log.warning(
+                "[%s] _resolve_customer_from_batch: AMBIGUOUS client "
+                "candidates=%s — batch level fails closed, client_ref=%r",
+                batch_id, party.candidates, client_name,
+            )
     except Exception as exc:
         log.debug("_resolve_customer_from_batch party resolve failed: %s", exc)
 
     if client_name:
+        cid = _draft_client_contractor_id(batch_id, client_name, storage_root)
+        if cid:
+            return _load_customer(cid, storage_root)
+
+    if client_name and allow_name_match:
         try:
             wfirma_db = storage_root / "wfirma.db"
             if wfirma_db.exists():

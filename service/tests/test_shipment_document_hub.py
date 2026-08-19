@@ -931,3 +931,49 @@ def test_cmr_never_required_for_complete_package(tmp_path):
         assert cmr["reason"] == "canonical_cmr"
     else:
         assert cmr["download_available"] is False
+
+
+# ── DO NOT USE inheritance (2026-08-19) ───────────────────────────────────────
+# Regression: the document-hub rebuild (#1144) dropped the Documents-tab
+# DO-NOT-USE warning, so a label flagged as a duplicate looked perfectly usable
+# in the only surface that offers it for download (Lesson M). The flag lives on
+# the carrier shipment row; the manifest stamps it onto that AWB's documents.
+
+
+def test_flagged_awb_documents_inherit_do_not_use(tmp_path):
+    from app.services.carrier.persistence import shipment_db
+    did = _seed_draft(tmp_path).id
+    _seed_shipment(tmp_path)
+    _write_dhl_doc(tmp_path, "labels", BATCH, AWB)
+    shipment_db.mark_do_not_use(_carrier_db(tmp_path), BATCH, AWB, "duplicate")
+
+    label = _find(_build(tmp_path, did)["groups"]["carrier"], "dhl_label")
+    assert label["do_not_use"] is True
+    assert label["do_not_use_reason"] == "duplicate"
+
+
+def test_unflagged_awb_documents_carry_no_do_not_use(tmp_path):
+    did = _seed_draft(tmp_path).id
+    _seed_shipment(tmp_path)
+    _write_dhl_doc(tmp_path, "labels", BATCH, AWB)
+
+    label = _find(_build(tmp_path, did)["groups"]["carrier"], "dhl_label")
+    assert not label.get("do_not_use")
+
+
+def test_do_not_use_never_stamps_a_non_awb_document(tmp_path):
+    """Commercial docs are not the label — flagging an AWB must not touch them."""
+    from app.services.carrier.persistence import shipment_db
+    did = _seed_draft(tmp_path).id
+    _seed_shipment(tmp_path)
+    shipment_db.mark_do_not_use(_carrier_db(tmp_path), BATCH, AWB, "duplicate")
+
+    manifest = _build(tmp_path, did)
+    assert not any(e.get("do_not_use") for e in manifest["groups"]["commercial"])
+
+
+def test_hub_ui_renders_the_do_not_use_badge():
+    src = (Path(__file__).resolve().parents[1] / "app" / "static" / "v2"
+           / "proforma-detail.jsx").read_text(encoding="utf-8")
+    assert "pf-doc-dnu-" in src
+    assert "d.do_not_use" in src

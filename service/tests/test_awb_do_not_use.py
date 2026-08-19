@@ -287,6 +287,10 @@ class TestResponseContract:
             declared_value=100.0, currency="EUR", weight_kg=1.0,
             dimensions={"length_cm": 10, "width_cm": 10, "height_cm": 10},
             product_code="U",
+            # Incoterm is a hard adapter precondition (the platform refuses to
+            # invent DAP). Supplied here the way resolve_incoterm supplies it in
+            # production — this test is about replay, not about Incoterm policy.
+            incoterm="DAP",
         )
         rates = MagicMock(); rates.is_success = True
         rates.json.return_value = {"products": [{"productCode": "U"}]}

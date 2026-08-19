@@ -350,6 +350,18 @@ def build_manifest(
     pkg_entry["generate"] = gen_meta
     carrier.append(pkg_entry)
 
+    # ── DO NOT USE — carrier-shipment authority, stamped onto AWB documents ───
+    # The operator can mark a duplicate/unused label DO NOT USE
+    # (shipment_db.mark_do_not_use). The flag lives on the carrier shipment row,
+    # so every document that IS that AWB inherits it here rather than the UI
+    # re-deriving it. Restores the Documents-tab warning that the document-hub
+    # rebuild dropped (Lesson M): a flagged label must never look usable.
+    if awb and shipment_row and shipment_row.get("do_not_use"):
+        for _e in carrier:
+            if _e.get("reference") == awb:
+                _e["do_not_use"] = True
+                _e["do_not_use_reason"] = shipment_row.get("do_not_use_reason")
+
     # ── Complete package readiness ─────────────────────────────────────────────
     # Mandatory: fiscal PDF + packing list + DHL transport label (when booked).
     # Waybill only when DHL actually provided one. ePOD/CMR/commercial pkg optional.

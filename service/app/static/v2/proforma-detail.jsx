@@ -1638,6 +1638,12 @@ function _awbPreferredCarrierFromCm(accounts) {
   const code = String(defaults[0].carrier || '').toLowerCase();
   return _AWB_CM_CARRIER_REV[code] || 'DHL';
 }
+/** Human label for _transport.effectiveWeight.gross_source. */
+const _AWB_WEIGHT_SOURCE_LABEL = {
+  manual:  'the operator-confirmed weight on this proforma',
+  carrier: 'the previous carrier booking',
+  packing: 'the packing list',
+};
 function _awbPayerLabel(paymentType) {
   return _AWB_PAYER_LABEL[paymentType] || '';
 }
@@ -1648,6 +1654,9 @@ function _awbPayerLabel(paymentType) {
 // Prefill authority:
 //   recipient identity/address → Customer Master (via buyer_override / ship_to_override)
 //   box dimensions             → Box Master (box_types table via /api/v1/box-types/)
+//   packed gross weight        → proforma draft weight authority (manual →
+//                                carrier → packing); a calculated net+tare gross
+//                                is display-only and never prefills a booking
 //   declared value / currency  → draft total / draft currency
 //   EORI / VAT                 → Customer Master (bo.eori, bo.vat_id)
 //   DHL service                → /api/v1/carrier/services (static catalogue)
@@ -1657,7 +1666,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
     product_code:  prefill.product_code || 'P',
     // Package
     box_type_code: '',
-    weight_kg:     '',
+    // Packed gross weight — the page's canonical weight authority, already
+    // resolved by _transport.effectiveWeight (manual → carrier → packing).
+    // The operator records it ONCE in the Weights panel; the booking reads it.
+    weight_kg:     prefill.weight_kg || '',
     length_cm:     '',
     width_cm:      '',
     height_cm:     '',
@@ -2578,6 +2590,14 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
                   style={inputStyle} data-testid={`awb-field-${k}`} />
               </div>
             ))}
+          </div>
+          {/* Weight provenance — states where the prefilled weight came from, or
+              names the operator workflow that records it. Never invents one. */}
+          <div style={{ fontSize: 11, color: form.weight_kg ? 'var(--text-3)' : 'var(--badge-amber-text)', marginTop: -8, marginBottom: 14 }}
+            data-testid="awb-weight-source-hint">
+            {form.weight_kg
+              ? `Gross weight from ${_AWB_WEIGHT_SOURCE_LABEL[prefill.weight_source] || 'this proforma'} — edit only if the scale disagrees.`
+              : 'No packed gross weight recorded yet — record it once in the Weights panel on this proforma, then it prefills here.'}
           </div>
 
           {/* ── Declared Value ── */}
@@ -4848,6 +4868,15 @@ function ShipmentDocumentHub({ draftId, batchId, onOpenPreview, onDownloadOffici
         {d.reason && d.reason !== 'browser_preview' ? (
           <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }} data-testid={`pf-doc-pending-${d.document_type}`}>
             {d.reason}
+          </div>
+        ) : null}
+        {/* DO NOT USE — from the carrier shipment authority via the manifest.
+            A flagged label stays downloadable for audit but must never look
+            usable to the operator. */}
+        {d.do_not_use ? (
+          <div style={{ marginTop: 6, padding: '6px 10px', background: 'var(--badge-red-bg)', border: '1px solid var(--badge-red-border)', borderRadius: 6, color: 'var(--badge-red-text)', fontSize: 11, fontWeight: 700 }}
+            data-testid={`pf-doc-dnu-${d.document_type}`}>
+            DO NOT USE — duplicate/unused label{d.do_not_use_reason ? ` (${d.do_not_use_reason})` : ''}
           </div>
         ) : null}
         <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
@@ -7855,6 +7884,15 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
         <AwbGenerateModal
           batchId={batchId}
           prefill={{
+            // Packed gross weight — the page's own weight authority
+            // (_transport.effectiveWeight). 'calculated_net_plus_tare' is
+            // DISPLAY-ONLY by contract, so it never prefills a booking: an
+            // inferred weight must not become a declared shipment weight.
+            // > 0 because String(0) is TRUTHY: a zero gross would sail straight
+            // past the modal's own required-field check and book a 0 kg parcel.
+            weight_kg:          (_ew.gross > 0 && _ew.gross_source !== 'calculated_net_plus_tare')
+              ? String(_ew.gross) : '',
+            weight_source:      _ew.gross_source || '',
             // Value — Overview total authority (lines + same-currency charges)
             declared_value:     _awbDeclared > 0 ? _awbDeclared.toFixed(2) : '',
             currency:           draftCurrency || 'EUR',

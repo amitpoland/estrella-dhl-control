@@ -60,7 +60,11 @@ def _is_historical_batch(batch_id: str, cutoff_days: int = 90) -> bool:
     return False
 
 
-def derive_awb_address_authority(batch_id: str, storage_root: Path) -> Dict[str, str]:
+def derive_awb_address_authority(
+    batch_id: str,
+    storage_root: Path,
+    client_ref: Optional[str] = None,
+) -> Dict[str, str]:
     """Derive the authoritative DHL delivery address for AWB shipment creation.
 
     Authority rule (operator-mandated):
@@ -68,9 +72,15 @@ def derive_awb_address_authority(batch_id: str, storage_root: Path) -> Dict[str,
     - Fallback: Customer Master Bill-To
     - NO raw address bypasses permitted
 
+    *client_ref* is the outbound commercial scope (the proforma draft's client
+    name).  An import batch may carry several commercial customers, so the
+    booking must resolve through the client's own document rather than a
+    batch-level guess; without it an ambiguous batch fails closed as before.
+
     Args:
         batch_id: The batch identifier to resolve customer from
         storage_root: Storage root path for database access
+        client_ref: Outbound commercial client scope (proforma draft client_name)
 
     Returns:
         Dict with address fields suitable for DHL API + 'source' metadata
@@ -84,7 +94,11 @@ def derive_awb_address_authority(batch_id: str, storage_root: Path) -> Dict[str,
     from .customer_master import resolve_delivery_address
 
     try:
-        customer = _resolve_customer_from_batch(batch_id, client_name=None, storage_root=storage_root)
+        customer = _resolve_customer_from_batch(
+            batch_id,
+            client_name=(client_ref or "").strip() or None,
+            storage_root=storage_root,
+        )
     except Exception as exc:
         raise CustomerNotFoundError(f"Customer resolution failed for batch_id={batch_id!r}: {exc}") from exc
 
@@ -112,7 +126,8 @@ def derive_awb_address_authority(batch_id: str, storage_root: Path) -> Dict[str,
 def derive_awb_address_authority_with_fallback(
     batch_id: str,
     storage_root: Path,
-    raw_fallback: Optional[Dict] = None
+    raw_fallback: Optional[Dict] = None,
+    client_ref: Optional[str] = None,
 ) -> Dict[str, str]:
     """Derive AWB address authority with graceful degradation to raw fallback.
 
@@ -123,6 +138,7 @@ def derive_awb_address_authority_with_fallback(
         batch_id: The batch identifier to resolve customer from
         storage_root: Storage root path for database access
         raw_fallback: Raw address dict to use if authority derivation fails
+        client_ref: Outbound commercial client scope (proforma draft client_name)
 
     Returns:
         Dict with address fields + 'source' metadata indicating authority path used
@@ -131,7 +147,7 @@ def derive_awb_address_authority_with_fallback(
         AddressMissingError: Both authority derivation and raw fallback inadequate
     """
     try:
-        return derive_awb_address_authority(batch_id, storage_root)
+        return derive_awb_address_authority(batch_id, storage_root, client_ref=client_ref)
     except CustomerNotFoundError as exc:
         # Graceful degradation: use raw fallback only for historical batches
         if raw_fallback is not None and _is_historical_batch(batch_id):
