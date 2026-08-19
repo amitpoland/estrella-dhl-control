@@ -409,6 +409,11 @@ class ShipmentRequestBody(BaseModel):
     receiver_vat_id: Optional[str] = None     # receiver EU VAT number
     receiver_eori: Optional[str] = None       # receiver EORI number
     box_type_code: Optional[str] = None       # Box Master profile selected in the modal
+    # Multi-package split entered by the operator at booking time. Each entry:
+    # {weight_kg, length_cm, width_cm, height_cm, box_type_code?}. Omitted /
+    # empty means one package from weight_kg + dimensions above. There is no
+    # warehouse carton authority, so the parcel count is never inferred here.
+    packages: Optional[List[dict]] = None
     client_ref: Optional[str] = None          # per-client shipment scope (draft client_name);
                                               # scopes idempotency key + row to one client so
                                               # two clients in the same batch never share an AWB
@@ -555,6 +560,54 @@ def _project_shipment_description_for_client(
         "shipment_description": projected or "",
         "source": "canonical" if projected else "empty",
     }
+
+
+_PACKAGE_DIMS = ("length_cm", "width_cm", "height_cm")
+# ponytail: a flat ceiling, not a carrier-specific piece limit. Raise it when a
+# carrier documents a higher one.
+_MAX_PACKAGES = 50
+
+
+def _validated_packages(packages):
+    """Trust-boundary check on the operator's booking-time package split.
+
+    Returns None for "no split" so the adapters keep their single-package
+    path. Every number must be a real positive measurement: a 0 kg or 0 cm
+    entry is a MISSING measurement, never a physical fact, and booking one
+    would declare a weight nobody put on a scale.
+    """
+    if not packages:
+        return None
+    if len(packages) > _MAX_PACKAGES:
+        raise HTTPException(status_code=422, detail={
+            "error": f"Too many packages ({len(packages)}); maximum is {_MAX_PACKAGES}.",
+            "code": "PACKAGES_TOO_MANY",
+        })
+    cleaned = []
+    for i, pkg in enumerate(packages, start=1):
+        if not isinstance(pkg, dict):
+            raise HTTPException(status_code=422, detail={
+                "error": f"Package {i} is not an object.", "code": "PACKAGE_INVALID"})
+        out = {}
+        for field in ("weight_kg",) + _PACKAGE_DIMS:
+            raw = pkg.get(field)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail={
+                    "error": f"Package {i}: {field} is required and must be a number.",
+                    "code": "PACKAGE_FIELD_INVALID", "package": i, "field": field})
+            if value <= 0:
+                raise HTTPException(status_code=422, detail={
+                    "error": (f"Package {i}: {field} is {value}. A zero or negative "
+                              "value is a missing measurement, not a shipment fact."),
+                    "code": "PACKAGE_FIELD_NOT_MEASURED", "package": i, "field": field})
+            out[field] = value
+        code = (pkg.get("box_type_code") or "").strip()
+        if code:
+            out["box_type_code"] = code
+        cleaned.append(out)
+    return cleaned
 
 
 def _carrier_address_from_delivery_authority(address: dict) -> dict:
@@ -1132,6 +1185,7 @@ def create_shipment(
         receiver_vat_id=body.receiver_vat_id,
         receiver_eori=body.receiver_eori,
         box_type_code=body.box_type_code,
+        packages=_validated_packages(body.packages),
         client_ref=(body.client_ref or None),
         incoterm=resolved_incoterm,
     )

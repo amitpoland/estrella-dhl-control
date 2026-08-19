@@ -357,6 +357,16 @@ class CarrierCoordinator:
         except (TypeError, ValueError):
             pass
 
+        # Multi-package split, when the operator entered one. Stays NULL for a
+        # single-package booking — an absent split is not a parcel count of 1
+        # measured in the warehouse, it is simply no split.
+        packages_json: Optional[str] = None
+        try:
+            if getattr(request, "packages", None):
+                packages_json = json.dumps(request.packages, ensure_ascii=False)
+        except (TypeError, ValueError):
+            pass
+
         # Report the PERSISTED booker on the result. For a fresh booking this
         # is the operator just inserted; for a crash-recovery replay it is the
         # ORIGINAL booker recorded at the first insert (this call skipped the
@@ -418,6 +428,7 @@ class CarrierCoordinator:
                 currency=request.currency,
                 box_type_code=request.box_type_code,
                 carrier_transaction_id=getattr(complete, "carrier_transaction_id", None),
+                packages_json=packages_json,
             )
         except Exception:
             pass  # best-effort — state already COMPLETE above

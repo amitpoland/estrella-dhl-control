@@ -10,7 +10,7 @@ import json
 import re as _re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 
 class ShipmentMode(str, Enum):
@@ -57,6 +57,12 @@ class ShipmentRequest:
     # Commercial Incoterm — MUST come from resolve_incoterm(draft → CM → unset).
     # Never invent DAP/EXW here. Live adapter blocks when this is blank.
     incoterm: Optional[str] = None
+    # Multi-package split, entered by the operator at booking time. Each entry:
+    # {weight_kg, length_cm, width_cm, height_cm, box_type_code?}. There is no
+    # carton authority in the warehouse yet, so a parcel count is NEVER
+    # inferred — None means "one package", derived from the scalar weight_kg +
+    # dimensions above, which is exactly what every existing caller sends.
+    packages: Optional[List[dict]] = None
 
 
 @dataclass
@@ -139,8 +145,50 @@ def compute_idempotency_key(request: ShipmentRequest) -> str:
     client_ref = getattr(request, "client_ref", None)
     if client_ref:
         payload["client_ref"] = client_ref
+    # A multi-package split is part of the shipment INTENT: 2x5kg and 1x10kg
+    # share a total weight but are different bookings. Without this they
+    # collide onto one key and the second one silently replays the first.
+    # Added only when packages are present, so single-package callers keep
+    # their existing key.
+    packages = getattr(request, "packages", None)
+    if packages:
+        payload["packages"] = _canonical_packages(packages)
     canonical = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+_PACKAGE_FIELDS = ("weight_kg", "length_cm", "width_cm", "height_cm", "box_type_code")
+
+
+def _canonical_packages(packages) -> list:
+    """Order-preserving, field-stable view of a package split.
+
+    Only the fields that change what is shipped. Order is preserved because
+    package 1 and package 2 carry different contents on the label.
+    """
+    return [
+        {k: p.get(k) for k in _PACKAGE_FIELDS if p.get(k) is not None}
+        for p in packages
+    ]
+
+
+def resolve_packages(request: "ShipmentRequest") -> list:
+    """The package list a carrier adapter should send.
+
+    ``packages=None`` derives exactly one package from the scalar weight and
+    dimensions — byte-identical to what the adapters built before multi-package
+    existed. Shared by DHL, FedEx and UPS so a split is described once.
+    """
+    if request.packages:
+        return list(request.packages)
+    dims = request.dimensions or {}
+    return [{
+        "weight_kg":  request.weight_kg,
+        "length_cm":  dims.get("length_cm", 1),
+        "width_cm":   dims.get("width_cm", 1),
+        "height_cm":  dims.get("height_cm", 1),
+        "box_type_code": request.box_type_code,
+    }]
 
 
 def normalize_tracking_ref(raw: Optional[str]) -> str:
