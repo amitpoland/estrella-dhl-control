@@ -726,3 +726,138 @@ def test_recompute_line_warning_is_per_producer():
     empty = {}
     pildb.recompute_line_warning(empty, a)
     assert empty == {}
+
+
+# ── 17-19. producer 2 — the customs warning, driven over HTTP ────────────────
+# Tests 13-16 pin the shared helper and THIS module's producer. The SECOND
+# producer lives in `routes_proforma.import_draft_sales_prices` and was covered
+# at helper level only. These three drive the real endpoint and assert what is
+# actually PERSISTED into `editable_lines_json` — the surface a stale or
+# duplicated warning is read back from on the outbound proforma.
+
+_HTTP_PC    = "EJL-RNG-417G"
+_HTTP_BATCH = "BATCH_WARN_HTTP"
+
+# One row, Sr=1, grand total equal to the row total (the import validates it).
+_HTTP_TSV = "\n".join([
+    "Sr\tCtg\tDesign\tDesign Description\tKt\tCol\tQuality\tQty\t"
+    "Value (EUR)\tTotal Value (EUR)",
+    f"1\tPND\t{_HTTP_PC}\tTest\t14KT\tW\tGH-SI1\t3\t211\t633",
+    "Grand Total\t\t\t\t\t\t\t\t\t633",
+])
+
+
+@pytest.fixture()
+def http_draft(tmp_path):
+    """Real endpoint over real storage — yields (client, storage, draft_id)."""
+    from app.services import packing_db as pdb
+    from app.services import document_db as ddb
+    from app.services import wfirma_db as wfdb
+    from app.main import app
+
+    pdb.init_packing_db(tmp_path / "packing.db")
+    ddb.init_document_db(tmp_path / "documents.db")
+    wfdb.init_wfirma_db(tmp_path / "wfirma.db")
+    pildb.init_db(tmp_path / "proforma_links.db")
+
+    out = tmp_path / "outputs" / _HTTP_BATCH
+    (out / "source").mkdir(parents=True, exist_ok=True)
+    (out / "audit.json").write_text(
+        json.dumps({"batch_id": _HTTP_BATCH, "tracking_no": _HTTP_BATCH,
+                    "awb": _HTTP_BATCH, "carrier": "DHL", "timeline": []}),
+        encoding="utf-8",
+    )
+
+    # 1-based integer line_id matches TSV Sr=1 on the precise 1:1 path.
+    seed = [{"line_id": 1, "product_code": _HTTP_PC, "quantity": 1.0,
+             "unit_price": 50.0, "total_eur": 50.0, "currency": "EUR"}]
+    with sqlite3.connect(str(tmp_path / "proforma_links.db")) as conn:
+        draft_id = conn.execute(
+            """
+            INSERT INTO proforma_drafts
+              (batch_id, client_name, status, currency, draft_state,
+               wfirma_proforma_id, wfirma_proforma_fullnumber,
+               source_lines_json, editable_lines_json, service_charges_json,
+               clone_generation, draft_version, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))
+            """,
+            (_HTTP_BATCH, "ACME", "draft", "EUR", "draft", None, "", "[]",
+             json.dumps(seed), "[]", 0, 1),
+        ).lastrowid
+        conn.commit()
+
+    with patch.object(settings, "storage_root", tmp_path):
+        with TestClient(app, raise_server_exceptions=True) as c:
+            yield c, tmp_path, draft_id
+
+
+def _persisted_line(storage: Path, draft_id: int) -> Dict[str, Any]:
+    draft = pildb.get_draft_by_id(storage / "proforma_links.db", draft_id)
+    return json.loads(draft.editable_lines_json or "[]")[0]
+
+
+def _http_import(c, storage: Path, draft_id: int) -> Dict[str, Any]:
+    """POST the sales-price import; return the line as PERSISTED."""
+    draft = pildb.get_draft_by_id(storage / "proforma_links.db", draft_id)
+    r = c.post(
+        f"/api/v1/proforma/draft/{draft_id}/import-sales-prices",
+        json={"expected_updated_at": draft.updated_at or "",
+              "tsv_text": _HTTP_TSV},
+        headers=_auth_headers(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["lines_matched"] == 1, r.text
+    return _persisted_line(storage, draft_id)
+
+
+def test_http_import_raises_customs_warning_when_pd_missing(http_draft):
+    """No product_descriptions row → exactly one customs warning persisted."""
+    c, storage, draft_id = http_draft
+    line = _http_import(c, storage, draft_id)
+
+    assert line["name_pl"] == "", "no PD row must never yield a fabricated name_pl"
+    warnings = line["_warnings"]
+    assert len(warnings) == 1, warnings
+    assert warnings[0].startswith(pildb.CUSTOMS_PL_MISSING_WARNING_PREFIX)
+
+
+def test_http_import_customs_warning_not_duplicated(http_draft):
+    """Root cause: append-only added one copy per import pass. Now exactly one."""
+    c, storage, draft_id = http_draft
+    for _ in range(3):
+        warnings = _http_import(c, storage, draft_id)["_warnings"]
+        assert len(warnings) == 1, warnings
+        assert warnings[0].startswith(pildb.CUSTOMS_PL_MISSING_WARNING_PREFIX)
+
+
+def test_http_import_clears_customs_warning_and_keeps_foreign(http_draft):
+    """PD exists now → own warning dropped; the other producer's survives."""
+    from app.services import document_db as ddb
+    c, storage, draft_id = http_draft
+
+    assert len(_http_import(c, storage, draft_id)["_warnings"]) == 1
+
+    # Persist a foreign entry from the OTHER producer alongside ours.
+    line = _persisted_line(storage, draft_id)
+    line["_warnings"] = [_STALE_PD_WARNING] + line["_warnings"]
+    with sqlite3.connect(str(storage / "proforma_links.db")) as conn:
+        conn.execute("UPDATE proforma_drafts SET editable_lines_json=? WHERE id=?",
+                     (json.dumps([line]), draft_id))
+        conn.commit()
+
+    # The canonical description authority now answers for this product_code.
+    ddb.upsert_product_description(
+        product_code      = _HTTP_PC,
+        item_type         = "RING",
+        name_pl           = "Pierscionek zloty",
+        description_pl    = "Pierscionek zloty 585",
+        material_pl       = "zloto 585",
+        purpose_pl        = "bizuteria",
+        description_block = "Pierscionek zloty 585",
+        source            = "manual",
+    )
+
+    line = _http_import(c, storage, draft_id)
+    assert line["name_pl"] == "Pierscionek zloty 585", line
+    # Ours is gone; the foreign producer's entry is untouched.
+    assert line["_warnings"] == [_STALE_PD_WARNING], line["_warnings"]
