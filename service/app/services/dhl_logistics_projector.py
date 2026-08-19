@@ -1281,6 +1281,100 @@ def _inbound_tracking_snapshot(awb: str, batch_id: str, audit: Dict[str, Any]) -
     return out
 
 
+# ── Unified shipment timeline ────────────────────────────────────────────────
+# Reads workflow and carrier events and orders them. Owns no facts of its own:
+# no customer, weight, box, customs, warehouse or booking authority lives here.
+
+def _humanise(name: str) -> str:
+    return str(name or "").replace("_", " ").strip().capitalize()
+
+
+def assemble_shipment_timeline(
+    batch_id: str, audit: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """One chronological event stream for a shipment.
+
+    Merges, in this authority order:
+
+    * ``audit["timeline"]`` — workflow events (source ``audit_timeline``)
+    * ``tracking_db`` — normalised carrier events (source ``tracking_db``)
+    * the batch ``tracking_cache.json`` — raw carrier events, read via
+      :func:`_outbound_tracking_snapshot` and used **only** when tracking_db
+      returned nothing, so the normalised store always wins
+      (source ``tracking_cache``)
+
+    Every entry keeps its ``source`` so the UI can attribute it. Sorted
+    ascending by timestamp; deduped on ``(source, event, minute)``.
+    """
+    awb = _awb_of(audit or {})
+    rows: List[Dict[str, Any]] = []
+
+    for ev in (audit or {}).get("timeline") or []:
+        if not isinstance(ev, dict):
+            continue
+        name = str(ev.get("event") or "")
+        rows.append({
+            "ts": ev.get("ts"),
+            "source": "audit_timeline",
+            "event": name,
+            "label": _humanise(name),
+            "location": "",
+            "actor": ev.get("actor") or "system",
+            "trigger_source": ev.get("trigger_source") or "",
+            "detail": ev.get("detail"),
+        })
+
+    carrier_events: List[Dict[str, Any]] = []
+    carrier_source = "tracking_db"
+    try:
+        from . import tracking_db as tdb
+        carrier_events = tdb.get_events_for_batch(batch_id) or []
+        if not carrier_events and awb:
+            carrier_events = tdb.get_events_for_awb(awb) or []
+    except Exception as exc:
+        log.debug("assemble_shipment_timeline: tracking_db read failed: %s", exc)
+
+    if not carrier_events and awb:
+        # Fall back to the raw carrier cache only when the normalised store is
+        # empty — never both, or every event would appear twice.
+        try:
+            snap = _outbound_tracking_snapshot(awb, batch_id)
+            carrier_events = list(snap.get("events") or [])
+            carrier_source = "tracking_cache"
+        except Exception as exc:
+            log.debug("assemble_shipment_timeline: cache read failed: %s", exc)
+
+    for ev in carrier_events:
+        if not isinstance(ev, dict):
+            continue
+        stage = str(ev.get("normalized_stage") or ev.get("stage") or "").strip()
+        desc = str(ev.get("description") or ev.get("status") or "").strip()
+        rows.append({
+            "ts": ev.get("event_time") or ev.get("timestamp") or ev.get("ts"),
+            "source": carrier_source,
+            "event": stage or desc,
+            "label": desc or _humanise(stage),
+            "location": str(ev.get("location") or ""),
+            "actor": str(ev.get("carrier") or "DHL"),
+            "trigger_source": str(ev.get("source") or "carrier"),
+            "detail": None,
+        })
+
+    seen = set()
+    merged: List[Dict[str, Any]] = []
+    for row in rows:
+        ts = str(row.get("ts") or "")
+        if not ts:
+            continue
+        key = (row["source"], row["event"], ts[:16])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(row)
+
+    merged.sort(key=lambda r: str(r.get("ts") or ""))
+    return merged
+
 def _transport_status_label(status: Optional[str], *, has_awb: bool, has_movement: bool) -> str:
     """Human transport status for the main table — never booking 'complete'."""
     s = str(status or "").strip().lower().replace("-", "_").replace(" ", "_")
