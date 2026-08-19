@@ -142,3 +142,30 @@ def test_pz_api_has_carrier_document_url_helper_only():
     # Helper must not invent a parallel shipping namespace
     helper = api[api.index("carrierDocumentUrls:") : api.index("carrierDocumentUrls:") + 600]
     assert "/shipping/" not in helper
+
+
+def test_queue_surfaces_carrier_tracking_freshness():
+    """Location / ETA / last-sync come from the projection row, not from the UI."""
+    code = _code_only(_src())
+    for field in (
+        "r.current_location",
+        "r.expected_delivery_warsaw",
+        "r.tracking_last_checked_at",
+        "r.tracking_stale",
+    ):
+        assert field in code, f"Shipping Ops queue must render {field} from the projection row"
+
+
+def test_projection_rows_carry_tracking_freshness_both_directions():
+    """Outbound rows must expose the same staleness keys inbound already does.
+
+    Without them the queue's Last Sync column would silently read blank for every
+    outbound shipment, which looks like 'never checked' rather than 'not projected'.
+    """
+    proj = (
+        Path(__file__).parent.parent / "app" / "services" / "dhl_logistics_projector.py"
+    ).read_text(encoding="utf-8")
+    for key in ('"tracking_stale":', '"tracking_last_checked_at":'):
+        assert proj.count(key) >= 4, (
+            f"{key} must be emitted by both the inbound and the outbound row builder"
+        )

@@ -1791,6 +1791,8 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         ],
         "data_quality": data_quality,
         "tracking_source": tracking.get("source"),
+        "tracking_stale": bool(tracking.get("tracking_stale")),
+        "tracking_last_checked_at": tracking.get("tracking_last_checked_at"),
     }
 
 

@@ -385,7 +385,7 @@ function SOQueue({ loading, err, kpis, rows, selectedKey, onSelect, onOpen, onRe
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
             <thead>
               <tr style={{ background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-                {['AWB', 'Direction', 'Party', 'Carrier', 'Classification', 'Status', 'Stage', 'Batch', ''].map((h) => (
+                {['AWB', 'Direction', 'Party', 'Carrier', 'Classification', 'Status', 'Stage', 'Location', 'ETA', 'Last Sync', 'Batch', ''].map((h) => (
                   <th key={h} style={{
                     textAlign: 'left', padding: '8px 10px', fontWeight: 700, color: 'var(--text-2)',
                     fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em',
@@ -395,7 +395,7 @@ function SOQueue({ loading, err, kpis, rows, selectedKey, onSelect, onOpen, onRe
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={9} style={{ padding: 16, color: 'var(--text-3)' }}>Loading logistics projection…</td></tr>
+                <tr><td colSpan={12} style={{ padding: 16, color: 'var(--text-3)' }}>Loading logistics projection…</td></tr>
               )}
               {!loading && rows.map((r) => {
                 const key = _rowKey(r);
@@ -418,6 +418,13 @@ function SOQueue({ loading, err, kpis, rows, selectedKey, onSelect, onOpen, onRe
                     <td style={{ padding: '8px 10px' }}>{r.classification || '—'}</td>
                     <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.current_status || '—'}</td>
                     <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.stage_label || r.current_stage || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.current_location || '—'}</td>
+                    <td style={{ padding: '8px 10px', color: 'var(--text-2)' }}>{r.expected_delivery_warsaw || r.expected_delivery_utc || '—'}</td>
+                    <td
+                      data-testid="ship-ops-last-sync"
+                      title={r.tracking_stale ? 'Carrier tracking is stale or last refresh errored' : ''}
+                      style={{ padding: '8px 10px', fontSize: 11, color: r.tracking_stale ? 'var(--danger, #c0392b)' : 'var(--text-3)' }}
+                    >{(r.tracking_last_checked_at || '—') + (r.tracking_stale ? ' ⚠' : '')}</td>
                     <td style={{ padding: '8px 10px', fontFamily: 'ui-monospace, monospace', fontSize: 10, color: 'var(--text-3)' }}>
                       {r.batch_id ? String(r.batch_id).slice(0, 28) : '—'}
                     </td>
