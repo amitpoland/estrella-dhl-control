@@ -131,3 +131,38 @@ def test_awb_modal_uses_description_override_dirty_flag():
     assert "descriptionDirty" in SRC
     assert "_awbShipmentDescriptionFromLines" not in SRC
     assert "STUD: 'Stud Earrings'" not in SRC
+
+
+# ── Packed gross weight (2026-08-19) ──────────────────────────────────────────
+# Bug: the operator recorded the packed gross weight once in the proforma
+# Weights panel (proforma_drafts.manual_gross_weight, already an endpoint + UI),
+# and then had to retype it into the AWB modal because the booking modal read no
+# weight authority at all. These pins hold the prefill AND the one contract that
+# makes it safe: a display-only calculated gross must never become a booked
+# shipment weight.
+
+
+def test_weight_prefills_from_page_weight_authority():
+    block = _prefill_block()
+    assert "weight_kg:" in block
+    assert "_ew.gross" in block
+
+
+def test_calculated_gross_never_prefills_a_booking():
+    """`calculated_net_plus_tare` is display-only by the _transport contract."""
+    block = _prefill_block()
+    assert "calculated_net_plus_tare" in block
+    weight = block[block.index("weight_kg:"):block.index("weight_source:")]
+    assert "!==" in weight and "calculated_net_plus_tare" in weight
+
+
+def test_modal_weight_field_initialises_from_prefill():
+    assert "weight_kg:     prefill.weight_kg || ''" in SRC
+
+
+def test_weight_source_hint_is_honest_when_no_weight_recorded():
+    """No recorded weight → name the operator workflow, never invent a number."""
+    hint = SRC[SRC.index('data-testid="awb-weight-source-hint"'):]
+    hint = hint[:hint.index("</div>")]
+    assert "Weights panel" in hint
+    assert not re.search(r"\b\d+(\.\d+)?\s*kg\b", hint)
