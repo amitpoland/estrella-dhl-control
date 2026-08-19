@@ -726,3 +726,91 @@ def test_recompute_line_warning_is_per_producer():
     empty = {}
     pildb.recompute_line_warning(empty, a)
     assert empty == {}
+
+
+# ── 17. item_type authority — product_descriptions, then Product Master ──────
+#
+# Regression: PD rows promoted from pz_rows.json carry item_type = ''. The
+# persisted line then stored item_type: null while the draft GET projection
+# showed the Product Master value — so the carrier content description
+# degraded to the "Jewellery" last resort. One rule, both producers.
+
+_PD_BLANK_TYPE = {
+    "product_code":   "EJL-BRC-750",
+    "item_type":      "",                      # promoted from pz_rows.json
+    "description_pl": "Bransoletka złota 750",
+    "description_en": "Gold bracelet 750",
+    "confidence":     "high",
+}
+
+
+def test_resolve_item_type_pd_wins_then_master_then_none():
+    assert pildb.resolve_item_type({"item_type": "RING"}, {"item_type": "BRC"}) == "RING"
+    assert pildb.resolve_item_type({"item_type": ""}, {"item_type": "BRC"}) == "BRC"
+    assert pildb.resolve_item_type(None, {"item_type": "  BRC  "}) == "BRC"
+    assert pildb.resolve_item_type({"item_type": ""}, {"item_type": ""}) is None
+    assert pildb.resolve_item_type(None, None) is None
+
+
+def test_enrich_lines_master_fallback_fills_blank_pd_item_type():
+    lines = [{"line_id": 1, "product_code": "EJL-BRC-750",
+              "qty": 1, "unit_price": 10.0, "currency": "EUR"}]
+    # PD-only (no master lookup) — unchanged legacy behaviour.
+    pd_only, _, _ = pildb.enrich_lines_from_product_descriptions(
+        lines, lambda pc: _PD_BLANK_TYPE
+    )
+    assert pd_only[0]["item_type"] is None
+
+    with_master, _, _ = pildb.enrich_lines_from_product_descriptions(
+        lines, lambda pc: _PD_BLANK_TYPE, lambda pc: {"item_type": "BRC"}
+    )
+    assert with_master[0]["item_type"] == "BRC"
+    # PD is still the primary authority.
+    pd_wins, _, _ = pildb.enrich_lines_from_product_descriptions(
+        lines,
+        lambda pc: {**_PD_BLANK_TYPE, "item_type": "RING"},
+        lambda pc: {"item_type": "BRC"},
+    )
+    assert pd_wins[0]["item_type"] == "RING"
+    # No PD row at all → Product Master still answers.
+    no_pd, _, _ = pildb.enrich_lines_from_product_descriptions(
+        lines, lambda pc: None, lambda pc: {"item_type": "BRC"}
+    )
+    assert no_pd[0]["item_type"] == "BRC"
+
+
+def test_enrich_draft_persists_master_item_type_so_description_resolves(tmp_path):
+    """End-to-end: the PERSISTED draft line carries the Product Master
+    item_type, so the carrier description projection (which reads the raw
+    stored draft) resolves to 'Bracelet' instead of the 'Jewellery' fallback."""
+    from app.services import reservation_db as rdb
+    from app.services.description_engine import project_shipment_content_description
+
+    db = tmp_path / "proforma_links.db"
+    pildb.init_db(db)
+    # Product Master lives beside the proforma DB in the same storage root.
+    rdb.init_reservation_db(tmp_path / "reservation_queue.db")
+    rdb.upsert_product_master(
+        tmp_path / "reservation_queue.db",
+        product_code="EJL-BRC-750", design_no="JBR00379", item_type="BRC",
+    )
+    d, _ = pildb.auto_create_draft_from_sales_packing(
+        db,
+        batch_id="B-ITEMTYPE", client_name="ACME", currency="EUR",
+        lines=[{"product_code": "EJL-BRC-750", "design_no": "JBR00379",
+                "qty": 1, "unit_price": 10.0, "currency": "EUR",
+                "price_source": "packing_list", "client_ref": ""}],
+    )
+    refreshed = pildb.enrich_draft_lines(
+        db, d.id, "alice", d.updated_at, lambda pc: _PD_BLANK_TYPE
+    )
+    stored = json.loads(
+        pildb.get_draft_by_id(db, d.id).editable_lines_json
+    )
+    assert stored[0]["item_type"] == "BRC"
+    assert project_shipment_content_description(stored) == "Bracelet"
+    # Idempotent — a second pass resolves identically.
+    again = pildb.enrich_draft_lines(
+        db, d.id, "alice", refreshed.updated_at, lambda pc: _PD_BLANK_TYPE
+    )
+    assert json.loads(again.editable_lines_json)[0]["item_type"] == "BRC"
