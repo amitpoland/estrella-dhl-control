@@ -89,6 +89,43 @@ def _shipment(storage, batch_id="SHIPMENT_777_2026-08_abcd1234"):
     return batch_id
 
 
+@pytest.fixture()
+def anon_client(storage):
+    """The same app with NO session override — a caller off the street."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    app.dependency_overrides.clear()
+    with patch.object(settings, "storage_root", storage):
+        with TestClient(app, raise_server_exceptions=True) as c:
+            yield c
+
+
+# An advance list names a supplier, its designs and its quantities, and the
+# withdraw route retracts a document for everybody. Each endpoint carries
+# Depends(get_current_user); this fails the moment one stops. The bodies are
+# valid on purpose, so a refusal can only be the missing session.
+@pytest.mark.parametrize("method,path,kwargs", [
+    ("post", "/api/v1/packing-advance/upload",
+     {"files": {"file": ("a.xlsx", b"x" * 32, "application/vnd.ms-excel")}}),
+    ("get",  "/api/v1/packing-advance", {}),
+    ("get",  "/api/v1/packing-advance?include_withdrawn=true", {}),
+    ("get",  "/api/v1/packing-advance/ADV-1", {}),
+    ("post", "/api/v1/packing-advance/ADV-1/link",
+     {"json": {"batch_id": "SHIPMENT_777_2026-08_abcd1234"}}),
+    ("post", "/api/v1/packing-advance/ADV-1/withdraw",
+     {"json": {"reason": "wrong file"}}),
+    ("get",  "/api/v1/packing-advance/ADV-1/reconciliation", {}),
+])
+def test_no_advance_endpoint_answers_without_a_session(anon_client, method, path, kwargs):
+    r = getattr(anon_client, method)(path, **kwargs)
+    assert r.status_code in (401, 403), (
+        f"{method.upper()} {path} answered {r.status_code} without a session: "
+        f"{r.text[:200]}"
+    )
+
+
 def test_upload_creates_an_advance_batch(client):
     r = _upload(client)
     assert r.status_code == 200, r.text
