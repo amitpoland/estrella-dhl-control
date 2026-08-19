@@ -40,7 +40,10 @@ def under_prod(path) -> bool:
     try:
         if isinstance(path, int):          # already-open file descriptor
             return False
-        p = os.path.normcase(os.path.abspath(os.fspath(path)))
+        # fsdecode, not fspath: open(b"C:\PZ\storage\x", "w") is a real
+        # write vector, and a bytes path would otherwise reach str.startswith
+        # below and raise instead of being refused.
+        p = os.path.normcase(os.path.abspath(os.fsdecode(path)))
     except (TypeError, ValueError, OSError):
         return False
     return any(p == r or p.startswith(r + os.sep) for r in PROD_ROOTS)

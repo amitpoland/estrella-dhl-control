@@ -791,7 +791,15 @@ def upsert_packing_lines(
                 # populated. Empty bag_id means the packing list doesn't track physical
                 # bags, so design_no IS the unique identifier. Without this guard,
                 # aggregate (N:1) matches collapse to a single row per invoice line.
-                if existing is None and bag_id:
+                #
+                # Only when the row has NO serial of its own. A row that came
+                # with a pack_sr already carries the source list's own identity
+                # statement; falling back to "same bag" contradicts it and
+                # collapses distinct rows. That is what happened to advance
+                # lists, where invoice_line_position is NULL for every row, so
+                # the check below degenerated to "same bag = same row" and a
+                # multi-design bag stored one line.
+                if existing is None and bag_id and pack_sr is None:
                     existing = con.execute(
                         """SELECT id, operator_review_status, product_code,
                                   invoice_line_position FROM packing_lines

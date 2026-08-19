@@ -85,14 +85,26 @@ async def upload_advance_packing_list(
     dest_dir = adv.advance_source_dir(bid)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / _safe_name(file.filename or "")
+    existed  = dest.exists()
+    previous = dest.read_bytes() if existed else b""
     dest.write_bytes(content)
+
+    def _undo() -> None:
+        # A rejected upload must not leave the batch's source directory
+        # holding a file that was never ingested.
+        if existed:
+            dest.write_bytes(previous)
+        else:
+            dest.unlink(missing_ok=True)
 
     try:
         return adv.ingest_advance(dest, supplier_id=supplier_id,
                                   batch_id=bid, operator=operator)
     except ValueError as exc:
+        _undo()
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
+        _undo()
         log.warning("advance packing extraction failed for %s: %s", dest, exc)
         raise HTTPException(status_code=422,
                             detail=f"Advance packing list extraction failed: {exc}")

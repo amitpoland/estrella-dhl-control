@@ -382,6 +382,7 @@ window.EstrellaShared = {
 <script type="text/babel" src="proforma-detail.jsx"></script>
 <script type="text/babel" src="supplier-invoice-review.jsx"></script>
 <script type="text/babel" src="global-search.jsx"></script>
+<script type="text/babel" src="advance-packing.jsx"></script>
 <!-- Sprint 31: live DHL cards composed by DhlCustomsPage (window.DhlScanStatus / window.DhlDailySummary). -->
 <script type="text/babel" src="dhl-scan-status.jsx"></script>
 <script type="text/babel" src="dhl-daily-summary.jsx"></script>
@@ -921,6 +922,11 @@ function App() {
             <>
               <PageHeader title="Shipments" subtitle="Operational shipment hub — newest upload first. View opens V2 detail. Recheck / Archive use the same dashboard batch authority as B1." />
               <SubTabStrip active={page} onNav={handleNav} allowedPages={allowedPagesProp} />
+              {/* Advance (pre-shipment) packing lists: goods announced but not
+                  yet dispatched, so they have no shipment row to hang off. */}
+              <div style={{ padding: '0 32px' }}>
+                {window.AdvancePackingHub && <window.AdvancePackingHub />}
+              </div>
               <DashboardPage onViewShipment={handleViewShipment} />
             </>
           )}

@@ -307,6 +307,26 @@ def link_to_batch(document_id: str, batch_id: str, *,
             )
     log.info("advance packing %s linked to shipment %s by %s",
              document_id, batch_id, operator or "unknown")
+
+    # The link is an operator claim, so it belongs on the shipment's own audit
+    # timeline -- the same authority that records proforma and invoice claims.
+    # Best-effort: a missing audit.json must not undo a link that already
+    # committed.
+    lines = pdb.get_packing_lines_for_document(document_id)
+    try:
+        from .audit_persist import record_advance_packing_linked
+        record_advance_packing_linked(
+            _storage() / "outputs" / batch_id / "audit.json",
+            batch_id            = batch_id,
+            advance_document_id = document_id,
+            advance_batch_id    = doc["batch_id"],
+            line_count          = len(lines),
+            expected_total      = sum(_f(ln.get("quantity")) for ln in lines),
+            operator            = operator,
+        )
+    except Exception as exc:                       # pragma: no cover - defensive
+        log.warning("advance link audit event failed (non-fatal): %s", exc)
+
     return {"document_id": document_id, "linked_batch_id": batch_id, "changed": True}
 
 

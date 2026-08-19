@@ -51,6 +51,7 @@ EV_INVOICE_LINK_RECONCILED          = "invoice_link_reconciled"
 EV_WFIRMA_DOCUMENT_MANUALLY_LINKED  = "wfirma_document_manually_linked"
 EV_INVENTORY_DIRECT_DISPATCH_MARKED = "inventory_direct_dispatch_marked"
 EV_WFIRMA_PZ_MAPPING_REFRESHED      = "wfirma_pz_mapping_refreshed"
+EV_ADVANCE_PACKING_LINKED           = "advance_packing_linked"
 
 
 # ── Internal I/O ─────────────────────────────────────────────────────────────
@@ -758,6 +759,75 @@ def record_wfirma_pz_mapping(
 
     return {"changed": bool(changed), "before": before, "after": after,
             "reason": "stamped" if changed else "already aligned"}
+
+
+def record_advance_packing_linked(
+    audit_path: Path,
+    *,
+    batch_id:          str,
+    advance_document_id: str,
+    advance_batch_id:  str,
+    line_count:        int,
+    expected_total:    float,
+    operator:          str,
+) -> Dict[str, Any]:
+    """
+    Append an ``advance_packing_linked`` timeline event recording that an
+    operator declared a pre-shipment (advance) packing list to be the
+    announcement for THIS shipment.
+
+    Commercial evidence only. The advance list says what the supplier
+    announced; it seeds no inventory, mints no product_code and writes
+    nothing fiscal. The event exists so that a later expected-vs-shipped
+    variance is attributable: who claimed the link, when, and against which
+    document.
+
+    Idempotent on ``advance_document_id``. Append-only.
+    """
+    did = (advance_document_id or "").strip()
+    if not did:
+        return {"appended": False, "advance_document_id": "",
+                "reason": "advance_document_id is empty"}
+
+    audit = _load(audit_path)
+    if audit is None:
+        return {"appended": False, "advance_document_id": did,
+                "reason": "audit.json missing or unreadable"}
+
+    timeline = audit.get("timeline") or []
+    if isinstance(timeline, list):
+        for entry in timeline:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("event") != EV_ADVANCE_PACKING_LINKED:
+                continue
+            if ((entry.get("detail") or {}).get("advance_document_id") or "") == did:
+                return {"appended": False, "advance_document_id": did,
+                        "reason": "already recorded"}
+
+    try:
+        tl.log_event(
+            audit_path, EV_ADVANCE_PACKING_LINKED, "operator",
+            operator or "operator",
+            detail={
+                "batch_id":            batch_id,
+                "advance_document_id": did,
+                "advance_batch_id":    advance_batch_id or "",
+                "line_count":          int(line_count or 0),
+                "expected_total":      float(expected_total or 0),
+                "operator":            operator or "",
+                "evidence_class":      "commercial",
+                "inventory_write":     False,
+                "wfirma_write":        False,
+            },
+        )
+    except Exception as exc:
+        log.warning("audit_persist.record_advance_packing_linked timeline "
+                    "emit failed (non-fatal): %s", exc)
+        return {"appended": False, "advance_document_id": did,
+                "reason": f"timeline emit failed: {exc}"}
+
+    return {"appended": True, "advance_document_id": did, "reason": "appended"}
 
 
 def _now_iso() -> str:
