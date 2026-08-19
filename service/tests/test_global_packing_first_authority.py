@@ -24,6 +24,7 @@ unchanged.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -180,7 +181,30 @@ def test_pdf_parser_totals_reconcile_after_lenient_split():
 # ── End-to-end: customs row injection from real packing_lines DB ─────────
 
 
-def test_end_to_end_packing_lines_become_audit_rows(monkeypatch):
+def _prod_packing_snapshot(prod_db: Path, tmp_path: Path) -> Path:
+    """Copy the DEPLOYED packing.db into *tmp_path* without writing to it.
+
+    Opened through a ``file:...?mode=ro`` URI so SQLite cannot create, mutate
+    or checkpoint the production database, then duplicated with sqlite3's
+    online-backup API.  A plain ``shutil.copy`` is NOT equivalent: packing.db
+    runs in WAL mode, so copying the main file alone can miss committed pages
+    still living in the -wal sidecar.
+    """
+    snapshot = tmp_path / "packing.db"
+    uri = "file:" + prod_db.as_posix() + "?mode=ro"
+    src_con = sqlite3.connect(uri, uri=True)
+    try:
+        dst_con = sqlite3.connect(str(snapshot))
+        try:
+            src_con.backup(dst_con)
+        finally:
+            dst_con.close()
+    finally:
+        src_con.close()
+    return snapshot
+
+
+def test_end_to_end_packing_lines_become_audit_rows(monkeypatch, tmp_path):
     """When packing.db has rows for a Global batch, _inject_rows_from_sources
     must use them as audit['rows'] — NOT the aggregate synthesizer."""
     import sys
@@ -199,9 +223,18 @@ def test_end_to_end_packing_lines_become_audit_rows(monkeypatch):
     monkeypatch.setattr(_s, "storage_root",
                         Path(r"C:\PZ\storage"), raising=False)
 
-    # Initialise packing_db pointing at production
+    # Initialise packing_db against a SNAPSHOT of production -- never against
+    # production itself.  ``init_packing_db`` is a schema *initialiser*: it runs
+    # CREATE TABLE / CREATE INDEX / ALTER TABLE against whatever path it is
+    # handed, so pointing it at the deployed C:\PZ\storage\packing.db mutates
+    # the running service's database.  This test only ever needed to READ
+    # production packing rows, so copy them out through a read-only connection
+    # and point the module at the copy.  See _prod_packing_snapshot below.
     from app.services import packing_db
-    packing_db.init_packing_db(Path(r"C:\PZ\storage\packing.db"))
+    prod_db = Path(r"C:\PZ\storage\packing.db")
+    if not prod_db.exists():
+        pytest.skip("production packing.db missing")
+    packing_db.init_packing_db(_prod_packing_snapshot(prod_db, tmp_path))
 
     pkg = packing_db.get_packing_lines_for_batch(
         "SHIPMENT_4789974092_2026-05_999deef1"
