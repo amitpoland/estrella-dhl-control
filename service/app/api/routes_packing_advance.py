@@ -6,7 +6,12 @@
 
   GET    /api/v1/packing-advance
          List advance documents. ?linked=false shows the ones still waiting
-         for their shipment.
+         for their shipment; ?include_withdrawn=true also shows retracted ones.
+
+  POST   /api/v1/packing-advance/{document_id}/withdraw
+         Body: {"reason": "..."} — the operator's repair for a wrong upload or
+         a wrong link. Retracts, never deletes: the rows and the link stay put
+         and the reason is recorded beside them.
 
   GET    /api/v1/packing-advance/{document_id}
          One advance document plus its lines.
@@ -34,7 +39,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import (APIRouter, Body, Depends, Header, HTTPException, Query,
+from fastapi import (APIRouter, Body, Depends, HTTPException, Query,
                      UploadFile)
 
 from ..core.config import settings
@@ -50,13 +55,17 @@ _auth  = Depends(get_current_user)
 _ALLOWED_EXTENSIONS = {".pdf", ".xlsx", ".xls"}
 
 
-def _operator_of(user: Dict[str, Any], header: str) -> str:
-    """Who is acting. The session is the authority; the header is only a hint.
+def _operator_of(user: Dict[str, Any]) -> str:
+    """Who is acting. The authenticated session is the ONLY authority.
 
-    Audit attribution must not be forgeable by whoever crafts the request, and
-    the V2 shell has no operator global to send one anyway.
+    An earlier revision let an ``X-Operator-User`` header win whenever it was
+    present, so any session holder could attribute an advance upload or link
+    to somebody else with one extra curl flag -- and a link is deliberately
+    hard to undo, so the false name stuck. Audit attribution must not be
+    forgeable by whoever crafts the request. Nothing falls back to a header:
+    the V2 shell never sent one.
     """
-    return (header or "").strip() or str(
+    return str(
         (user or {}).get("full_name") or (user or {}).get("email") or ""
     ).strip()
 
@@ -72,10 +81,9 @@ async def upload_advance_packing_list(
     supplier_id: Optional[int] = Query(default=None),
     batch_id:    Optional[str] = Query(default=None,
                                        description="Append to an existing ADVANCE_* batch"),
-    operator:    str           = Header(default="", alias="X-Operator-User"),
     user:        Dict[str, Any] = _auth,
 ) -> Dict[str, Any]:
-    operator = _operator_of(user, operator)
+    operator = _operator_of(user)
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -125,9 +133,11 @@ async def upload_advance_packing_list(
 
 @router.get("", dependencies=[_auth])
 def list_advance_packing_lists(
-    linked: Optional[bool] = Query(default=None),
+    linked:            Optional[bool] = Query(default=None),
+    include_withdrawn: bool           = Query(default=False),
 ) -> Dict[str, Any]:
-    docs = adv.list_advance_documents(linked=linked)
+    docs = adv.list_advance_documents(linked=linked,
+                                      include_withdrawn=include_withdrawn)
     return {"count": len(docs), "documents": docs}
 
 
@@ -145,15 +155,31 @@ def get_advance_packing_list(document_id: str) -> Dict[str, Any]:
 def link_advance_to_shipment(
     document_id: str,
     body:        Dict[str, Any] = Body(...),
-    operator:    str            = Header(default="", alias="X-Operator-User"),
     user:        Dict[str, Any] = _auth,
 ) -> Dict[str, Any]:
-    operator = _operator_of(user, operator)
+    operator = _operator_of(user)
     batch_id = str(body.get("batch_id") or "").strip()
     if not batch_id:
         raise HTTPException(status_code=400, detail="batch_id is required.")
     try:
         return adv.link_to_batch(document_id, batch_id, operator=operator)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{document_id}/withdraw")
+def withdraw_advance_packing_list(
+    document_id: str,
+    body:        Dict[str, Any] = Body(...),
+    user:        Dict[str, Any] = _auth,
+) -> Dict[str, Any]:
+    operator = _operator_of(user)
+    reason   = str(body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400,
+                            detail="A reason is required to withdraw this list.")
+    try:
+        return adv.withdraw(document_id, reason, operator=operator)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

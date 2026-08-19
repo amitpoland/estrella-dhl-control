@@ -261,14 +261,18 @@
     const [uploading, setUploading] = React.useState(false);
     const [error,     setError]     = React.useState('');
     const [open,      setOpen]      = React.useState(null);   // expanded doc id
+    const [showGone,  setShowGone]  = React.useState(false);  // include withdrawn
+    const [wdDoc,     setWdDoc]     = React.useState(null);   // doc being withdrawn
+    const [wdReason,  setWdReason]  = React.useState('');
+    const [wdBusy,    setWdBusy]    = React.useState(false);
 
     const load = React.useCallback(() => {
       setLoading(true);
-      apiFetch('/api/v1/packing-advance')
+      apiFetch('/api/v1/packing-advance' + (showGone ? '?include_withdrawn=true' : ''))
         .then(d => { setDocs((d && d.documents) || []); setError(''); })
         .catch(e => setError(_err(e)))
         .then(() => setLoading(false));
-    }, []);
+    }, [showGone]);
 
     React.useEffect(load, [load]);
 
@@ -287,7 +291,26 @@
         .then(() => setUploading(false));
     };
 
-    const waiting = docs.filter(d => !d.linked_batch_id).length;
+    // Withdrawing is the operator's own repair for a wrong upload or a wrong
+    // link — the alternative was SQL. It retracts, it does not delete, so the
+    // reason is mandatory and the corrected list is a fresh upload.
+    const withdraw = (id) => {
+      const reason = wdReason.trim();
+      if (!reason) return;
+      setWdBusy(true); setError('');
+      apiFetch(`/api/v1/packing-advance/${encodeURIComponent(id)}/withdraw`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      }).then(() => {
+        if (onToast) onToast('Advance list withdrawn. Upload the corrected list when you have it.');
+        setWdDoc(null); setWdReason('');
+        load();
+      }).catch(e => setError(_err(e)))
+        .then(() => setWdBusy(false));
+    };
+
+    const waiting = docs.filter(d => !d.linked_batch_id && !d.withdrawn_reason).length;
 
     return (
       <div data-testid="advance-packing-hub">
@@ -300,6 +323,12 @@
             Goods announced before dispatch. Expected quantities only — no stock,
             no product codes, no barcodes until the real shipment arrives.
           </div>
+          <label style={{ fontSize: 11, color: 'var(--text-2)', display: 'inline-flex',
+                          alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showGone}
+                   onChange={e => setShowGone(e.target.checked)} />
+            show withdrawn
+          </label>
           <Btn small variant="outline" onClick={load} disabled={loading || uploading}>↻</Btn>
           <label style={{ cursor: uploading ? 'not-allowed' : 'pointer' }}>
             <input type="file" accept=".pdf,.xlsx,.xls" disabled={uploading}
@@ -345,23 +374,67 @@
                   {docs.map(d => (
                     <React.Fragment key={d.id}>
                       <tr style={{ borderTop: '1px solid var(--border)' }}>
-                        <td style={{ padding: '5px 8px 5px 0', fontFamily: 'monospace' }}>{d.batch_id}</td>
+                        <td style={{ padding: '5px 8px 5px 0', fontFamily: 'monospace' }}>
+                          {d.batch_id}
+                          {d.withdrawn_reason && (
+                            <div style={{ fontFamily: 'inherit', fontSize: 10, color: 'var(--badge-red-text)' }}>
+                              withdrawn — {d.withdrawn_reason}
+                            </div>
+                          )}
+                        </td>
                         <td style={{ padding: '5px 8px', textAlign: 'right' }}>{d.line_count}</td>
                         <td style={{ padding: '5px 8px', color: 'var(--text-2)' }}>{_fmtDate(d.created_at)}</td>
                         <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>
                           {d.linked_batch_id
                             ? d.linked_batch_id
-                            : <span style={{ fontFamily: 'inherit', color: 'var(--text-3)' }}>waiting — link it from the shipment</span>}
+                            : <span style={{ fontFamily: 'inherit', color: 'var(--text-3)' }}>
+                                {d.withdrawn_reason
+                                  ? 'never linked'
+                                  : 'waiting — link it from the shipment'}
+                              </span>}
                         </td>
-                        <td style={{ padding: '5px 0 5px 8px', textAlign: 'right' }}>
+                        <td style={{ padding: '5px 0 5px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                           {d.linked_batch_id && (
                             <Btn small variant="outline"
                                  onClick={() => setOpen(open === d.id ? null : d.id)}>
                               {open === d.id ? 'Hide' : 'Reconcile'}
                             </Btn>
                           )}
+                          {!d.withdrawn_reason && (
+                            <Btn small variant="outline" style={{ marginLeft: 6 }}
+                                 onClick={() => { setWdDoc(wdDoc === d.id ? null : d.id); setWdReason(''); }}>
+                              {wdDoc === d.id ? 'Keep' : 'Withdraw'}
+                            </Btn>
+                          )}
                         </td>
                       </tr>
+                      {wdDoc === d.id && (
+                        <tr>
+                          <td colSpan={5} style={{ padding: '6px 0 10px' }}>
+                            {/* Capped: the Shipments page is wider than the
+                                viewport, and a flexible input would push the
+                                confirm button off-screen. */}
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center',
+                                          flexWrap: 'wrap', maxWidth: 820 }}>
+                              <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                                Why is this list being withdrawn? It stays on record — upload the corrected list afterwards.
+                              </span>
+                              <input value={wdReason} autoFocus
+                                     disabled={wdBusy}
+                                     placeholder="e.g. supplier sent the wrong file"
+                                     onChange={e => setWdReason(e.target.value)}
+                                     onKeyDown={e => { if (e.key === 'Enter') withdraw(d.id); }}
+                                     style={{ flex: '1 1 220px', fontSize: 12, padding: '4px 8px',
+                                              borderRadius: 6, border: '1px solid var(--border)',
+                                              background: 'var(--bg)', color: 'var(--text)' }} />
+                              <Btn small variant="danger" disabled={wdBusy || !wdReason.trim()}
+                                   onClick={() => withdraw(d.id)}>
+                                {wdBusy ? 'Withdrawing…' : 'Withdraw list'}
+                              </Btn>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
                       {open === d.id && (
                         <tr>
                           <td colSpan={5} style={{ padding: '8px 0 12px', borderTop: '1px solid var(--border)' }}>

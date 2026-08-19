@@ -236,9 +236,16 @@ def _null_scan_codes(batch_id: str) -> None:
 
 def list_advance_documents(
     *, linked: Optional[bool] = None,
+    include_withdrawn: bool = False,
 ) -> List[Dict[str, Any]]:
     """Advance documents, newest first.  ``linked=False`` returns only the
-    ones still waiting for their shipment."""
+    ones still waiting for their shipment.
+
+    Withdrawn documents are out of the working list by default — they are the
+    operator's own retractions and would otherwise sit there looking like work
+    to do — but they are never deleted, so ``include_withdrawn`` brings the
+    full history back.
+    """
     if pdb._db_path is None:
         return []
     sql = "SELECT * FROM packing_documents WHERE doc_stage=? "
@@ -247,6 +254,8 @@ def list_advance_documents(
         sql += "AND linked_batch_id != '' "
     elif linked is False:
         sql += "AND linked_batch_id = '' "
+    if not include_withdrawn:
+        sql += "AND withdrawn_reason = '' "
     sql += "ORDER BY created_at DESC"
     with pdb._connect() as con:
         rows = con.execute(sql, args).fetchall()
@@ -282,6 +291,9 @@ def link_to_batch(document_id: str, batch_id: str, *,
     doc = get_advance_document(document_id)
     if doc is None:
         raise ValueError(f"no advance packing document {document_id!r}")
+    if (doc.get("withdrawn_reason") or "").strip():
+        raise ValueError("this advance document was withdrawn; upload the "
+                         "corrected list and link that one instead")
     if is_advance_batch(batch_id):
         raise ValueError("an advance document must be linked to a real shipment batch")
     if "/" in batch_id or "\\" in batch_id or ".." in batch_id:
@@ -328,6 +340,72 @@ def link_to_batch(document_id: str, batch_id: str, *,
         log.warning("advance link audit event failed (non-fatal): %s", exc)
 
     return {"document_id": document_id, "linked_batch_id": batch_id, "changed": True}
+
+
+# ── Withdraw (operator repair) ──────────────────────────────────────────────
+
+def withdraw(document_id: str, reason: str, *,
+             operator: str = "") -> Dict[str, Any]:
+    """Withdraw an advance document the operator should not have filed.
+
+    Two things go wrong in real use and neither is a developer's problem: the
+    wrong file gets uploaded, or the right file gets linked to the wrong
+    shipment.  Without this the only repair was SQL, and ``link_to_batch``
+    refuses to re-point a link on purpose — so a single mis-click stranded the
+    document permanently.
+
+    Withdrawing is deliberately not deleting.  The supplier did send that
+    announcement; the rows stay exactly as received, the link stays where it
+    was made, and the reason is recorded next to them.  What changes is
+    standing: a withdrawn document drops out of the operator's working list
+    and is labelled everywhere it still appears.  To correct a mis-link the
+    operator withdraws and uploads the list again — a new advance document,
+    honestly dated, linked to the right shipment.
+
+    Idempotent: withdrawing twice returns ``changed: False`` and keeps the
+    FIRST reason, because that is the one that was true at the time.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("a reason is required to withdraw an advance document")
+
+    doc = get_advance_document(document_id)
+    if doc is None:
+        raise ValueError(f"no advance packing document {document_id!r}")
+    if (doc.get("withdrawn_reason") or "").strip():
+        return {"document_id": document_id, "changed": False,
+                "withdrawn_reason": doc["withdrawn_reason"]}
+
+    with pdb._lock:
+        with pdb._connect() as con:
+            con.execute(
+                "UPDATE packing_documents SET withdrawn_reason=?, updated_at=? "
+                "WHERE id=?",
+                (reason, pdb._now_iso(), document_id),
+            )
+    log.info("advance packing %s withdrawn by %s: %s",
+             document_id, operator or "unknown", reason)
+
+    # If it had been linked, the shipment's timeline already carries the claim.
+    # Leaving that claim standing with no retraction next to it is exactly the
+    # kind of silent-history problem this feature exists to avoid.
+    batch_id = (doc.get("linked_batch_id") or "").strip()
+    if batch_id:
+        try:
+            from .audit_persist import record_advance_packing_withdrawn
+            record_advance_packing_withdrawn(
+                _storage() / "outputs" / batch_id / "audit.json",
+                batch_id            = batch_id,
+                advance_document_id = document_id,
+                advance_batch_id    = doc["batch_id"],
+                reason              = reason,
+                operator            = operator,
+            )
+        except Exception as exc:                   # pragma: no cover - defensive
+            log.warning("advance withdraw audit event failed (non-fatal): %s", exc)
+
+    return {"document_id": document_id, "changed": True,
+            "withdrawn_reason": reason}
 
 
 # ── Reconcile ───────────────────────────────────────────────────────────────

@@ -279,6 +279,14 @@ def init_packing_db(db_path: Path) -> None:
                                "TEXT NOT NULL DEFAULT 'final'")
         _add_column_if_missing(con, "packing_documents", "linked_batch_id",
                                "TEXT NOT NULL DEFAULT ''")
+        # An operator who uploads the wrong advance list, or links one to the
+        # wrong shipment, has to be able to put it right without a developer.
+        # Withdrawing is that repair: a non-empty reason means withdrawn. The
+        # rows are KEPT -- the supplier really did send that announcement, and
+        # a withdrawn document plus its reason is the honest record of what
+        # happened. Empty on every other row, so nothing historical changes.
+        _add_column_if_missing(con, "packing_documents", "withdrawn_reason",
+                               "TEXT NOT NULL DEFAULT ''")
         con.execute("CREATE INDEX IF NOT EXISTS idx_pd_doc_stage "
                     "ON packing_documents (doc_stage)")
 

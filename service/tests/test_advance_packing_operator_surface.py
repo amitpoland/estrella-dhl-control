@@ -269,20 +269,48 @@ def test_linking_is_recorded_on_the_shipment_timeline(client, storage):
     _audit(storage, batch).write_text(json.dumps({"batch_id": batch, "timeline": []}),
                                       encoding="utf-8")
 
-    client.post(f"/api/v1/packing-advance/{doc}/link", json={"batch_id": batch},
-                headers={"X-Operator-User": "anna"})
+    client.post(f"/api/v1/packing-advance/{doc}/link", json={"batch_id": batch})
 
     timeline = json.loads(_audit(storage, batch).read_text(encoding="utf-8"))["timeline"]
     events = [e for e in timeline if e.get("event") == "advance_packing_linked"]
     assert len(events) == 1, timeline
     d = events[0]["detail"]
     assert d["advance_document_id"] == doc
-    assert d["operator"] == "anna"
+    assert d["operator"] == "t@t"          # the session, nobody else
     assert d["line_count"] == 3
     assert d["expected_total"] == 13          # 4 + 6 + 3 announced
     # The event must say plainly that nothing physical or fiscal happened.
     assert d["evidence_class"] == "commercial"
     assert d["inventory_write"] is False and d["wfirma_write"] is False
+
+
+def test_the_operator_name_cannot_be_forged_by_a_request_header(client, storage):
+    """Attribution comes from the session and from nothing else.
+
+    A revision of this route preferred an ``X-Operator-User`` header whenever
+    one was present, so any authenticated caller could sign somebody else's
+    name to an advance link -- permanently, because the link is deliberately
+    hard to undo. The header is gone; sending one must change nothing.
+    """
+    import json
+
+    doc   = _upload(client).json()["document_id"]
+    batch = _shipment(storage)
+    _audit(storage, batch).write_text(json.dumps({"batch_id": batch, "timeline": []}),
+                                      encoding="utf-8")
+
+    client.post(f"/api/v1/packing-advance/{doc}/link", json={"batch_id": batch},
+                headers={"X-Operator-User": "somebody-else"})
+
+    timeline = json.loads(_audit(storage, batch).read_text(encoding="utf-8"))["timeline"]
+    d = [e for e in timeline if e.get("event") == "advance_packing_linked"][0]["detail"]
+    assert d["operator"] == "t@t", "the header forged the audit actor"
+
+    # And the affordance is gone from the route surface entirely, so it cannot
+    # quietly come back as a fallback. (The docstring still NAMES the header to
+    # explain why it went; what must not exist is a parameter reading one.)
+    routes = (_svc / "app" / "api" / "routes_packing_advance.py").read_text(encoding="utf-8")
+    assert "Header(" not in routes, "a request header is feeding operator identity again"
 
 
 def test_the_audit_event_is_not_duplicated_by_a_repeat_link(client, storage):
@@ -307,6 +335,92 @@ def test_a_missing_audit_file_does_not_undo_the_link(client, storage):
     batch = _shipment(storage)                 # no audit.json
     r = client.post(f"/api/v1/packing-advance/{doc}/link", json={"batch_id": batch})
     assert r.status_code == 200 and r.json()["changed"] is True
+
+
+# ── Withdraw: the operator's own repair ───────────────────────────────────────
+
+def test_withdraw_requires_a_reason(client):
+    doc = _upload(client).json()["document_id"]
+    r = client.post(f"/api/v1/packing-advance/{doc}/withdraw", json={"reason": "   "})
+    assert r.status_code == 400
+    assert client.get("/api/v1/packing-advance").json()["count"] == 1, \
+        "a refused withdrawal must leave the document standing"
+
+
+def test_a_withdrawn_list_leaves_the_working_list_but_not_the_record(client):
+    doc = _upload(client).json()["document_id"]
+    r = client.post(f"/api/v1/packing-advance/{doc}/withdraw",
+                    json={"reason": "supplier sent last season's file"})
+    assert r.status_code == 200 and r.json()["changed"] is True
+
+    assert client.get("/api/v1/packing-advance").json()["count"] == 0
+    assert client.get("/api/v1/packing-advance?linked=false").json()["count"] == 0
+
+    kept = client.get("/api/v1/packing-advance?include_withdrawn=true").json()
+    assert kept["count"] == 1
+    assert kept["documents"][0]["withdrawn_reason"] == "supplier sent last season's file"
+    # Withdrawing is not deleting: the announced lines are still readable.
+    assert client.get(f"/api/v1/packing-advance/{doc}").json()["line_count"] == 3
+
+
+def test_withdrawing_twice_keeps_the_first_reason(client):
+    doc = _upload(client).json()["document_id"]
+    client.post(f"/api/v1/packing-advance/{doc}/withdraw", json={"reason": "first"})
+    again = client.post(f"/api/v1/packing-advance/{doc}/withdraw",
+                        json={"reason": "second"}).json()
+    assert again["changed"] is False
+    assert again["withdrawn_reason"] == "first"
+
+
+def test_a_withdrawn_list_cannot_be_linked_to_a_shipment(client, storage):
+    """The repair path is withdraw-then-re-upload. Letting a withdrawn document
+    still claim a shipment would put a retracted announcement on a timeline."""
+    doc = _upload(client).json()["document_id"]
+    client.post(f"/api/v1/packing-advance/{doc}/withdraw", json={"reason": "wrong file"})
+
+    r = client.post(f"/api/v1/packing-advance/{doc}/link",
+                    json={"batch_id": _shipment(storage)})
+    assert r.status_code == 400
+    assert "withdrawn" in r.json()["detail"]
+
+
+def test_withdrawing_a_linked_list_retracts_it_on_the_shipment_timeline(client, storage):
+    import json
+
+    doc   = _upload(client).json()["document_id"]
+    batch = _shipment(storage)
+    _audit(storage, batch).write_text(json.dumps({"batch_id": batch, "timeline": []}),
+                                      encoding="utf-8")
+    client.post(f"/api/v1/packing-advance/{doc}/link", json={"batch_id": batch})
+
+    for _ in range(3):                       # idempotent, like the link event
+        client.post(f"/api/v1/packing-advance/{doc}/withdraw",
+                    json={"reason": "linked to the wrong shipment"})
+
+    timeline = json.loads(_audit(storage, batch).read_text(encoding="utf-8"))["timeline"]
+    events = [e for e in timeline if e.get("event") == "advance_packing_withdrawn"]
+    assert len(events) == 1, timeline
+    d = events[0]["detail"]
+    assert d["advance_document_id"] == doc
+    assert d["withdrawn_reason"] == "linked to the wrong shipment"
+    assert d["operator"] == "t@t"
+    assert d["evidence_class"] == "commercial"
+    assert d["inventory_write"] is False and d["wfirma_write"] is False
+    # The original claim is retracted, never rewritten.
+    assert sum(e.get("event") == "advance_packing_linked" for e in timeline) == 1
+
+
+def test_the_operator_can_withdraw_without_leaving_the_ui():
+    """The point of this endpoint is that the repair needs no SQL. If the hub
+    stops offering it, the operator is back to calling a developer."""
+    src = _code("advance-packing.jsx")
+    assert "/withdraw" in src, "the hub no longer calls the withdraw endpoint"
+    assert "Withdraw" in src, "no withdraw control in the hub"
+    assert "include_withdrawn=true" in src, "withdrawn lists became unreachable in the UI"
+    assert "reason" in src, "the UI does not collect a withdrawal reason"
+    # Never through a browser modal: it blocks the page.
+    for modal in ("prompt(", "confirm(", "alert("):
+        assert modal not in src, f"{modal} blocks the page; use an inline control"
 
 
 def test_testids_land_on_real_dom_elements():
