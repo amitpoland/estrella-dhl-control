@@ -2171,6 +2171,16 @@ NAME_PL_SOURCE_MACHINE_REPLACEABLE = frozenset({
     "",          # unstamped legacy row
 })
 
+# Stable marker for the description-missing warning this module emits onto
+# ``_warnings``.  ``_warnings`` is a DERIVED annotation: it rides along on the
+# line dict via ``{**ln, ...}``, so an emission from an earlier pass survives
+# into the next one.  Recomputing means dropping OUR OWN prior entries (matched
+# by this prefix) before re-deciding — a warning raised while
+# product_descriptions was absent must disappear once the row exists, and must
+# never accumulate one copy per pass.  Foreign producers' warnings (e.g. the
+# customs-description warning from routes_proforma) are left untouched.
+PD_MISSING_WARNING_PREFIX = "Product description missing for product_code="
+
 
 def _birth_resolve_name_pl(
     lines:         List[Dict[str, Any]],
@@ -5395,14 +5405,22 @@ def enrich_lines_from_product_descriptions(
             })
 
         out = enriched[-1]
+        kept = [
+            w for w in (out.get("_warnings") or [])
+            if not str(w).startswith(PD_MISSING_WARNING_PREFIX)
+        ]
         if not out.get("description_pl"):
-            out["_warnings"] = list(out.get("_warnings") or []) + [
-                f"Product description missing for product_code={pc!r}. "
+            kept.append(
+                f"{PD_MISSING_WARNING_PREFIX}{pc!r}. "
                 "The canonical product_descriptions row is absent or contains "
                 "generic/forbidden text. Promote the PZ bilingual description "
                 "(pz_rows.json) into product_descriptions first — no description "
                 "may be fabricated."
-            ]
+            )
+        if kept:
+            out["_warnings"] = kept
+        else:
+            out.pop("_warnings", None)
         if out.get("name_pl"):
             n_hit += 1
         else:
