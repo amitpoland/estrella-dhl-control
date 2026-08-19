@@ -15,6 +15,12 @@ Coverage:
  10. test_enrich_state_unchanged             — draft stays 'draft', not 'editing'
  11. test_route_requires_expected_updated_at — missing field → HTTP 400
  12. test_dashboard_has_enrich_button_and_columns — HTML assertions
+ 13. test_enrich_clears_stale_description_warning — PD now present → own stale
+                                               warning dropped, key removed
+ 14. test_enrich_description_warning_not_duplicated — repeated passes emit ONE
+ 15. test_enrich_preserves_foreign_warning  — another producer's _warnings kept
+ 16. test_recompute_line_warning_is_per_producer — the shared helper both
+                                               producers route through
 """
 from __future__ import annotations
 
@@ -136,7 +142,8 @@ def test_enrich_lines_pure_all_found():
 
     r = enriched[0]
     assert r["item_type"]             == "RING"
-    assert r["name_pl"]               == "Pierścionek złoty"
+    # Commercial name_pl is the usable description_pl (preferred over PD name_pl).
+    assert r["name_pl"]               == "Pierścionek złoty 585"
     assert r["description_pl"]        == "Pierścionek złoty 585"
     assert r["description_en"]        == "Gold ring 585"
     assert r["description_bilingual"] == "Pierścionek złoty 585 / Gold ring 585"
@@ -196,7 +203,7 @@ def test_enrich_lines_preserves_pricing():
     assert r["client_ref"]   == "PO-X"
     # Annotation fields must be set.
     assert r["item_type"] == "RING"
-    assert r["name_pl"]   == "Pierścionek złoty"
+    assert r["name_pl"]   == "Pierścionek złoty 585"
 
 
 # ── 4. Low-confidence accepted (no confidence filter) ─────────────────────────
@@ -210,7 +217,7 @@ def test_enrich_lines_low_confidence_accepted():
     )
     assert n_hit == 1
     assert enriched[0]["pd_confidence"] == "low"
-    assert enriched[0]["name_pl"]       == "Pierścionek złoty"
+    assert enriched[0]["name_pl"]       == "Pierścionek złoty 585"
 
 
 # ── 5. Enrichment persists to DB ─────────────────────────────────────────────
@@ -222,7 +229,7 @@ def test_enrich_draft_persists_to_db(db_path):
     )
     lines = json.loads(refreshed.editable_lines_json)
     by_code = {ln["product_code"]: ln for ln in lines}
-    assert by_code["EJL-RNG-417G"]["name_pl"]   == "Pierścionek złoty"
+    assert by_code["EJL-RNG-417G"]["name_pl"]   == "Pierścionek złoty 585"
     assert by_code["EJL-PND-ROSE"]["item_type"] == "PENDANT"
 
     # Verify the data really is in the DB, not just in the returned object.
@@ -615,3 +622,107 @@ def test_enrich_100pct_after_unmatched_filter(db_path):
         f"expected 0 missing after unmatched rows filtered; got {detail['missing_count']}"
     )
     assert detail["enriched_count"] == 2
+
+
+# ── 13-15. `_warnings` is DERIVED — recomputed, never accumulated ─────────────
+# Regression: `_warnings` rides along on the line dict via `{**ln, ...}`, so a
+# "Product description missing" warning emitted on an earlier pass (before the
+# product_descriptions row existed) survived every later pass and gained one
+# duplicate per enrichment — a false, un-actionable operator blocker on the
+# outbound proforma. Production draft 90 carried it twice while both PD rows
+# were present and usable.
+
+_STALE_PD_WARNING = (
+    "Product description missing for product_code='EJL-RNG-417G'. "
+    "The canonical product_descriptions row is absent or contains "
+    "generic/forbidden text. Promote the PZ bilingual description "
+    "(pz_rows.json) into product_descriptions first — no description "
+    "may be fabricated."
+)
+
+# Emitted by routes_proforma (a DIFFERENT producer) — must never be eaten here.
+_FOREIGN_WARNING = (
+    "Polish customs description missing for product_code='EJL-RNG-417G'. "
+    "Generate customs description package first. "
+    "Proforma must not fabricate Polish description."
+)
+
+
+def test_enrich_clears_stale_description_warning():
+    """PD resolves now → this module's own earlier warning is dropped entirely."""
+    lines = [{
+        "line_id": 1, "product_code": "EJL-RNG-417G",
+        "qty": 2, "unit_price": 25.50, "currency": "EUR",
+        "_warnings": [_STALE_PD_WARNING],
+    }]
+    enriched, n_hit, n_miss = pildb.enrich_lines_from_product_descriptions(
+        lines, _lookup_both
+    )
+    assert (n_hit, n_miss) == (1, 0)
+    assert enriched[0]["description_pl"] == "Pierścionek złoty 585"
+    # No empty-list residue either — the key is gone, same shape as never-warned.
+    assert "_warnings" not in enriched[0]
+    # Input line untouched (documented pure function).
+    assert lines[0]["_warnings"] == [_STALE_PD_WARNING]
+
+
+def test_enrich_description_warning_not_duplicated():
+    """A genuine miss warns exactly once, no matter how many passes run."""
+    lines = [{"line_id": 1, "product_code": "EJL-RNG-417G",
+              "qty": 2, "unit_price": 25.50, "currency": "EUR"}]
+
+    for _ in range(3):
+        lines, _hit, n_miss = pildb.enrich_lines_from_product_descriptions(
+            lines, _lookup_none
+        )
+        assert n_miss == 1
+        warnings = lines[0]["_warnings"]
+        assert len(warnings) == 1, warnings
+        assert warnings[0].startswith(pildb.PD_MISSING_WARNING_PREFIX)
+
+
+def test_enrich_preserves_foreign_warning():
+    """Only OUR prefix is recomputed; another producer's warning survives."""
+    lines = [{
+        "line_id": 1, "product_code": "EJL-RNG-417G",
+        "qty": 2, "unit_price": 25.50, "currency": "EUR",
+        "_warnings": [_FOREIGN_WARNING, _STALE_PD_WARNING],
+    }]
+    enriched, _hit, _miss = pildb.enrich_lines_from_product_descriptions(
+        lines, _lookup_both
+    )
+    assert enriched[0]["_warnings"] == [_FOREIGN_WARNING]
+
+
+# ── 16. the shared `_warnings` recompute helper ──────────────────────────────
+def test_recompute_line_warning_is_per_producer():
+    """Each producer replaces only its OWN entries and never accumulates.
+
+    Both `_warnings` producers (this module's PD-missing warning and
+    routes_proforma's customs warning) route through this helper, so the
+    per-producer isolation is pinned once here rather than twice downstream.
+    """
+    a, b = pildb.PD_MISSING_WARNING_PREFIX, pildb.CUSTOMS_PL_MISSING_WARNING_PREFIX
+
+    line = {"_warnings": [a + "'X'. old", b + "'X'. old"]}
+
+    # producer A re-emits: its own entry is replaced, B's survives untouched
+    pildb.recompute_line_warning(line, a, a + "'X'. new")
+    assert line["_warnings"] == [b + "'X'. old", a + "'X'. new"]
+
+    # idempotent — a second identical pass does not duplicate
+    pildb.recompute_line_warning(line, a, a + "'X'. new")
+    assert line["_warnings"] == [b + "'X'. old", a + "'X'. new"]
+
+    # producer A resolves: only its entry is dropped
+    pildb.recompute_line_warning(line, a)
+    assert line["_warnings"] == [b + "'X'. old"]
+
+    # last producer resolves: the key disappears entirely
+    pildb.recompute_line_warning(line, b)
+    assert "_warnings" not in line
+
+    # a line that never warned stays clean
+    empty = {}
+    pildb.recompute_line_warning(empty, a)
+    assert empty == {}

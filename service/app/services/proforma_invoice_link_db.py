@@ -2171,6 +2171,44 @@ NAME_PL_SOURCE_MACHINE_REPLACEABLE = frozenset({
     "",          # unstamped legacy row
 })
 
+# ── ``_warnings`` protocol on an editable proforma line ──────────────────────
+# ``_warnings`` is a DERIVED annotation that is nevertheless PERSISTED into
+# ``editable_lines_json``.  A producer that only appends therefore leaves a
+# stale entry behind once the underlying fact is fixed, and adds one duplicate
+# per pass.  Every producer owns a stable message PREFIX and recomputes through
+# :func:`recompute_line_warning`, which drops that producer's prior entries and
+# leaves every other producer's untouched.  Prefixes must stay mutually
+# non-prefixing; they are registered together here so a collision is visible.
+PD_MISSING_WARNING_PREFIX = "Product description missing for product_code="
+CUSTOMS_PL_MISSING_WARNING_PREFIX = (
+    "Polish customs description missing for product_code="
+)
+
+
+def recompute_line_warning(
+    line:    Dict[str, Any],
+    prefix:  str,
+    message: Optional[str] = None,
+) -> None:
+    """Re-decide ONE producer's ``_warnings`` entry on *line*, in place.
+
+    Drops every existing entry starting with *prefix* (this producer's earlier
+    emissions), then appends *message* exactly once when it is given. Other
+    producers' entries keep their order and content, and the key is removed
+    entirely when nothing remains — so a line with nothing to say has the same
+    shape as one that never warned.
+    """
+    kept = [
+        w for w in (line.get("_warnings") or [])
+        if not str(w).startswith(prefix)
+    ]
+    if message:
+        kept.append(message)
+    if kept:
+        line["_warnings"] = kept
+    else:
+        line.pop("_warnings", None)
+
 
 def _birth_resolve_name_pl(
     lines:         List[Dict[str, Any]],
@@ -5395,14 +5433,17 @@ def enrich_lines_from_product_descriptions(
             })
 
         out = enriched[-1]
-        if not out.get("description_pl"):
-            out["_warnings"] = list(out.get("_warnings") or []) + [
-                f"Product description missing for product_code={pc!r}. "
+        recompute_line_warning(
+            out,
+            PD_MISSING_WARNING_PREFIX,
+            None if out.get("description_pl") else (
+                f"{PD_MISSING_WARNING_PREFIX}{pc!r}. "
                 "The canonical product_descriptions row is absent or contains "
                 "generic/forbidden text. Promote the PZ bilingual description "
                 "(pz_rows.json) into product_descriptions first — no description "
                 "may be fabricated."
-            ]
+            ),
+        )
         if out.get("name_pl"):
             n_hit += 1
         else:

@@ -8750,15 +8750,20 @@ def import_draft_sales_prices(
             or (_pd_row or {}).get("name_pl")
             or ""
         ).strip()
-        if _pd_text:
-            ln["name_pl"] = _pd_text
-        else:
-            ln["name_pl"] = ""
-            ln.setdefault("_warnings", []).append(
-                f"Polish customs description missing for product_code={_pc!r}. "
+        ln["name_pl"] = _pd_text
+        # ``_warnings`` is derived but persisted: recompute this producer's own
+        # entry instead of appending, so a warning raised while the customs
+        # description was missing disappears once it exists and never
+        # accumulates one copy per patch. Other producers are untouched.
+        pildb.recompute_line_warning(
+            ln,
+            pildb.CUSTOMS_PL_MISSING_WARNING_PREFIX,
+            None if _pd_text else (
+                f"{pildb.CUSTOMS_PL_MISSING_WARNING_PREFIX}{_pc!r}. "
                 "Generate customs description package first. "
                 "Proforma must not fabricate Polish description."
-            )
+            ),
+        )
         ln["remarks"]      = row.desc_en
         # #529 — stamp sales-price provenance. Before this, a line repriced from
         # the sales packing list still carried its cost-basis price_source
