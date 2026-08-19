@@ -53,9 +53,22 @@ def test_reads_statement_authority():
         "Statement table must read GET /ledgers/clients/{id}/statement.json "
         "(same authority the statement PDF uses)"
     )
-    assert "/statement.pdf" in src, (
-        "Statement PDF download must link the existing /statement.pdf route"
+    # The download link no longer inlines its own URL: both sides build it
+    # through the pz-api.js transport authority, so the route string lives in
+    # exactly one place. Assert BOTH halves -- consuming a builder that does
+    # not point at /statement.pdf would otherwise pass silently.
+    assert "clientStatementPdfUrl" in src and "supplierStatementPdfUrl" in src, (
+        "Statement PDF downloads must go through the PzApi URL builders"
     )
+    api = (_V2 / "pz-api.js").read_text(encoding="utf-8", errors="replace")
+    assert api.count("/statement.pdf") >= 2, (
+        "pz-api.js must own the /statement.pdf route for both AR and AP"
+    )
+    # All four statement products must be reachable, not just the default.
+    for document in ("soa", "monthly", "ledger", "confirmation"):
+        assert "'%s'" % document in src, (
+            "the %s statement product must be offered on the page" % document
+        )
 
 
 def test_uses_shared_transport_only():
