@@ -1664,8 +1664,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [form, setForm] = React.useState({
     // Service
     product_code:  prefill.product_code || 'P',
-    // Package
-    box_type_code: '',
+    // Package — the selection persisted on the draft, so reopening the modal
+    // keeps it. Box Master still owns the catalogue and the dimensions.
+    box_type_code: prefill.box_type_code || '',
     // Packed gross weight — the page's canonical weight authority, already
     // resolved by _transport.effectiveWeight (manual → carrier → packing).
     // The operator records it ONCE in the Weights panel; the booking reads it.
@@ -1705,6 +1706,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
+  // OCC token for persisting the box selection; refreshed from each response.
+  const [boxUpdatedAt, setBoxUpdatedAt] = React.useState(prefill.draft_updated_at || '');
+  const [boxSaveErr,   setBoxSaveErr]   = React.useState(null);
   const [selectedCarrier, setSelectedCarrier] = React.useState('DHL');
   const [carrierTouched, setCarrierTouched] = React.useState(false);
   const [externalTracking, setExternalTracking] = React.useState('');
@@ -2001,9 +2005,24 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
+  // Persist the selection on the draft so it survives closing the modal.
+  // Booking is unaffected either way — the payload still carries the form
+  // value; this only stops the operator having to re-pick the box.
+  const persistBoxSelection = (code) => {
+    if (!prefill.draft_id || typeof window.PzApi.setDraftBoxType !== 'function') return;
+    setBoxSaveErr(null);
+    window.PzApi.setDraftBoxType(prefill.draft_id, code, boxUpdatedAt)
+      .then(r => {
+        if (r && r.ok === false) throw new Error((r && (r.error || r.detail)) || 'Could not save the box selection');
+        if (r && r.draft && r.draft.updated_at) setBoxUpdatedAt(r.draft.updated_at);
+      })
+      .catch(e => setBoxSaveErr((e && e.message) || 'Could not save the box selection'));
+  };
+
   // When a box profile is selected, auto-fill dimensions and flag override state
   const handleBoxSelect = (code) => {
     set('box_type_code', code);
+    persistBoxSelection(code);
     if (!code) return;
     const box = boxTypes.find(b => b.code === code);
     if (!box) return;
@@ -2559,6 +2578,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}
                    data-testid="awb-box-empty-state">
                 No active box profiles found in Box Master.
+              </div>
+            )}
+            {boxSaveErr && (
+              <div style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: 4 }}
+                   data-testid="awb-box-save-error">
+                {boxSaveErr} — the selection still applies to this booking, it was not remembered on the draft.
               </div>
             )}
             {boxOverridden && (
@@ -7933,6 +7958,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
               || (draft && draft.sender_contractor_id) || '',
             client_name:        (liveDraft && liveDraft.client_name)
               || (draft && draft.client_name) || '',
+            // Box Master selection persisted on the draft (code only — the
+            // dimensions are read from Box Master, never copied onto a draft).
+            box_type_code:      (liveDraft && liveDraft.box_type_code)
+              || (draft && draft.box_type_code) || '',
+            draft_id:           (liveDraft && liveDraft.id) || (draft && draft.id) || null,
+            draft_updated_at:   (liveDraft && liveDraft.updated_at)
+              || (draft && draft.updated_at) || '',
           }}
           onClose={() => setShowAwbModal(false)}
           onSuccess={() => { setShowAwbModal(false); loadCarrierShipment(); }}

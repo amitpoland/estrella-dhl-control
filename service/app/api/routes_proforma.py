@@ -5023,6 +5023,9 @@ def _draft_to_full(d: "pildb.ProformaDraft") -> Dict[str, Any]:
         "weight_source_revision": getattr(d, "weight_source_revision", None),
         "weight_override_source": getattr(d, "weight_override_source", None),   # manual | cleared
         "weight_source_revision_current": _extracted_weight_revision(getattr(d, "batch_id", "") or ""),
+        # Box Master selection — the CODE only. Dimensions stay in Box Master and
+        # are read from GET /api/v1/box-types/{code}, never copied onto the draft.
+        "box_type_code":          getattr(d, "box_type_code", None),
     }
     # Slice 1 (feat/proforma-cm-suggestions) — additive, read-only advisory
     # projection of the mapped Customer Master commercial defaults. Never
@@ -10192,6 +10195,51 @@ def set_draft_weight_override(
         manual_tare_weight  = tare,
         reason              = str(body.get("reason") or ""),
         source_revision     = source_rev,
+        operator            = operator,
+        expected_updated_at = expected,
+    ))
+
+
+@router.post("/draft/{draft_id}/box-type", dependencies=[_auth_write])
+def set_draft_box_type(
+    draft_id:   int,
+    body:       Dict[str, Any],
+    x_operator: Optional[str] = Header(None, alias="X-Operator"),
+) -> JSONResponse:
+    """Operator persists the Box Master selection on the draft.
+
+    Box Master owns the catalogue and every dimension; this stores only the
+    chosen ``box_type_code`` so the selection survives closing the AWB modal and
+    is visible before the shipment is booked. The code is validated against Box
+    Master — an unknown code is a 422, never a silently-persisted string. Passing
+    ``null`` / ``""`` clears the selection.
+
+    Body:: ``{ "expected_updated_at": "...", "box_type_code": "DHL-M" }``
+
+    Errors: 400 (bad input), 401/403 (auth), 404 (draft), 409 (stale lock /
+    non-editable), 422 (unknown box type).
+    """
+    if not isinstance(draft_id, int) or draft_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid draft_id")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    operator = _require_operator(x_operator)
+    expected = str(body.get("expected_updated_at") or "")
+
+    raw = body.get("box_type_code")
+    code = (str(raw).strip() if raw is not None else "") or None
+    if code is not None:
+        # Box Master is the authority for which codes exist — never trust the body.
+        from ..services.master_data_db import get_box_type_by_code
+        if get_box_type_by_code(settings.storage_root / "master_data.sqlite", code) is None:
+            raise HTTPException(
+                status_code=422, detail=f"unknown box_type_code: {code!r}"
+            )
+
+    return _draft_edit_dispatch(draft_id, lambda: pildb.set_draft_box_type(
+        _proforma_db_path(),
+        int(draft_id),
+        box_type_code       = code,
         operator            = operator,
         expected_updated_at = expected,
     ))
