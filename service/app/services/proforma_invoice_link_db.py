@@ -5333,15 +5333,41 @@ def _description_policy():
     return _validate, _forbidden
 
 
+def resolve_item_type(
+    pd_row:     Optional[Dict[str, Any]],
+    master_row: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """The ONE item_type resolution rule: product_descriptions, then Product Master.
+
+    ``product_descriptions.item_type`` stays the primary authority.  Rows
+    promoted from ``pz_rows.json`` carry no item_type, so the EJ Dashboard
+    Product Master (``reservation_queue.db.product_master`` — the same store the
+    draft GET projection reads) is the fallback.  Nothing is invented: absent
+    from both authorities → ``None``.
+
+    Both producers of the key call this — the persisted enrichment below and the
+    read-time projection in ``routes_proforma`` — so they cannot diverge (the
+    divergence that left a persisted line with ``item_type: null`` while the GET
+    view showed a value, degrading the carrier content description).
+    """
+    return (str((pd_row or {}).get("item_type") or "").strip()
+            or str((master_row or {}).get("item_type") or "").strip()
+            or None)
+
+
 def enrich_lines_from_product_descriptions(
-    lines:     List[Dict[str, Any]],
-    lookup_fn: Callable[[str], Optional[Dict[str, Any]]],
+    lines:            List[Dict[str, Any]],
+    lookup_fn:        Callable[[str], Optional[Dict[str, Any]]],
+    master_lookup_fn: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
 ) -> Tuple[List[Dict[str, Any]], int, int]:
     """Annotate each editable line with canonical product-description fields.
 
     Pure function — no DB I/O, no mutation of the input lines or of the
     product_descriptions rows returned by *lookup_fn*.  The caller supplies
     *lookup_fn* so this module stays free from document_db imports.
+
+    *master_lookup_fn* is the optional Product Master reader used only as the
+    item_type fallback (:func:`resolve_item_type`); omitted → PD-only behaviour.
 
     Commercial ``name_pl`` is the usable ``description_pl`` (preferred) or
     ``name_pl`` from the shared
@@ -5363,6 +5389,10 @@ def enrich_lines_from_product_descriptions(
     for ln in lines:
         pc  = str(ln.get("product_code") or "").strip()
         row = lookup_fn(pc) if pc else None
+        item_type = resolve_item_type(
+            row,
+            master_lookup_fn(pc) if (master_lookup_fn is not None and pc) else None,
+        )
         existing_pl = str(ln.get("name_pl") or "").strip()
         operator_kept = (
             bool(existing_pl)
@@ -5406,7 +5436,7 @@ def enrich_lines_from_product_descriptions(
 
             enriched.append({
                 **ln,
-                "item_type":             str(row.get("item_type") or "").strip() or None,
+                "item_type":             item_type,
                 "name_pl":               commercial or None,
                 "name_pl_source":        name_src,
                 "description_pl":        v.description_pl or None,
@@ -5418,7 +5448,7 @@ def enrich_lines_from_product_descriptions(
         else:
             enriched.append({
                 **ln,
-                "item_type":             None,
+                "item_type":             item_type,
                 "name_pl":               (existing_pl or None
                                           if (operator_kept or machine_kept) else None),
                 "name_pl_source":        (
@@ -5456,18 +5486,57 @@ def enrich_lines_from_product_descriptions(
     return enriched, n_hit, n_miss
 
 
+def _product_master_item_type_lookup(
+    storage_root: Path,
+) -> Callable[[str], Optional[Dict[str, Any]]]:
+    """Lazy per-call Product Master index feeding :func:`resolve_item_type`.
+
+    Reads the SAME authority the draft GET projection reads
+    (``reservation_db.list_product_masters``) — no second product authority is
+    created here.  The table is read at most once per enrichment call and only
+    when a line actually needs the fallback.  Any failure degrades to "no
+    fallback" (item_type stays ``None``); it never raises.
+    """
+    cache: Dict[str, Dict[str, Any]] = {}
+    state: Dict[str, bool] = {}
+
+    def _lookup(product_code: str) -> Optional[Dict[str, Any]]:
+        if not state.get("loaded"):
+            state["loaded"] = True
+            try:
+                from .reservation_db import list_product_masters
+                path = Path(storage_root) / "reservation_queue.db"
+                if path.exists():
+                    for pm in (list_product_masters(path) or []):
+                        code = str(pm.get("product_code") or "").strip()
+                        if code and code not in cache:
+                            cache[code] = pm
+            except Exception as exc:                      # pragma: no cover
+                log.warning("product_master item_type fallback unavailable "
+                            "(non-fatal): %s", exc)
+        return cache.get(str(product_code or "").strip())
+
+    return _lookup
+
+
 def enrich_draft_lines(
     db_path:             Path,
     draft_id:            int,
     operator:            str,
     expected_updated_at: str,
     lookup_fn:           Callable[[str], Optional[Dict[str, Any]]],
+    master_lookup_fn:    Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
 ) -> ProformaDraft:
     """Enrich ``editable_lines_json`` with product-description annotations.
 
     ``source_lines_json`` is NEVER touched.  ``draft_state`` is preserved
     unchanged (enrichment is a pure annotation, not a lifecycle transition).
     Allowed only from :data:`EDITABLE_STATES`.
+
+    ``item_type`` resolves through :func:`resolve_item_type`: product_descriptions
+    first, then the Product Master (defaulted from the storage root beside
+    *db_path* unless *master_lookup_fn* is supplied), so the PERSISTED line
+    carries the same value the read-time draft projection shows.
 
     Records event ``lines_enriched_from_product_descriptions`` with detail::
 
@@ -5480,7 +5549,12 @@ def enrich_draft_lines(
 
     d = _load_for_edit(db_path, draft_id, expected_updated_at)
     lines = _ensure_line_ids(json.loads(d.editable_lines_json or "[]") or [])
-    enriched, n_hit, n_miss = enrich_lines_from_product_descriptions(lines, lookup_fn)
+    enriched, n_hit, n_miss = enrich_lines_from_product_descriptions(
+        lines,
+        lookup_fn,
+        master_lookup_fn if master_lookup_fn is not None
+        else _product_master_item_type_lookup(Path(db_path).parent),
+    )
 
     refreshed = _commit_draft_update(
         db_path,

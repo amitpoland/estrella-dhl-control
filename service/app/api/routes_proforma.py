@@ -5900,10 +5900,6 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                 continue
             row = ddb.get_product_description(pc) or {}
             if row:
-                if not (ln.get("item_type") or "").strip():
-                    v = (row.get("item_type") or "").strip()
-                    if v:
-                        ln["item_type"] = v
                 if not (ln.get("name_pl") or "").strip():
                     v = (row.get("name_pl") or "").strip()
                     if v:
@@ -5921,14 +5917,14 @@ def get_proforma_draft(draft_id: int) -> JSONResponse:
                          or (row.get("description_block") or "").strip())
                     if v:
                         ln["description_bilingual"] = v
-            # product_master fallback — item_type only.  Never aliases
-            # design_no as product_code; never invents product_code.
+            # item_type — the SHARED rule (product_descriptions, then
+            # product_master) that the persisted enrichment also applies, so
+            # this projection and the stored line cannot diverge.  Never
+            # aliases design_no as product_code; never invents product_code.
             if not (ln.get("item_type") or "").strip():
-                pm = pm_index.get(pc)
-                if pm:
-                    v = (pm.get("item_type") or "").strip()
-                    if v:
-                        ln["item_type"] = v
+                v = pildb.resolve_item_type(row, pm_index.get(pc))
+                if v:
+                    ln["item_type"] = v
             # Origin enrichment — Product Master authority (ISO code).
             # Prefer product_local; fall back to reservation product_master
             # (live Product Master store). Never invent missing SKUs.
