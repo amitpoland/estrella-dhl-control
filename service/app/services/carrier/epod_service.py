@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .models.shipment import CarrierCapabilityUnsupported
+
 log = logging.getLogger(__name__)
 
 _SAFE_REF = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
@@ -94,18 +96,15 @@ def ensure_epod_result(batch_id: str, tracking_ref: str) -> EpodResult:
     except Exception as exc:
         return EpodResult("error", detail=f"adapter:{exc}")
 
-    outcome_fn = getattr(adapter, "fetch_electronic_pod_outcome", None)
-    if callable(outcome_fn):
+    # ePOD is an OPTIONAL adapter capability (adapters/base.py): a carrier that
+    # does not sell proof of delivery is skipped, never reported as an error.
+    try:
+        outcome = adapter.fetch_electronic_pod_outcome(tracking_ref)
+    except CarrierCapabilityUnsupported:
         try:
-            outcome = outcome_fn(tracking_ref)
-        except Exception as exc:
-            return EpodResult("error", detail=str(exc))
-    else:
-        fetch = getattr(adapter, "fetch_electronic_pod", None)
-        if not callable(fetch):
+            pdf = adapter.fetch_electronic_pod(tracking_ref)
+        except CarrierCapabilityUnsupported:
             return EpodResult("skipped", detail="no_fetch")
-        try:
-            pdf = fetch(tracking_ref)
         except Exception as exc:
             return EpodResult("error", detail=str(exc))
         outcome = (
@@ -113,6 +112,8 @@ def ensure_epod_result(batch_id: str, tracking_ref: str) -> EpodResult:
             if pdf and pdf[:4] == b"%PDF"
             else {"status": "not_eligible", "detail": "empty"}
         )
+    except Exception as exc:
+        return EpodResult("error", detail=str(exc))
 
     status = (outcome or {}).get("status")
     if status == "not_eligible":

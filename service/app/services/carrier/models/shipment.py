@@ -90,6 +90,16 @@ class ShipmentResult:
     carrier_transaction_id: Optional[str] = None
 
 
+class CarrierCapabilityUnsupported(NotImplementedError):
+    """The adapter does not implement an OPTIONAL capability.
+
+    Tracking, ePOD and document-image retrieval are not part of the booking
+    contract: an adapter that cannot do them is still a valid adapter. Callers
+    must treat this as "skipped", never as a carrier error — a FedEx shipment
+    with no ePOD service is a fact about FedEx, not a failure.
+    """
+
+
 class CarrierGateError(Exception):
     """Raised when the carrier API gate is not in the required state."""
 
