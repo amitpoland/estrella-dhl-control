@@ -307,3 +307,31 @@ def test_a_missing_audit_file_does_not_undo_the_link(client, storage):
     batch = _shipment(storage)                 # no audit.json
     r = client.post(f"/api/v1/packing-advance/{doc}/link", json={"batch_id": batch})
     assert r.status_code == 200 and r.json()["changed"] is True
+
+
+def test_testids_land_on_real_dom_elements():
+    """``Card`` destructures only {children, style, onClick} -- it has no rest
+    spread, so a data-testid handed to it is silently dropped and never reaches
+    the DOM. The hooks must sit on plain elements."""
+    src = _code("advance-packing.jsx")
+    for tid in ("advance-packing-card", "advance-packing-hub"):
+        assert f'<div data-testid="{tid}">' in src
+    assert not any("data-testid" in ln and "<Card" in ln
+                   for ln in src.splitlines()), "Card drops unknown props"
+
+
+def test_jsx_only_destructures_apifetch_from_the_v2_shim():
+    """The V2 shell does NOT load dashboard-shared.js -- index.html ships an
+    apiFetch-only ``EstrellaShared`` shim and puts the visual atoms on
+    ``window``. Pulling ``Btn``/``Card``/``EmptyState`` off ``EstrellaShared``
+    here yields undefined components and React error #130 the moment the
+    Shipments page renders. This is a browser-only failure: every source grep
+    passes because the names exist -- in the file the shell never loads."""
+    src = _code("advance-packing.jsx")
+    m = re.search(r"const\s*\{([^}]*)\}\s*=\s*window\.EstrellaShared", src)
+    assert m, "advance-packing.jsx no longer destructures EstrellaShared"
+    names = {n.strip() for n in m.group(1).split(",") if n.strip()}
+    assert names == {"apiFetch"}, (
+        f"{names - {'apiFetch'}} are not on the V2 EstrellaShared shim; "
+        "take visual atoms from window instead")
+    assert "const { Btn, Card, EmptyState } = window;" in src

@@ -16,7 +16,12 @@
 (function () {
   'use strict';
 
-  const { apiFetch, Btn, Card, EmptyState, _resolveOperator } = window.EstrellaShared;
+  // The V2 shell deliberately does NOT load dashboard-shared.js -- index.html
+  // ships an apiFetch-only EstrellaShared shim and puts the visual atoms on
+  // window (same as inventory-page.jsx). Destructuring the atoms off
+  // EstrellaShared here yielded undefined components and React error #130.
+  const { apiFetch } = window.EstrellaShared;
+  const { Btn, Card, EmptyState } = window;
 
   const STATUS_STYLE = {
     match:   { bg: 'var(--badge-green-bg)',   text: 'var(--badge-green-text)',   label: 'match' },
@@ -181,7 +186,7 @@
       setBusy(true); setError('');
       apiFetch(`/api/v1/packing-advance/${encodeURIComponent(chosen)}/link`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Operator-User': _resolveOperator() },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ batch_id: batchId }),
       }).then(() => { setChosen(''); load(); })
         .catch(e => setError(_err(e)))
@@ -189,7 +194,8 @@
     };
 
     return (
-      <Card data-testid="advance-packing-card" style={{ padding: 16, marginBottom: 16 }}>
+      <div data-testid="advance-packing-card">
+      <Card style={{ padding: 16, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
             📥 Advance Packing List
@@ -244,6 +250,7 @@
           </div>
         )}
       </Card>
+      </div>
     );
   }
 
@@ -272,7 +279,6 @@
       fd.append('file', file);
       apiFetch('/api/v1/packing-advance/upload', {
         method: 'POST',
-        headers: { 'X-Operator-User': _resolveOperator() },
         body: fd,
       }).then(r => {
         if (onToast) onToast(`Advance list stored: ${r.rows_stored} of ${r.rows_parsed} lines · ${r.batch_id}`);
@@ -284,7 +290,8 @@
     const waiting = docs.filter(d => !d.linked_batch_id).length;
 
     return (
-      <Card data-testid="advance-packing-hub" style={{ padding: 16, marginBottom: 16 }}>
+      <div data-testid="advance-packing-hub">
+      <Card style={{ padding: 16, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
             📥 Advance Packing Lists
@@ -370,6 +377,7 @@
           </div>
         )}
       </Card>
+      </div>
     );
   }
 

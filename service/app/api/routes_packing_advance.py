@@ -50,19 +50,32 @@ _auth  = Depends(get_current_user)
 _ALLOWED_EXTENSIONS = {".pdf", ".xlsx", ".xls"}
 
 
+def _operator_of(user: Dict[str, Any], header: str) -> str:
+    """Who is acting. The session is the authority; the header is only a hint.
+
+    Audit attribution must not be forgeable by whoever crafts the request, and
+    the V2 shell has no operator global to send one anyway.
+    """
+    return (header or "").strip() or str(
+        (user or {}).get("full_name") or (user or {}).get("email") or ""
+    ).strip()
+
+
 def _safe_name(filename: str) -> str:
     name = Path(filename or "advance_packing_list").name
     return "".join(c if c.isalnum() or c in "._- " else "_" for c in name)
 
 
-@router.post("/upload", dependencies=[_auth])
+@router.post("/upload")
 async def upload_advance_packing_list(
     file:        UploadFile,
     supplier_id: Optional[int] = Query(default=None),
     batch_id:    Optional[str] = Query(default=None,
                                        description="Append to an existing ADVANCE_* batch"),
     operator:    str           = Header(default="", alias="X-Operator-User"),
+    user:        Dict[str, Any] = _auth,
 ) -> Dict[str, Any]:
+    operator = _operator_of(user, operator)
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -128,12 +141,14 @@ def get_advance_packing_list(document_id: str) -> Dict[str, Any]:
     return {"document": doc, "line_count": len(lines), "lines": lines}
 
 
-@router.post("/{document_id}/link", dependencies=[_auth])
+@router.post("/{document_id}/link")
 def link_advance_to_shipment(
     document_id: str,
     body:        Dict[str, Any] = Body(...),
     operator:    str            = Header(default="", alias="X-Operator-User"),
+    user:        Dict[str, Any] = _auth,
 ) -> Dict[str, Any]:
+    operator = _operator_of(user, operator)
     batch_id = str(body.get("batch_id") or "").strip()
     if not batch_id:
         raise HTTPException(status_code=400, detail="batch_id is required.")
