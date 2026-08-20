@@ -1782,8 +1782,29 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
   React.useEffect(() => {
     window.PzApi.listBoxTypes && window.PzApi.listBoxTypes()
       .then(r => {
-        setBoxTypes(r && r.ok && r.data && Array.isArray(r.data.box_types) ? r.data.box_types : []);
+        const list = (r && r.ok && r.data && Array.isArray(r.data.box_types))
+          ? r.data.box_types : [];
+        setBoxTypes(list);
         setBoxTypesLoaded(true);
+        // Hydrate the parcel dimensions from the box the draft already
+        // remembers. Box Master owns the measurements; the draft stores only
+        // the code, so on reopen the dimensions have to be read back from the
+        // catalogue. Without this the modal showed a selected box with blank
+        // L/W/H and a fully prepared shipment looked incomplete. Only fills
+        // blanks — a dimension the operator overrode is never overwritten.
+        const persisted = list.find(b => b.code === (prefill.box_type_code || ''));
+        if (persisted) {
+          setForm(prev => (
+            (prev.length_cm || prev.width_cm || prev.height_cm)
+              ? prev
+              : {
+                  ...prev,
+                  length_cm: (persisted.length_cm || '').toString(),
+                  width_cm:  (persisted.width_cm  || '').toString(),
+                  height_cm: (persisted.height_cm || '').toString(),
+                }
+          ));
+        }
       })
       .catch(() => { setBoxTypes([]); setBoxTypesLoaded(true); });
     window.PzApi.listCarrierServices && window.PzApi.listCarrierServices()
