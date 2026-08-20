@@ -228,6 +228,24 @@ def _normalise_mydhl_event(ev: dict) -> dict:
         "description": str(ev.get("description") or ""),
     }
 
+# ── Tracking provisioning truth ───────────────────────────────────────────────
+#
+# The carriers THIS authority can actually call. Declared once and consumed
+# both by the fetch path below and by Carrier Master readiness, so a provider
+# can never be shown as tracking-ready while this module has no client for it.
+# A carrier is added here only when its fetch path lands in tracking_service —
+# never by adding a tracking client to a carrier adapter, which would make that
+# adapter a second tracking authority for the same fact.
+TRACKING_SUPPORTED_CARRIERS = ("DHL", "FedEx")
+
+
+def supports_tracking(carrier: str) -> bool:
+    """True when this authority has a real client for *carrier*."""
+    return (carrier or "").strip().upper() in {
+        c.upper() for c in TRACKING_SUPPORTED_CARRIERS
+    }
+
+
 # ── FedEx status mapping ──────────────────────────────────────────────────────
 
 _FEDEX_STATUS_MAP: Dict[str, tuple[str, str]] = {
@@ -1256,7 +1274,12 @@ def _get_tracking_status(
     ):
         return _fedex_pending_fallback(tracking_no, cache_dir=cache_dir)
 
-    if carrier not in ("DHL", "FedEx"):
+    # Exact match, deliberately: the carrier value on the fetch path is already
+    # canonical ("DHL" / "FedEx"), and loosening it here would change which
+    # inputs reach a live carrier call. supports_tracking() is the tolerant
+    # PUBLIC predicate for callers like Carrier Master readiness; both read the
+    # one TRACKING_SUPPORTED_CARRIERS declaration, so neither can drift from it.
+    if carrier not in TRACKING_SUPPORTED_CARRIERS:
         base["source"] = "no_credentials"
         return base
 

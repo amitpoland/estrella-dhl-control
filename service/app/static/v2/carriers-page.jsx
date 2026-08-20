@@ -623,10 +623,18 @@ function ReadinessTab({ readiness }) {
           : <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{ad.reason || 'unavailable'}</span>}
       </div>,
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+        {/* Per CAPABILITY, never one roll-up: a carrier whose booking works and
+            whose tracking is not provisioned must not read as ready. An
+            unprovisioned capability says so, instead of showing a credential
+            state that would imply it merely needs configuring. */}
         {(c.credentials || []).map(cr => (
-          <span key={cr.capability} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span key={cr.capability} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                title={cr.not_provisioned_reason || ''}>
             <span style={{ fontSize: 10, color: 'var(--text-2)' }}>{cr.capability}</span>
-            {stateChip(cr.state)}
+            {cr.provisioned === false
+              ? <span data-testid={'readiness-not-provisioned-' + c.carrier_code + '-' + cr.capability}
+                      style={{ fontSize: 10, color: 'var(--text-3)' }}>not provisioned</span>
+              : stateChip(cr.state)}
           </span>
         ))}
       </div>,
