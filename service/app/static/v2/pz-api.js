@@ -2480,6 +2480,12 @@
     wfirmaPzPreview: (batchId) =>
       _get(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/wfirma/pz_preview`),
 
+    // POST /api/v1/upload/shipment/{batch_id}/wfirma/products/resolve — canonical
+    // product identity resolution (search wFirma → adopt → create only when
+    // WFIRMA_CREATE_PRODUCT_ALLOWED). Backend authority; transport only here.
+    wfirmaProductsResolve: (batchId) =>
+      _postM(`${BASE}/upload/shipment/${encodeURIComponent(batchId)}/wfirma/products/resolve`),
+
     // POST /api/v1/upload/shipment/{batch_id}/wfirma/pz_create — live wFirma PZ.
     // Requires WFIRMA_CREATE_PZ_ALLOWED + server export guards. Sends X-Operator.
     wfirmaPzCreate: (batchId) =>
