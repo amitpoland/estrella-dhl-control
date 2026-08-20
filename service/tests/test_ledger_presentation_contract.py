@@ -1841,3 +1841,128 @@ def test_ap_offset_status_is_judged_against_the_suppliers_own_gross():
     # mislabel did not merely print a wrong flag -- it dropped a 9,900
     # creditor into the bottom (fully_offset) tier. Pin the tier itself.
     assert by_id["S-A"]["offset_status"] != "fully_offset"
+
+
+# ---------------------------------------------------------------------------
+# Definition-level invariants, mirrored on BOTH sides.
+#
+# The leaked-variable defect survived a 64-check production acceptance because
+# AR asserted the definition while AP asserted only ORDERING -- and a list
+# sorted consistently by a wrong classification is still a sorted list, so no
+# ordering test can see it. Both sides now pin all three branches:
+#
+#     credit == 0                          -> actionable
+#     0 < credit < gross                   -> partially_offset
+#     credit >= gross and credit > 0       -> fully_offset
+#
+# The middle and last branches are what the ranking depends on; the last one
+# also guards the opposite error -- demoting a genuinely offset party would
+# push it up the list instead of down.
+# ---------------------------------------------------------------------------
+
+def test_ap_offset_status_covers_the_whole_definition():
+    """All three AP branches, including a genuinely fully-offset supplier."""
+    from app.services.accounting_analytics import (
+        build_payables_portfolio_from_facts,
+    )
+
+    def _exp(eid, cid, brutto):
+        return {"id": eid, "contractor_id": cid, "contractor_name": cid,
+                "currency": "USD", "brutto": Decimal(brutto),
+                "date": "2026-01-10", "payment_date": "2026-02-10"}
+
+    facts = [
+        _exp("a1", "S-PARTIAL", "10000"), _exp("a2", "S-PARTIAL", "-100"),
+        _exp("b1", "S-FULL", "500"), _exp("b2", "S-FULL", "-500"),
+        _exp("c1", "S-PLAIN", "300"),
+        _exp("d1", "S-PLAIN-BIG", "900"),
+    ]
+    out = build_payables_portfolio_from_facts(
+        facts, [], as_of="2026-08-20", period=("2020-01-01", "2026-08-20"))
+    by_id = {s["contractor_id"]: s for s in out["suppliers"]}
+
+    # credit == 0
+    assert by_id["S-PLAIN"]["credit_balance"] == "0.00"
+    assert by_id["S-PLAIN"]["offset_status"] == "actionable"
+
+    # 0 < credit < gross_payable
+    assert by_id["S-PARTIAL"]["gross_payable"] == "10000.00"
+    assert by_id["S-PARTIAL"]["credit_balance"] == "100.00"
+    assert by_id["S-PARTIAL"]["offset_status"] == "partially_offset"
+
+    # credit >= gross_payable and credit > 0
+    assert by_id["S-FULL"]["gross_payable"] == "500.00"
+    assert by_id["S-FULL"]["credit_balance"] == "500.00"
+    assert by_id["S-FULL"]["net_payable"] == "0.00"
+    assert by_id["S-FULL"]["offset_status"] == "fully_offset"
+
+    # Ordering: offset_status is the PRIMARY key, so the tier decides first and
+    # net_payable only breaks ties WITHIN a tier. A fully-offset supplier must
+    # therefore land last regardless of how large its gross is.
+    order = [s["contractor_id"] for s in out["suppliers"]]
+    assert order == ["S-PLAIN-BIG", "S-PLAIN", "S-PARTIAL", "S-FULL"], order
+    # Within the actionable tier, the larger payable leads -- numerically, not
+    # as a string ("900" must beat "300", and later "1000" must beat "900").
+    assert order.index("S-PLAIN-BIG") < order.index("S-PLAIN")
+
+
+def test_ar_offset_status_covers_the_whole_definition():
+    """The AR mirror -- same three branches, judged against ``outstanding``."""
+    from app.services.accounting_analytics import build_portfolio_from_facts
+
+    def _inv(iid, cid, brutto, typ=""):
+        row = {"id": iid, "contractor_id": cid, "contractor_name": cid,
+               "currency": "USD", "brutto": Decimal(brutto),
+               "date": "2026-01-10", "due_date": "2026-02-10"}
+        if typ:
+            row["type"] = typ
+        return row
+
+    facts = [
+        _inv("a1", "C-PARTIAL", "10000"), _inv("a2", "C-PARTIAL", "-100", "correction"),
+        _inv("b1", "C-FULL", "500"), _inv("b2", "C-FULL", "-500", "correction"),
+        _inv("c1", "C-PLAIN", "300"),
+        _inv("d1", "C-PLAIN-BIG", "900"),
+    ]
+    out = build_portfolio_from_facts(
+        facts, [], as_of="2026-08-20", period=("2020-01-01", "2026-08-20"))
+    by_id = {c["contractor_id"]: c for c in out["customers"]}
+
+    assert by_id["C-PLAIN"]["credit_balance"] == "0.00"
+    assert by_id["C-PLAIN"]["offset_status"] == "actionable"
+
+    assert by_id["C-PARTIAL"]["outstanding"] == "10000.00"
+    assert by_id["C-PARTIAL"]["credit_balance"] == "100.00"
+    assert by_id["C-PARTIAL"]["net_position"] == "9900.00"
+    assert by_id["C-PARTIAL"]["offset_status"] == "partially_offset"
+
+    assert by_id["C-FULL"]["outstanding"] == "500.00"
+    assert by_id["C-FULL"]["credit_balance"] == "500.00"
+    assert by_id["C-FULL"]["net_position"] == "0.00"
+    assert by_id["C-FULL"]["offset_status"] == "fully_offset"
+
+    order = [c["contractor_id"] for c in out["customers"]]
+    assert order == ["C-PLAIN-BIG", "C-PLAIN", "C-PARTIAL", "C-FULL"], order
+    assert order.index("C-PLAIN-BIG") < order.index("C-PLAIN")
+
+
+def test_offset_status_is_defined_in_exactly_one_place_per_side():
+    """No second offset or ranking authority may appear.
+
+    The repair must not spawn a parallel classifier: each side derives
+    ``offset_status`` once, inside its own builder.
+    """
+    import inspect
+
+    from app.services import accounting_analytics as aa
+
+    src = inspect.getsource(aa)
+    assert src.count('"offset_status": (') == 2, (
+        "expected exactly one offset_status derivation per side (AR + AP)"
+    )
+    # And each must read its OWN gross authority.
+    assert "credit >= outstanding and credit > 0" in src
+    assert "credit >= gross_payable and credit > 0" in src
+    assert "credit >= gross and credit > 0" not in src, (
+        "the leaked bare `gross` comparison is back"
+    )
