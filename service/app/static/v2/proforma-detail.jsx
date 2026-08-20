@@ -2019,16 +2019,35 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
       });
   };
 
-  // Readiness-derived gates. Absent/failed readiness never invents a block —
+  // Readiness-derived gates. Absent/failed readiness never invents a block --
   // the existing server gates still fail closed on their own.
-  const _rdyBooking    = (readiness && readiness.booking) || null;
-  const _rdyBlockers   = (_rdyBooking && _rdyBooking.blockers) || [];
-  const _rdyAdvisories = (_rdyBooking && _rdyBooking.advisories) || [];
-  const _rdyRelease    = (readiness && readiness.release) || null;
-  // Live production writing is not released for THIS shipment. The operator may
-  // still prepare everything; Create Shipment is simply not called.
-  const releaseBlocked = !!(readiness && readiness.live_release_blocked);
+  //
+  // business readiness and live release are INDEPENDENT axes. "Not released"
+  // means the production carrier write is not authorized for this shipment; it
+  // never means the shipment data is invalid, and the UI must not say so.
+  const _rdyBiz      = (readiness && readiness.business_readiness) || null;
+  const _rdyBlockers = (_rdyBiz && _rdyBiz.blockers) || [];
+  const _rdyWarnings = (_rdyBiz && _rdyBiz.warnings) || [];
+  const _rdyRelease  = (readiness && readiness.live_release) || null;
+  const _rdyExisting = (readiness && readiness.existing_booking) || null;
+  const _rdyWarehouse = (readiness && readiness.warehouse) || null;
+  // This leg already has a real AWB -- booking again would duplicate it.
+  const legAlreadyBooked = !!(_rdyExisting && _rdyExisting.blocks_duplicate_booking);
+  const releaseBlocked   = !!(_rdyRelease && !_rdyRelease.ready);
   const readinessBlocksSubmit = _rdyBlockers.length > 0 || releaseBlocked;
+
+  // AWB preparation checklist -- one row per authority-backed fact, so a
+  // missing prerequisite is understandable BEFORE the POST.
+  const _rdyRows = readiness ? [
+    ['Proforma Invoice',   (readiness.proforma || {}).ready],
+    ['Recipient',          (readiness.recipient || {}).ready],
+    ['Actual gross weight',(readiness.weight || {}).ready],
+    ['Box Profile',        (readiness.box || {}).ready],
+    ['Packages',           (readiness.packages || {}).ready],
+    ['Declared value',     (readiness.declared_value || {}).ready],
+    ['Description',        (readiness.description || {}).ready],
+    ['Carrier account',    (readiness.carrier || {}).account_ready],
+  ] : [];
 
   const _apiStatus = carrierStatus && carrierStatus.carrier_api_status;
   const isPending = !_apiStatus || _apiStatus === 'pending';
@@ -2947,65 +2966,95 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
               this batch (or could not be ruled out); booking is HELD until the
               operator explicitly confirms creating a NEW shipment record.
               No DHL void, no auto-cancel — the prior AWB stays as it is. */}
-          {/* ── Booking preflight ─────────────────────────────────────────
+          {/* -- AWB preparation preflight ------------------------------
               What the booking authorities already know, shown BEFORE the
-              operator fills the form — so a missing prerequisite is a sentence
-              here, not a raw carrier 422 after the work is done. Two separate
-              axes: business readiness, and whether live production writing is
-              released for this shipment. Never suggests widening the
-              allowlist. */}
+              operator fills the form -- so a missing requirement is a sentence
+              here, not a raw carrier 422 after the work is done.
+
+              Warehouse receipt is displayed as downstream information ONLY.
+              Goods are packed and weighed in India and the AWB is created
+              before they travel, so a pending destination receipt is the
+              expected state at booking time and never turns anything red. */}
           {readinessState === 'loaded' && readiness && (
             <div style={{
               padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 8,
               border: '1px solid var(--border)', marginBottom: 16,
             }} data-testid="awb-readiness-panel">
-              {readiness.existing_awb && readiness.shipment_intent === 'inbound_existing' && (
-                <div style={{ fontSize: 12, marginBottom: 8 }}
-                     data-testid="awb-readiness-inbound-leg">
-                  <strong>Inbound supplier leg — AWB {readiness.existing_awb}</strong>
-                  {readiness.inbound_leg && readiness.inbound_leg.status
-                    ? ` · ${readiness.inbound_leg.status}` : ''}
-                  {readiness.inbound_leg && readiness.inbound_leg.location
-                    ? ` · ${readiness.inbound_leg.location}` : ''}
-                  <div style={{ color: 'var(--text-3)', marginTop: 2 }}>
-                    This AWB belongs to the supplier and is tracked here — it is
-                    never re-booked. Outbound customer shipments are prepared
-                    per customer proforma.
-                  </div>
+              <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>
+                AWB Preparation
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '3px 12px', fontSize: 11.5 }}>
+                {_rdyRows.map(([label, ok]) => (
+                  <React.Fragment key={label}>
+                    <div style={{ color: 'var(--text-2)' }}>{label}</div>
+                    <div style={{ color: ok ? 'var(--badge-green-text)' : 'var(--badge-amber-text)' }}>
+                      {ok ? 'Ready' : 'Missing'}
+                    </div>
+                  </React.Fragment>
+                ))}
+                <div style={{ color: 'var(--text-2)' }}>Existing AWB</div>
+                <div data-testid="awb-readiness-existing">
+                  {legAlreadyBooked
+                    ? `${_rdyExisting.carrier || ''} ${_rdyExisting.awb}`.trim()
+                    : 'None'}
+                </div>
+                <div style={{ color: 'var(--text-2)' }}>Live release</div>
+                <div data-testid="awb-readiness-release">
+                  {releaseBlocked ? 'Not authorized' : 'Authorized'}
+                </div>
+              </div>
+
+              {/* Downstream only -- never a booking prerequisite. */}
+              {_rdyWarehouse && (
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}
+                     data-testid="awb-readiness-warehouse">
+                  Warehouse receipt: {_rdyWarehouse.state}
+                  {_rdyWarehouse.expected_count
+                    ? ` (${_rdyWarehouse.received_count}/${_rdyWarehouse.expected_count} lines)` : ''}
+                  {' \u2014 not required for origin dispatch.'}
                 </div>
               )}
-              {_rdyBlockers.length > 0 && (
-                <div style={{ fontSize: 12 }} data-testid="awb-readiness-blockers">
+
+              {legAlreadyBooked && (
+                <div style={{ fontSize: 11.5, marginTop: 8 }}
+                     data-testid="awb-readiness-already-booked">
+                  <strong>Shipment leg already booked.</strong> {_rdyExisting.carrier || ''} AWB{' '}
+                  {_rdyExisting.awb} already represents this shipment leg, so no new
+                  AWB is required and nothing needs to be released.
+                  {_rdyExisting.tracking_status ? ` Currently: ${_rdyExisting.tracking_status}` : ''}
+                  {_rdyExisting.tracking_location ? ` (${_rdyExisting.tracking_location})` : ''}
+                </div>
+              )}
+
+              {!legAlreadyBooked && _rdyBlockers.length > 0 && (
+                <div style={{ fontSize: 11.5, marginTop: 8 }} data-testid="awb-readiness-blockers">
                   <strong>Not ready to book yet</strong>
                   <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
                     {_rdyBlockers.map(b => (
-                      <li key={b.code} style={{ marginBottom: 3 }}>
-                        {b.message} <span style={{ color: 'var(--text-3)' }}>({b.authority})</span>
-                      </li>
+                      <li key={b.code} style={{ marginBottom: 3 }}>{b.message}</li>
                     ))}
                   </ul>
                 </div>
               )}
-              {_rdyBlockers.length === 0 && (
-                <div style={{ fontSize: 12 }} data-testid="awb-readiness-ready">
-                  <strong>Ready to generate a real AWB</strong> — every business
+              {!legAlreadyBooked && _rdyBlockers.length === 0 && (
+                <div style={{ fontSize: 11.5, marginTop: 8 }} data-testid="awb-readiness-ready">
+                  <strong>Ready to generate a real AWB</strong> -- every business
                   prerequisite is satisfied.
                 </div>
               )}
-              {_rdyAdvisories.length > 0 && (
-                <div style={{ fontSize: 11.5, color: 'var(--badge-amber-text)', marginTop: 8 }}
-                     data-testid="awb-readiness-advisories">
-                  {_rdyAdvisories.map(a => (
-                    <div key={a.code}>{a.message}</div>
-                  ))}
+              {_rdyWarnings.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}
+                     data-testid="awb-readiness-warnings">
+                  {_rdyWarnings.map(w => <div key={w.code}>{w.message}</div>)}
                 </div>
               )}
-              {releaseBlocked && (
+              {releaseBlocked && !legAlreadyBooked && (
                 <div style={{ fontSize: 11.5, marginTop: 8, color: 'var(--badge-amber-text)' }}
                      data-testid="awb-readiness-release-blocked">
-                  Live {selectedCarrier} booking is not released for this shipment.
-                  Release this specific shipment through the governed
-                  live-booking process. Everything above can be prepared now.
+                  Live {selectedCarrier} booking is not authorized for this shipment
+                  yet. Release this specific shipment through the governed
+                  live-booking process. The shipment data above is unaffected --
+                  everything can be prepared now.
                 </div>
               )}
             </div>

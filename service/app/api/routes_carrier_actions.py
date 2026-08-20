@@ -1175,44 +1175,53 @@ def create_shipment(
             },
         )
 
-    # ── Shipment-leg safety: never re-book the inbound supplier leg ──────
+    # -- Duplicate protection: one canonical shipment leg, one AWB ---------
     #
-    # An import batch carries the supplier's own inbound AWB AND, separately,
-    # zero or more outbound customer intents (one per proforma draft, scoped by
-    # client_ref). batch_id alone therefore does not identify a shipment. A
-    # request that resolves to NO outbound customer intent is a request to book
-    # the batch itself — i.e. the leg the supplier already booked — so it fails
-    # here, before the coordinator and before any chargeable carrier call.
+    # The invariant is exactly one sentence: the same canonical shipment leg
+    # must not receive a second AWB.
     #
-    # This is deliberately NOT "inbound batch ⇒ no outbound shipment": a batch
-    # with customer drafts keeps every one of them bookable, independently.
-    from ..services.carrier.booking_readiness import (
-        has_outbound_customer_scope, project_inbound_leg,
-    )
+    # Direction is NOT consulted and must never be. Goods moving India -> Poland
+    # are "inbound" relative to the destination warehouse while the origin-side
+    # operator legitimately books the carrier BEFORE departure. A blanket
+    # "inbound batches are unbookable" rule would forbid the normal workflow.
     #
-    # The check fires only when there IS an inbound leg to protect: a batch with
-    # no supplier AWB and no draft is an unrelated caller shape and keeps its
-    # existing behaviour.
-    _inbound = project_inbound_leg(batch_id, storage_root=settings.storage_root)
-    if (_inbound and _inbound.get("awb")) and not has_outbound_customer_scope(
+    # Leg identity (resolve_existing_leg_awb): a client_ref naming a real
+    # proforma draft is a distinct outbound customer leg, and duplicates there
+    # are already handled correctly by the coordinator's idempotency key, which
+    # REPLAYS the stored booking instead of creating a second AWB. An
+    # unscoped request identifies the batch itself, and for an import batch
+    # whose intake carried a supplier AWB that leg is already booked.
+    #
+    # Warehouse receipt is NOT consulted here and must never be: it is
+    # downstream of dispatch (goods are packed and weighed in India before they
+    # travel), so it cannot be a booking prerequisite.
+    from ..services.carrier.booking_readiness import resolve_existing_leg_awb
+
+    _booked = resolve_existing_leg_awb(
         batch_id,
+        storage_root=settings.storage_root,
         proforma_db_path=settings.storage_root / "proforma_links.db",
         client_ref=(body.client_ref or None),
-    ):
+    )
+    if _booked:
         raise HTTPException(status_code=422, detail={
             "error": (
-                f"This batch has no outbound customer proforma to ship. AWB "
-                f"{_inbound['awb']} belongs to the inbound supplier leg and is "
-                f"tracked, not re-booked."
+                "This shipment leg already has {0} AWB {1}. "
+                "No new AWB is required.".format(
+                    _booked.get("provider") or "an existing", _booked["awb"])
             ),
-            "code": "INBOUND_EXISTING_AWB",
+            "code": "SHIPMENT_LEG_ALREADY_BOOKED",
             "batch_id": batch_id,
             "client_ref": (body.client_ref or None),
-            "existing_awb": (_inbound or {}).get("awb"),
-            "existing_awb_provider": (_inbound or {}).get("provider"),
+            "existing_awb": _booked["awb"],
+            "existing_awb_provider": _booked.get("provider"),
+            "existing_awb_source": _booked.get("source"),
             "guidance": (
-                "Create or select the customer proforma for this shipment, then "
-                "prepare its outbound AWB. No carrier request was sent."
+                "The existing carrier shipment already represents this shipment "
+                "leg, so nothing needs to be released or allowlisted. To ship a "
+                "different customer's goods from this batch, select that "
+                "customer's proforma and prepare its own AWB. No carrier "
+                "request was sent."
             ),
         })
 

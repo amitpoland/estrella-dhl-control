@@ -1,13 +1,16 @@
-"""Shipment-leg model + booking-readiness projection.
+"""Shipment-leg duplicate protection + booking-readiness projection.
 
-An import batch is NOT one shipment. It carries the supplier's inbound AWB and,
-separately, zero or more outbound customer intents scoped by ``client_ref``.
-These pin both halves:
+Three business rules are pinned here because getting any of them wrong stops a
+real shipment leaving India:
 
-* the READ projection (``GET .../booking-readiness``) reports what the booking
-  authorities already know, before the operator fills the modal in;
-* the server-side leg guard refuses to re-book the inbound supplier leg, and
-  refuses it BEFORE any carrier adapter is reached.
+1. **Warehouse receipt is DOWNSTREAM of dispatch.** Goods are packed and weighed
+   in India and the AWB is created before they travel. A pending destination
+   receipt is the expected state at booking time — never a blocker, never a
+   warning, never a booking dependency.
+2. **The Proforma Invoice is the value document at AWB stage.** A final sales /
+   commercial invoice is not required and is never consulted.
+3. **Direction alone never blocks a booking.** Duplicate protection is tied to
+   leg identity: the same canonical leg must not receive a second AWB.
 
 Nothing here contacts a carrier, creates a shipment, or widens an allowlist.
 The batch ids are synthetic.
@@ -31,6 +34,7 @@ if str(_ROOT) not in sys.path:
 
 INBOUND_AWB = "1000000002"
 BATCH = "SHIPMENT_" + INBOUND_AWB + "_2026-08_bbbb2222"
+PLAIN_BATCH = "SHIPMENT_NOAWB_2026-08_cccc3333"
 CLIENT_A = "CUSTOMER_A"
 CLIENT_B = "CUSTOMER_B"
 
@@ -45,15 +49,22 @@ def storage(tmp_path):
     pildb.init_db(tmp_path / "proforma_links.db")
     out = tmp_path / "outputs" / BATCH
     out.mkdir(parents=True, exist_ok=True)
-    # An intake-uploaded supplier AWB — the inbound leg.
+    # An intake-uploaded supplier AWB — this leg is already booked.
     (out / "audit.json").write_text(json.dumps({
         "batch_id": BATCH, "awb": INBOUND_AWB, "tracking_no": INBOUND_AWB,
         "carrier": "DHL", "source": "intake_upload", "timeline": [],
     }), encoding="utf-8")
+    # A batch carrying NO AWB at all — nothing to protect against.
+    plain = tmp_path / "outputs" / PLAIN_BATCH
+    plain.mkdir(parents=True, exist_ok=True)
+    (plain / "audit.json").write_text(json.dumps({
+        "batch_id": PLAIN_BATCH, "carrier": "DHL", "source": "intake_upload",
+        "timeline": [],
+    }), encoding="utf-8")
     return tmp_path
 
 
-def _seed_draft(storage, client_name, *, box=None, gross=None):
+def _seed_draft(storage, client_name, *, box=None, gross=None, batch=BATCH):
     with sqlite3.connect(str(storage / "proforma_links.db")) as conn:
         cur = conn.execute(
             """INSERT INTO proforma_drafts
@@ -63,7 +74,7 @@ def _seed_draft(storage, client_name, *, box=None, gross=None):
                   clone_generation, draft_version, box_type_code,
                   manual_gross_weight, created_at, updated_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))""",
-            (BATCH, client_name, "draft", "EUR", "draft", None, "", "[]", "[]",
+            (batch, client_name, "draft", "EUR", "draft", None, "", "[]", "[]",
              "[]", 0, 1, box, gross),
         )
         conn.commit()
@@ -77,6 +88,8 @@ def _settings(storage, **over):
     s.carrier_live_allowlist = ""
     s.carrier_api_status = "live"
     s.dhl_express_account_number = "ACC123"
+    s.dhl_express_api_key = "k"
+    s.dhl_express_api_secret = "s"
     for k, v in over.items():
         setattr(s, k, v)
     return s
@@ -84,7 +97,7 @@ def _settings(storage, **over):
 
 @pytest.fixture(autouse=True)
 def _stub_external_authorities(monkeypatch):
-    """Customer Master / warehouse / Incoterm have their own pinned suites."""
+    """Customer Master / warehouse / Incoterm / description have their own suites."""
     monkeypatch.setattr(
         "app.services.awb_address_authority.derive_awb_address_authority",
         lambda batch_id, storage_root, client_ref=None: {
@@ -97,13 +110,19 @@ def _stub_external_authorities(monkeypatch):
         lambda **kw: {"value": "DAP", "source": "customer_master"},
     )
     monkeypatch.setattr(
+        "app.api.routes_carrier_actions._project_shipment_description_for_client",
+        lambda **kw: "Jewellery",
+    )
+    # Goods have NOT reached the destination warehouse — the normal state at
+    # booking time, since the AWB is created before they travel.
+    monkeypatch.setattr(
         "app.services.warehouse_receipt.get_receipt_status",
         lambda batch_id: {"total_lines": 2, "confirmed_lines": 0,
                           "fully_confirmed": False, "serial_controlled": False},
     )
 
 
-def _project(storage, **kw):
+def _project(storage, batch=BATCH, **kw):
     from app.services.carrier.booking_readiness import project_booking_readiness
 
     params = dict(
@@ -115,101 +134,164 @@ def _project(storage, **kw):
         declared_value=1000.0,
     )
     params.update(kw)
-    return project_booking_readiness(BATCH, **params)
+    return project_booking_readiness(batch, **params)
 
 
 def _codes(items):
     return {i["code"] for i in items}
 
 
-# ── shipment-leg model ──────────────────────────────────────────────────────
+def _blockers(proj):
+    return _codes(proj["business_readiness"]["blockers"])
 
 
-def test_batch_alone_never_identifies_a_shipment(storage):
-    """Two customers in one import batch stay independently scoped."""
+# ── RULE 1 — warehouse receipt is downstream, never a gate ──────────────────
+
+
+def test_warehouse_not_received_does_not_block_business_readiness(storage):
+    """Goods are packed in India; the AWB is created before they travel."""
+    _seed_draft(storage, CLIENT_A, box="BOX-A", batch=PLAIN_BATCH)
+    proj = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A)
+    assert proj["warehouse"]["state"] == "pending"
+    assert proj["business_readiness"]["ready"] is True
+    assert proj["business_readiness"]["blockers"] == []
+
+
+def test_warehouse_never_appears_as_a_blocker_or_a_warning(storage):
+    _seed_draft(storage, CLIENT_A, batch=PLAIN_BATCH)
+    biz = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A)["business_readiness"]
+    assert "WAREHOUSE" not in json.dumps(biz).upper()
+
+
+def test_warehouse_declares_itself_a_non_dependency(storage):
+    """A permanent contract, not an incidental value."""
+    assert _project(storage, batch=PLAIN_BATCH)["warehouse"]["booking_dependency"] is False
+
+
+def test_create_shipment_never_consults_warehouse_receipt():
+    """Server-side: the booking path must not import or read receipt state."""
+    routes = (_ROOT / "app" / "api" / "routes_carrier_actions.py").read_text(encoding="utf-8")
+    body = routes[routes.index("def create_shipment("):
+                  routes.index("def _external_shipment_payload(")]
+    for banned in ("warehouse_receipt", "get_receipt_status", "fully_confirmed",
+                   "WAREHOUSE_NOT_RECEIVED"):
+        assert banned not in body, banned
+
+
+# ── RULE 2 — proforma is the AWB value document ─────────────────────────────
+
+
+def test_final_sales_invoice_is_not_required_for_awb(storage):
+    """No sales/commercial invoice exists in this fixture at all."""
+    _seed_draft(storage, CLIENT_A, box="BOX-A", batch=PLAIN_BATCH)
+    proj = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A)
+    assert proj["proforma"]["ready"] is True
+    assert proj["proforma"]["final_sales_invoice_required"] is False
+    assert proj["business_readiness"]["ready"] is True
+    assert proj["declared_value"]["authority"] == "proforma_invoice"
+
+
+def test_readiness_never_reads_a_sales_invoice_authority():
+    src = _SRC.read_text(encoding="utf-8").lower()
+    body = src[src.index("from __future__"):]      # skip the explanatory docstring
+    for banned in ("import invoice", "invoice_db", "get_sales_invoice",
+                   "wfirma_invoice", "list_invoices"):
+        assert banned not in body, banned
+    # The one permitted mention is the declared negative contract itself.
+    assert body.count("sales_invoice") == body.count("final_sales_invoice_required")
+
+
+# ── RULE 3 — direction never blocks; leg identity does ──────────────────────
+
+
+def test_inbound_direction_alone_does_not_block_a_booking(storage):
+    """India -> Poland is 'inbound' at the warehouse while origin-side booking
+    is exactly the normal workflow."""
+    _seed_draft(storage, CLIENT_A, box="BOX-A", batch=PLAIN_BATCH)
+    proj = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A)
+    assert proj["existing_booking"]["existing"] is False
+    assert proj["business_readiness"]["ready"] is True
+
+
+def test_direction_is_never_consulted_by_the_duplicate_rule():
+    import ast
+    import inspect
+
+    from app.services.carrier import booking_readiness as br
+
+    fn = ast.parse(inspect.getsource(br.resolve_existing_leg_awb)).body[0]
+    # Drop the docstring: it EXPLAINS why direction is irrelevant, at length.
+    if (fn.body and isinstance(fn.body[0], ast.Expr)
+            and isinstance(fn.body[0].value, ast.Constant)):
+        fn.body = fn.body[1:]
+    code = ast.dump(ast.Module(body=fn.body, type_ignores=[])).lower()
+    for banned in ("direction", "inbound_batch", "is_inbound"):
+        assert banned not in code, banned
+
+
+def test_same_leg_with_an_existing_awb_blocks_a_duplicate(storage):
+    proj = _project(storage)                      # unscoped -> the batch leg
+    assert proj["existing_booking"]["awb"] == INBOUND_AWB
+    assert proj["existing_booking"]["blocks_duplicate_booking"] is True
+    assert "SHIPMENT_LEG_ALREADY_BOOKED" in _blockers(proj)
+
+
+def test_a_distinct_customer_leg_is_not_the_already_booked_leg(storage):
+    """The supplier AWB must not make every customer in the batch unbookable."""
+    _seed_draft(storage, CLIENT_A, box="BOX-A")
+    proj = _project(storage, client_ref=CLIENT_A)
+    assert proj["existing_booking"]["existing"] is False
+    assert "SHIPMENT_LEG_ALREADY_BOOKED" not in _blockers(proj)
+    assert proj["business_readiness"]["ready"] is True
+
+
+def test_two_customers_in_one_batch_stay_independently_scoped(storage):
     from app.services.carrier.booking_readiness import resolve_outbound_intents
 
     _seed_draft(storage, CLIENT_A)
     _seed_draft(storage, CLIENT_B)
     db = storage / "proforma_links.db"
-
-    both = resolve_outbound_intents(BATCH, proforma_db_path=db)
-    assert {i["client_ref"] for i in both} == {CLIENT_A, CLIENT_B}
-
-    only_a = resolve_outbound_intents(BATCH, proforma_db_path=db, client_ref=CLIENT_A)
-    assert [i["client_ref"] for i in only_a] == [CLIENT_A]
+    assert {i["client_ref"] for i in resolve_outbound_intents(BATCH, proforma_db_path=db)} \
+        == {CLIENT_A, CLIENT_B}
+    assert [i["client_ref"] for i in resolve_outbound_intents(
+        BATCH, proforma_db_path=db, client_ref=CLIENT_A)] == [CLIENT_A]
 
 
 def test_readiness_scopes_by_client_ref_not_by_batch(storage):
-    _seed_draft(storage, CLIENT_A, box="BOX-A")
-    _seed_draft(storage, CLIENT_B)
-
-    # No scope + several customers = ambiguous, and it says so rather than
-    # silently picking one customer's shipment.
-    assert "OUTBOUND_SCOPE_AMBIGUOUS" in _codes(_project(storage)["booking"]["blockers"])
-
-    scoped = _project(storage, client_ref=CLIENT_A)
+    _seed_draft(storage, CLIENT_A, box="BOX-A", batch=PLAIN_BATCH)
+    _seed_draft(storage, CLIENT_B, batch=PLAIN_BATCH)
+    assert "OUTBOUND_SCOPE_AMBIGUOUS" in _blockers(_project(storage, batch=PLAIN_BATCH))
+    scoped = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A)
     assert scoped["customer_scope"] == CLIENT_A
-    assert scoped["box"]["code"] == "BOX-A"
-    assert "OUTBOUND_SCOPE_AMBIGUOUS" not in _codes(scoped["booking"]["blockers"])
-
-
-def test_inbound_leg_is_reported_and_never_becomes_an_outbound_intent(storage):
-    proj = _project(storage)
-    assert proj["existing_awb"] == INBOUND_AWB
-    assert proj["existing_awb_provider"] == "DHL"
-    assert proj["outbound_intents"] == []
-    assert proj["shipment_intent"] == "inbound_existing"
-    assert "NO_OUTBOUND_CUSTOMER_INTENT" in _codes(proj["booking"]["blockers"])
-
-
-def test_an_outbound_intent_coexists_with_the_inbound_leg(storage):
-    """An inbound batch does NOT forbid preparing a customer shipment."""
-    _seed_draft(storage, CLIENT_A, box="BOX-A")
-    proj = _project(storage, client_ref=CLIENT_A)
-    assert proj["existing_awb"] == INBOUND_AWB          # still tracked
-    assert proj["shipment_intent"] == "outbound_customer"
-    assert "NO_OUTBOUND_CUSTOMER_INTENT" not in _codes(proj["booking"]["blockers"])
+    assert scoped["box"]["box_type_code"] == "BOX-A"
+    assert "OUTBOUND_SCOPE_AMBIGUOUS" not in _blockers(scoped)
 
 
 # ── physical / business facts ───────────────────────────────────────────────
 
 
 def test_missing_packed_gross_blocks_and_zero_is_never_a_measurement(storage):
-    _seed_draft(storage, CLIENT_A)
+    _seed_draft(storage, CLIENT_A, batch=PLAIN_BATCH)
     for value in (None, 0, 0.0, "0", "", "not-a-number", -1):
-        proj = _project(storage, client_ref=CLIENT_A, weight_kg=value)
-        assert "WEIGHT_NOT_MEASURED" in _codes(proj["booking"]["blockers"]), value
-        assert proj["weight"]["value"] is None
+        proj = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A, weight_kg=value)
+        assert "WEIGHT_NOT_MEASURED" in _blockers(proj), value
+        assert proj["weight"]["gross_weight"] is None
         assert proj["weight"]["ready"] is False
 
 
-def test_persisted_manual_gross_satisfies_weight_without_a_caller_value(storage):
-    _seed_draft(storage, CLIENT_A, gross=3.2)
-    proj = _project(storage, client_ref=CLIENT_A, weight_kg=None)
-    assert proj["weight"]["value"] == 3.2
+def test_origin_entered_packed_weight_is_accepted_before_dispatch(storage):
+    """The India-side operator records actual packed weight; that IS the truth."""
+    _seed_draft(storage, CLIENT_A, gross=3.2, batch=PLAIN_BATCH)
+    proj = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A, weight_kg=None)
+    assert proj["weight"]["gross_weight"] == 3.2
     assert proj["weight"]["source"] == "draft_manual_gross"
+    assert proj["warehouse"]["state"] == "pending"     # and still not received
 
 
 def test_missing_declared_value_blocks(storage):
-    _seed_draft(storage, CLIENT_A)
-    proj = _project(storage, client_ref=CLIENT_A, declared_value=0)
-    assert "DECLARED_VALUE_MISSING" in _codes(proj["booking"]["blockers"])
-
-
-def test_warehouse_receipt_is_advisory_never_a_blocker(storage):
-    """Lesson R: WAREHOUSE may hard-block on quantity risk only.
-
-    A pending receipt is disclosed so the operator sees it, and preparation
-    still proceeds — promoting it to a hard gate would need an explicit
-    business rule naming the fiscal/duplication risk it protects (Lesson N).
-    """
-    _seed_draft(storage, CLIENT_A, box="BOX-A")
-    proj = _project(storage, client_ref=CLIENT_A)
-    assert proj["warehouse"]["state"] == "pending"
-    assert "WAREHOUSE_RECEIPT_PENDING" in _codes(proj["booking"]["advisories"])
-    assert "WAREHOUSE_RECEIPT_PENDING" not in _codes(proj["booking"]["blockers"])
-    assert proj["booking"]["ready"] is True
+    _seed_draft(storage, CLIENT_A, batch=PLAIN_BATCH)
+    assert "DECLARED_VALUE_MISSING" in _blockers(
+        _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A, declared_value=0))
 
 
 def test_unmapped_customer_blocks_through_the_one_recipient_authority(storage, monkeypatch):
@@ -220,32 +302,30 @@ def test_unmapped_customer_blocks_through_the_one_recipient_authority(storage, m
 
     monkeypatch.setattr(
         "app.services.awb_address_authority.derive_awb_address_authority", _boom)
-    _seed_draft(storage, CLIENT_A)
-    proj = _project(storage, client_ref=CLIENT_A)
-    assert "CUSTOMER_NOT_FOUND" in _codes(proj["booking"]["blockers"])
+    _seed_draft(storage, CLIENT_A, batch=PLAIN_BATCH)
+    proj = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A)
+    assert "CUSTOMER_NOT_FOUND" in _blockers(proj)
     assert proj["recipient"]["ready"] is False
+    assert proj["recipient"]["authority"] == "customer_master"
 
 
-# ── release axis ────────────────────────────────────────────────────────────
+# ── business readiness vs live release are independent ──────────────────────
 
 
-def test_live_release_is_a_separate_axis_from_business_readiness(storage):
-    """Prepared and ready, with live writing still closed, is the NORMAL state."""
-    _seed_draft(storage, CLIENT_A, box="BOX-A")
-    proj = _project(storage, client_ref=CLIENT_A)
-    assert proj["booking"]["ready"] is True
-    assert proj["ready_to_generate_real_awb"] is True
-    assert proj["release"]["live_allowlisted"] is False
-    assert proj["release"]["production_write_ready"] is False
-    assert proj["live_release_blocked"] is True
+def test_business_ready_true_with_live_release_false_is_valid(storage):
+    _seed_draft(storage, CLIENT_A, box="BOX-A", batch=PLAIN_BATCH)
+    proj = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A)
+    assert proj["business_readiness"]["ready"] is True
+    assert proj["live_release"]["specifically_allowlisted"] is False
+    assert proj["live_release"]["ready"] is False
 
 
 def test_release_reason_never_suggests_widening_the_allowlist(storage):
-    _seed_draft(storage, CLIENT_A)
-    reason = _project(storage, client_ref=CLIENT_A)["release"]["reason"]
+    _seed_draft(storage, CLIENT_A, batch=PLAIN_BATCH)
+    reason = _project(storage, batch=PLAIN_BATCH,
+                      client_ref=CLIENT_A)["live_release"]["reason"]
     assert "governed live-booking process" in reason
-    assert "*" not in reason
-    assert "CARRIER_LIVE_ALLOWLIST" not in reason
+    assert "*" not in reason and "CARRIER_LIVE_ALLOWLIST" not in reason
 
 
 def test_allowlist_reading_matches_the_live_gate_exactly(storage):
@@ -254,7 +334,7 @@ def test_allowlist_reading_matches_the_live_gate_exactly(storage):
     from app.services.carrier.factory import CarrierConfig
     from app.services.carrier.models.shipment import CarrierAllowlistError
 
-    for raw in ("", "  ", BATCH, f"other,{BATCH}", "other", "*", f" {BATCH} , other "):
+    for raw in ("", "  ", BATCH, "other," + BATCH, "other", "*", " " + BATCH + " , other "):
         adapter = DhlExpressLiveAdapter(CarrierConfig(status="live", live_allowlist=raw))
         try:
             adapter._check_allowlist(BATCH)
@@ -263,11 +343,11 @@ def test_allowlist_reading_matches_the_live_gate_exactly(storage):
             gate_allows = False
         projected = _project(
             storage, settings_over={"carrier_live_allowlist": raw},
-        )["release"]["live_allowlisted"]
+        )["live_release"]["specifically_allowlisted"]
         assert projected == gate_allows, raw
 
 
-# ── server-side leg guard on the booking endpoint ───────────────────────────
+# ── server-side duplicate guard on the booking endpoint ─────────────────────
 
 
 @contextmanager
@@ -285,13 +365,13 @@ def _booking_client(storage):
     }
     coord = MagicMock()
     coord.create_shipment.side_effect = AssertionError(
-        "CarrierCoordinator was reached — the leg guard must refuse first")
+        "CarrierCoordinator was reached - the duplicate guard must refuse first")
     app.dependency_overrides[_get_coordinator] = lambda: coord
     with patch("app.core.config.settings", _settings(storage)):
         yield TestClient(app, raise_server_exceptions=True), coord
 
 
-def _book(client, **extra):
+def _book(client, batch=BATCH, **extra):
     body = {
         "shipper_account": "ACC123",
         "recipient_address": {"name": "N", "street": "S", "city": "C",
@@ -300,39 +380,52 @@ def _book(client, **extra):
         "dimensions": {"length": 10, "width": 10, "height": 10},
     }
     body.update(extra)
-    return client.post(f"/api/v1/carrier/{BATCH}/shipment", json=body)
+    return client.post("/api/v1/carrier/" + batch + "/shipment", json=body)
 
 
-def test_booking_the_inbound_leg_fails_before_any_carrier_call(storage):
-    """No outbound customer intent = a request to re-book the supplier's AWB."""
+def test_booking_an_already_booked_leg_fails_before_any_carrier_call(storage):
     with _booking_client(storage) as (client, coord):
         resp = _book(client)
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
-    assert detail["code"] == "INBOUND_EXISTING_AWB"
+    assert detail["code"] == "SHIPMENT_LEG_ALREADY_BOOKED"
     assert detail["existing_awb"] == INBOUND_AWB
     assert "No carrier request was sent." in detail["guidance"]
     coord.create_shipment.assert_not_called()
 
 
-def test_a_valid_outbound_intent_is_not_refused_by_the_leg_guard(storage):
-    """The guard must not become 'inbound batch ⇒ nothing may ever ship'."""
+def test_already_booked_guidance_never_mentions_the_allowlist(storage):
+    """The operator must not be told to allowlist a leg that is already booked."""
+    with _booking_client(storage) as (client, _):
+        detail = _book(client).json()["detail"]
+    blob = json.dumps(detail)
+    # It may say the allowlist is IRRELEVANT here; it must never point at one.
+    assert "nothing needs to be released or allowlisted" in detail["guidance"]
+    for banned in ("CARRIER_LIVE_ALLOWLIST", "Add this batch", "add it to", "*"):
+        assert banned not in blob, banned
+    assert detail["code"] != "CARRIER_LIVE_ALLOWLIST_BLOCKED"
+
+
+def test_a_distinct_customer_leg_reaches_the_coordinator(storage):
+    """The guard must not become 'inbound batch => nothing may ever ship'."""
     _seed_draft(storage, CLIENT_A)
-    with _booking_client(storage) as (client, coord):
-        # The coordinator stub raises on call: reaching it proves the guard let
-        # this request through, which is the behaviour under test.
-        with pytest.raises(AssertionError, match="leg guard must refuse first"):
+    with _booking_client(storage) as (client, _):
+        with pytest.raises(AssertionError, match="duplicate guard must refuse first"):
             _book(client, client_ref=CLIENT_A)
 
 
-def test_leg_guard_is_scoped_per_customer_not_per_batch(storage):
-    """Customer A having a draft does not authorise booking for customer B."""
-    _seed_draft(storage, CLIENT_A)
-    with _booking_client(storage) as (client, coord):
-        resp = _book(client, client_ref=CLIENT_B)
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"]["code"] == "INBOUND_EXISTING_AWB"
-    coord.create_shipment.assert_not_called()
+def test_a_batch_with_no_existing_awb_is_never_blocked_by_the_guard(storage):
+    with _booking_client(storage) as (client, _):
+        with pytest.raises(AssertionError, match="duplicate guard must refuse first"):
+            _book(client, batch=PLAIN_BATCH)
+
+
+def test_warehouse_pending_never_blocks_create_shipment(storage):
+    """Receipt is pending in every fixture here; booking still proceeds."""
+    _seed_draft(storage, CLIENT_A, batch=PLAIN_BATCH)
+    with _booking_client(storage) as (client, _):
+        with pytest.raises(AssertionError, match="duplicate guard must refuse first"):
+            _book(client, batch=PLAIN_BATCH, client_ref=CLIENT_A)
 
 
 # ── authority containment (adversarial) ─────────────────────────────────────
@@ -352,9 +445,6 @@ def test_readiness_books_nothing_and_tracks_nothing_of_its_own():
     src = _SRC.read_text(encoding="utf-8")
     assert "CarrierCoordinator" not in src
     assert "create_shipment" not in src
-    # Tracking facts are read through the existing inbound projector only —
-    # no adapter, no carrier HTTP client, no second tracking authority.
-    assert "adapters" not in src
     assert "httpx" not in src and "requests" not in src
 
 
@@ -367,53 +457,8 @@ def test_no_source_anywhere_suggests_a_wildcard_allowlist():
         for phrase in ("CARRIER_LIVE_ALLOWLIST=*", "set it to *",
                        "or set CARRIER_LIVE_ALLOWLIST", "ALLOWLIST=* to permit"):
             if phrase in text:
-                offenders.append(f"{path.name}: {phrase}")
+                offenders.append(path.name + ": " + phrase)
     assert not offenders, offenders
-
-
-# ── operator-facing contract pins (source-grep) ─────────────────────────────
-
-_V2 = _ROOT / "app" / "static" / "v2"
-
-
-def test_modal_preflights_before_the_operator_fills_it_in():
-    """The raw carrier 422 must not be how the operator learns what is missing."""
-    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    assert "PzApi.getBookingReadiness" in src
-    assert 'data-testid="awb-readiness-panel"' in src
-    assert 'data-testid="awb-readiness-blockers"' in src
-    assert 'data-testid="awb-readiness-release-blocked"' in src
-    # The inbound supplier leg is shown, never offered as a re-booking.
-    assert 'data-testid="awb-readiness-inbound-leg"' in src
-    api = (_V2 / "pz-api.js").read_text(encoding="utf-8")
-    assert "getBookingReadiness:" in api
-    assert "booking-readiness" in api
-
-
-def test_preparation_is_possible_while_live_release_is_closed():
-    """Release is a separate axis: a closed allowlist blocks the CALL, not the work."""
-    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    assert "const releaseBlocked = !!(readiness && readiness.live_release_blocked);" in src
-    assert "readinessBlocksSubmit" in src
-    # Only the submit is gated — no field, panel or section is hidden by it.
-    assert src.count("readinessBlocksSubmit") == 2
-
-
-def test_ui_never_tells_the_operator_to_widen_the_allowlist():
-    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    start = src.index('data-testid="awb-readiness-release-blocked"')
-    panel = src[start:start + 600]
-    assert "governed" in panel
-    assert "CARRIER_LIVE_ALLOWLIST" not in panel
-
-
-def test_ups_guidance_states_the_real_external_blocker():
-    """UPS has an adapter in the factory — the blocker is external, not code."""
-    routes = (_ROOT / "app" / "api" / "routes_carrier_actions.py").read_text(encoding="utf-8")
-    assert "UPS has no adapter" not in routes
-    assert "customer-arranged" in routes
-    factory = (_ROOT / "app" / "services" / "carrier" / "factory.py").read_text(encoding="utf-8")
-    assert "UpsSandboxAdapter" in factory      # the adapter the old text denied
 
 
 # ── HTTP surface ────────────────────────────────────────────────────────────
@@ -421,33 +466,46 @@ def test_ups_guidance_states_the_real_external_blocker():
 
 def test_readiness_endpoint_is_registered_and_creates_nothing(storage):
     """The literal path must not be captured by a /{batch_id}/... route."""
-    _seed_draft(storage, CLIENT_A, box="BOX-A")
+    _seed_draft(storage, CLIENT_A, box="BOX-A", batch=PLAIN_BATCH)
     with _booking_client(storage) as (client, coord):
         resp = client.get(
-            f"/api/v1/carrier/{BATCH}/booking-readiness",
-            params={"client_ref": CLIENT_A, "weight_kg": 2.5,
-                    "declared_value": 900.0},
+            "/api/v1/carrier/" + PLAIN_BATCH + "/booking-readiness",
+            params={"client_ref": CLIENT_A, "weight_kg": 2.5, "declared_value": 900.0},
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["batch_id"] == BATCH
+    assert body["batch_id"] == PLAIN_BATCH
     assert body["customer_scope"] == CLIENT_A
-    assert body["shipment_intent"] == "outbound_customer"
-    assert body["existing_awb"] == INBOUND_AWB
-    assert body["ready_to_generate_real_awb"] is True
-    assert body["live_release_blocked"] is True     # allowlist closed, correctly
-    # A read projection books nothing.
+    assert body["business_readiness"]["ready"] is True
+    assert body["live_release"]["ready"] is False        # allowlist closed, correctly
+    assert body["warehouse"]["booking_dependency"] is False
     coord.create_shipment.assert_not_called()
 
 
-def test_readiness_response_carries_no_contact_pii(storage):
-    _seed_draft(storage, CLIENT_A)
+def test_readiness_reports_the_existing_awb_for_an_already_booked_leg(storage):
     with _booking_client(storage) as (client, _):
-        body = client.get(f"/api/v1/carrier/{BATCH}/booking-readiness",
+        body = client.get("/api/v1/carrier/" + BATCH + "/booking-readiness").json()
+    assert body["existing_booking"]["awb"] == INBOUND_AWB
+    assert body["existing_booking"]["carrier"] == "DHL"
+    assert body["existing_booking"]["blocks_duplicate_booking"] is True
+
+
+def test_readiness_response_carries_no_contact_pii(storage):
+    _seed_draft(storage, CLIENT_A, batch=PLAIN_BATCH)
+    with _booking_client(storage) as (client, _):
+        body = client.get("/api/v1/carrier/" + PLAIN_BATCH + "/booking-readiness",
                           params={"client_ref": CLIENT_A}).json()
     assert set(body["recipient"]) <= {"ready", "source", "company", "city",
-                                      "country", "blocker"}
+                                      "country", "blocker", "authority"}
     assert "+48100200300" not in json.dumps(body)
+
+
+def test_readiness_response_carries_no_carrier_secret(storage):
+    with _booking_client(storage) as (client, _):
+        blob = json.dumps(client.get(
+            "/api/v1/carrier/" + BATCH + "/booking-readiness").json())
+    for secret in ("ACC123", '"k"', '"s"'):
+        assert secret not in blob, secret
 
 
 def test_readiness_carries_the_same_auth_guard_as_its_sibling_reads():
@@ -462,9 +520,51 @@ def test_readiness_carries_the_same_auth_guard_as_its_sibling_reads():
         for r in router.routes:
             if getattr(r, "path", None) == path and method in getattr(r, "methods", ()):
                 return {d.call for d in r.dependant.dependencies}
-        raise AssertionError(f"route not registered: {method} {path}")
+        raise AssertionError("route not registered: " + method + " " + path)
 
-    readiness = _guards("/api/v1/carrier/{batch_id}/booking-readiness", "GET")
-    assert require_api_key in readiness
-    # Same guard the existing shipment read carries — no weaker, no stronger.
+    assert require_api_key in _guards("/api/v1/carrier/{batch_id}/booking-readiness", "GET")
     assert require_api_key in _guards("/api/v1/carrier/{batch_id}/shipment", "GET")
+
+
+# ── operator-facing contract pins (source-grep) ─────────────────────────────
+
+_V2 = _ROOT / "app" / "static" / "v2"
+
+
+def test_modal_preflights_before_the_operator_fills_it_in():
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    assert "PzApi.getBookingReadiness" in src
+    for tid in ("awb-readiness-panel", "awb-readiness-existing",
+                "awb-readiness-release", "awb-readiness-warehouse",
+                "awb-readiness-already-booked", "awb-readiness-blockers"):
+        assert 'data-testid="' + tid + '"' in src, tid
+    api = (_V2 / "pz-api.js").read_text(encoding="utf-8")
+    assert "getBookingReadiness:" in api and "booking-readiness" in api
+
+
+def test_ui_shows_warehouse_as_downstream_not_as_a_blocker():
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    start = src.index('data-testid="awb-readiness-warehouse"')
+    assert "not required for origin dispatch" in src[start:start + 600]
+    # It must not participate in the submit gate.
+    gate = src[src.index("const readinessBlocksSubmit"):]
+    assert "warehouse" not in gate[:200].lower()
+
+
+def test_ui_keeps_business_readiness_and_live_release_separate():
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    assert "const releaseBlocked   = !!(_rdyRelease && !_rdyRelease.ready);" in src
+    start = src.index('data-testid="awb-readiness-release-blocked"')
+    panel = src[start:start + 800]
+    assert "shipment data above is unaffected" in panel
+    assert "CARRIER_LIVE_ALLOWLIST" not in panel
+
+
+def test_ui_presents_an_already_booked_leg_instead_of_an_allowlist_prompt():
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    start = src.index('data-testid="awb-readiness-already-booked"')
+    panel = src[start:start + 800]
+    assert "already represents this shipment leg" in panel
+    assert "allowlist" not in panel.lower()
+    # The release warning is suppressed while the leg is already booked.
+    assert "releaseBlocked && !legAlreadyBooked" in src

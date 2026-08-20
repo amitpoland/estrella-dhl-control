@@ -21,19 +21,31 @@ An import batch is not one shipment. It carries:
 ``batch_id`` alone therefore never identifies a shipment, and "this batch is
 inbound" never means "no outbound shipment may be prepared".
 
-Blockers vs advisories (Lesson N / Lesson R)
---------------------------------------------
-``blockers`` carries only conditions that already fail the booking POST closed
-today — an unresolvable recipient, a missing measured weight, a missing
-declared value, an unset Incoterm, an unresolvable carrier account. Everything
-else is an ``advisory``: surfaced to the operator, never a gate. Warehouse
-receipt is advisory by authority (Lesson R: WAREHOUSE may hard-block on
-quantity risk only), so a pending receipt is disclosed and does NOT disable
-preparation.
+Business rules this module encodes (operator-ratified)
+------------------------------------------------------
+* **Warehouse receipt is DOWNSTREAM of dispatch.** Goods are packed and weighed
+  in India and the AWB is created before they travel, so a pending destination
+  receipt is the expected state at booking time. It is reported for information
+  and is never a blocker, never a warning, never a booking dependency.
+* **The Proforma Invoice is the value document at AWB stage.** A final sales /
+  commercial invoice is NOT required to create an AWB and is never consulted
+  here.
+* **Direction alone never blocks a booking.** India -> Poland goods are
+  "inbound" relative to the destination warehouse while the origin-side operator
+  legitimately books the carrier before departure. Duplicate protection is tied
+  to leg identity -- see ``resolve_existing_leg_awb``.
 
-``release`` is a SEPARATE axis from ``booking``. A shipment can be fully
-prepared and business-ready while live production writing is still not
-released for it. That is the normal state, not an error.
+Blockers vs warnings (Lesson N / Lesson R)
+------------------------------------------
+``blockers`` carries only conditions that already fail the booking POST closed
+today -- an unresolvable recipient, a missing measured weight, a missing declared
+value, an unset Incoterm, an unresolvable carrier account. Everything else is a
+``warning``: surfaced to the operator, never a gate.
+
+``live_release`` is a SEPARATE axis from ``business_readiness``. A shipment can
+be fully prepared and business-ready while the production carrier write has not
+been authorized. That is the normal state, not invalid shipment data, and the UI
+must never conflate the two.
 """
 from __future__ import annotations
 
@@ -158,21 +170,48 @@ def resolve_outbound_intents(
     return out
 
 
-def has_outbound_customer_scope(
+def resolve_existing_leg_awb(
     batch_id: str,
     *,
+    storage_root: Path,
     proforma_db_path: Path,
     client_ref: Optional[str] = None,
-) -> bool:
-    """True when a real outbound customer intent exists for this booking scope.
+) -> Optional[Dict[str, Any]]:
+    """The AWB that ALREADY represents this canonical shipment leg, or None.
 
-    The server-side leg check. A request that resolves to no customer intent at
-    all is a request to re-book the batch itself — i.e. the supplier's inbound
-    leg — and must fail before any carrier adapter is reached.
+    This is duplicate protection, and the invariant is exactly one sentence:
+    **the same canonical shipment leg must not receive a second AWB.**
+
+    Direction is NOT consulted and never can be. Goods moving India → Poland are
+    "inbound" relative to the destination warehouse while the origin-side
+    operator legitimately books the carrier before departure; treating inbound as
+    unbookable would forbid the normal workflow.
+
+    Leg identity:
+
+    * ``client_ref`` naming a real proforma draft is a DISTINCT outbound
+      customer leg. Duplicates there are already handled correctly by the
+      coordinator's idempotency key (it REPLAYS the stored booking rather than
+      creating a second AWB), so this returns None and lets that path run.
+    * Otherwise the request identifies the batch itself. For an import batch
+      whose intake carried a supplier AWB, that batch-level leg IS the supplier
+      leg, and it already has a real AWB.
+
+    Returns ``{"awb", "provider", "source"}`` when the leg is already booked.
     """
-    return bool(resolve_outbound_intents(
-        batch_id, proforma_db_path=proforma_db_path, client_ref=client_ref,
-    ))
+    scoped = (client_ref or "").strip()
+    if scoped and resolve_outbound_intents(
+        batch_id, proforma_db_path=proforma_db_path, client_ref=scoped,
+    ):
+        return None      # distinct customer leg — coordinator idempotency owns it
+    inbound = project_inbound_leg(batch_id, storage_root=storage_root)
+    if inbound and inbound.get("awb"):
+        return {
+            "awb": inbound["awb"],
+            "provider": inbound.get("provider"),
+            "source": "intake_shipment_document",
+        }
+    return None
 
 
 # ── Full readiness projection ────────────────────────────────────────────────
@@ -229,27 +268,46 @@ def _recipient_state(batch_id: str, storage_root: Path, client_ref: Optional[str
 
 
 def _warehouse_state(batch_id: str) -> Dict[str, Any]:
-    """Operator quantity confirmation (Lesson R: advisory, never a hard gate)."""
+    """Destination receipt state — DOWNSTREAM of dispatch, never a booking gate.
+
+    Warehouse authority answers "have these physical goods reached the
+    destination warehouse", not "may the origin operator dispatch them". Goods
+    are packed and weighed in India and the AWB is created BEFORE they travel,
+    so a pending receipt is the expected state at booking time, not a defect.
+
+    ``booking_dependency`` is hard-coded False and pinned by test: this value is
+    reported for information only and never reaches blockers or warnings.
+    """
     try:
         from ...services.warehouse_receipt import get_receipt_status
         status = get_receipt_status(batch_id)
     except Exception:
-        return {"required": True, "confirmed": None, "state": "unknown",
-                "total_lines": None, "confirmed_lines": None}
-    total = status.get("total_lines") or 0
+        return {"state": "unknown", "received_count": None, "expected_count": None,
+                "serial_controlled": None, "booking_dependency": False}
+    expected = status.get("total_lines") or 0
+    received = status.get("confirmed_lines") or 0
     return {
-        "required": bool(total),
-        "confirmed": bool(status.get("fully_confirmed")),
-        "state": ("confirmed" if status.get("fully_confirmed")
-                  else ("pending" if total else "not_applicable")),
-        "total_lines": total,
-        "confirmed_lines": status.get("confirmed_lines"),
+        "state": ("received" if status.get("fully_confirmed")
+                  else ("pending" if expected else "not_applicable")),
+        "received_count": received,
+        "expected_count": expected,
         "serial_controlled": bool(status.get("serial_controlled")),
+        # Permanent contract. Warehouse receipt is downstream of dispatch.
+        "booking_dependency": False,
     }
 
 
-def _release_state(batch_id: str, settings) -> Dict[str, Any]:
-    """Live-release state. NEVER suggests widening the allowlist."""
+def _release_state(batch_id: str, settings, provider: str = "DHL") -> Dict[str, Any]:
+    """Live production-release state for ONE provider. NEVER suggests "*".
+
+    Independent of business readiness: "not released" means the production
+    carrier write has not been authorized for this shipment, NOT that the
+    shipment data is invalid.
+
+    Capability and credential state come from the carrier factory + credential
+    resolver -- the same authorities Carrier Master renders -- so this can never
+    report a provider ready that the factory would refuse.
+    """
     # Parsed exactly as DhlExpressLiveAdapter.__init__ parses it, so the
     # preflight and the gate can never disagree about the same string
     # (pinned by test_booking_readiness_allowlist_matches_the_live_gate).
@@ -257,14 +315,54 @@ def _release_state(batch_id: str, settings) -> Dict[str, Any]:
     allowlist = {b.strip() for b in str(raw).split(",") if b.strip()}
     status = (getattr(settings, "carrier_api_status", "") or "").strip().lower()
     allowlisted = bool(allowlist) and (batch_id in allowlist or "*" in allowlist)
+
+    # Capability = "would the factory hand back a usable adapter for this
+    # provider right now". Asking it is the only honest answer; a stored flag
+    # would go stale the moment a credential changed.
+    capability_ready, capability_reason, adapter_name = False, None, None
+    try:
+        from ..factory import CarrierConfig, get_adapter
+        adapter = get_adapter(
+            CarrierConfig(
+                status=status or "pending",
+                api_key=getattr(settings, "dhl_express_api_key", None),
+                api_secret=getattr(settings, "dhl_express_api_secret", None),
+                account_number=getattr(settings, "dhl_express_account_number", None),
+                live_allowlist=raw,
+            ),
+            provider=provider,
+        )
+        capability_ready = True
+        adapter_name = type(adapter).__name__
+    except Exception as exc:
+        capability_reason = str(exc) or type(exc).__name__
+
     return {
         "carrier_api_status": status or None,
-        "live_allowlisted": allowlisted,
-        "production_write_ready": bool(allowlisted and status == "live"),
-        "reason": (None if allowlisted else
+        "specifically_allowlisted": allowlisted,
+        "credentials_ready": capability_ready,
+        "capability_ready": capability_ready,
+        "adapter": adapter_name,
+        "capability_reason": capability_reason,
+        "ready": bool(allowlisted and capability_ready and status == "live"),
+        "reason": (None if (allowlisted and capability_ready) else
                    "Live booking is not released for this shipment. Release this "
                    "specific shipment through the governed live-booking process."),
     }
+
+
+def _description_state(batch_id, storage_root, client_ref):
+    """Canonical shipment description -- the ONE backend projection, never a
+    browser-side item_type mapping."""
+    try:
+        from ...api.routes_carrier_actions import _project_shipment_description_for_client
+        text = _project_shipment_description_for_client(
+            storage_root=storage_root, batch_id=batch_id, client_ref=client_ref,
+        )
+    except Exception:
+        return {"ready": False, "authority": "description_engine", "value": None}
+    value = (text or "").strip() or None
+    return {"ready": bool(value), "authority": "description_engine", "value": value}
 
 
 def project_booking_readiness(
@@ -290,55 +388,76 @@ def project_booking_readiness(
     reported missing rather than assumed.
     """
     provider = (provider or "DHL").strip().upper() or "DHL"
-    inbound = project_inbound_leg(batch_id, storage_root=storage_root)
     intents = resolve_outbound_intents(
         batch_id, proforma_db_path=proforma_db_path, client_ref=client_ref,
     )
-    scoped = intents[0] if (client_ref and intents) else (intents[0] if len(intents) == 1 else None)
+    scoped = intents[0] if len(intents) == 1 else None
+    scope = (client_ref or "").strip() or ((scoped or {}).get("client_ref"))
 
-    blockers: List[Dict[str, str]] = []
-    advisories: List[Dict[str, str]] = []
+    blockers = []
+    warnings = []
 
-    # ── Which leg is the operator looking at? ────────────────────────────────
-    if not intents:
-        intent = INTENT_INBOUND_EXISTING if inbound else INTENT_OUTBOUND_CUSTOMER
+    # -- Is this leg already booked? (the ONLY duplicate rule) ---------------
+    existing = resolve_existing_leg_awb(
+        batch_id, storage_root=storage_root,
+        proforma_db_path=proforma_db_path, client_ref=client_ref,
+    )
+    inbound = project_inbound_leg(batch_id, storage_root=storage_root)
+    existing_booking = {
+        "existing": bool(existing),
+        "carrier": (existing or {}).get("provider"),
+        "awb": (existing or {}).get("awb"),
+        "source": (existing or {}).get("source"),
+        "blocks_duplicate_booking": bool(existing),
+        # Transport facts for the already-booked leg, from the ONE tracking
+        # projection -- this module runs no tracking fetch of its own.
+        "tracking_stage": (inbound or {}).get("stage"),
+        "tracking_status": (inbound or {}).get("status"),
+        "tracking_location": (inbound or {}).get("location"),
+        "customs_status": (inbound or {}).get("customs_status"),
+    }
+    if existing:
         blockers.append(_reason(
-            "NO_OUTBOUND_CUSTOMER_INTENT",
-            "This batch carries no outbound customer proforma to ship. The "
-            "existing AWB belongs to the inbound supplier leg and is tracked, "
-            "not re-booked.",
+            "SHIPMENT_LEG_ALREADY_BOOKED",
+            "This shipment leg already has {0} AWB {1}. No new AWB is required.".format(
+                existing.get("provider") or "a", existing["awb"]),
             AUTH_SALES))
-    else:
-        intent = INTENT_OUTBOUND_CUSTOMER
-        if client_ref is None and len(intents) > 1:
-            blockers.append(_reason(
-                "OUTBOUND_SCOPE_AMBIGUOUS",
-                f"This import batch carries {len(intents)} customer proformas. "
-                "Choose which customer's shipment to prepare — a batch is not a "
-                "shipment.",
-                AUTH_SALES))
+    elif client_ref is None and len(intents) > 1:
+        blockers.append(_reason(
+            "OUTBOUND_SCOPE_AMBIGUOUS",
+            "This import batch carries {0} customer proformas. Choose which "
+            "customer's shipment to prepare -- a batch is not a shipment.".format(
+                len(intents)),
+            AUTH_SALES))
 
-    # ── Recipient (Customer Master, via the outbound client scope) ───────────
-    if intent == INTENT_OUTBOUND_CUSTOMER and intents:
-        recipient = _recipient_state(
-            batch_id, storage_root,
-            (client_ref or (scoped or {}).get("client_ref")),
-        )
-    else:
-        recipient = {"ready": False, "source": None, "blocker": None}
+    # -- Proforma is the value document at AWB stage; no sales invoice needed -
+    proforma = {
+        "ready": bool(scope and intents),
+        "authority": "proforma_invoice_link_db",
+        "client_ref": scope,
+        "draft_id": (scoped or {}).get("draft_id"),
+        "draft_state": (scoped or {}).get("draft_state"),
+        # Permanent contract, pinned by test: a final sales / commercial invoice
+        # is NOT a prerequisite for creating an AWB and is never read here.
+        "final_sales_invoice_required": False,
+    }
+    if not intents:
+        warnings.append(_reason(
+            "NO_CUSTOMER_PROFORMA",
+            "No customer proforma is linked to this batch yet.",
+            AUTH_SALES))
+
+    # -- Recipient (Customer Master -- the ONE authority, no raw fallback) ----
+    recipient = (_recipient_state(batch_id, storage_root, scope) if intents
+                 else {"ready": False, "source": None, "blocker": None})
     if recipient.get("blocker"):
         blockers.append(recipient["blocker"])
+    recipient["authority"] = "customer_master"
 
-    # ── Warehouse receipt — advisory by authority ───────────────────────────
+    # -- Warehouse -- downstream, reported only, never a gate ----------------
     warehouse = _warehouse_state(batch_id)
-    if warehouse["required"] and warehouse["state"] == "pending":
-        advisories.append(_reason(
-            "WAREHOUSE_RECEIPT_PENDING",
-            f"Warehouse receipt pending — {warehouse['confirmed_lines']} of "
-            f"{warehouse['total_lines']} lines confirmed.",
-            AUTH_WAREHOUSE))
 
-    # ── Weight (proforma weight authority; zero is never a measurement) ──────
+    # -- Weight: origin packing truth, entered before dispatch --------------
     resolved_weight = _measured(weight_kg)
     weight_source = "caller_resolved" if resolved_weight is not None else None
     if resolved_weight is None and scoped:
@@ -348,47 +467,48 @@ def project_booking_readiness(
         try:
             shipment_db.init_db(shipment_db_path)
             row = shipment_db.get_shipment_for_draft(
-                shipment_db_path, batch_id,
-                (client_ref or (scoped or {}).get("client_ref")),
+                shipment_db_path, batch_id, scope,
                 allow_single_client_fallback=False,
             )
         except Exception:
             row = None
         if row:
             resolved_weight = _measured(row.get("weight_kg"))
-            weight_source = "previous_carrier_booking" if resolved_weight is not None else None
+            weight_source = ("previous_carrier_booking"
+                             if resolved_weight is not None else None)
     if resolved_weight is None:
         blockers.append(_reason(
             "WEIGHT_NOT_MEASURED",
-            "Packed gross weight is required. Record it once in the proforma "
-            "Weights panel — a zero or blank weight is a missing measurement, "
-            "never a shipment fact.",
+            "Actual packed gross weight is required. Record it in the proforma "
+            "Weights panel -- a zero or blank weight is a missing measurement, "
+            "never a shipment fact. Destination receipt is NOT required for this.",
             AUTH_PROFORMA))
 
-    # ── Box Master selection (code only; Box Master owns the dimensions) ─────
+    # -- Box Master selection (code only; Box Master owns the dimensions) ----
     box_code = (scoped or {}).get("box_type_code") or None
     if not box_code:
-        advisories.append(_reason(
+        warnings.append(_reason(
             "BOX_PROFILE_NOT_SELECTED",
-            "No Box Profile selected — dimensions will be sent exactly as typed.",
+            "No Box Profile selected -- dimensions will be sent exactly as typed.",
             AUTH_PROFORMA))
 
-    # ── Packages (neutral split; the booking validates each measurement) ─────
     try:
         packages = int(packages_count) if packages_count not in (None, "") else None
     except (TypeError, ValueError):
         packages = None
 
-    # ── Declared value ──────────────────────────────────────────────────────
     resolved_value = _measured(declared_value)
     if resolved_value is None:
         blockers.append(_reason(
             "DECLARED_VALUE_MISSING",
-            "Declared value is required for a customs-bearing shipment.",
+            "Declared value is required for a customs-bearing shipment. The "
+            "Proforma Invoice is the value document at this stage.",
             AUTH_PROFORMA))
 
-    # ── Carrier account + Incoterm (same resolvers the booking POST uses) ────
-    carrier_block: Dict[str, Any] = {"provider": provider}
+    description = _description_state(batch_id, storage_root, scope)
+
+    # -- Carrier account + Incoterm (same resolvers the booking POST uses) ---
+    carrier_block = {"provider": provider}
     if provider == "DHL":
         account = (getattr(settings, "dhl_express_account_number", "") or "").strip()
         carrier_block["account_ready"] = bool(account)
@@ -401,8 +521,7 @@ def project_booking_readiness(
         from ...api.routes_carrier_actions import _resolve_booking_incoterm
         try:
             incoterm = _resolve_booking_incoterm(
-                storage_root=storage_root, batch_id=batch_id,
-                client_ref=(client_ref or (scoped or {}).get("client_ref")),
+                storage_root=storage_root, batch_id=batch_id, client_ref=scope,
             )
         except Exception:
             incoterm = {"value": None, "source": "unset"}
@@ -412,49 +531,49 @@ def project_booking_readiness(
             blockers.append(_reason(
                 "INCOTERM_UNSET",
                 "Incoterm is unset for this client. Set it in Client Master or on "
-                "the proforma draft — the platform will not invent DAP.",
+                "the proforma draft -- the platform will not invent DAP.",
                 AUTH_PROFORMA))
     else:
         carrier_block["account_ready"] = None
         carrier_block["account_source"] = None
-    carrier_block["environment"] = (getattr(settings, "carrier_api_status", "") or None)
 
-    release = _release_state(batch_id, settings)
+    live_release = _release_state(batch_id, settings, provider)
     ready = not blockers
 
     return {
         "batch_id": batch_id,
-        "shipment_intent": intent,
-        # The supplier leg. Present and tracked — never re-booked from here.
-        "existing_awb": (inbound or {}).get("awb"),
-        "existing_awb_provider": (inbound or {}).get("provider"),
-        "inbound_leg": inbound,
-        # Every customer intent this batch carries, so the operator can see that
-        # one import batch is legitimately several outbound shipments.
+        "customer_scope": scope,
         "outbound_intents": intents,
-        "customer_scope": (client_ref or (scoped or {}).get("client_ref")),
-        "recipient": recipient,
-        "warehouse": warehouse,
-        "weight": {
-            "value": resolved_weight,
-            "source": weight_source,
-            "ready": resolved_weight is not None,
-        },
-        "box": {"code": box_code, "ready": bool(box_code)},
-        "packages": {"count": packages, "ready": packages is None or packages > 0},
-        "commercial": {
-            "declared_value": resolved_value,
-            "currency": (scoped or {}).get("currency"),
-            "ready": resolved_value is not None,
-        },
-        "carrier": carrier_block,
-        "release": release,
-        "booking": {
+        # 1. business preparation -- what the booking POST already enforces
+        "business_readiness": {
             "ready": ready,
             "blockers": blockers,
-            "advisories": advisories,
+            "warnings": warnings,
         },
-        # The two axes, stated plainly, so the UI never has to infer them.
-        "ready_to_generate_real_awb": bool(ready),
-        "live_release_blocked": not release["production_write_ready"],
+        "proforma": proforma,
+        "recipient": recipient,
+        "weight": {
+            "ready": resolved_weight is not None,
+            "gross_weight": resolved_weight,
+            "source": weight_source,
+            "authority": "proforma_packing_weight_authority",
+        },
+        "box": {"ready": bool(box_code), "box_type_code": box_code,
+                "authority": "box_master"},
+        "packages": {"ready": packages is None or packages > 0, "count": packages,
+                     "source": "neutral_package_model"},
+        "declared_value": {
+            "ready": resolved_value is not None,
+            "value": resolved_value,
+            "currency": (scoped or {}).get("currency"),
+            "authority": "proforma_invoice",
+        },
+        "description": description,
+        "carrier": carrier_block,
+        # 3. existing shipment / AWB state
+        "existing_booking": existing_booking,
+        # 2. live carrier release -- INDEPENDENT of business readiness
+        "live_release": live_release,
+        # 4. downstream informational state only
+        "warehouse": warehouse,
     }
