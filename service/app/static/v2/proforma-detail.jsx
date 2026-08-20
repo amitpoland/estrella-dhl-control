@@ -6670,6 +6670,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       service:           ship ? (ship.service_code || null) : null,
       tracking_url:      ship ? (ship.tracking_url || null) : null,
       status:            ship ? (ship.state || ship.status || null) : null,
+      // Carried so a SIMULATED shipment can never be presented as a real one.
+      // The carrier read model has always returned these; the projection used
+      // to drop them, so a historical shadow booking showed its tracking_ref in
+      // Logistics indistinguishably from a live DHL AWB. This describes the
+      // stored RESULT only -- current capability comes from carrier_api_status.
+      mode:              ship ? (ship.mode || null) : null,
+      simulated:         ship ? !!ship.simulated : false,
       dimensions:        ship ? (ship.dimensions || null) : null,
       batch_ref:         liveDraft.batch_id || null,   // import identity — internal provenance only
       // Short, deterministic CMR document number from the ONE backend authority
@@ -6682,6 +6689,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       effectiveWeight,
     };
   })();
+  // One place decides how a stored shipment result is described, so the label
+  // cannot drift between panels.
+  const _shipmentIsSimulated = !!(_transport.simulated || _transport.mode === 'shadow');
+  const _shipmentResultLabel = _shipmentIsSimulated
+    ? 'Historical test shipment \u00b7 shadow / simulated'
+    : null;
+
   const _ew = _transport.effectiveWeight;
 
 
@@ -7855,6 +7869,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   authorities — never merge their timelines. Outbound uses the canonical
                   tracking backend keyed by carrierShipment.tracking_ref; inbound uses
                   import batch audit / clearance-status keyed by draft.batch_id. */}
+              {/* A stored SHADOW result is history, not a shipment in transit.
+                  Without this the tracking_ref of a simulated booking rendered
+                  exactly like a real DHL AWB. Says what the stored result IS; it
+                  does not describe current carrier capability, which comes from
+                  carrier_api_status. */}
+              {_shipmentResultLabel && (
+                <div style={{
+                  padding: '8px 12px', marginBottom: 8, borderRadius: 8, fontSize: 11.5,
+                  background: 'var(--bg-subtle)', border: '1px dashed var(--badge-amber-border)',
+                  color: 'var(--badge-amber-text)',
+                }} data-testid="pf-logistics-simulated-shipment">
+                  {_shipmentResultLabel} — this AWB was never handed to a carrier.
+                </div>
+              )}
               <OutboundShipmentTracking
                 awb={(carrierShipment && carrierShipment.tracking_ref) || (_transport && _transport.outbound_awb) || ''}
                 batchId={liveDraft.batch_id || (draft && draft.batch_id) || ''}

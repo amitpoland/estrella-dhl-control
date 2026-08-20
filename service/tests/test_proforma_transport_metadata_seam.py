@@ -272,3 +272,51 @@ def test_the_persisted_code_round_trips_for_a_reopened_modal(db, tmp_path):
     code = _row(db, did).box_type_code                 # what reopen reads
     box = mdb.get_box_type_by_code(mp, code)           # what it resolves to
     assert box is not None and box.length_cm > 0
+
+
+# ── a simulated shipment must never read as a real one ─────────────────────
+
+
+def test_the_carrier_read_model_distinguishes_a_simulated_result():
+    """Backend contract the UI relies on: mode + simulated are both published.
+
+    The transport projection used to drop them, so a stored shadow booking
+    surfaced its tracking_ref in Logistics exactly like a real DHL AWB.
+    """
+    routes = (_ROOT / "app" / "api" / "routes_carrier_actions.py").read_text(encoding="utf-8")
+    get_shipment = routes[routes.index("def get_shipment("):
+                          routes.index("def probe_legacy_shipment(")]
+    assert '"mode"' in get_shipment
+    assert '"simulated"' in get_shipment
+
+
+def test_current_capability_is_never_read_from_a_stored_shipment_row():
+    """Which adapter the booking will call comes from the canonical gate.
+
+    A historical shadow row describes a past RESULT. It must not be allowed to
+    answer 'what can DHL do right now'.
+    """
+    v2 = _ROOT / "app" / "static" / "v2"
+    ops = (v2 / "shipping-ops.jsx").read_text(encoding="utf-8")
+    cap = ops[ops.index("function dhlCapFromStatus("):]
+    cap = cap[:cap.index("\nfunction ")]
+    assert "carrier_api_status" in cap
+    for banned in ("carrierShipment", "tracking_ref", "shipment.mode"):
+        assert banned not in cap, banned
+
+    detail = (v2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    modal = detail[detail.index("function AwbGenerateModal("):]
+    modal = modal[:modal.index("\nfunction ", 10)]
+    # The modal's mode label is derived from the gate, not from a stored row.
+    assert "carrierStatus.carrier_api_status" in modal or "_apiStatus" in modal
+
+
+def test_a_simulated_shipment_is_labelled_in_the_logistics_view():
+    detail = (_ROOT / "app" / "static" / "v2" / "proforma-detail.jsx").read_text(encoding="utf-8")
+    # The projection carries the two facts the label needs.
+    assert "simulated:         ship ? !!ship.simulated : false," in detail
+    assert "mode:              ship ? (ship.mode || null) : null," in detail
+    # One place decides the wording, and it is rendered.
+    assert "_shipmentIsSimulated" in detail
+    assert 'data-testid="pf-logistics-simulated-shipment"' in detail
+    assert "never handed to a carrier" in detail
