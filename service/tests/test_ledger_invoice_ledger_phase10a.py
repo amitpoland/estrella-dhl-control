@@ -8,7 +8,7 @@ Coverage (per task spec):
   3. Python-side date filter removes out-of-window invoices that wFirma
      silently returned.
   4. aggregator groups entries by currency.
-  5. each entry contains exactly the seven proven fields.
+  5. each entry contains exactly the six proven fields.
   6. each entry does NOT contain payment_state, remaining, alreadypaid,
      due_date, paid_date, aging, or balance.
   7. unknown contractor returns 404.
