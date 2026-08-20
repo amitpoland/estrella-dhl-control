@@ -255,3 +255,53 @@ def test_product_master_missing_does_not_affect_health(tmp_path):
     assert b["health_status"] == "healthy"
     assert all("product_master" not in reason and "master" not in reason.lower()
                for reason in b["health_reasons"])
+
+
+# -- 9. advance packing never becomes an inventory shortage ------------------
+
+def _add_advance_document(pk: Path, batch_id: str) -> None:
+    """Mark ``batch_id`` as an advance (pre-shipment) batch the way
+    ``advance_packing.ingest_advance`` does -- a packing_documents row whose
+    doc_stage is 'advance'."""
+    con = sqlite3.connect(str(pk))
+    con.execute("CREATE TABLE IF NOT EXISTS packing_documents "
+                "(id TEXT, batch_id TEXT, doc_stage TEXT)")
+    con.execute("INSERT INTO packing_documents (id, batch_id, doc_stage) "
+                "VALUES (?,?,?)", ("doc-" + batch_id, batch_id, "advance"))
+    con.commit(); con.close()
+
+
+def test_advance_batch_is_not_an_under_scan(tmp_path):
+    """An advance list announces goods that do not exist yet, so they cannot
+    have been scanned into stock. Counting its quantity here invented an
+    under_scan shortage against a batch that has no inventory and never will."""
+    sub = tmp_path / "adv"
+    sub.mkdir()
+    wh, pk, rq = _make_dbs(
+        sub,
+        inv_rows=[("SHIPMENT_X", "PC1", "WAREHOUSE_STOCK")],
+        pak_rows=[("SHIPMENT_X", "PC1", 1), ("ADVANCE_2026-08_deadbeef", None, 40)],
+        master_codes=["PC1"],
+    )
+    _add_advance_document(pk, "ADVANCE_2026-08_deadbeef")
+    r = svc.compute_reconciliation(warehouse_db_path=wh, packing_db_path=pk,
+                                   reservation_db_path=rq)
+
+    assert all(not b["batch_id"].startswith("ADVANCE_") for b in r["batches"]), (
+        "an advance batch must not appear in the inventory reconciliation report")
+    assert r["totals"]["under_scan"] == 0
+    assert r["totals"]["packing_quantity"] == 1
+    # the real shipment is untouched by the filter
+    assert _batch(r, "SHIPMENT_X")["packing_quantity"] == 1
+
+
+def test_final_batches_survive_when_no_advance_document_exists(tmp_path):
+    """No advance documents (or a packing.db predating doc_stage) must leave
+    the report exactly as it was -- the filter degrades to a no-op, never to
+    zero packing everywhere."""
+    r = _run(tmp_path,
+             inv_rows=[("B1", "PC1", "WAREHOUSE_STOCK")],
+             pak_rows=[("B1", "PC1", 5)],
+             master_codes=["PC1"])
+    assert _batch(r, "B1")["packing_quantity"] == 5
+    assert _batch(r, "B1")["under_scan"] == 4
