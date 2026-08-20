@@ -103,5 +103,10 @@
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python -S \"${CLAUDE_PROJECT_DIR}/.claude/statusline/session-health.py\"",
+    "padding": 0
   }
 }
