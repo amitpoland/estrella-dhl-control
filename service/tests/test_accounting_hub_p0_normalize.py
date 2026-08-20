@@ -343,3 +343,62 @@ def test_list_invoices_by_type_uses_sibling_page(monkeypatch):
     assert "<page>2</page>" in body
     assert "<limit>20</limit>" in body
     assert "<page><start>" not in body
+
+
+# ── Currency truth: <netto>/<tax> are PLN accounting figures ────────────────
+# Same defect class as the invoice-ledger repair: wFirma returns these in the
+# PLN accounting currency on every document, so a row labelled USD/EUR that
+# printed them stated a PLN amount as if it were foreign. Pinned as a
+# PROPERTY (no emitted money field may be the PLN netto inside a foreign
+# row), not as a field name, so a rename cannot quietly reintroduce it.
+
+def _invoice_with_currency(ccy: str) -> str:
+    return f"""<api><invoices>
+      <invoice>
+        <id>7701</id>
+        <fullnumber>WDT 17/2026</fullnumber>
+        <date>2026-05-15</date>
+        <type>normal</type>
+        <contractor_detail><name>Foreign Party</name></contractor_detail>
+        <contractor><id>90484280</id></contractor>
+        <netto>3938.72</netto><tax>0.00</tax>
+        <total>1084.12</total>
+        <currency>{ccy}</currency>
+        <paymentstate>unpaid</paymentstate>
+      </invoice>
+    </invoices></api>"""
+
+
+def test_foreign_invoice_withholds_pln_netto_and_tax():
+    row = normalize_invoices_from_xml(_invoice_with_currency("USD"))[0]
+    assert row["currency"] == "USD"
+    # The document-currency gross survives — <total> on a foreign document.
+    assert row["gross"] == "1084.12"
+    # The PLN accounting figures are withheld, never converted.
+    assert row["net"] == "—"
+    assert row["tax"] == "—"
+    # Property: no emitted value may be the PLN netto in a foreign row.
+    assert "3938.72" not in [str(v) for v in row.values()]
+
+
+def test_domestic_invoice_keeps_netto_and_tax():
+    row = normalize_invoices_from_xml(_invoice_with_currency("PLN"))[0]
+    assert row["currency"] == "PLN"
+    assert row["net"] == "3938.72"
+    assert row["tax"] == "0.00"
+
+
+def test_foreign_warehouse_document_withholds_pln_netto():
+    xml = """<api><warehouse_documents>
+      <warehouse_document>
+        <id>5501</id><fullnumber>WZ 3/2026</fullnumber><type>WZ</type>
+        <date>2026-05-15</date>
+        <contractor_detail><name>Foreign Party</name></contractor_detail>
+        <netto>3938.72</netto><brutto>1084.12</brutto>
+        <currency>EUR</currency><status>open</status>
+      </warehouse_document>
+    </warehouse_documents></api>"""
+    row = normalize_warehouse_documents_from_xml(xml)[0]
+    assert row["currency"] == "EUR"
+    assert row["net"] == "—"
+    assert "3938.72" not in [str(v) for v in row.values()]

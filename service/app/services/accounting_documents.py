@@ -52,6 +52,27 @@ def _text(node: Optional[ET.Element], *tags: str, default: str = "") -> str:
     return default
 
 
+def _accounting_currency_amount(
+    node: ET.Element, currency: str, *tags: str
+) -> str:
+    """A ``<netto>`` / ``<tax>`` figure, withheld when it is not in ``currency``.
+
+    wFirma returns these in the PLN accounting currency on EVERY document,
+    while ``<currency>`` and the document-currency gross describe a foreign
+    document — the same split ``ledger_aggregator._invoice_gross_raw``
+    documents ("``<netto>`` may be PLN"). Emitting them in a row labelled USD
+    or EUR stated a PLN amount as if it were foreign.
+
+    No approved FX authority owns a netto conversion, so the figure is
+    withheld on foreign documents rather than converted: truthful absence
+    over an invented rate. Domestic documents are unaffected — there the
+    accounting currency IS the document currency.
+    """
+    if (currency or "").strip().upper() not in ("", "PLN"):
+        return "—"
+    return _text(node, *tags) or "—"
+
+
 def _first_child(parent: ET.Element, name: str) -> Optional[ET.Element]:
     return parent.find(name)
 
@@ -112,6 +133,7 @@ def normalize_invoice_node(inv: ET.Element) -> Optional[Dict[str, Any]]:
     raw_state = _text(inv, "paymentstate", "state")
     paid = _text(inv, "alreadypaid")
     remaining = _text(inv, "remaining")
+    ccy = _text(inv, "currency")
     return {
         "wfirma_id": wfirma_id,
         "number": number,
@@ -119,9 +141,9 @@ def normalize_invoice_node(inv: ET.Element) -> Optional[Dict[str, Any]]:
         "party_name": party or "—",
         "party": party or "—",  # back-compat for AccDocGrid until UI cutover
         "contractor_id": contractor_id,
-        "currency": _text(inv, "currency") or "—",
-        "net": _text(inv, "netto", "total_netto") or "—",
-        "tax": _text(inv, "tax", "vat") or "—",
+        "currency": ccy or "—",
+        "net": _accounting_currency_amount(inv, ccy, "netto", "total_netto"),
+        "tax": _accounting_currency_amount(inv, ccy, "tax", "vat"),
         "gross": _text(inv, "brutto", "total", "total_brutto") or "—",
         "payment_state_raw": raw_state or "undefined",
         "payment_state": map_payment_state(raw_state),
@@ -178,6 +200,7 @@ def normalize_warehouse_node(
         "contractor/name",
         "contractor_detail/altname",
     )
+    wh_ccy = _text(wd, "currency")
     return {
         "wfirma_id": wfirma_id,
         "doc_type": doc_type,
@@ -186,8 +209,8 @@ def normalize_warehouse_node(
         "party_name": party or "—",
         "party": party or "—",
         "contractor_id": _text(wd, "contractor/id", "contractor_detail/id"),
-        "currency": _text(wd, "currency") or "—",
-        "net": _text(wd, "netto") or "—",
+        "currency": wh_ccy or "—",
+        "net": _accounting_currency_amount(wd, wh_ccy, "netto"),
         "gross": _text(wd, "brutto") or "—",
         "qty_or_lines": None,  # filled only when contents count is projected
         "awb": None,  # secondary EJ correlation — filled by route when linked
