@@ -20,6 +20,24 @@ The compaction-thrashing root cause was found and fixed on 2026-08-20: the persi
 boundary. **That investigation is closed.** This document is the next layer: detect degradation
 early, keep avoidable context growth out, and prove performance claims with measurement.
 
+**That fix was an operator-side Windows environment correction, not a repository change.** No
+file in this repo set the variable, no file here removes it, and nothing in this document or the
+change that introduced it implements or can implement it. If the variable is ever re-set —
+by a script, a profile, or another session repeating the 2026-05-24 mistake — **the repository
+cannot detect or undo it**; only §1.2's two proofs will show it, and only an operator can clear
+it again. Do not read anything here as a code-level guarantee of the 1M window.
+
+### 0.1 What this campaign did *not* do
+
+It **did not make sessions faster, and no speedup is claimed.** The command-level benchmark was
+re-run after every change in §6–§7 and is identical to the baseline within noise (`git status`
+64 → 62 ms, `python -c pass` 67 → 70 ms, trivial bash 18 → 18 ms). The one large movement —
+repo-wide `grep` p95 3,708 → 137 ms — is **filesystem cache warming, not an improvement**.
+
+What it produced is measurement, telemetry and rules. The status line in §7 *adds* ~87–104 ms
+per turn, asynchronously. The only quantity this campaign is entitled to claim it reduces is
+**context growth**, and only where §6.1 is actually followed.
+
 ---
 
 ## 1. Reference baseline (2026-08-20)
@@ -121,10 +139,13 @@ Three results, each of which contradicts a plausible assumption:
   time-to-first-token is 1,578 ms vs 2,139 ms — **≈560 ms per turn** attributable to the larger
   prompt.
 
-**Interpretation.** ~560 ms/turn against a 6,588 ms p50 turn is ≈8 %. That does not justify
-disabling governance, skills or memory, all of which exist for correctness reasons. It does
-justify not *growing* the static surface without a reason, and it prices any future proposal to
-add to it.
+**Interpretation — safe mode is a measuring instrument, not the operating recommendation.**
+~560 ms/turn against a 6,588 ms p50 turn is ≈8 %, bought by discarding `CLAUDE.md`, the
+Engineering Lessons, memory, skills and every project hook — i.e. by trading away the governance
+and context that make the work correct. **Do not adopt `--safe-mode` as a normal working mode**;
+its value here was isolating *why* the static surface costs what it costs. What the number does
+justify is not *growing* that surface without a reason, and it prices any future proposal to add
+to it.
 
 ---
 
