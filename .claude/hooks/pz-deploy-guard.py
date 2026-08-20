@@ -2,21 +2,37 @@
 """
 PZ deploy / merge / push-to-main PreToolUse guard.
 
-Purpose: BLOCK (permissionDecision="deny") four operator-only actions that
-must never be executed by Claude Code:
+Purpose: BLOCK (permissionDecision="deny") operator-only actions that must never
+be executed by Claude Code:
   1. copy/write INTO the production tree (C:\\PZ) via shell
-  2. gh pr merge
-  3. git push to main / origin main
-  4. Edit/Write a file under C:\\PZ (closes the direct file-write path)
+  2. execution of the canonical deployment script or a runtime-config writer
+  3. control of the production service (PZService)
+  4. gh pr merge
+  5. git push to main / origin main
+  6. Edit/Write a file under C:\\PZ (closes the direct file-write path)
 
-These are reserved for the human operator. The agent must never deploy to
-prod, merge a PR, or push to main, and must never write into C:\\PZ through
-any tool. The deploy-guard is a hard DENY authority — not an "ask".
+These are reserved for the human operator. The deploy-guard is a hard DENY
+authority — not an "ask".
+
+CLASSIFY THE ACTION, NOT THE TEXT (2026-08-20)
+----------------------------------------------
+The guard used to deny any command whose text merely CONTAINED "deploy-pz.ps1".
+That made `sed -n ... Deploy-PZ.ps1`, `git diff -- ...Deploy-PZ.ps1`,
+`Get-FileHash ...Deploy-PZ.ps1` and even `echo "Deploy-PZ.ps1"` unrunnable:
+15 of 16 measured read-only inspections were denied. A protected filename in
+command text is NOT evidence of execution — it is usually evidence of reading.
+
+The guard now splits the command into shell segments and asks, per segment,
+whether the protected token is DATA being read or CODE being executed. A segment
+whose head command is a known read-only verb, with no in-place/write flag, no
+output redirection and no command substitution, is classified ALLOW_READ. Every
+other shape containing a protected token stays denied. The default is unchanged:
+anything not provably read-only fails closed.
 
 Wiring: registered as a PreToolUse hook in .claude/settings.json under TWO
 matchers:
-  - "Bash|PowerShell" — guards shell commands (rules 1-3)
-  - "Edit|Write"      — guards file_path writes into C:\\PZ (rule 4)
+  - "Bash|PowerShell" — guards shell commands (rules 1-5)
+  - "Edit|Write"      — guards file_path writes into C:\\PZ (rule 6)
 
 Behaviour:
   - Guarded shell command         -> permissionDecision="deny", exit 0.
@@ -24,6 +40,11 @@ Behaviour:
   - Unparseable payload           -> permissionDecision="ask",  exit 0 (FAIL CLOSED).
   - Otherwise                     -> exit 0 with NO output (must never block
                                      ordinary commands or edits).
+
+KNOWN RESIDUAL (accepted, documented): a heredoc whose BODY contains a
+production path plus a write verb is denied, because `bash <<EOF` executes its
+body and the two cases are indistinguishable in text. Create such files with the
+Write tool, not with shell heredocs.
 
 Output is written as raw UTF-8 bytes so non-ASCII reason text cannot trip
 a cp1252 Windows console (Lesson L).
@@ -34,6 +55,8 @@ import json
 import re
 
 
+# ---- Protected tokens ------------------------------------------------------
+
 # 'C:\PZ' as a path token: exact, or followed by \ or /. Case-insensitive.
 # Negative lookahead excludes C:\PZ-verify (followed by '-') and C:\PZAPP
 # (followed by alphanumeric). Also covers C:/PZ variants.
@@ -42,18 +65,114 @@ PROD_PZ_RX = re.compile(r"c:[\\/]pz(?![\w\-])", re.IGNORECASE)
 # The canonical deployment script. Matched by NAME because the script is
 # configuration-driven: its command line carries no production path token, so the
 # path-based rule cannot see it. Covers Deploy-PZ.ps1 however it is invoked
-# (relative, absolute, via &, via powershell -File).
+# (relative, absolute, via &, via powershell -File). Name-matching alone is NOT
+# the decision — see _segment_is_read_only: the name only matters in a segment
+# that actually executes something.
 DEPLOY_SCRIPT_RX = re.compile(r"deploy-pz\.ps1", re.IGNORECASE)
 
 # Scripts that write production RUNTIME CONFIGURATION (C:\PZ\.env) rather than code.
 # They are matched by NAME for the same reason as the deploy script: their command
 # lines carry no C:\PZ token, so the path rule cannot see them. .env controls live
 # service behaviour (API keys, write-gate flags), so running one is an operator action.
-# They are not yet consolidated behind a governed runtime-configuration authority;
-# blocking execution is the interim mitigation.
 RUNTIME_CONFIG_SCRIPT_RX = re.compile(
     r"env_config_manager\.ps1|activate_pz_lifecycle\.py", re.IGNORECASE
 )
+
+# Control of the production Windows service. A control VERB plus the PZService
+# TARGET, tested independently so pipeline order cannot evade the match
+# (`Get-Service PZService | Stop-Service` reads target-before-verb).
+# CLAUDE.md core rule 3: never stop or modify PZService.
+SERVICE_VERB_RX = re.compile(
+    r"\b(?:sc(?:\.exe)?|nssm(?:\.exe)?|net)\s+(?:stop|start|restart|config|delete|failure)\b"
+    r"|\b(?:stop|start|restart|set|remove|new)-service\b",
+    re.IGNORECASE,
+)
+SERVICE_TARGET_RX = re.compile(r"pzservice", re.IGNORECASE)
+
+# Piping a read into an interpreter turns the read into an execution:
+#   git show HEAD:...Deploy-PZ.ps1 | powershell -
+# Each segment looks innocent alone (segment 1 is a genuine read, segment 2
+# names nothing protected), so this is caught on the whole command instead.
+PIPE_TO_INTERPRETER_RX = re.compile(
+    r"\|\s*&?\s*(?:powershell|pwsh|cmd|bash|sh|zsh|python\d?|node|perl|ruby"
+    r"|iex|invoke-expression)\b",
+    re.IGNORECASE,
+)
+
+# An encoded PowerShell command cannot be classified from its text at all.
+ENCODED_COMMAND_RX = re.compile(
+    r"-e(?:c|nc|ncoded|ncodedcommand)?\s+[A-Za-z0-9+/=]{16,}", re.IGNORECASE
+)
+
+# Verbs that place bytes somewhere. Used together with a production path.
+WRITE_VERB_RX = re.compile(
+    r"\brobocopy\b|\bxcopy\b|copy-item\b|move-item\b|set-content\b|add-content\b"
+    r"|out-file\b|new-item\b|remove-item\b|\bcp\b|\bmv\b|\btee\b",
+    re.IGNORECASE,
+)
+
+
+# ---- Read-only vocabulary --------------------------------------------------
+# A conservative allowlist. Anything absent is NOT read-only, so growth of the
+# shell vocabulary cannot silently weaken the guard.
+
+READ_ONLY_HEADS = frozenset(
+    # POSIX / Git Bash
+    "cat head tail sed awk grep egrep fgrep rg ack less more nl wc file stat ls "
+    "dir find diff cmp md5sum sha1sum sha256sum echo printf cut sort uniq tr jq "
+    "xxd od basename dirname realpath readlink true pwd date which type comm tee0"
+    .split()
+    +
+    # PowerShell (lower-cased; aliases included)
+    "get-content gc type select-string sls get-item gi get-childitem gci "
+    "get-filehash get-acl get-itemproperty compare-object measure-object "
+    "out-string out-host write-host write-output format-list format-table "
+    "resolve-path test-path convertfrom-json convertto-json select-object "
+    "where-object sort-object group-object".split()
+)
+
+# `git` is read-only only for these subcommands. `git push` / `git commit` etc.
+# fall through to the normal rules.
+GIT_READ_ONLY_SUBCOMMANDS = frozenset(
+    "show diff log ls-files ls-tree cat-file grep blame status rev-parse "
+    "describe show-ref merge-base shortlog name-rev rev-list whatchanged "
+    "diff-tree config".split()
+)
+
+# git subcommands that write only inside the LOCAL REPOSITORY. They take file
+# paths and prose as arguments and can neither execute what they name nor reach
+# C:\PZ, so a protected filename in `git commit -m "fix Deploy-PZ.ps1 guard"` is
+# prose, not an invocation. `push` is deliberately absent -- it is rule
+# 'git-push-main'.
+GIT_LOCAL_WRITE_SUBCOMMANDS = frozenset("commit add tag stash notes".split())
+
+# Splits a command into independently-classified segments.
+SEGMENT_SPLIT_RX = re.compile(r"&&|\|\||[;|\n]")
+
+# Command substitution / expansion — the segment's real content is not visible.
+SUBSTITUTION_RX = re.compile(r"\$\(|\$\{|`|@\(")
+
+# Output redirection. `2>/dev/null` and `2>&1` are diagnostic noise suppression,
+# not writes, and are the only forms tolerated inside a read-only segment.
+BENIGN_REDIRECT_RX = re.compile(r"\d?>\s*(?:&\d|/dev/null|\$null|nul)\b", re.IGNORECASE)
+ANY_REDIRECT_RX = re.compile(r">")
+
+# In-place / write flags for otherwise-read-only stream editors.
+INPLACE_RX = re.compile(r"(?:^|\s)-{1,2}[a-z]*i(?:[a-z]*)?(?:\s|$|\.)|in-?place", re.IGNORECASE)
+STREAM_EDITORS = frozenset(["sed", "awk", "perl", "ruby"])
+
+
+# Shell escape / quote characters that split a protected token without changing
+# what the shell executes: PowerShell backtick, cmd caret, and quote characters
+# (`.\Dep"loy-PZ.ps1`, ``.\Deploy-PZ.ps`1``). Token detection runs on a
+# normalised copy so escaping cannot hide the name. Detection only -- the raw
+# segment is what the read-only test inspects.
+ESCAPE_NOISE_RX = re.compile(r"[`^\"']")
+
+
+def _normalise(text):
+    """Lower-cased text with shell escape/quote noise removed, for token matching."""
+    return ESCAPE_NOISE_RX.sub("", text).lower()
 
 
 def _is_prod_pz_path(text):
@@ -63,6 +182,55 @@ def _is_prod_pz_path(text):
     if not text:
         return False
     return PROD_PZ_RX.search(text) is not None
+
+
+def _segment_head(segment):
+    """The executable word of a segment, lower-cased. '' when there is none.
+
+    `git <sub>` collapses to 'git <sub>' so read-only git subcommands can be
+    allowed without allowing `git push`.
+    """
+    tokens = segment.strip().split()
+    if not tokens:
+        return ""
+    head = tokens[0].strip("'\"").lower()
+    if head == "git" and len(tokens) > 1:
+        return "git " + tokens[1].strip("'\"").lower()
+    return head
+
+
+def _segment_is_read_only(segment):
+    """True when this segment provably only READS.
+
+    Read-only requires ALL of:
+      - head command is in the read-only vocabulary (git: read-only subcommand),
+      - no command substitution (content would be invisible to us),
+      - no output redirection other than stderr suppression,
+      - no in-place flag on a stream editor.
+    Everything else is not provably read-only and therefore is not read-only.
+    """
+    head = _segment_head(segment)
+    if not head:
+        return False
+
+    if head.startswith("git "):
+        if head.split(" ", 1)[1] not in GIT_READ_ONLY_SUBCOMMANDS:
+            return False
+    elif head not in READ_ONLY_HEADS:
+        return False
+
+    if SUBSTITUTION_RX.search(segment):
+        return False
+
+    stripped = BENIGN_REDIRECT_RX.sub("", segment)
+    if ANY_REDIRECT_RX.search(stripped):
+        return False
+
+    base = head.split(" ", 1)[0]
+    if base in STREAM_EDITORS and INPLACE_RX.search(segment):
+        return False
+
+    return True
 
 
 # ---- Payload extraction ----------------------------------------------------
@@ -93,45 +261,161 @@ def _extract_file_path(data):
 
 
 # ---- Classification --------------------------------------------------------
-def _classify_command(command):
-    """Return (rule-label, reason) if the command is guarded, else (None, None)."""
-    low = command.lower()
+# Structured verdicts. `classify_command` returns None (allow) or a dict.
+BLOCK_DEPLOY_OPERATOR_ONLY = "BLOCK_DEPLOY_OPERATOR_ONLY"
+BLOCK_PRODUCTION_WRITE = "BLOCK_PRODUCTION_WRITE"
+BLOCK_UNKNOWN = "BLOCK_UNKNOWN"
 
-    # 1. copy/write into the production tree (C:\PZ)
-    has_copy = (
-        "copy-item" in low
-        or "robocopy" in low
-        or "xcopy" in low
-        or re.search(r"\bcp\b", low) is not None
+
+def _blocked(result, rule, operation, reason, authority="operator"):
+    return {
+        "result": result,
+        "matched_rule": rule,
+        "operation": operation,
+        "reason": reason,
+        "authority_required": authority,
+    }
+
+
+def _segment_is_inert(segment):
+    """True when a segment can neither execute what it names nor write outside
+    the local repository: a read-only command, or a local-repository git write."""
+    if _segment_is_read_only(segment):
+        return True
+    head = _segment_head(segment)
+    return (
+        head.startswith("git ")
+        and head.split(" ", 1)[1] in GIT_LOCAL_WRITE_SUBCOMMANDS
+        and not SUBSTITUTION_RX.search(segment)
     )
-    if has_copy and _is_prod_pz_path(low):
-        return ("deploy-to-prod-PZ", "copy/write into C:\\PZ is operator-only")
 
-    # 1b. Invocation of the canonical deployment script.
-    #     Deploy-PZ.ps1 reads every production path from windows_prod_v2.json, so the
-    #     command text an agent would run ('.\Deploy-PZ.ps1') contains NO C:\PZ token
-    #     and rule 1 above would not fire. Without this rule, config-driving the paths
-    #     would silently DISABLE the guard. Deny by script name instead of by path.
-    #     Rollback is equally production-mutating and is denied by the same rule.
-    if DEPLOY_SCRIPT_RX.search(low) is not None:
-        return ("deploy-script-invocation",
-                "Deploy-PZ.ps1 writes to production and is operator-only "
-                "(-WhatIf is also denied to the agent: use the operator shell)")
 
-    # 1c. Runtime-configuration writers. Same name-matching rationale as 1b.
-    if RUNTIME_CONFIG_SCRIPT_RX.search(low) is not None:
-        return ("runtime-config-write",
+def _command_is_inert(command):
+    """True when EVERY segment is inert.
+
+    Such a command carries no execution and no write outside the repository, so
+    protected names inside it are prose, pathspecs or search patterns -- a commit
+    message describing PZService control, a grep for a robocopy line. Checked
+    before the whole-command rules, which otherwise match their own description.
+    """
+    segments = [s for s in SEGMENT_SPLIT_RX.split(command) if s.strip()]
+    return bool(segments) and all(_segment_is_inert(s) for s in segments)
+
+
+def classify_command(command):
+    """Return None when the command may proceed, else a structured block dict.
+
+    Order: inert commands short-circuit, then whole-command production-mutation
+    rules (they hold however the command is shaped), then per-segment
+    protected-token rules.
+    """
+    if _command_is_inert(command):
+        return None
+
+    low = _normalise(command)
+
+    # --- whole-command production mutation ---------------------------------
+    if SERVICE_VERB_RX.search(low) and SERVICE_TARGET_RX.search(low):
+        return _blocked(
+            BLOCK_PRODUCTION_WRITE, "service-control", "PRODUCTION_MUTATION",
+            "controlling the production service (PZService) is operator-only",
+        )
+
+    if ENCODED_COMMAND_RX.search(low):
+        return _blocked(
+            BLOCK_UNKNOWN, "encoded-command", "UNKNOWN",
+            "an encoded command cannot be classified; unclassifiable execution fails closed",
+        )
+
+    names_protected = (
+        DEPLOY_SCRIPT_RX.search(low) is not None
+        or RUNTIME_CONFIG_SCRIPT_RX.search(low) is not None
+        or _is_prod_pz_path(low)
+    )
+    if names_protected and PIPE_TO_INTERPRETER_RX.search(low):
+        return _blocked(
+            BLOCK_DEPLOY_OPERATOR_ONLY, "pipe-to-interpreter", "DEPLOY_EXECUTION",
+            "piping protected deployment content into an interpreter executes it; "
+            "read it without the pipe instead",
+        )
+
+    if _is_prod_pz_path(low) and ANY_REDIRECT_RX.search(
+        BENIGN_REDIRECT_RX.sub("", command)
+    ):
+        return _blocked(
+            BLOCK_PRODUCTION_WRITE, "redirect-into-prod", "PRODUCTION_MUTATION",
+            "redirecting output into C:\\PZ is a production write and is operator-only",
+        )
+
+    # --- per-segment classification ----------------------------------------
+    for segment in SEGMENT_SPLIT_RX.split(command):
+        if not segment.strip():
+            continue
+        seg_low = _normalise(segment)
+
+        touches_prod = _is_prod_pz_path(seg_low)
+        names_deploy = DEPLOY_SCRIPT_RX.search(seg_low) is not None
+        names_config = RUNTIME_CONFIG_SCRIPT_RX.search(seg_low) is not None
+
+        if not (touches_prod or names_deploy or names_config):
+            continue  # nothing protected in this segment
+
+        # Reading a protected file — including production files — is safe.
+        if _segment_is_read_only(segment):
+            continue
+
+        # Naming a protected file to a local-repository git write is prose or a
+        # pathspec, never an invocation.
+        head = _segment_head(segment)
+        if head.startswith("git ") and head.split(" ", 1)[1] in GIT_LOCAL_WRITE_SUBCOMMANDS:
+            continue
+
+        # 1. copy/write into the production tree (C:\PZ)
+        if touches_prod and WRITE_VERB_RX.search(seg_low):
+            return _blocked(
+                BLOCK_PRODUCTION_WRITE, "deploy-to-prod-PZ", "PRODUCTION_MUTATION",
+                "copy/write into C:\\PZ is operator-only",
+            )
+
+        # 2. Execution of the canonical deployment script.
+        #    Deploy-PZ.ps1 reads every production path from windows_prod_v2.json, so
+        #    the command text an agent would run ('.\\Deploy-PZ.ps1') contains NO
+        #    C:\\PZ token and the path rule above would not fire. Rollback is equally
+        #    production-mutating and is denied by the same rule. Reading the script
+        #    was already permitted above.
+        if names_deploy:
+            return _blocked(
+                BLOCK_DEPLOY_OPERATOR_ONLY, "deploy-script-invocation", "DEPLOY_EXECUTION",
+                "requested execution of the canonical production deploy script "
+                "Deploy-PZ.ps1 (-WhatIf is also denied to the agent: use the operator "
+                "shell). Reading, diffing and hashing the script are permitted",
+            )
+
+        # 3. Runtime-configuration writers. Same name-matching rationale as 2.
+        if names_config:
+            return _blocked(
+                BLOCK_DEPLOY_OPERATOR_ONLY, "runtime-config-write", "PRODUCTION_MUTATION",
                 "this script writes production runtime configuration (C:\\PZ\\.env) "
-                "and is operator-only")
+                "and is operator-only. Reading it is permitted",
+            )
 
-    # 2. gh pr merge — Council-authorized merge gate
-    #    (ADR-council-authorized-merge-gate). Default-OFF + FAIL-CLOSED: replaces
-    #    the former UNCONDITIONAL denial with a narrowly-scoped, machine-verifiable
-    #    authorization check. With no flag / no trusted signing key / no signed
-    #    authorization artifact (the current repository state — no CI signer),
-    #    evaluate_merge ALWAYS returns "deny", so the merge denial is NOT weakened.
-    #    Protected files / guard self-modification / non-squash / stale head /
-    #    expired / consumed / unsigned all deny. Validator error also denies.
+        # 4. A production path in a segment that is not provably read-only and
+        #    carries no recognised write verb: unclassifiable. Fail closed.
+        if touches_prod:
+            return _blocked(
+                BLOCK_UNKNOWN, "unclassified-prod-touch", "UNKNOWN",
+                "this command reaches into C:\\PZ in a way the guard cannot classify "
+                "as read-only; ambiguous production access fails closed",
+            )
+
+    # --- merge / push authority (whole command) ----------------------------
+    # gh pr merge — Council-authorized merge gate
+    # (ADR-council-authorized-merge-gate). Default-OFF + FAIL-CLOSED: a narrowly
+    # scoped, machine-verifiable authorization check. With no flag / no trusted
+    # signing key / no signed authorization artifact (the current repository state
+    # — no CI signer), evaluate_merge ALWAYS returns "deny", so the merge denial is
+    # NOT weakened. Protected files / guard self-modification / non-squash / stale
+    # head / expired / consumed / unsigned all deny. Validator error also denies.
     if "gh pr merge" in low:
         try:
             _hook_dir = os.path.dirname(os.path.abspath(__file__))
@@ -142,16 +426,20 @@ def _classify_command(command):
         except Exception as _exc:  # fail closed on ANY error
             decision, reason = ("deny", "merge-authorization validator error: "
                                 + type(_exc).__name__)
-        if decision == "allow":
-            return (None, None)   # Council-authorized squash merge — permit
-        return ("gh-pr-merge",
-                "gh pr merge is operator-only unless Council-authorized — " + reason)
+        if decision != "allow":
+            return _blocked(
+                BLOCK_DEPLOY_OPERATOR_ONLY, "gh-pr-merge", "PRODUCTION_MUTATION",
+                "gh pr merge is operator-only unless Council-authorized — " + reason,
+            )
 
-    # 3. git push to main / origin main
+    # git push to main / origin main
     if "git push" in low and re.search(r"git\s+push\b[^\n]*\bmain\b", low):
-        return ("git-push-main", "git push to main is operator-only")
+        return _blocked(
+            BLOCK_DEPLOY_OPERATOR_ONLY, "git-push-main", "PRODUCTION_MUTATION",
+            "git push to main is operator-only",
+        )
 
-    return (None, None)
+    return None
 
 
 # ---- Output ----------------------------------------------------------------
@@ -183,7 +471,7 @@ def _read_stdin_json():
             raw = sys.stdin.read()
         except Exception:
             return None
-    raw = raw.lstrip("﻿").lstrip("ï»¿").strip()
+    raw = raw.lstrip("\ufeff").lstrip("ï»¿").strip()
     if not raw:
         return {}
     try:
@@ -196,18 +484,20 @@ def main():
     data = _read_stdin_json()
     if data is None:
         # Fail CLOSED — surface to operator rather than silently allowing.
-        _emit("ask", "PZ deploy-guard: could not parse PreToolUse payload — confirm before running.")
+        _emit("ask", "PZ deploy-guard: ERROR — could not parse PreToolUse payload; confirm before running.")
         return 0
 
     # Shell-command path (Bash|PowerShell matcher) ---------------------------
     command = _extract_command(data)
     if command.strip():
-        label, reason = _classify_command(command)
-        if label is not None:
+        verdict = classify_command(command)
+        if verdict is not None:
             _emit(
                 "deny",
-                f"PZ deploy-guard: BLOCKED rule '{label}' — {reason}. "
-                f"This action is operator-only; the agent must not run it.",
+                "PZ deploy-guard: {result} (rule '{matched_rule}', operation "
+                "{operation}) — {reason}. Authority required: {authority_required}.".format(
+                    **verdict
+                ),
             )
             return 0
 
@@ -216,8 +506,9 @@ def main():
     if file_path.strip() and _is_prod_pz_path(file_path):
         _emit(
             "deny",
-            f"PZ deploy-guard: BLOCKED Edit/Write into prod tree '{file_path}'. "
-            f"C:\\PZ is operator-only — never edit production files directly.",
+            f"PZ deploy-guard: {BLOCK_PRODUCTION_WRITE} (rule 'prod-tree-edit') — "
+            f"Edit/Write into prod tree '{file_path}'. C:\\PZ is operator-only; "
+            f"never edit production files directly.",
         )
         return 0
 
