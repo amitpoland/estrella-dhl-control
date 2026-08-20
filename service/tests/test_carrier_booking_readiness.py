@@ -568,3 +568,25 @@ def test_ui_presents_an_already_booked_leg_instead_of_an_allowlist_prompt():
     assert "allowlist" not in panel.lower()
     # The release warning is suppressed while the leg is already booked.
     assert "releaseBlocked && !legAlreadyBooked" in src
+
+
+def test_readiness_validates_batch_id_at_the_trust_boundary(storage):
+    """batch_id reaches a filesystem path, so a traversal attempt is REFUSED.
+
+    Read-only is not a licence to skip the check: every sibling batch-scoped
+    route in this module validates before use, and this one must match them.
+    """
+    from app.api.routes_carrier_actions import _SAFE_BATCH
+
+    with _booking_client(storage) as (client, _):
+        for bad in ("../../etc/passwd", "..", "a/b", "x" * 200, "ab", "a b"):
+            assert not _SAFE_BATCH.match(bad), bad
+            resp = client.get(
+                "/api/v1/carrier/" + bad + "/booking-readiness",
+                params={"client_ref": CLIENT_A},
+            )
+            # Refused by the route's own guard, or never routed at all.
+            assert resp.status_code in (400, 404), (bad, resp.status_code)
+        # The real batch id still resolves.
+        assert client.get(
+            "/api/v1/carrier/" + BATCH + "/booking-readiness").status_code == 200

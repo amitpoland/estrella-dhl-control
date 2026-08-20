@@ -1565,6 +1565,14 @@ def get_booking_readiness(
     from ..core.config import settings
     from ..services.carrier.booking_readiness import project_booking_readiness
 
+    # Trust boundary. batch_id reaches a filesystem path
+    # (storage_root/outputs/<batch_id>/audit.json), so it is validated here the
+    # same way every sibling batch-scoped route in this module validates it —
+    # before the value is used, not after. Read-only is not a licence to skip
+    # the check: a traversal attempt must be refused, never merely survived.
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        raise HTTPException(status_code=400, detail="invalid batch_id")
+
     return JSONResponse(project_booking_readiness(
         batch_id,
         storage_root=settings.storage_root,
