@@ -321,7 +321,14 @@ def _release_state(batch_id: str, settings, provider: str = "DHL") -> Dict[str, 
     # would go stale the moment a credential changed.
     capability_ready, capability_reason, adapter_name = False, None, None
     try:
-        from ..factory import CarrierConfig, get_adapter
+        # `.factory` -- app.services.carrier.factory, the same module the
+        # coordinator imports (coordinator.py:34). This read `..factory`,
+        # i.e. app.services.factory, which does not exist: every release
+        # projection raised ImportError, was swallowed, and reported
+        # capability_ready False with "No module named 'app.services.factory'"
+        # leaking into an operator-facing field -- even for DHL, which Carrier
+        # Master independently reports as fully provisioned.
+        from .factory import CarrierConfig, get_adapter
         adapter = get_adapter(
             CarrierConfig(
                 status=status or "pending",

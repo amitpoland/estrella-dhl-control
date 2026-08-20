@@ -625,6 +625,37 @@ def test_description_projection_real_shape_is_a_dict(tmp_path):
     assert not isinstance(out, str)
 
 
+def test_release_state_resolves_the_real_carrier_factory():
+    """_release_state must reach the REAL factory, not swallow an ImportError.
+
+    The import read `..factory` (app.services.factory, which does not exist)
+    instead of `.factory`, so every release projection reported
+    capability_ready False with a Python import error in an operator-facing
+    field. Pinned by importing the same module the coordinator uses.
+    """
+    import importlib
+
+    # The module the coordinator imports must be importable under the name
+    # booking_readiness now uses.
+    mod = importlib.import_module("app.services.carrier.factory")
+    assert hasattr(mod, "get_adapter") and hasattr(mod, "CarrierConfig")
+
+    # And the wrong name must still not exist — if it ever does, this test is
+    # the place that says the two-dot form was never the right one.
+    try:
+        importlib.import_module("app.services.factory")
+        raise AssertionError("app.services.factory unexpectedly exists")
+    except ImportError:
+        pass
+
+    # No release projection may surface a Python import error to an operator.
+    from app.services.carrier import booking_readiness as br
+    from app.core.config import settings as _s
+
+    state = br._release_state("SHIPMENT_1_2026-08_aaaa1111", _s, "DHL")
+    assert "No module named" not in str(state.get("capability_reason") or "")
+
+
 def test_readiness_normalises_the_real_description_shape(tmp_path):
     """_description_state survives the real builder's dict return."""
     from app.api.routes_carrier_actions import (
