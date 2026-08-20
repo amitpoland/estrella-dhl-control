@@ -372,14 +372,11 @@ def classify_command(command):
         if not (touches_prod or names_deploy or names_config):
             continue  # nothing protected in this segment
 
-        # Reading a protected file — including production files — is safe.
-        if _segment_is_read_only(segment):
-            continue
-
-        # Naming a protected file to a local-repository git write is prose or a
-        # pathspec, never an invocation.
-        head = _segment_head(segment)
-        if head.startswith("git ") and head.split(" ", 1)[1] in GIT_LOCAL_WRITE_SUBCOMMANDS:
+        # An inert segment names the protected token as data, a pathspec or
+        # prose: reading a protected file (production files included), a local
+        # git write, a PR description. One definition, shared with the
+        # whole-command short-circuit above.
+        if _segment_is_inert(segment):
             continue
 
         # 1. copy/write into the production tree (C:\PZ)

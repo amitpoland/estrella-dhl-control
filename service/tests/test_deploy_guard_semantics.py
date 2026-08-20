@@ -82,6 +82,8 @@ ALLOWED_READS = [
     'gh pr create --title "fix(guard): Deploy-PZ.ps1 reads are not deploys"',
     'gh pr comment 1 --body "robocopy into C:\\PZ stays operator-only"',
     "gh pr view 1295",
+    # a non-inert but harmless segment must not re-block an inert sibling
+    'git push && gh pr create --title "guard: Deploy-PZ.ps1 reads"',
     # ordinary work that mentions nothing protected
     "pytest service/tests/test_deploy_authority.py -q",
     "git status --porcelain",
