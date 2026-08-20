@@ -115,6 +115,22 @@ def compute_reconciliation(
     are missing simply contribute nothing (never an error, never a write)."""
     inv = _read_rows(warehouse_db_path, "SELECT batch_id, product_code, state FROM inventory_state")
     pak = _read_rows(packing_db_path, "SELECT batch_id, product_code, quantity FROM packing_lines")
+    # Advance (pre-shipment) packing lines announce goods that do not exist yet,
+    # so they can never have been scanned into stock. Left in, every ADVANCE_*
+    # batch reports its whole announced quantity as under_scan -- an inventory
+    # shortage manufactured out of a supplier's announcement, against a batch
+    # that has no inventory and never will. doc_stage is the authority for what
+    # is provisional; the batch is the unit this report aggregates on, and an
+    # advance document always owns its own ADVANCE_* batch.
+    advance_batches = {
+        (r.get("batch_id") or "")
+        for r in _read_rows(
+            packing_db_path,
+            "SELECT DISTINCT batch_id FROM packing_documents WHERE doc_stage='advance'",
+        )
+    }
+    if advance_batches:
+        pak = [r for r in pak if (r.get("batch_id") or "") not in advance_batches]
     master = _master_codes(reservation_db_path)
 
     # Aggregate per batch (union of inventory and packing batches).
