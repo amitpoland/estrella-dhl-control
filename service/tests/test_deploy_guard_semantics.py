@@ -78,6 +78,10 @@ ALLOWED_READS = [
     'git commit -m "guard now blocks Stop-Service PZService and robocopy C:\\PZ\\app"',
     'grep -rn "robocopy .* C:\\PZ\\app" .claude/',
     'echo "never run sc.exe stop PZService by hand"',
+    # gh prose: a PR describing deployment work is not deployment
+    'gh pr create --title "fix(guard): Deploy-PZ.ps1 reads are not deploys"',
+    'gh pr comment 1 --body "robocopy into C:\\PZ stays operator-only"',
+    "gh pr view 1295",
     # ordinary work that mentions nothing protected
     "pytest service/tests/test_deploy_authority.py -q",
     "git status --porcelain",
@@ -236,6 +240,15 @@ def test_read_only_vocabulary_excludes_arbitrary_interpreters():
 def test_git_write_subcommands_are_not_read_only():
     for sub in ("push", "commit", "merge", "reset", "checkout", "clean", "apply"):
         assert sub not in guard.GIT_READ_ONLY_SUBCOMMANDS
+
+
+def test_gh_pr_merge_is_never_prose():
+    """`merge` must not join the gh prose set -- it has its own Council gate."""
+    assert guard.GH_PROSE_RX.search("gh pr merge 1295 --squash") is None
+    assert guard.classify_command("gh pr merge 1295 --squash")["matched_rule"] == "gh-pr-merge"
+    # and it stays gated when chained behind an inert command
+    verdict = guard.classify_command('gh pr create --title "x" && gh pr merge 1295 --squash')
+    assert verdict is not None and verdict["matched_rule"] == "gh-pr-merge"
 
 
 def test_git_push_is_never_treated_as_a_local_write():

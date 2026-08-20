@@ -146,6 +146,15 @@ GIT_READ_ONLY_SUBCOMMANDS = frozenset(
 # 'git-push-main'.
 GIT_LOCAL_WRITE_SUBCOMMANDS = frozenset("commit add tag stash notes".split())
 
+# `gh` subcommands that carry PROSE about the repository -- a PR title, body or
+# comment describing deployment work. They cannot execute a named script and
+# cannot reach C:\PZ. `gh pr merge` is deliberately absent: it keeps its own
+# Council-authorized gate, which runs on the whole command.
+GH_PROSE_RX = re.compile(
+    r"^\s*gh\s+(?:pr|issue)\s+(?:create|edit|comment|view|list|status|diff|checks)\b",
+    re.IGNORECASE,
+)
+
 # Splits a command into independently-classified segments.
 SEGMENT_SPLIT_RX = re.compile(r"&&|\|\||[;|\n]")
 
@@ -282,11 +291,14 @@ def _segment_is_inert(segment):
     the local repository: a read-only command, or a local-repository git write."""
     if _segment_is_read_only(segment):
         return True
+    if SUBSTITUTION_RX.search(segment):
+        return False
+    if GH_PROSE_RX.search(segment):
+        return True
     head = _segment_head(segment)
     return (
         head.startswith("git ")
         and head.split(" ", 1)[1] in GIT_LOCAL_WRITE_SUBCOMMANDS
-        and not SUBSTITUTION_RX.search(segment)
     )
 
 
