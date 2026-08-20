@@ -321,7 +321,14 @@ def _release_state(batch_id: str, settings, provider: str = "DHL") -> Dict[str, 
     # would go stale the moment a credential changed.
     capability_ready, capability_reason, adapter_name = False, None, None
     try:
-        from ..factory import CarrierConfig, get_adapter
+        # `.factory` -- app.services.carrier.factory, the same module the
+        # coordinator imports (coordinator.py:34). This read `..factory`,
+        # i.e. app.services.factory, which does not exist: every release
+        # projection raised ImportError, was swallowed, and reported
+        # capability_ready False with "No module named 'app.services.factory'"
+        # leaking into an operator-facing field -- even for DHL, which Carrier
+        # Master independently reports as fully provisioned.
+        from .factory import CarrierConfig, get_adapter
         adapter = get_adapter(
             CarrierConfig(
                 status=status or "pending",
@@ -351,17 +358,37 @@ def _release_state(batch_id: str, settings, provider: str = "DHL") -> Dict[str, 
     }
 
 
+def _normalise_description(projected):
+    """The description text out of whatever the projection returned.
+
+    ``_project_shipment_description_for_client`` returns the full projection
+    DICT (``batch_id`` / ``client_ref`` / ``shipment_description`` / ``source``),
+    not a bare string. This consumer previously called ``.strip()`` on the
+    return value directly, so every readiness request raised
+    ``AttributeError: 'dict' object has no attribute 'strip'`` and the endpoint
+    500'd -- the unit tests missed it because the stub returned a string the
+    real builder never produces (Lesson A). Normalised here, at the one seam,
+    rather than re-deriving the description: description_engine stays the sole
+    authority and this function only reads what it published.
+    """
+    if isinstance(projected, dict):
+        text = projected.get("shipment_description")
+    else:
+        text = projected
+    return (text or "").strip() or None
+
+
 def _description_state(batch_id, storage_root, client_ref):
     """Canonical shipment description -- the ONE backend projection, never a
     browser-side item_type mapping."""
     try:
         from ...api.routes_carrier_actions import _project_shipment_description_for_client
-        text = _project_shipment_description_for_client(
+        projected = _project_shipment_description_for_client(
             storage_root=storage_root, batch_id=batch_id, client_ref=client_ref,
         )
     except Exception:
         return {"ready": False, "authority": "description_engine", "value": None}
-    value = (text or "").strip() or None
+    value = _normalise_description(projected)
     return {"ready": bool(value), "authority": "description_engine", "value": value}
 
 
