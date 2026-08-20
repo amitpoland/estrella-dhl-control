@@ -17,8 +17,8 @@ this module only surfaces the seven invoice-side fields proven by
     type            — <type>            (normal | correction | proforma)
     date            — <date>
     currency        — <currency>
-    total_net       — <netto>
-    total_gross     — <brutto>
+    total_gross     — <brutto>, or <total> on foreign-currency
+                      documents — always the DOCUMENT currency
 
 All decimals are emitted as quantised-2dp strings so JSON consumers do
 not lose precision through float round-trips. Chronological order
@@ -42,15 +42,22 @@ from .financial_aging import (
 
 
 # Fields the aggregator emits per entry — pinned by the Phase 10A test
-# ``test_entries_contain_exactly_seven_proven_fields``. Keep this tuple
+# ``test_entries_contain_exactly_six_proven_fields``. Keep this tuple
 # in lockstep with the entry dict below; any change is a contract break.
+#
+# ``total_net`` was REMOVED (invoice-ledger currency-truth repair): wFirma
+# returns <netto> in the PLN accounting currency on every document, while
+# <currency> and the document-currency gross describe a foreign document.
+# Emitting it inside a currency-keyed container stated a PLN amount as if it
+# were USD/EUR. No approved FX authority owns a netto conversion, so the
+# field is removed rather than converted — truthful removal over an
+# invented rate. Document-currency gross remains, per _invoice_gross_raw.
 LEDGER_ENTRY_FIELDS: Tuple[str, ...] = (
     "wfirma_doc_id",
     "doc_number",
     "type",
     "date",
     "currency",
-    "total_net",
     "total_gross",
 )
 
@@ -100,7 +107,7 @@ def _q(d: Decimal) -> str:
 def _entry_from_invoice(inv: ET.Element) -> Dict[str, Any]:
     """Project one ``<invoice>`` node into a ledger entry dict.
 
-    Only emits the seven proven fields. Empty / missing source values
+    Only emits the six proven fields. Empty / missing source values
     surface as empty strings (``date``, ``doc_number``, ``currency``)
     or ``"0.00"`` (totals); callers downstream can drop / surface them
     as they like.
@@ -111,7 +118,6 @@ def _entry_from_invoice(inv: ET.Element) -> Dict[str, Any]:
         "type":          (inv.findtext("type") or "").strip(),
         "date":          (inv.findtext("date") or "").strip(),
         "currency":      (inv.findtext("currency") or "").strip().upper(),
-        "total_net":     _q(_decimal_or_none(inv.findtext("netto"))),
         "total_gross":   _q(_decimal_or_none(_invoice_gross_raw(inv))),
     }
 
@@ -152,8 +158,7 @@ def aggregate_invoice_ledger(
             ...
           },
           "totals_per_currency": {      # invoice totals only — no balance
-            "EUR": {"invoiced_net": "...", "invoiced_gross": "...",
-                     "entry_count": int},
+            "EUR": {"invoiced_gross": "...", "entry_count": int},
             ...
           }
         }``
@@ -175,10 +180,8 @@ def aggregate_invoice_ledger(
 
     totals_by_ccy: Dict[str, Dict[str, Any]] = {}
     for ccy, rows in entries_by_ccy.items():
-        net   = sum((Decimal(r["total_net"])   for r in rows), Decimal("0"))
         gross = sum((Decimal(r["total_gross"]) for r in rows), Decimal("0"))
         totals_by_ccy[ccy] = {
-            "invoiced_net":   _q(net),
             "invoiced_gross": _q(gross),
             "entry_count":    len(rows),
         }

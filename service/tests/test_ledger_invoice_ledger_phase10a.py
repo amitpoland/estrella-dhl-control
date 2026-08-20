@@ -26,6 +26,7 @@ Plus:
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -234,8 +235,8 @@ def test_aggregator_groups_by_currency():
     assert out["currencies"] == ["EUR", "USD"]
     assert len(out["entries_per_currency"]["EUR"]) == 2
     assert len(out["entries_per_currency"]["USD"]) == 1
-    assert out["totals_per_currency"]["EUR"]["invoiced_net"] == "300.00"
-    assert out["totals_per_currency"]["USD"]["invoiced_net"] == "50.00"
+    assert out["totals_per_currency"]["EUR"]["invoiced_gross"] == "246.00"
+    assert out["totals_per_currency"]["USD"]["invoiced_gross"] == "123.00"
     assert out["totals_per_currency"]["EUR"]["entry_count"] == 2
 
 
@@ -259,7 +260,7 @@ def test_aggregator_sorts_chronologically_per_currency():
 
 # ── 5. Entries contain exactly the 7 proven fields ────────────────────────
 
-def test_entries_contain_exactly_seven_proven_fields():
+def test_entries_contain_exactly_six_proven_fields():
     nodes = [
         ET.fromstring(_invoice_xml(invoice_id="1", currency="EUR",
                                      date="2026-04-15", netto="10.00",
@@ -276,7 +277,6 @@ def test_entries_contain_exactly_seven_proven_fields():
     assert e["wfirma_doc_id"] == "1"
     assert e["type"]          == "normal"
     assert e["currency"]      == "EUR"
-    assert e["total_net"]     == "10.00"
     assert e["total_gross"]   == "12.30"
 
 
@@ -291,7 +291,6 @@ def test_aggregator_quantises_decimals_to_2dp():
         period          = ("2026-04-01", "2026-04-30"),
     )
     e = out["entries_per_currency"]["EUR"][0]
-    assert e["total_net"]   == "10.00"
     # Decimal.quantize defaults to ROUND_HALF_EVEN — 12.345 rounds to
     # 12.34 because 4 is even. Pinned so future rounding-mode changes
     # are intentional.
@@ -310,7 +309,6 @@ def test_aggregator_handles_missing_totals_safely():
         period          = ("2026-04-01", "2026-04-30"),
     )
     e = out["entries_per_currency"]["EUR"][0]
-    assert e["total_net"]   == "0.00"
     assert e["total_gross"] == "0.00"
 
 
@@ -583,3 +581,65 @@ def test_phase10a_endpoint_naming_preserved():
     assert '"/clients/{contractor_id}/invoice-ledger.json"' in src
     assert '"/clients/{contractor_id}/statement.json"'      in src
     assert '"/clients/{contractor_id}/statement.pdf"'       in src
+
+
+# -- currency truth (invoice-ledger currency-truth repair) -----------------
+
+def _wdt_xml(invoice_id, currency, netto_pln, total_doc_ccy):
+    """Real WDT/EXPORT shape: wFirma omits <brutto> and puts the
+    document-currency gross in <total>, while <netto> stays PLN."""
+    return (
+        "<invoice>"
+        "<id>" + invoice_id + "</id>"
+        "<fullnumber>WDT " + invoice_id + "/2026</fullnumber>"
+        "<type>normal</type><date>2026-04-15</date>"
+        "<currency>" + currency + "</currency>"
+        "<netto>" + netto_pln + "</netto>"
+        "<total>" + total_doc_ccy + "</total>"
+        "</invoice>"
+    )
+
+
+def test_no_pln_amount_is_emitted_inside_a_foreign_currency_bucket():
+    """regression: wFirma returns <netto> in the PLN accounting currency on
+    every document. A USD-labelled bucket must therefore carry no field whose
+    value is the PLN netto - that stated a PLN amount as if it were USD.
+
+    Measured on production before the repair: 58 of 64 rows across 5
+    contractors had gross < net, with net/gross in a 3.53-3.64 band, i.e.
+    exactly the USD/PLN rate."""
+    nodes = [ET.fromstring(_wdt_xml("1", "USD", "3938.72", "1084.12"))]
+    out = aggregate_invoice_ledger(
+        contractor_meta={"wfirma_contractor_id": "C-1"},
+        invoice_nodes=nodes,
+        period=("2026-04-01", "2026-04-30"),
+    )
+    entry = out["entries_per_currency"]["USD"][0]
+    assert "3938.72" not in entry.values(), (
+        "a PLN amount reached a USD-labelled ledger row: %r" % entry)
+    totals = out["totals_per_currency"]["USD"]
+    assert "3938.72" not in totals.values(), (
+        "a PLN amount was summed into USD totals: %r" % totals)
+    # the document-currency gross survives, sourced via _invoice_gross_raw
+    assert entry["total_gross"] == "1084.12"
+    assert totals["invoiced_gross"] == "1084.12"
+
+
+def test_every_emitted_money_field_is_document_currency():
+    """VAT is never negative, so within one document the gross can never be
+    below the net. This is the property that catches a currency mix
+    regardless of which field names exist."""
+    nodes = [ET.fromstring(_wdt_xml("2", "USD", "30367.62", "8584.00"))]
+    out = aggregate_invoice_ledger(
+        contractor_meta={"wfirma_contractor_id": "C-1"},
+        invoice_nodes=nodes,
+        period=("2026-04-01", "2026-04-30"),
+    )
+    entry = out["entries_per_currency"]["USD"][0]
+    money = [v for k, v in entry.items()
+             if k.startswith("total_") or k.startswith("invoiced_")]
+    gross = Decimal(entry["total_gross"])
+    for v in money:
+        assert Decimal(v) <= gross, (
+            "field %r=%s exceeds the document-currency gross %s - it is not "
+            "in the document currency" % (money, v, gross))
