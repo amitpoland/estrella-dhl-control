@@ -1740,3 +1740,67 @@ def test_the_sentence_is_absent_when_there_is_no_unapplied_cash():
     text = _confirmation_of(clean, "ar")
     assert _SIDE_CFG["ar"]["unapplied_sentence"] not in " ".join(text.split())
     assert "AGREED" in text, "the confirmation itself must still render"
+
+
+# ── One unmatched-payment rule, applied by BOTH consumers ──────────────────
+# The AR portfolio matcher counted every payment without a linked_invoice as an
+# unmatched AR receipt, including supplier-side cash linked to an EXPENSE. That
+# reported 2,049 phantom unapplied receipts on Management Analysis (production,
+# 2026-08-20) while the AP side raised 3 warnings and customer statements none.
+# The statement path already skipped supplier cash; these tests pin that the
+# portfolio path now applies the SAME rule, and that money is untouched.
+
+def test_supplier_cash_is_not_an_unmatched_ar_receipt():
+    """A payment linked to an expense belongs to AP, never to AR."""
+    from app.services.ledger_aggregator import match_payments_to_invoices
+
+    out = match_payments_to_invoices(
+        [_inv(iid="1", date="2026-01-05", brutto="100.00")],
+        [_pay(pid="p-sup", date="2026-01-10", value="100.00",
+              linked_expense="55")],
+    )
+    events = [w.get("event") for w in out["warnings"]]
+    assert "unmatched_payment" not in events, (
+        "supplier-side cash was counted as an unmatched AR receipt: %s" % events
+    )
+    assert not out["unmatched_payments"]
+
+
+def test_genuinely_unlinked_cash_is_still_reported_unmatched():
+    """The guard must not silence real unapplied AR receipts."""
+    from app.services.ledger_aggregator import match_payments_to_invoices
+
+    out = match_payments_to_invoices(
+        [_inv(iid="1", date="2026-01-05", brutto="100.00")],
+        [_pay(pid="p-orphan", date="2026-01-10", value="100.00")],
+    )
+    assert [w.get("event") for w in out["warnings"]] == ["unmatched_payment"]
+    assert [p["id"] for p in out["unmatched_payments"]] == ["p-orphan"]
+
+
+def test_the_guard_changes_no_money():
+    """Only the counter moves: paid_against_invoice is identical either way."""
+    from app.services.ledger_aggregator import match_payments_to_invoices
+
+    inv = [_inv(iid="1", date="2026-01-05", brutto="100.00")]
+    p_ar = _pay(pid="p1", date="2026-01-10", value="40.00", linked="1")
+    p_sup = _pay(pid="p2", date="2026-01-10", value="99.00", linked_expense="55")
+    without = match_payments_to_invoices(inv, [p_ar])
+    withsup = match_payments_to_invoices(inv, [p_ar, p_sup])
+    assert without["paid_against_invoice"] == withsup["paid_against_invoice"], (
+        "supplier cash must not alter AR settlement"
+    )
+
+
+def test_both_consumers_share_one_rule():
+    """Structural pin: the expense-link skip exists in BOTH payment loops."""
+    import inspect
+
+    from app.services import ledger_aggregator as la
+
+    portfolio = inspect.getsource(la.match_payments_to_invoices)
+    statement = inspect.getsource(la.aggregate_statement_from_facts)
+    for name, src in (("portfolio", portfolio), ("statement", statement)):
+        assert "linked_expense" in src, (
+            "%s consumer lost the canonical supplier-cash rule" % name
+        )
