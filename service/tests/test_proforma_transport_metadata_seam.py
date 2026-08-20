@@ -320,3 +320,47 @@ def test_a_simulated_shipment_is_labelled_in_the_logistics_view():
     assert "_shipmentIsSimulated" in detail
     assert 'data-testid="pf-logistics-simulated-shipment"' in detail
     assert "never handed to a carrier" in detail
+
+
+
+def _perm_edit_dep():
+    """The proforma.edit dependency object as PATCH /draft/{id} declares it."""
+    from app.api.routes_proforma import router
+    for r in router.routes:
+        if getattr(r, "path", None) == "/api/v1/proforma/draft/{draft_id}"                 and "PATCH" in getattr(r, "methods", ()):
+            deps = [d.call for d in r.dependant.dependencies]
+            # _auth_write first, the permission guard second.
+            return deps[-1]
+    raise AssertionError("PATCH /draft/{draft_id} not registered")
+
+
+def test_transport_routes_require_the_same_permission_as_draft_edits():
+    """Closing the access inversion the seam created.
+
+    Once these routes accepted a POSTED fiscal document, guarding them with only
+    _auth_write meant the logistics role could write shipping metadata onto a
+    posted proforma while being blocked from editing the same document's remarks
+    as a draft. logistics already holds proforma.edit, so requiring it closes the
+    inversion without narrowing the dispatch workflow.
+    """
+    from app.api.routes_proforma import router
+    from app.auth.permissions import ROLE_PERMISSIONS
+
+    wanted = {
+        "/api/v1/proforma/draft/{draft_id}/weight-override",
+        "/api/v1/proforma/draft/{draft_id}/box-type",
+        "/api/v1/proforma/draft/{draft_id}/clear-weight-override",
+    }
+    seen = set()
+    for r in router.routes:
+        path = getattr(r, "path", None)
+        if path in wanted and "POST" in getattr(r, "methods", ()):
+            seen.add(path)
+            calls = {d.call for d in r.dependant.dependencies}
+            # The SAME dependency object the draft-field edit routes use, so this
+            # cannot drift into a different or weaker permission.
+            assert _perm_edit_dep() in calls, path
+    assert seen == wanted, f"routes not registered: {wanted - seen}"
+
+    # The guard must not lock the dispatch operator out of their own workflow.
+    assert "proforma.edit" in ROLE_PERMISSIONS["logistics"]
