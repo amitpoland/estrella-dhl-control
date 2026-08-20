@@ -641,6 +641,23 @@ def match_payments_to_invoices(
             warnings.append({"event": "payment_with_empty_id"})
             continue
         linked = _normalize_doc_link_id(p.get("linked_invoice"))
+        if not linked and _normalize_doc_link_id(p.get("linked_expense")):
+            # Supplier-side cash. The AP matcher owns it — matched there, or
+            # disclosed there as unapplied. Counting it here as an AR
+            # "unmatched_payment" reported 2,049 phantom unapplied receipts on
+            # the Management Analysis portfolio (measured 2026-08-20 against
+            # production: 3,083 payment rows over 2,172 expense rows, while the
+            # AP side raised only 3 warnings and a real customer statement
+            # raised none). Exact mirror of the guard already in
+            # ``aggregate_statement_from_facts`` — ONE rule, applied by both
+            # consumers of the same payment facts, not a second matcher.
+            #
+            # Money is unaffected either way: an unlinked payment never reaches
+            # ``paid_against_invoice``, and ``unmatched_payments`` has no
+            # consumer in the portfolio path (accounting_analytics.py:118 reads
+            # only ``paid_against_invoice`` and ``warnings``). This corrects a
+            # false data-quality signal, not a balance.
+            continue
         if not linked:
             unmatched_payments.append(p)
             warnings.append({

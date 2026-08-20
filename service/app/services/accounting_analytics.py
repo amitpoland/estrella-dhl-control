@@ -299,14 +299,49 @@ def build_portfolio_from_facts(
             "last_payment_date": row["last_payment_date"] or None,
             "invoice_count": int(row["invoice_count"]),
             "open_invoice_count": int(row["open_invoice_count"]),
+            # ── Customer-level economic position, beside the gross truth ────
+            # ``outstanding`` and every aging bucket stay GROSS: aging_basis is
+            # gross_before_credits and audit needs the source figure intact.
+            #
+            # These two fields are customer-level facts already computed here,
+            # published so the screen never recomputes them. DELIBERATELY NOT
+            # published: any "net 365+". Netting a credit against the 365+
+            # bucket asserts WHICH old document the credit offsets, and only
+            # the canonical payment/correction linkage can prove that. Absent
+            # that proof it would be an invented allocation, so the management
+            # indicator must read "gross 365+ exposure, customer credit
+            # available" and never imply a bucket-level allocation.
+            #
+            # Why this matters, measured 2026-08-20: 115,262.66 of the
+            # 126,341.72 USD at 365+ sits on customers whose total credit
+            # equals or exceeds their total outstanding — UAB Tomas Gold
+            # 52,940 against a 52,940 credit. Their customer-level net is 0,
+            # which IS provable without any allocation assumption.
+            "net_position": _q(outstanding - credit),
+            "offset_status": (
+                "fully_offset" if credit >= outstanding and credit > 0
+                else "partially_offset" if credit > 0
+                else "actionable"
+            ),
         })
 
-    # Default sort: largest overdue DESC, then outstanding DESC
+    # Default sort: actionable positive net first, then partially offset, then
+    # fully-offset / credit-only last, with a stable name tie-break.
+    #
+    # Was ``-overdue, -outstanding`` — both GROSS — so a customer whose balance
+    # is wholly offset by credit notes outranked one who genuinely owes money.
+    # net_position is a canonical customer-level economic position, so ranking
+    # on it asserts nothing about which document a credit offsets. Sorting
+    # happens HERE, before the route paginates, so page 1 is the largest real
+    # exposure and never a formatted-string sort in the browser.
+    _OFFSET_RANK = {"actionable": 0, "partially_offset": 1, "fully_offset": 2}
     customers.sort(
         key=lambda r: (
+            _OFFSET_RANK.get(r["offset_status"], 0),
+            -Decimal(r["net_position"]),
             -Decimal(r["overdue"]),
-            -Decimal(r["outstanding"]),
             r["customer_name"] or "",
+            r["contractor_id"] or "",
         )
     )
 
@@ -729,13 +764,28 @@ def build_payables_portfolio_from_facts(
             "last_payment_date": row["last_payment_date"] or None,
             "expense_count": int(row["expense_count"]),
             "open_expense_count": int(row["open_expense_count"]),
+            # Mirror of the AR block. ``net_payable`` is already the canonical
+            # supplier-level net, so only the offset flag is derived — and, as
+            # on the AR side, no "net 365+" is published without document-level
+            # linkage proving which old expense a credit offsets.
+            "offset_status": (
+                "fully_offset" if credit >= gross and credit > 0
+                else "partially_offset" if credit > 0
+                else "actionable"
+            ),
         })
 
+    # Largest NET payable first; fully-offset positions last. Was
+    # ``-overdue, -gross_payable`` — gross — so a supplier whose balance is
+    # wholly offset by credit notes outranked one we genuinely owe.
+    _OFFSET_RANK_AP = {"actionable": 0, "partially_offset": 1, "fully_offset": 2}
     suppliers.sort(
         key=lambda r: (
+            _OFFSET_RANK_AP.get(r["offset_status"], 0),
+            -Decimal(r["net_payable"]),
             -Decimal(r["overdue"]),
-            -Decimal(r["gross_payable"]),
             r["supplier_name"] or "",
+            r["contractor_id"] or "",
         )
     )
 
