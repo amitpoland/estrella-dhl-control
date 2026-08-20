@@ -36,6 +36,7 @@ import xml.etree.ElementTree as ET
 
 from .financial_aging import (
     AGING_BUCKETS,
+    AGING_BUCKETS_WITH_UNAVAILABLE,
     due_bucket as _due_bucket_canonical,
     open_total as _open_total_canonical,
 )
@@ -1061,13 +1062,9 @@ def aggregate_supplier_statement(
     # using the SAME bucket boundaries as the payables portfolio (imported, not
     # re-derived — a second bucket definition would drift). Supplier credits
     # stay outside the overdue buckets, exactly as in build_payables_analysis.
-    # Local import: accounting_analytics imports this module, so a module-level
-    # import here would be circular.
-    from .accounting_analytics import _BUCKETS, _due_bucket
-
     aging_by_ccy: Dict[str, Dict[str, Any]] = {}
     for ccy in entries_by_ccy:
-        buckets = {b: Decimal("0") for b in _BUCKETS}
+        buckets = {b: Decimal("0") for b in AGING_BUCKETS_WITH_UNAVAILABLE}
         for f in expense_facts:
             if (f.get("currency") or "") != ccy:
                 continue
@@ -1079,7 +1076,7 @@ def aggregate_supplier_statement(
                 continue
             due = f.get("payment_date") or ""
             if due and as_of:
-                buckets[_due_bucket(_days_between(as_of, due))] += rem
+                buckets[_due_bucket_canonical(_days_between(as_of, due))] += rem
             else:
                 buckets["due_date_unavailable"] += rem
         out = {b: _q(v) for b, v in buckets.items()}
