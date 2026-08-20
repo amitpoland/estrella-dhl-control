@@ -109,9 +109,14 @@ def test_the_row_reports_state_not_the_credential(client):
     )
     assert ship["configured"] is True
     assert ship["state"] == "ready"
+    # "ship" needs no separate provisioning axis — the adapter IS the wiring.
+    assert ship["provisioned"] is True
+    assert ship["capability_ready"] is True
     assert set(ship) == {
         "capability", "environment", "state", "configured", "active",
         "masked_suffix", "last_validated_at", "reason",
+        # Credentials alone are not readiness: the capability must also exist.
+        "provisioned", "capability_ready", "not_provisioned_reason",
     }
 
 

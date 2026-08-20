@@ -1041,9 +1041,20 @@ def create_shipment(
         raise HTTPException(
             status_code=422,
             detail={
-                "error": "UPS is not configured",
+                "error": "UPS booking is not released",
                 "code": "UPS_NOT_CONFIGURED",
-                "guidance": "UPS has no adapter. Do not silently book DHL.",
+                # The shared UpsSandboxAdapter EXISTS and is wired into the
+                # carrier factory (factory.get_adapter → UpsSandboxAdapter); the
+                # blocker is external, not missing code: UPS production Ship is
+                # refused by design (UPS_PRODUCTION_BLOCKED) and UPS Track is not
+                # provisioned (UPS_TRACK_NOT_PROVISIONED). Saying "no adapter"
+                # here sent operators looking for engineering work that is done.
+                "guidance": (
+                    "UPS shipments are registered as customer-arranged: record "
+                    "the carrier's own tracking number and AWB document. UPS "
+                    "production booking stays closed and UPS is never silently "
+                    "booked as DHL."
+                ),
             },
         )
     if provider == "OTHER":
@@ -1164,6 +1175,56 @@ def create_shipment(
             },
         )
 
+    # -- Duplicate protection: one canonical shipment leg, one AWB ---------
+    #
+    # The invariant is exactly one sentence: the same canonical shipment leg
+    # must not receive a second AWB.
+    #
+    # Direction is NOT consulted and must never be. Goods moving India -> Poland
+    # are "inbound" relative to the destination warehouse while the origin-side
+    # operator legitimately books the carrier BEFORE departure. A blanket
+    # "inbound batches are unbookable" rule would forbid the normal workflow.
+    #
+    # Leg identity (resolve_existing_leg_awb): a client_ref naming a real
+    # proforma draft is a distinct outbound customer leg, and duplicates there
+    # are already handled correctly by the coordinator's idempotency key, which
+    # REPLAYS the stored booking instead of creating a second AWB. An
+    # unscoped request identifies the batch itself, and for an import batch
+    # whose intake carried a supplier AWB that leg is already booked.
+    #
+    # Warehouse receipt is NOT consulted here and must never be: it is
+    # downstream of dispatch (goods are packed and weighed in India before they
+    # travel), so it cannot be a booking prerequisite.
+    from ..services.carrier.booking_readiness import resolve_existing_leg_awb
+
+    _booked = resolve_existing_leg_awb(
+        batch_id,
+        storage_root=settings.storage_root,
+        proforma_db_path=settings.storage_root / "proforma_links.db",
+        client_ref=(body.client_ref or None),
+    )
+    if _booked:
+        raise HTTPException(status_code=422, detail={
+            "error": (
+                "This shipment leg already has {0} AWB {1}. "
+                "No new AWB is required.".format(
+                    _booked.get("provider") or "an existing", _booked["awb"])
+            ),
+            "code": "SHIPMENT_LEG_ALREADY_BOOKED",
+            "batch_id": batch_id,
+            "client_ref": (body.client_ref or None),
+            "existing_awb": _booked["awb"],
+            "existing_awb_provider": _booked.get("provider"),
+            "existing_awb_source": _booked.get("source"),
+            "guidance": (
+                "The existing carrier shipment already represents this shipment "
+                "leg, so nothing needs to be released or allowlisted. To ship a "
+                "different customer's goods from this batch, select that "
+                "customer's proforma and prepare its own AWB. No carrier "
+                "request was sent."
+            ),
+        })
+
     request = ShipmentRequest(
         batch_id=batch_id,
         shipper_account=shipper_account,
@@ -1210,8 +1271,9 @@ def create_shipment(
                 "guidance": (
                     "No live carrier request was sent — the allowlist is "
                     "checked before the provider is contacted, so no AWB was "
-                    "created and nothing was charged. Add this batch to "
-                    "CARRIER_LIVE_ALLOWLIST (or set it to *) and retry."
+                    "created and nothing was charged. Release this specific "
+                    "shipment through the governed live-booking process, then "
+                    "retry. Never widen the allowlist to permit all batches."
                 ),
             },
         )
@@ -1471,6 +1533,58 @@ async def upload_external_awb_document(
     payload = _external_shipment_payload(batch_id, fake, db_path)
     payload["awb_document_saved"] = True
     return JSONResponse(payload)
+
+
+@router.get(
+    "/{batch_id}/booking-readiness",
+    summary="Pre-booking readiness for ONE shipment leg (read-only projection)",
+)
+def get_booking_readiness(
+    batch_id: str,
+    client_ref: Optional[str] = None,
+    provider: str = "DHL",
+    weight_kg: Optional[float] = None,
+    declared_value: Optional[float] = None,
+    packages_count: Optional[int] = None,
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """What is actually ready to book, BEFORE the operator fills the modal.
+
+    A read projection over the authorities that already own each fact — no
+    readiness store, no second shipment DB, no second tracking authority. It
+    reports two independent axes:
+
+    * ``booking.ready`` — the business/physical prerequisites the booking POST
+      already enforces. ``booking.advisories`` are surfaced, never gates.
+    * ``release`` — whether live production writing is released for this
+      specific shipment. A prepared, business-ready shipment whose live release
+      is still closed is the NORMAL state, not a failure.
+
+    Creates nothing and books nothing.
+    """
+    from ..core.config import settings
+    from ..services.carrier.booking_readiness import project_booking_readiness
+
+    # Trust boundary. batch_id reaches a filesystem path
+    # (storage_root/outputs/<batch_id>/audit.json), so it is validated here the
+    # same way every sibling batch-scoped route in this module validates it —
+    # before the value is used, not after. Read-only is not a licence to skip
+    # the check: a traversal attempt must be refused, never merely survived.
+    if not (isinstance(batch_id, str) and _SAFE_BATCH.match(batch_id)):
+        raise HTTPException(status_code=400, detail="invalid batch_id")
+
+    return JSONResponse(project_booking_readiness(
+        batch_id,
+        storage_root=settings.storage_root,
+        proforma_db_path=settings.storage_root / "proforma_links.db",
+        shipment_db_path=_get_shipment_db_path(),
+        settings=settings,
+        client_ref=(client_ref or None),
+        provider=provider,
+        weight_kg=weight_kg,
+        declared_value=declared_value,
+        packages_count=packages_count,
+    ))
 
 
 @router.get("/{batch_id}/shipment")

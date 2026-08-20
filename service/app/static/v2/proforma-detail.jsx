@@ -1660,7 +1660,7 @@ function _awbPayerLabel(paymentType) {
 //   declared value / currency  → draft total / draft currency
 //   EORI / VAT                 → Customer Master (bo.eori, bo.vat_id)
 //   DHL service                → /api/v1/carrier/services (static catalogue)
-function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
+function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged }) {
   const [form, setForm] = React.useState({
     // Service
     product_code:  prefill.product_code || 'P',
@@ -1706,6 +1706,11 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
+  // Pre-booking readiness projection (GET .../booking-readiness). Read-only:
+  // it tells the operator what is missing BEFORE the modal is filled in,
+  // instead of surfacing a raw carrier 422 after the work is done.
+  const [readiness, setReadiness] = React.useState(null);
+  const [readinessState, setReadinessState] = React.useState('loading');
   // OCC token for persisting the box selection; refreshed from each response.
   const [boxUpdatedAt, setBoxUpdatedAt] = React.useState(prefill.draft_updated_at || '');
   const [boxSaveErr,   setBoxSaveErr]   = React.useState(null);
@@ -1716,7 +1721,9 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
   const isUps = selectedCarrier === 'UPS';
   const isFedex = selectedCarrier === 'FEDEX';
   const isDhl = selectedCarrier === 'DHL';
-  // UPS has no adapter — customer-arranged registration only (not DHL fallback).
+  // UPS: customer-arranged registration only (never a DHL fallback). The
+  // shared UpsSandboxAdapter exists in the carrier factory — the blocker is
+  // external (production Ship closed by design, Track not provisioned).
   const isExternal = isUps;
   const isApiBooking = isDhl || isFedex;
   const [cmAccounts, setCmAccounts] = React.useState([]);
@@ -1834,6 +1841,21 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
         .catch(() => setMasterState('failed'));
     } else {
       setMasterState('missing-id');
+    }
+    // Booking readiness — the SAME authorities the booking POST consults,
+    // read before the operator invests any typing. A failed read arms
+    // 'failed' and shows nothing rather than implying everything is ready.
+    if (window.PzApi.getBookingReadiness) {
+      window.PzApi.getBookingReadiness(batchId, {
+        client_ref: prefill.client_name || '',
+        weight_kg: prefill.weight_kg || '',
+        declared_value: prefill.declared_value || '',
+      }).then(r => {
+        if (r && r.ok && r.data) { setReadiness(r.data); setReadinessState('loaded'); }
+        else setReadinessState('failed');
+      }).catch(() => setReadinessState('failed'));
+    } else {
+      setReadinessState('failed');
     }
     // Customer Master carrier accounts for the current draft contractor only.
     // listCarrierAccounts defaults to active-only (inactive/soft-deleted excluded).
@@ -1997,6 +2019,36 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
       });
   };
 
+  // Readiness-derived gates. Absent/failed readiness never invents a block --
+  // the existing server gates still fail closed on their own.
+  //
+  // business readiness and live release are INDEPENDENT axes. "Not released"
+  // means the production carrier write is not authorized for this shipment; it
+  // never means the shipment data is invalid, and the UI must not say so.
+  const _rdyBiz      = (readiness && readiness.business_readiness) || null;
+  const _rdyBlockers = (_rdyBiz && _rdyBiz.blockers) || [];
+  const _rdyWarnings = (_rdyBiz && _rdyBiz.warnings) || [];
+  const _rdyRelease  = (readiness && readiness.live_release) || null;
+  const _rdyExisting = (readiness && readiness.existing_booking) || null;
+  const _rdyWarehouse = (readiness && readiness.warehouse) || null;
+  // This leg already has a real AWB -- booking again would duplicate it.
+  const legAlreadyBooked = !!(_rdyExisting && _rdyExisting.blocks_duplicate_booking);
+  const releaseBlocked   = !!(_rdyRelease && !_rdyRelease.ready);
+  const readinessBlocksSubmit = _rdyBlockers.length > 0 || releaseBlocked;
+
+  // AWB preparation checklist -- one row per authority-backed fact, so a
+  // missing prerequisite is understandable BEFORE the POST.
+  const _rdyRows = readiness ? [
+    ['Proforma Invoice',   (readiness.proforma || {}).ready],
+    ['Recipient',          (readiness.recipient || {}).ready],
+    ['Actual gross weight',(readiness.weight || {}).ready],
+    ['Box Profile',        (readiness.box || {}).ready],
+    ['Packages',           (readiness.packages || {}).ready],
+    ['Declared value',     (readiness.declared_value || {}).ready],
+    ['Description',        (readiness.description || {}).ready],
+    ['Carrier account',    (readiness.carrier || {}).account_ready],
+  ] : [];
+
   const _apiStatus = carrierStatus && carrierStatus.carrier_api_status;
   const isPending = !_apiStatus || _apiStatus === 'pending';
   const _footerLabel = isPending ? 'Carrier API pending'
@@ -2005,24 +2057,56 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
+  // Adopt the canonical draft the server just returned: refresh the OCC token
+  // this modal holds AND tell the page, so the parent draft state stops serving
+  // an already-superseded updated_at to the next edit (and reopening the modal
+  // shows the saved box without a page refresh).
+  const adoptSavedDraft = (d) => {
+    if (d && d.updated_at) setBoxUpdatedAt(d.updated_at);
+    if (typeof onDraftChanged === 'function') onDraftChanged();
+  };
+
   // Persist the selection on the draft so it survives closing the modal.
   // Booking is unaffected either way — the payload still carries the form
   // value; this only stops the operator having to re-pick the box.
-  const persistBoxSelection = (code) => {
+  //
+  // OCC: this modal holds its own draft.updated_at snapshot, which any other
+  // legitimate draft edit can advance while the modal stays open. The server
+  // correctly rejects the stale token (409) — recovery belongs here. On 409 we
+  // re-read the CANONICAL draft and retry this ONE isolated field write exactly
+  // once. The server never accepts a stale token, no unrelated draft mutation is
+  // ever replayed, and a second conflict stops instead of looping.
+  const persistBoxSelection = (code, token, isRetry) => {
     if (!prefill.draft_id || typeof window.PzApi.setDraftBoxType !== 'function') return;
     setBoxSaveErr(null);
-    window.PzApi.setDraftBoxType(prefill.draft_id, code, boxUpdatedAt)
+    return window.PzApi.setDraftBoxType(prefill.draft_id, code, token)
       .then(r => {
-        if (r && r.ok === false) throw new Error((r && (r.error || r.detail)) || 'Could not save the box selection');
-        if (r && r.draft && r.draft.updated_at) setBoxUpdatedAt(r.draft.updated_at);
+        // _callM wraps the body: the draft is at r.data.draft, never r.draft.
+        if (r && r.ok) return adoptSavedDraft((r.data && r.data.draft) || null);
+        if (r && r.status === 409 && !isRetry) return recoverBoxSelectionConflict(code);
+        throw new Error((r && (r.error || r.detail)) || 'Could not save the box selection');
       })
       .catch(e => setBoxSaveErr((e && e.message) || 'Could not save the box selection'));
   };
 
+  // Single, bounded conflict recovery — refresh, then retry once at most.
+  const recoverBoxSelectionConflict = (code) =>
+    window.PzApi.getDraft(prefill.draft_id).then(r => {
+      const d = (r && r.ok && r.data && r.data.draft) || null;
+      if (!d || !d.updated_at) {
+        throw new Error('Could not refresh the draft to save the box selection');
+      }
+      // Another session already stored exactly this code — resolve as success
+      // rather than spending a second write on an identical value.
+      if ((d.box_type_code || '') === (code || '')) return adoptSavedDraft(d);
+      setBoxUpdatedAt(d.updated_at);
+      return persistBoxSelection(code, d.updated_at, true);
+    });
+
   // When a box profile is selected, auto-fill dimensions and flag override state
   const handleBoxSelect = (code) => {
     set('box_type_code', code);
-    persistBoxSelection(code);
+    persistBoxSelection(code, boxUpdatedAt, false);
     if (!code) return;
     const box = boxTypes.find(b => b.code === code);
     if (!box) return;
@@ -2882,6 +2966,100 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
               this batch (or could not be ruled out); booking is HELD until the
               operator explicitly confirms creating a NEW shipment record.
               No DHL void, no auto-cancel — the prior AWB stays as it is. */}
+          {/* -- AWB preparation preflight ------------------------------
+              What the booking authorities already know, shown BEFORE the
+              operator fills the form -- so a missing requirement is a sentence
+              here, not a raw carrier 422 after the work is done.
+
+              Warehouse receipt is displayed as downstream information ONLY.
+              Goods are packed and weighed in India and the AWB is created
+              before they travel, so a pending destination receipt is the
+              expected state at booking time and never turns anything red. */}
+          {readinessState === 'loaded' && readiness && (
+            <div style={{
+              padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 8,
+              border: '1px solid var(--border)', marginBottom: 16,
+            }} data-testid="awb-readiness-panel">
+              <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>
+                AWB Preparation
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '3px 12px', fontSize: 11.5 }}>
+                {_rdyRows.map(([label, ok]) => (
+                  <React.Fragment key={label}>
+                    <div style={{ color: 'var(--text-2)' }}>{label}</div>
+                    <div style={{ color: ok ? 'var(--badge-green-text)' : 'var(--badge-amber-text)' }}>
+                      {ok ? 'Ready' : 'Missing'}
+                    </div>
+                  </React.Fragment>
+                ))}
+                <div style={{ color: 'var(--text-2)' }}>Existing AWB</div>
+                <div data-testid="awb-readiness-existing">
+                  {legAlreadyBooked
+                    ? `${_rdyExisting.carrier || ''} ${_rdyExisting.awb}`.trim()
+                    : 'None'}
+                </div>
+                <div style={{ color: 'var(--text-2)' }}>Live release</div>
+                <div data-testid="awb-readiness-release">
+                  {releaseBlocked ? 'Not authorized' : 'Authorized'}
+                </div>
+              </div>
+
+              {/* Downstream only -- never a booking prerequisite. */}
+              {_rdyWarehouse && (
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}
+                     data-testid="awb-readiness-warehouse">
+                  Warehouse receipt: {_rdyWarehouse.state}
+                  {_rdyWarehouse.expected_count
+                    ? ` (${_rdyWarehouse.received_count}/${_rdyWarehouse.expected_count} lines)` : ''}
+                  {' \u2014 not required for origin dispatch.'}
+                </div>
+              )}
+
+              {legAlreadyBooked && (
+                <div style={{ fontSize: 11.5, marginTop: 8 }}
+                     data-testid="awb-readiness-already-booked">
+                  <strong>Shipment leg already booked.</strong> {_rdyExisting.carrier || ''} AWB{' '}
+                  {_rdyExisting.awb} already represents this shipment leg, so no new
+                  AWB is required and nothing needs to be released.
+                  {_rdyExisting.tracking_status ? ` Currently: ${_rdyExisting.tracking_status}` : ''}
+                  {_rdyExisting.tracking_location ? ` (${_rdyExisting.tracking_location})` : ''}
+                </div>
+              )}
+
+              {!legAlreadyBooked && _rdyBlockers.length > 0 && (
+                <div style={{ fontSize: 11.5, marginTop: 8 }} data-testid="awb-readiness-blockers">
+                  <strong>Not ready to book yet</strong>
+                  <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+                    {_rdyBlockers.map(b => (
+                      <li key={b.code} style={{ marginBottom: 3 }}>{b.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {!legAlreadyBooked && _rdyBlockers.length === 0 && (
+                <div style={{ fontSize: 11.5, marginTop: 8 }} data-testid="awb-readiness-ready">
+                  <strong>Ready to generate a real AWB</strong> -- every business
+                  prerequisite is satisfied.
+                </div>
+              )}
+              {_rdyWarnings.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}
+                     data-testid="awb-readiness-warnings">
+                  {_rdyWarnings.map(w => <div key={w.code}>{w.message}</div>)}
+                </div>
+              )}
+              {releaseBlocked && !legAlreadyBooked && (
+                <div style={{ fontSize: 11.5, marginTop: 8, color: 'var(--badge-amber-text)' }}
+                     data-testid="awb-readiness-release-blocked">
+                  Live {selectedCarrier} booking is not authorized for this shipment
+                  yet. Release this specific shipment through the governed
+                  live-booking process. The shipment data above is unaffected --
+                  everything can be prepared now.
+                </div>
+              )}
+            </div>
+          )}
+
           {/* DHL account — server-resolved; the modal renders, never decides.
               Hidden while the sender has no Client Master record, because the
               backend then uses its legacy account path and there is no
@@ -2925,7 +3103,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess }) {
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
               <Btn variant="primary" onClick={handleSubmit}
-                disabled={loading || (isDhl && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit))}
+                disabled={loading || (isDhl && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit || readinessBlocksSubmit))}
                 data-testid="awb-submit-btn">
                 {loading
                   ? (isExternal ? 'Saving…' : 'Creating AWB…')
@@ -7968,6 +8146,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
           }}
           onClose={() => setShowAwbModal(false)}
           onSuccess={() => { setShowAwbModal(false); loadCarrierShipment(); }}
+          onDraftChanged={() => draftHook && draftHook.reload && draftHook.reload()}
         />
         );
       })()}

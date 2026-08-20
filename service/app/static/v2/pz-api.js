@@ -1786,6 +1786,21 @@
         expected_updated_at: updatedAt || '',
       }),
 
+    // GET /api/v1/carrier/{batch_id}/booking-readiness
+    // Pre-booking projection over the authorities that already own each fact.
+    // Reports two INDEPENDENT axes: booking.ready (business prerequisites) and
+    // release (whether live production writing is released for this shipment).
+    // Read-only — creates nothing, books nothing.
+    getBookingReadiness: (batchId, params) => {
+      const q = new URLSearchParams();
+      Object.entries(params || {}).forEach(([k, v]) => {
+        if (v !== null && v !== undefined && v !== '') q.set(k, v);
+      });
+      const qs = q.toString();
+      return _get(`${BASE}/carrier/${encodeURIComponent(batchId)}/booking-readiness`
+        + (qs ? `?${qs}` : ''));
+    },
+
     // POST /api/v1/proforma/draft/{id}/clear-weight-override (X-Operator).
     // Clears the manual override, restoring the extracted packing weight.
     clearWeightOverride: (draftId, updatedAt) =>

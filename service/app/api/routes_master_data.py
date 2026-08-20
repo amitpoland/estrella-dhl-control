@@ -925,7 +925,10 @@ _READINESS_MATRIX = (
     ("DHL",   "production", ("ship", "track", "epod", "documents")),
     ("FEDEX", "sandbox",    ("ship_rate",)),
     ("FEDEX", "production", ("track",)),
-    ("UPS",   "sandbox",    ("ship",)),
+    # UPS ship and track are SEPARATE capabilities with different states:
+    # booking is implemented, tracking is not provisioned in the one tracking
+    # authority. Listing only "ship" would let the row read as "UPS ready".
+    ("UPS",   "sandbox",    ("ship", "track")),
 )
 
 # Optional capabilities every adapter inherits from AbstractCarrierAdapter.
@@ -935,9 +938,30 @@ _OPTIONAL_CAPABILITIES = (
 )
 
 
+def _capability_provisioned(carrier: str, capability: str) -> tuple:
+    """Is this capability actually WIRED for this carrier, credentials aside?
+
+    Two independent axes make a capability ready: the credential must resolve,
+    and the platform must have somewhere to send it. Tracking provisioning is
+    answered by the ONE tracking authority (``tracking_service``) — asking a
+    carrier adapter instead would let a second answer exist for the same fact.
+    """
+    if capability != "track":
+        return True, None
+    from ..services.tracking_service import supports_tracking
+
+    if supports_tracking(carrier):
+        return True, None
+    return False, (
+        f"{carrier} tracking is not provisioned in tracking_service — the "
+        "single tracking authority has no client for this carrier."
+    )
+
+
 def _readiness_credential_row(carrier: str, environment: str, capability: str) -> dict:
     from ..services.carrier.credentials.resolver import resolve_carrier_capability
 
+    provisioned, not_provisioned_reason = _capability_provisioned(carrier, capability)
     try:
         meta = resolve_carrier_capability(carrier.lower(), capability, environment)
     except Exception as exc:   # unresolvable is not-ready, never a 500
@@ -946,7 +970,9 @@ def _readiness_credential_row(carrier: str, environment: str, capability: str) -
         return {"capability": capability, "environment": environment,
                 "state": "not_configured", "configured": False, "active": False,
                 "masked_suffix": None, "last_validated_at": None,
-                "reason": type(exc).__name__}
+                "provisioned": provisioned, "capability_ready": False,
+                "reason": type(exc).__name__,
+                "not_provisioned_reason": not_provisioned_reason}
     return {
         "capability": capability,
         "environment": environment,
@@ -955,7 +981,11 @@ def _readiness_credential_row(carrier: str, environment: str, capability: str) -
         "active": bool(meta.active),
         "masked_suffix": meta.masked_suffix,
         "last_validated_at": meta.last_validated_at,
+        # Credentials alone are not readiness — the capability must also exist.
+        "provisioned": provisioned,
+        "capability_ready": bool(meta.configured) and provisioned,
         "reason": None,
+        "not_provisioned_reason": not_provisioned_reason,
     }
 
 
@@ -993,7 +1023,10 @@ def carriers_readiness_endpoint() -> JSONResponse:
         carriers.append({
             "carrier_code": code,
             "environment": environment,
-            "ready": adapter["available"] and all(c["configured"] for c in creds),
+            # Capability-specific, never a single roll-up: a provider whose
+            # booking works and whose tracking is not provisioned must not read
+            # as "ready". Credentials alone are not readiness.
+            "ready": adapter["available"] and all(c["capability_ready"] for c in creds),
             "adapter": adapter,
             "credentials": creds,
         })

@@ -161,7 +161,7 @@ _V2 = pathlib.Path(__file__).resolve().parents[1] / "app" / "static" / "v2"
 
 def test_modal_persists_and_prefills_the_selection():
     src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    assert "persistBoxSelection(code)" in src, "selection is not persisted on change"
+    assert "persistBoxSelection(code, boxUpdatedAt, false)" in src, "selection is not persisted on change"
     assert "box_type_code: prefill.box_type_code || ''" in src, "modal does not prefill"
     assert "PzApi.setDraftBoxType" in src
     api = (_V2 / "pz-api.js").read_text(encoding="utf-8")
@@ -176,3 +176,140 @@ def test_modal_never_persists_dimensions_on_the_draft():
     body = src[start:src.index("const handleBoxSelect", start)]
     for field in ("length_cm", "width_cm", "height_cm", "tare_weight_kg"):
         assert field not in body, field
+
+
+# ── OCC conflict recovery (production incident, draft id=90, 2026-08-20) ─────
+#
+# The modal owns a snapshot of draft.updated_at. Any other legitimate draft edit
+# advances the canonical token while the modal stays open, so the box write
+# arrives stale and the server correctly refuses it. The OCC contract is NOT
+# weakened anywhere below: every successful write still presents the CANONICAL
+# token. What these pin is the recovery — refresh, then retry once, then stop.
+
+_STALE     = "2026-08-20T02:20:20Z"   # token the modal opened with
+_CANONICAL = "2026-08-20T02:26:19Z"   # after another legitimate draft mutation
+
+
+def _force_updated_at(storage, did, when, remarks=None):
+    """Stand in for an interleaving draft mutation with a controlled timestamp.
+
+    updated_at has one-second resolution, so a same-second sibling write cannot
+    be made deterministically distinct through the API.
+    """
+    with sqlite3.connect(str(storage / "proforma_links.db")) as conn:
+        if remarks is None:
+            conn.execute("UPDATE proforma_drafts SET updated_at=? WHERE id=?", (when, did))
+        else:
+            conn.execute(
+                "UPDATE proforma_drafts SET updated_at=?, remarks=? WHERE id=?",
+                (when, remarks, did))
+        conn.commit()
+
+
+def test_stale_box_write_recovers_through_one_refresh_and_retry(client):
+    """The exact production failure, end to end, without weakening the lock."""
+    c, storage = client
+    did = _seed_draft(storage)
+    _force_updated_at(storage, did, _STALE)
+    # Another legitimate mutation lands while the modal is open.
+    _force_updated_at(storage, did, _CANONICAL, remarks="edited elsewhere")
+
+    # 1. The modal's stale token is refused — the server keeps its authority.
+    r = _set(c, did, {"expected_updated_at": _STALE, "box_type_code": "BOX-A"})
+    assert r.status_code == 409, r.text
+    assert _get(c, did)["box_type_code"] is None
+
+    # 2. The client re-reads the CANONICAL draft.
+    d = _get(c, did)
+    assert d["updated_at"] == _CANONICAL
+
+    # 3. One retry against the canonical token succeeds.
+    r = _set(c, did, {"expected_updated_at": d["updated_at"], "box_type_code": "BOX-A"})
+    assert r.status_code == 200, r.text
+
+    # 4. Reopening the modal reads the persisted selection, and the unrelated
+    #    edit made by the other session was never discarded.
+    after = _get(c, did)
+    assert after["box_type_code"] == "BOX-A"
+    assert after["remarks"] == "edited elsewhere"
+    assert after["updated_at"] != _CANONICAL     # the write advanced the token
+
+
+def test_response_carries_the_new_token_so_the_next_write_is_not_stale(client):
+    """A successful save must hand back the token the next write has to use.
+
+    The client read it from the wrong level of the response envelope, so its
+    snapshot never advanced and the SECOND box change in one modal session
+    conflicted with no other editor involved.
+    """
+    c, storage = client
+    did = _seed_draft(storage)
+    d = _get(c, did)
+    r = _set(c, did, {"expected_updated_at": d["updated_at"], "box_type_code": "BOX-A"})
+    assert r.status_code == 200, r.text
+    returned = r.json()["draft"]["updated_at"]
+    assert returned == _get(c, did)["updated_at"]
+    # Reusing the returned token immediately is accepted; the pre-write one is not.
+    assert _set(c, did, {"expected_updated_at": returned,
+                         "box_type_code": ""}).status_code == 200
+
+
+def test_recovery_needs_no_second_write_when_the_value_is_already_canonical(client):
+    """Another session stored the same code — the refresh alone resolves it."""
+    c, storage = client
+    did = _seed_draft(storage)
+    d = _get(c, did)
+    assert _set(c, did, {"expected_updated_at": d["updated_at"],
+                         "box_type_code": "BOX-A"}).status_code == 200
+    _force_updated_at(storage, did, _CANONICAL)
+
+    assert _set(c, did, {"expected_updated_at": _STALE,
+                         "box_type_code": "BOX-A"}).status_code == 409
+    # The refreshed draft already holds the requested code, so the client has
+    # nothing left to write — one box_type_set event, not two.
+    assert _get(c, did)["box_type_code"] == "BOX-A"
+    assert _events(storage, did).count("box_type_set") == 1
+
+
+def test_a_second_conflict_stops_instead_of_looping(client):
+    """Retry number two never happens — and nothing is lost when it doesn't."""
+    c, storage = client
+    did = _seed_draft(storage)
+    _force_updated_at(storage, did, _CANONICAL, remarks="concurrent edit")
+
+    assert _set(c, did, {"expected_updated_at": _STALE,
+                         "box_type_code": "BOX-A"}).status_code == 409
+    # The retry token is stale too (a third writer moved again): still refused,
+    # still no partial write, still the other session's data intact.
+    _force_updated_at(storage, did, "2026-08-20T02:31:00Z", remarks="concurrent edit")
+    assert _set(c, did, {"expected_updated_at": _CANONICAL,
+                         "box_type_code": "BOX-A"}).status_code == 409
+    after = _get(c, did)
+    assert after["box_type_code"] is None
+    assert after["remarks"] == "concurrent edit"
+    assert "box_type_set" not in _events(storage, did)
+
+
+def test_client_recovery_is_bounded_and_reads_the_right_envelope():
+    """Source pins for the browser half of the recovery."""
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    start = src.index("const adoptSavedDraft")
+    body = src[start:src.index("// When a box profile is selected", start)]
+    # The draft is at r.data.draft — reading r.draft silently never refreshed.
+    assert "(r.data && r.data.draft)" in body
+    # Exactly one retry, gated on the 409 and on not already being the retry.
+    assert "r.status === 409 && !isRetry" in body
+    assert "persistBoxSelection(code, d.updated_at, true)" in body
+    # Already-canonical value resolves without a second write.
+    assert "(d.box_type_code || '') === (code || '')" in body
+    # No unbounded recovery loop (Lesson S).
+    for banned in ("while (", "for (", "setInterval", "setTimeout"):
+        assert banned not in body, banned
+
+
+def test_successful_save_converges_the_parent_draft_token():
+    """The page must learn the canonical draft, not just the modal."""
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    assert "onDraftChanged" in src
+    assert "onDraftChanged={() => draftHook && draftHook.reload && draftHook.reload()}" in src
+    assert "if (typeof onDraftChanged === 'function') onDraftChanged();" in src
