@@ -111,7 +111,16 @@ def _stub_external_authorities(monkeypatch):
     )
     monkeypatch.setattr(
         "app.api.routes_carrier_actions._project_shipment_description_for_client",
-        lambda **kw: "Jewellery",
+        # The REAL builder returns the whole projection dict, never a bare
+        # string. This stub said "Jewellery" and every test passed against a
+        # shape production never produces, so the readiness endpoint 500'd on
+        # the first real request (Lesson A). Stub matches the real return
+        # shape now; test_description_projection_real_shape_is_a_dict pins it
+        # against the real builder with no stub at all.
+        lambda **kw: {"batch_id": kw.get("batch_id"),
+                      "client_ref": kw.get("client_ref"),
+                      "shipment_description": "Jewellery",
+                      "source": "canonical"},
     )
     # Goods have NOT reached the destination warehouse — the normal state at
     # booking time, since the AWB is created before they travel.
@@ -590,3 +599,52 @@ def test_readiness_validates_batch_id_at_the_trust_boundary(storage):
         # The real batch id still resolves.
         assert client.get(
             "/api/v1/carrier/" + BATCH + "/booking-readiness").status_code == 200
+
+
+# ── Lesson A: pin the REAL builder's return shape, with no stub ─────────────
+# The readiness consumer called .strip() on this builder's return value. Every
+# stubbed test passed because the stub returned a bare string; production
+# raised AttributeError: 'dict' object has no attribute 'strip' on the first
+# real request and the endpoint 500'd. These two tests use the real builder,
+# so a future shape change breaks them here instead of in production.
+
+def test_description_projection_real_shape_is_a_dict(tmp_path):
+    """The real builder returns the projection DICT, never a bare string."""
+    from app.api.routes_carrier_actions import (
+        _project_shipment_description_for_client,
+    )
+
+    out = _project_shipment_description_for_client(
+        storage_root=tmp_path, batch_id="SHIPMENT_1_2026-08_aaaa1111",
+        client_ref=None,
+    )
+    assert isinstance(out, dict), "builder contract is dict, got %r" % type(out)
+    assert "shipment_description" in out
+    assert isinstance(out["shipment_description"], str)
+    # A bare string must never be the contract again.
+    assert not isinstance(out, str)
+
+
+def test_readiness_normalises_the_real_description_shape(tmp_path):
+    """_description_state survives the real builder's dict return."""
+    from app.api.routes_carrier_actions import (
+        _project_shipment_description_for_client,
+    )
+    from app.services.carrier import booking_readiness as br
+
+    real = _project_shipment_description_for_client(
+        storage_root=tmp_path, batch_id="SHIPMENT_1_2026-08_aaaa1111",
+        client_ref=None,
+    )
+    # The normaliser accepts exactly what the builder emits — no AttributeError.
+    assert br._normalise_description(real) is None or isinstance(
+        br._normalise_description(real), str)
+    assert br._normalise_description(
+        {"shipment_description": "  Jewellery  "}) == "Jewellery"
+    assert br._normalise_description({"shipment_description": ""}) is None
+
+    # And the state wrapper never raises on the real shape.
+    state = br._description_state(
+        "SHIPMENT_1_2026-08_aaaa1111", tmp_path, None)
+    assert state["authority"] == "description_engine"
+    assert set(state) == {"ready", "authority", "value"}
