@@ -414,3 +414,57 @@ def test_ups_guidance_states_the_real_external_blocker():
     assert "customer-arranged" in routes
     factory = (_ROOT / "app" / "services" / "carrier" / "factory.py").read_text(encoding="utf-8")
     assert "UpsSandboxAdapter" in factory      # the adapter the old text denied
+
+
+# ── HTTP surface ────────────────────────────────────────────────────────────
+
+
+def test_readiness_endpoint_is_registered_and_creates_nothing(storage):
+    """The literal path must not be captured by a /{batch_id}/... route."""
+    _seed_draft(storage, CLIENT_A, box="BOX-A")
+    with _booking_client(storage) as (client, coord):
+        resp = client.get(
+            f"/api/v1/carrier/{BATCH}/booking-readiness",
+            params={"client_ref": CLIENT_A, "weight_kg": 2.5,
+                    "declared_value": 900.0},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["batch_id"] == BATCH
+    assert body["customer_scope"] == CLIENT_A
+    assert body["shipment_intent"] == "outbound_customer"
+    assert body["existing_awb"] == INBOUND_AWB
+    assert body["ready_to_generate_real_awb"] is True
+    assert body["live_release_blocked"] is True     # allowlist closed, correctly
+    # A read projection books nothing.
+    coord.create_shipment.assert_not_called()
+
+
+def test_readiness_response_carries_no_contact_pii(storage):
+    _seed_draft(storage, CLIENT_A)
+    with _booking_client(storage) as (client, _):
+        body = client.get(f"/api/v1/carrier/{BATCH}/booking-readiness",
+                          params={"client_ref": CLIENT_A}).json()
+    assert set(body["recipient"]) <= {"ready", "source", "company", "city",
+                                      "country", "blocker"}
+    assert "+48100200300" not in json.dumps(body)
+
+
+def test_readiness_carries_the_same_auth_guard_as_its_sibling_reads():
+    """Asserting a status code here would measure the dev-mode auth bypass
+    (``require_api_key`` returns early when API_KEY is unset outside prod), not
+    the route. Pin the declared dependency instead — that is what a regression
+    would actually remove."""
+    from app.api.routes_carrier_actions import router
+    from app.core.security import require_api_key
+
+    def _guards(path, method):
+        for r in router.routes:
+            if getattr(r, "path", None) == path and method in getattr(r, "methods", ()):
+                return {d.call for d in r.dependant.dependencies}
+        raise AssertionError(f"route not registered: {method} {path}")
+
+    readiness = _guards("/api/v1/carrier/{batch_id}/booking-readiness", "GET")
+    assert require_api_key in readiness
+    # Same guard the existing shipment read carries — no weaker, no stronger.
+    assert require_api_key in _guards("/api/v1/carrier/{batch_id}/shipment", "GET")
