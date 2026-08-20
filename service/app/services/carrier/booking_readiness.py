@@ -220,7 +220,10 @@ def _recipient_state(batch_id: str, storage_root: Path, client_ref: Optional[str
         "company": address.get("name"),
         "city": address.get("city"),
         "country": address.get("country") or address.get("country_code"),
-        "phone": (address.get("phone") or "") or None,
+        # Deliberately no phone / street / email: readiness answers "is the
+        # recipient resolvable", not "what is it". The booking already reads the
+        # full address from the ONE authority; echoing contact PII into a
+        # preflight response widens the surface for nothing.
         "blocker": None,
     }
 
