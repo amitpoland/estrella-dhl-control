@@ -768,8 +768,16 @@ def build_payables_portfolio_from_facts(
             # supplier-level net, so only the offset flag is derived — and, as
             # on the AR side, no "net 365+" is published without document-level
             # linkage proving which old expense a credit offsets.
+            # ``gross_payable``, never the bare ``gross``: that name is still
+            # bound by the ``for exp in expense_facts`` loop above, so reading
+            # it here judged every supplier against the brutto of whichever
+            # expense that loop happened to keep last. Measured on #1303's tip:
+            # a supplier owing 10,000 against a 100 credit came back
+            # fully_offset because the leaked value was 50 — and offset_status
+            # is the PRIMARY sort key below, so that creditor dropped into the
+            # bottom tier instead of being shown as money we still owe.
             "offset_status": (
-                "fully_offset" if credit >= gross and credit > 0
+                "fully_offset" if credit >= gross_payable and credit > 0
                 else "partially_offset" if credit > 0
                 else "actionable"
             ),

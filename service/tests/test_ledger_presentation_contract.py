@@ -1804,3 +1804,40 @@ def test_both_consumers_share_one_rule():
         assert "linked_expense" in src, (
             "%s consumer lost the canonical supplier-cash rule" % name
         )
+
+
+def test_ap_offset_status_is_judged_against_the_suppliers_own_gross():
+    """offset_status must read gross_payable, not the leaked loop variable.
+
+    ``gross`` stays bound by the ``for exp in expense_facts`` loop, so reading
+    it in the supplier loop judged every supplier against the brutto of the
+    last expense that loop kept. Supplier A owes 9,900 net against a 100
+    credit -- partially_offset -- but the leaked 50 made it fully_offset, and
+    since offset_status is the primary sort key it then ranked BELOW a
+    supplier owing 50.
+    """
+    from app.services.accounting_analytics import (
+        build_payables_portfolio_from_facts,
+    )
+
+    def _exp(eid, cid, brutto):
+        return {"id": eid, "contractor_id": cid, "contractor_name": cid,
+                "currency": "USD", "brutto": Decimal(brutto),
+                "date": "2026-01-10", "payment_date": "2026-02-10"}
+
+    # S-B's +50 is the last expense kept, so 50 is what leaked.
+    facts = [_exp("e1", "S-A", "10000"), _exp("e2", "S-A", "-100"),
+             _exp("e3", "S-B", "50")]
+    out = build_payables_portfolio_from_facts(
+        facts, [], as_of="2026-08-20", period=("2020-01-01", "2026-08-20"))
+
+    by_id = {s["contractor_id"]: s for s in out["suppliers"]}
+    assert by_id["S-A"]["net_payable"] == "9900.00"
+    assert by_id["S-A"]["offset_status"] == "partially_offset", (
+        "a supplier owing 9,900 against a 100 credit is not fully offset"
+    )
+    assert by_id["S-B"]["offset_status"] == "actionable"
+    # Ranking consequence: offset_status is the PRIMARY sort key, so the
+    # mislabel did not merely print a wrong flag -- it dropped a 9,900
+    # creditor into the bottom (fully_offset) tier. Pin the tier itself.
+    assert by_id["S-A"]["offset_status"] != "fully_offset"
