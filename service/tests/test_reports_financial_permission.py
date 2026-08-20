@@ -266,7 +266,21 @@ def test_allow_roles_pass_auth_gate(auth_env, monkeypatch, role, path):
 
     client = _session_client(role)
     r = client.get(f"{path}?{_QS}")
-    assert r.status_code == 200, (role, path, r.status_code, r.text[:400])
+    # This test owns ONE property: an allowed role is not rejected by the auth
+    # gate. It must not also assert data availability.
+    #
+    # /api/v1/ledgers/clients now defaults to source=local and answers
+    # 503 LOCAL_PROJECTION_UNAVAILABLE when the financial reporting projection
+    # is empty — which it is in a bare test environment. That 503 is raised
+    # DOWNSTREAM of the guard, so reaching it already proves the role passed
+    # authorization; asserting == 200 conflated the two and turned a deliberate
+    # fail-honest data response into a false auth failure.
+    #
+    # The deny side still pins exactly 403, so the gate remains fully
+    # constrained from both directions: denied roles get 403, allowed roles
+    # never do.
+    assert r.status_code not in (401, 403), (role, path, r.status_code, r.text[:400])
+    assert r.status_code in (200, 503), (role, path, r.status_code, r.text[:400])
 
 
 def test_api_key_machine_identity_allowed(auth_env, monkeypatch):
