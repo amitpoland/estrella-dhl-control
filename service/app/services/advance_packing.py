@@ -479,3 +479,128 @@ def _qty_by_design(lines: List[Dict[str, Any]]) -> Dict[str, float]:
             continue
         out[d] = round(out.get(d, 0.0) + _f(ln.get("quantity")), 4)
     return out
+
+
+# -- Status / observability -------------------------------------------------
+
+# Deliberately NOT a background-job status. Advance Packing has no scheduler
+# and cannot have one: the trigger is a supplier emailing a list, an event no
+# cron can invent. The canonical status keys are still emitted so the screen
+# and any future consumer read one shape, but the run-shaped ones are honestly
+# null rather than filled with a fabricated number:
+#
+#   running / last_started_at / duration_ms  -> always null-ish, no run exists
+#   last_completed_at -> when the workflow last actually did something, i.e.
+#                        the newest advance document's created_at
+#   processed -> advance documents ever ingested (withdrawn ones included:
+#                they happened)
+#   created   -> documents still standing (not withdrawn)
+#   updated   -> documents whose row was updated after creation by a link
+#   skipped   -> documents the operator retracted
+#   errors    -> ingest/link/withdraw exceptions. There is no durable counter
+#                for those, so this is 0 and last_error is null, ALWAYS -- a
+#                fabricated error count is worse than an honest absent one.
+#
+# A variance is NOT an error: it is the business answer this module exists to
+# produce, so it is reported under ``attention``, where an operator can act.
+
+def advance_status() -> Dict[str, Any]:
+    """One status object for the API, the screen and any future consumer.
+
+    Answers the four operator questions: what state is this in, when did it
+    last do something, what happened, and is there anything for me to do.
+    """
+    empty = {
+        "healthy": False, "running": False,
+        "last_started_at": None, "last_completed_at": None, "duration_ms": None,
+        "processed": 0, "created": 0, "updated": 0, "skipped": 0,
+        "errors": 0, "last_error": None,
+        "documents": {"total": 0, "awaiting_link": 0, "linked": 0, "withdrawn": 0},
+        "attention": {"awaiting_link": 0, "with_variance": 0, "documents": []},
+        "automation": {
+            "mode": "operator_initiated",
+            "reason": "a supplier sends the advance list; there is no event a "
+                      "scheduler could poll",
+        },
+    }
+    if pdb._db_path is None:
+        empty["last_error"] = "packing database is not configured"
+        return empty
+
+    try:
+        with pdb._connect() as con:
+            rows = con.execute(
+                "SELECT id, batch_id, created_at, linked_batch_id, withdrawn_reason "
+                "FROM packing_documents WHERE doc_stage=? ORDER BY created_at DESC",
+                (ADVANCE,),
+            ).fetchall()
+    except Exception as exc:                     # pragma: no cover - defensive
+        log.warning("advance status read failed: %s", exc)
+        empty["last_error"] = str(exc)
+        return empty
+
+    docs = [dict(r) for r in rows]
+
+    def _withdrawn(d): return bool((d.get("withdrawn_reason") or "").strip())
+    def _linked(d):    return bool((d.get("linked_batch_id") or "").strip())
+
+    standing   = [d for d in docs if not _withdrawn(d)]
+    withdrawn  = [d for d in docs if _withdrawn(d)]
+    linked     = [d for d in standing if _linked(d)]
+    awaiting   = [d for d in standing if not _linked(d)]
+
+    # Actionable exceptions. reconcile() is read-only and these lists are the
+    # open advance documents only -- never the whole packing history.
+    attention: List[Dict[str, Any]] = []
+    variance_count = 0
+    for d in linked:
+        try:
+            summary = reconcile(d["id"])["summary"]
+        except Exception as exc:                 # pragma: no cover - defensive
+            log.warning("advance reconcile failed for %s: %s", d.get("id"), exc)
+            continue
+        if not summary.get("fully_matched"):
+            variance_count += 1
+            attention.append({
+                "document_id": d["id"],
+                "batch_id": d.get("linked_batch_id") or "",
+                "reason": "announced quantities do not match what shipped",
+                "by_status": summary.get("by_status") or {},
+            })
+    for d in awaiting:
+        attention.append({
+            "document_id": d["id"],
+            "batch_id": "",
+            "reason": "announced, not yet linked to a shipment",
+            "by_status": {},
+        })
+
+    return {
+        "healthy": True,
+        "running": False,
+        "last_started_at": None,
+        "last_completed_at": (docs[0].get("created_at") if docs else None),
+        "duration_ms": None,
+        "processed": len(docs),
+        "created": len(standing),
+        "updated": len(linked),
+        "skipped": len(withdrawn),
+        "errors": 0,
+        "last_error": None,
+        "documents": {
+            "total": len(docs),
+            "awaiting_link": len(awaiting),
+            "linked": len(linked),
+            "withdrawn": len(withdrawn),
+        },
+        "attention": {
+            "awaiting_link": len(awaiting),
+            "with_variance": variance_count,
+            "documents": attention,
+        },
+        "automation": {
+            "mode": "operator_initiated",
+            "reason": "a supplier sends the advance list; there is no event a "
+                      "scheduler could poll",
+        },
+    }

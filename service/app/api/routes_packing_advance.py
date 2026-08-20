@@ -23,6 +23,10 @@
   GET    /api/v1/packing-advance/{document_id}/reconciliation
          Expected (advance) vs actual (final purchase packing) by design_no.
 
+  GET    /api/v1/packing-advance/status
+         Module status for the operator panel: last activity, document
+         counts, and the documents actually needing attention.
+
 Own prefix, NOT ``/api/v1/packing/...``: that router owns ``/{batch_id}`` as a
 GET, so any literal sibling segment there would be a route-ordering trap.
 
@@ -139,6 +143,21 @@ def list_advance_packing_lists(
     docs = adv.list_advance_documents(linked=linked,
                                       include_withdrawn=include_withdrawn)
     return {"count": len(docs), "documents": docs}
+
+
+@router.get("/status", dependencies=[_auth])
+def advance_packing_status() -> Dict[str, Any]:
+    """Operator status for the Advance Packing module.
+
+    Registered BEFORE ``/{document_id}`` on purpose: that route would match the
+    literal segment ``status`` and answer 404 for a document of that name --
+    the same ordering trap this module's own prefix exists to avoid.
+
+    Never raises. A status screen that 500s tells the operator nothing about
+    the thing it is supposed to be reporting on, so an unreadable store comes
+    back as ``healthy: false`` with the reason in ``last_error``.
+    """
+    return adv.advance_status()
 
 
 @router.get("/{document_id}", dependencies=[_auth])
