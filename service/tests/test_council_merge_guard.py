@@ -270,22 +270,25 @@ def test_wfirma_fiscal_route_change_denies():
 
 # ── hook integration: current behaviour preserved (default deny) ─────────────
 
+# classify_command returns None (allow) or a structured verdict dict since
+# 2026-08-20 (deploy-guard semantics). The decisions pinned here are unchanged.
+
 def test_hook_denies_merge_by_default_env(monkeypatch):
     # no PZ_AUTONOMOUS_MERGE_ENABLED → hook rule-2 denies (current behaviour intact)
     monkeypatch.delenv("PZ_AUTONOMOUS_MERGE_ENABLED", raising=False)
-    label, reason = guard._classify_command("gh pr merge 949 --squash")
-    assert label == "gh-pr-merge"
-    assert "operator-only" in reason
+    verdict = guard.classify_command("gh pr merge 949 --squash")
+    assert verdict["matched_rule"] == "gh-pr-merge"
+    assert "operator-only" in verdict["reason"]
 
 def test_hook_other_rules_unchanged():
     # rule 1 (prod copy), rule 3 (push main) still deny; ordinary command passes
-    assert guard._classify_command("robocopy X C:\\PZ\\app")[0] == "deploy-to-prod-PZ"
-    assert guard._classify_command("git push origin main")[0] == "git-push-main"
-    assert guard._classify_command("pytest -q")[0] is None
+    assert guard.classify_command("robocopy X C:\\PZ\\app")["matched_rule"] == "deploy-to-prod-PZ"
+    assert guard.classify_command("git push origin main")["matched_rule"] == "git-push-main"
+    assert guard.classify_command("pytest -q") is None
 
 def test_hook_validator_error_fails_closed(monkeypatch):
     # if the validator import/exec fails, the hook must DENY (fail closed).
     import sys as _sys
     monkeypatch.setitem(_sys.modules, "merge_authorization", None)  # force ImportError
-    label, _ = guard._classify_command("gh pr merge 949 --squash --match-head-commit " + _HEAD)
-    assert label == "gh-pr-merge"
+    verdict = guard.classify_command("gh pr merge 949 --squash --match-head-commit " + _HEAD)
+    assert verdict["matched_rule"] == "gh-pr-merge"
