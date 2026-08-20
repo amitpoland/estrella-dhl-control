@@ -486,7 +486,8 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
         if batch_id not in self._allowlist:
             raise CarrierAllowlistError(
                 f"batch_id {batch_id!r} is not in carrier_live_allowlist. "
-                "Add it to CARRIER_LIVE_ALLOWLIST or set CARRIER_LIVE_ALLOWLIST=* to permit all."
+                "Release this specific shipment through the governed "
+                "live-booking process — never widen the allowlist to permit all."
             )
 
     def _api_path(self) -> str:

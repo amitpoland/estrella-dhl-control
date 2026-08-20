@@ -1041,9 +1041,20 @@ def create_shipment(
         raise HTTPException(
             status_code=422,
             detail={
-                "error": "UPS is not configured",
+                "error": "UPS booking is not released",
                 "code": "UPS_NOT_CONFIGURED",
-                "guidance": "UPS has no adapter. Do not silently book DHL.",
+                # The shared UpsSandboxAdapter EXISTS and is wired into the
+                # carrier factory (factory.get_adapter → UpsSandboxAdapter); the
+                # blocker is external, not missing code: UPS production Ship is
+                # refused by design (UPS_PRODUCTION_BLOCKED) and UPS Track is not
+                # provisioned (UPS_TRACK_NOT_PROVISIONED). Saying "no adapter"
+                # here sent operators looking for engineering work that is done.
+                "guidance": (
+                    "UPS shipments are registered as customer-arranged: record "
+                    "the carrier's own tracking number and AWB document. UPS "
+                    "production booking stays closed and UPS is never silently "
+                    "booked as DHL."
+                ),
             },
         )
     if provider == "OTHER":
@@ -1164,6 +1175,47 @@ def create_shipment(
             },
         )
 
+    # ── Shipment-leg safety: never re-book the inbound supplier leg ──────
+    #
+    # An import batch carries the supplier's own inbound AWB AND, separately,
+    # zero or more outbound customer intents (one per proforma draft, scoped by
+    # client_ref). batch_id alone therefore does not identify a shipment. A
+    # request that resolves to NO outbound customer intent is a request to book
+    # the batch itself — i.e. the leg the supplier already booked — so it fails
+    # here, before the coordinator and before any chargeable carrier call.
+    #
+    # This is deliberately NOT "inbound batch ⇒ no outbound shipment": a batch
+    # with customer drafts keeps every one of them bookable, independently.
+    from ..services.carrier.booking_readiness import (
+        has_outbound_customer_scope, project_inbound_leg,
+    )
+    #
+    # The check fires only when there IS an inbound leg to protect: a batch with
+    # no supplier AWB and no draft is an unrelated caller shape and keeps its
+    # existing behaviour.
+    _inbound = project_inbound_leg(batch_id, storage_root=settings.storage_root)
+    if (_inbound and _inbound.get("awb")) and not has_outbound_customer_scope(
+        batch_id,
+        proforma_db_path=settings.storage_root / "proforma_links.db",
+        client_ref=(body.client_ref or None),
+    ):
+        raise HTTPException(status_code=422, detail={
+            "error": (
+                f"This batch has no outbound customer proforma to ship. AWB "
+                f"{_inbound['awb']} belongs to the inbound supplier leg and is "
+                f"tracked, not re-booked."
+            ),
+            "code": "INBOUND_EXISTING_AWB",
+            "batch_id": batch_id,
+            "client_ref": (body.client_ref or None),
+            "existing_awb": (_inbound or {}).get("awb"),
+            "existing_awb_provider": (_inbound or {}).get("provider"),
+            "guidance": (
+                "Create or select the customer proforma for this shipment, then "
+                "prepare its outbound AWB. No carrier request was sent."
+            ),
+        })
+
     request = ShipmentRequest(
         batch_id=batch_id,
         shipper_account=shipper_account,
@@ -1210,8 +1262,9 @@ def create_shipment(
                 "guidance": (
                     "No live carrier request was sent — the allowlist is "
                     "checked before the provider is contacted, so no AWB was "
-                    "created and nothing was charged. Add this batch to "
-                    "CARRIER_LIVE_ALLOWLIST (or set it to *) and retry."
+                    "created and nothing was charged. Release this specific "
+                    "shipment through the governed live-booking process, then "
+                    "retry. Never widen the allowlist to permit all batches."
                 ),
             },
         )
@@ -1471,6 +1524,50 @@ async def upload_external_awb_document(
     payload = _external_shipment_payload(batch_id, fake, db_path)
     payload["awb_document_saved"] = True
     return JSONResponse(payload)
+
+
+@router.get(
+    "/{batch_id}/booking-readiness",
+    summary="Pre-booking readiness for ONE shipment leg (read-only projection)",
+)
+def get_booking_readiness(
+    batch_id: str,
+    client_ref: Optional[str] = None,
+    provider: str = "DHL",
+    weight_kg: Optional[float] = None,
+    declared_value: Optional[float] = None,
+    packages_count: Optional[int] = None,
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """What is actually ready to book, BEFORE the operator fills the modal.
+
+    A read projection over the authorities that already own each fact — no
+    readiness store, no second shipment DB, no second tracking authority. It
+    reports two independent axes:
+
+    * ``booking.ready`` — the business/physical prerequisites the booking POST
+      already enforces. ``booking.advisories`` are surfaced, never gates.
+    * ``release`` — whether live production writing is released for this
+      specific shipment. A prepared, business-ready shipment whose live release
+      is still closed is the NORMAL state, not a failure.
+
+    Creates nothing and books nothing.
+    """
+    from ..core.config import settings
+    from ..services.carrier.booking_readiness import project_booking_readiness
+
+    return JSONResponse(project_booking_readiness(
+        batch_id,
+        storage_root=settings.storage_root,
+        proforma_db_path=settings.storage_root / "proforma_links.db",
+        shipment_db_path=_get_shipment_db_path(),
+        settings=settings,
+        client_ref=(client_ref or None),
+        provider=provider,
+        weight_kg=weight_kg,
+        declared_value=declared_value,
+        packages_count=packages_count,
+    ))
 
 
 @router.get("/{batch_id}/shipment")
