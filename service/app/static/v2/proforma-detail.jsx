@@ -7548,8 +7548,14 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   .then(r => r && r.ok && draftHook && draftHook.reload && draftHook.reload());
               }}
             />
-            {/* Layer 3 — wFirma service-product registry — GET/PUT /proforma/service-products */}
-            <ServiceProductRegistryPanel />
+            {/* Layer 3 — wFirma service-product registry — GET/PUT /proforma/service-products.
+                canEdit-gated: the panel's own docstring says it belongs here
+                "when canEdit === true", but the guard was never written, so a
+                POSTED proforma rendered global registry mapping AND its edit
+                controls. That write is org-wide configuration, not a property
+                of this document — editing it from a posted fiscal document is
+                the wrong surface for it, and Master Data is the right one. */}
+            {canEdit && <ServiceProductRegistryPanel />}
           </React.Fragment>
         )}
         {activeTab === 'lines' && <ProformaLinesTab
@@ -9227,6 +9233,8 @@ function CommercialTermsEditor({ draftId, liveDraft, updatedAt, onReload }) {
 
 function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }) {
   const sug = suggestions || null;
+  // Rows already in agreement with Customer Master are collapsed by default.
+  const [_cmShowAgreed, _setCmShowAgreed] = React.useState(false);
   const mapped = sug && sug.status === 'mapped';
   const conflict = mapped ? sug.identity_conflict : null;
 
@@ -9344,7 +9352,31 @@ function CustomerMasterSuggestions({ suggestions, draftId, updatedAt, onReload }
                 <div></div>
                 <div>Field</div><div>Saved on draft</div><div>Customer Master</div><div>Source</div>
               </div>
-              {(sug.fields || []).map(f => {
+              {(() => {
+                const agreed = (sug.fields || []).filter(f => f.source === 'saved').length;
+                if (!agreed) return null;
+                return (
+                  <div data-testid="cm-agreed-summary"
+                       style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 0' }}>
+                    {agreed} field{agreed === 1 ? '' : 's'} already match Customer Master
+                    {' '}
+                    <button type="button"
+                            data-testid="cm-agreed-toggle"
+                            onClick={() => _setCmShowAgreed(v => !v)}
+                            style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)',
+                                     cursor: 'pointer', fontSize: 11, textDecoration: 'underline' }}>
+                      {_cmShowAgreed ? 'hide' : 'show'}
+                    </button>
+                  </div>
+                );
+              })()}
+              {/* Rows whose draft value already EQUALS Customer Master carry no
+                  decision: their checkbox is suppressed, and the two value
+                  columns print the same thing twice. They were the bulk of this
+                  table, burying the handful of rows that actually need the
+                  operator. They are summarised above and kept one fold away —
+                  still inspectable, no longer competing with the differences. */}
+              {(sug.fields || []).filter(f => f.source !== 'saved' || _cmShowAgreed).map(f => {
                 const applyKey = _CM_APPLY_KEY_MAP[f.key];
                 const applicable = !!applyKey && f.applicable !== false && (f.source === 'suggested' || f.source === 'conflict');
                 const isSaved    = f.source === 'saved';
@@ -9574,12 +9606,19 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
                 </div>
               </PfFieldRow>
             ) : (
-              <InfoRow label="Document currency" value={currency} />
+              <InfoRow label="Currency" value={currency} data-testid="pf-doc-currency" />
             )}
-            <InfoRow label="Source currency" value={detail.source_currency || currency || '—'} mono />
-            {/* Payment method/days: single editable authority is CommercialTermsEditor below.
-                Customer & terms shows the saved draft value read-only to avoid duplicate writers. */}
-            <InfoRow label="Payment method" value={detail.paymentTerms || '—'} />
+            {/* Source currency is the SAME fact as document currency until a
+                conversion actually happened — its old fallback was `|| currency`,
+                so the two rows printed one fact twice on every same-currency
+                document. Shown only when a conversion is real. */}
+            {detail.source_currency && detail.source_currency !== currency && (
+              <InfoRow label="Converted from" value={detail.source_currency} mono data-testid="pf-source-currency" />
+            )}
+            {/* Payment method used to be repeated here read-only.
+                CommercialTermsEditor below is the single display AND edit
+                authority for commercial terms, so this row is gone rather than
+                kept in sync by hand. */}
             <InfoRow label="Incoterm" value={detail.incoterm || '—'} />
             <InfoRow label="Status" value={(PF_STATUS_CHIP[detail.draft_state] || {}).label || detail.draft_state || '—'} />
           </div>
@@ -9594,6 +9633,8 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
         totalEur={totalEur}
         currency={currency}
         resolvedInsurance={detail.commercial_charges && detail.commercial_charges.insurance_total}
+        vatDecisionSource={vatResolution && vatResolution.decision_source}
+        vatFrozen={vatResolution ? !!vatResolution.draft_has_vat_freeze : undefined}
       />
 
       {/* ── Dates & FX (wireframe PanelCard; edit controls preserved) ──────── */}
@@ -9672,17 +9713,35 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
         <PfSectionLabel>Shipment reference</PfSectionLabel>
         <PfPanelCard>
           <div style={{ padding: '8px 20px 12px' }}>
+            {/* Business identity only. The internal identifiers this panel used
+                to print — batch id, wFirma record ids — are still stored and
+                still visible in Audit Trail; they are simply not document
+                facts an operator reads here. Rows that can only ever say "—"
+                on a proforma are not shown at all: an empty row is not
+                information, it is noise that hides the rows that are. */}
             <InfoRow label="Number" value={detail.wfirma_proforma_fullnumber || '—'} mono />
-            <InfoRow label="Shipment ID" value={detail.batch_id || '—'} mono />
-            <InfoRow label="KSeF" value={detail.ksef_number || '—'} mono />
+            {detail.ksef_number && (
+              <InfoRow label="KSeF" value={detail.ksef_number} mono data-testid="pf-ksef-row" />
+            )}
             <InfoRow label="Amount due" value={`${totalEur.toFixed(2)} ${currency}`} />
             <InfoRow label="Paid" value="— see Payment status" />
-            <InfoRow label="Accounting scheme" value={detail.accounting_scheme || 'Standard'} />
-            <InfoRow label="JPK codes" value={detail.jpk_codes || 'none'} />
+            {detail.accounting_scheme && detail.accounting_scheme !== 'Standard' && (
+              <InfoRow label="Accounting scheme" value={detail.accounting_scheme} data-testid="pf-accounting-scheme" />
+            )}
+            {detail.jpk_codes && (
+              <InfoRow label="JPK codes" value={detail.jpk_codes} data-testid="pf-jpk-codes" />
+            )}
             <InfoRow label="Warehouse" value={detail.warehouse || 'Main'} />
-            <InfoRow label="wFirma proforma ID" value={detail.wfirma_proforma_id || '—'} mono />
-            <InfoRow label="wFirma invoice ID" value={invoiceProjection.invoiceId || '—'} mono />
-            <InfoRow label="Source" value={detail.clone_source || detail.source_description || detail.source || '—'} />
+            {invoiceProjection.invoiceId && (
+              <InfoRow label="wFirma invoice ID" value={invoiceProjection.invoiceId} mono data-testid="pf-wfirma-inv-id" />
+            )}
+            {(detail.clone_source || detail.source_description || detail.source) && (
+              <InfoRow
+                label="Source"
+                value={detail.clone_source || detail.source_description || detail.source}
+                data-testid="pf-source-row-overview"
+              />
+            )}
           </div>
         </PfPanelCard>
       </div>
@@ -9694,22 +9753,10 @@ function ProformaOverviewTab({ detail, invoiceProjection, lines, fxRate, vatReso
         </div>
       )}
 
-      {/* VAT resolution (from disclose-post) */}
-      {vatResolution && (
-        <div style={{ padding: '10px 14px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 6 }} data-testid="vat-resolution-detail">
-          <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>VAT Treatment</div>
-          <div style={{ fontSize: 12, color: 'var(--text)' }}>
-            Context: <code>{vatResolution.vat_context || '?'}</code>
-            {' '}· Code: <code>{vatResolution.vat_code || '?'}</code>
-            {' '}· Source: <code>{vatResolution.decision_source || '?'}</code>
-          </div>
-          {!vatResolution.draft_has_vat_freeze && (
-            <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 4 }}>
-              VAT context not yet frozen — set on first post attempt
-            </div>
-          )}
-        </div>
-      )}
+      {/* The separate VAT Treatment block lived here. Its facts — context, code,
+          decision source and the not-yet-frozen warning — are now rows of
+          VatInsurancePanel above, so VAT is stated once. Nothing was dropped:
+          vatResolution is still read, it is just rendered in one place. */}
 
       {/* Payment status — real figures on demand (reuse-only, live wFirma statement) */}
       <OverviewFinancials contractorId={detail.client_contractor_id} currency={currency} />
@@ -9739,7 +9786,7 @@ const PF_VAT_LABELS = {
   '229': '0% Export',
 };
 
-function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, currency, resolvedInsurance }) {
+function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, currency, resolvedInsurance, vatDecisionSource, vatFrozen }) {
   const [master, setMaster] = React.useState(null);
   // idle → loading → loaded | failed | missing-id  (fail-visible, never fail-open)
   const [masterFetch, setMasterFetch] = React.useState('idle');
@@ -9778,8 +9825,29 @@ function VatInsurancePanel({ contractorId, vatCode, vatContext, totalEur, curren
       <PfSectionLabel>VAT &amp; Insurance (KUKE)</PfSectionLabel>
       <PfPanelCard data-testid="pf-vat-insurance">
         <div style={{ padding: '8px 20px 12px' }}>
+          {/* One VAT section. The separate "VAT Treatment" block below the
+              panel restated context and code, and added only two facts the
+              panel lacked — decision source and whether the context is frozen.
+              Those two moved in here rather than justifying a second block
+              that could drift out of step with this one. */}
           <InfoRow label="VAT treatment" value={vatLabel} />
           <InfoRow label="VAT context" value={vatContext || '—'} />
+          {/* Keeps the ADR-027 D4 contract: vat_resolution stays SURFACED under
+              its own testid. Consolidating the duplicate block moved where it
+              is rendered, not whether it is — a relocation, never a removal. */}
+          {(vatDecisionSource || vatFrozen === false) && (
+            <div data-testid="vat-resolution-detail">
+              {vatDecisionSource && (
+                <InfoRow label="VAT source" value={vatDecisionSource} data-testid="pf-vat-source" />
+              )}
+              {vatFrozen === false && (
+                <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', padding: '2px 0 6px' }}
+                     data-testid="pf-vat-not-frozen">
+                  VAT context not yet frozen — set on first post attempt
+                </div>
+              )}
+            </div>
+          )}
           <InfoRow label="KUKE insured" value={kukeApproved} />
           <InfoRow label="KUKE policy" value={m.kuke_policy_number || '—'} mono />
           <InfoRow label="KUKE limit" value={kukeLimit} mono />
@@ -9845,9 +9913,23 @@ function OverviewFinancials({ contractorId, currency }) {
           {state.status === 'loading' ? '↻ Loading…' : (state.status === 'done' ? '↻ Reload' : '↻ Load payment status (wFirma)')}
         </button>
       </div>
+      {/* Scope, stated once and up front. This reads the CUSTOMER's fiscal AR
+          position, not this document's: wFirma has no per-proforma payment
+          state, and the invoice-side fields that would carry one
+          (paymentstate / alreadypaid / remaining) are unverified and pinned
+          FORBIDDEN. A proforma acquires a payment record when it becomes a
+          fiscal invoice, not before. Saying so beats an empty panel that reads
+          like a failure. */}
+      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }} data-testid="pf-overview-financials-scope">
+        Customer AR position (fiscal invoices, last 2 years) — a proforma has no payment record of its own until it is converted.
+      </div>
       {state.status === 'idle' && <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>Live wFirma read — click to load invoiced / received / outstanding for this customer.</div>}
       {state.status === 'error' && <div style={{ fontSize: 11.5, color: 'var(--badge-amber-text)' }} data-testid="pf-overview-financials-err">Could not load · {state.err}</div>}
-      {state.status === 'done' && ccys.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>No invoices on record for this customer in the window.</div>}
+      {state.status === 'done' && ccys.length === 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--text-3)' }} data-testid="pf-overview-financials-empty">
+          No fiscal invoices on record for this customer in the last 2 years. Proformas are commercial documents and never appear here — this is not an error, and it does not mean the customer owes nothing outside that window.
+        </div>
+      )}
       {state.status === 'done' && ccys.map((cc) => {
         const t = totals[cc] || {}; const a = aging[cc] || {};
         return (
