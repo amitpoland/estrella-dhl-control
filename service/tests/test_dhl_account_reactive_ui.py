@@ -230,31 +230,76 @@ def test_no_parallel_state_store():
 def test_adapter_still_does_not_resolve():
     """The adapter may document the authority; it must not call it.
 
-    ``_code`` strips JSX ``//`` comments; the adapter is Python, so strip
-    ``#`` lines here.
+    Checked on the AST, not the text. The adapter now names the resolver in a
+    docstring to record where the verdict it serializes came from — saying who
+    decided is the opposite of deciding, and a substring search cannot tell the
+    two apart.
     """
-    src = "\n".join(ln for ln in _read(ADAPTER).splitlines()
-                    if not ln.strip().startswith("#"))
-    assert "resolve_dhl_billing_account" not in src
-    assert "client_carrier_accounts" not in src
+    import ast
+    tree = ast.parse(_read(ADAPTER))
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else
+        getattr(node.func, "attr", "")
+        for node in ast.walk(tree) if isinstance(node, ast.Call)
+    }
+    assert "resolve_dhl_billing_account" not in called
+    assert "resolve_declared_transport_payer" not in called
+    assert "list_accounts" not in called
+    consts = {n.value for n in ast.walk(tree)
+              if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert not any("client_carrier_accounts" in c for c in consts)
 
 
-# ── 10. sender-paid payload unchanged ────────────────────────────────────
+# ── 10. sender-paid payload unchanged, receiver-paid now executes ─────────
+#
+# SUPERSEDED 2026-08-21. These two asserted the adapter's literal source text
+# and that receiver billing was refused, while the MyDHL account contract was
+# unverified. Receiver-paid now executes; the guarantees they protected are
+# re-pinned below on BEHAVIOUR, which is stronger than the text match ever was.
+
+def _accounts(**kw):
+    from app.services.carrier.adapters.live import _build_accounts
+    from app.services.carrier.models.shipment import ShipmentRequest
+    base = dict(batch_id="B", recipient_address={}, declared_value=1.0,
+                currency="EUR", weight_kg=1.0, dimensions={})
+    base.update(kw)
+    return _build_accounts(ShipmentRequest(**base))
+
 
 def test_sender_paid_dhl_payload_unchanged():
-    """The DHL accounts array must still be a single 'shipper' entry."""
-    src = _read(ADAPTER)
-    assert '"typeCode": "shipper"' in src
-    assert '"number": request.shipper_account' in src
-    for banned in ('"payer"', '"thirdParty"', '"duties-taxes"'):
-        assert banned not in src, \
-            f"{banned} must not appear until the MyDHL typeCode is verified"
+    """Sender-paid still produces exactly the single 'shipper' entry."""
+    assert _accounts(shipper_account="958214771") == [
+        {"typeCode": "shipper", "number": "958214771"},
+    ]
 
 
-def test_receiver_paid_still_blocked():
+def test_receiver_paid_now_serializes_a_payer_entry():
+    """The account Customer Master declared actually reaches the DHL request.
+
+    This is the whole point of the repair: the panel used to display the
+    receiver's account while the request billed the shipper.
+    """
+    assert _accounts(shipper_account="958214771",
+                     transport_payer="receiver",
+                     billing_account="111222333") == [
+        {"typeCode": "shipper", "number": "958214771"},
+        {"typeCode": "payer", "number": "111222333"},
+    ]
+
+
+def test_the_panel_and_the_booking_no_longer_disagree():
+    """A resolved non-sender payer must not be reported as blocked.
+
+    The account panel and the booking now answer alike. While they disagreed,
+    the panel showed the receiver's account and the booking silently billed
+    Estrella — the operator could not see which one was true.
+    """
     src = _read(ROUTE)
-    assert "DHL_BILLING_PARTY_NOT_ENABLED" in src
-    assert "billing_party_not_enabled" in src
+    assert "DHL_BILLING_PARTY_NOT_ENABLED" not in src
+    assert "billing_party_not_enabled" not in src
+    # The superseded reason is kept as a marked constant, not deleted, so the
+    # audit trail of why the block existed and why it lifted stays readable.
+    assert "_RECEIVER_BILLING_WAS_BLOCKED_UNTIL_VERIFIED" in src
 
 
 # =============================================================================

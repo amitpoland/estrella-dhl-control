@@ -43,6 +43,7 @@ from ..models.shipment import (
     CarrierProviderStateUnknownError,
     ShipmentMode,
     ShipmentRequest,
+    TRANSPORT_PAYER_SENDER,
     ShipmentResult,
     ShipmentState,
     compute_idempotency_key,
@@ -677,6 +678,67 @@ def select_product_code(requested: str, available: List[str]) -> str:
 
 # ── DHL request body builder ──────────────────────────────────────────────────
 
+# MyDHL's wire vocabulary for the accounts array. THE ONLY PLACE the neutral
+# domain payer becomes a carrier field name — the domain model deliberately
+# knows none of this, so a contract correction is a change here and nowhere
+# else. That isolation is the point: if DHL rejects the shape, the repair is
+# this table, not a sweep through the booking path.
+#
+# "shipper" is the account the shipment moves on. A second entry names the payer
+# when transport is billed to someone else; DHL documents receiver- and
+# third-party transport billing in its Shipment Billing structure.
+#
+# DUTIES AND TAXES ARE NOT BILLED HERE. DHL carries the duty/tax payer as its
+# OWN typeCode ("duties-taxes"), separate from transport — and so does this
+# platform: Customer Master does not own that decision, so this function must
+# never emit it. Paying someone's transport is not agreeing to pay their duty.
+#
+# EVIDENCE for these values, and its limit (2026-08-21). DHL's public first-party
+# artifacts do NOT publish this enum: the Express Reference Data 3.3.1 workbook
+# carries product/service/incoterm code lists but no request-schema enums, and
+# the Reference Data Guide 3.3.1 is the workbook's companion. The raw schema sits
+# behind the portal's authenticated interactive reference, which this project
+# cannot reach. Three independent sources agree on shipper / payer /
+# duties-taxes, one of them (innoveit/python-dhl-api AccountType) validating
+# against DHL's 3.3.1 spec, and this repository's own earlier safety pins named
+# exactly these tokens as the candidates to verify.
+#
+# So "payer" is well-corroborated but NOT read from DHL's schema. That is why
+# every wire name lives here and nowhere else: if DHL rejects the shape, the
+# repair is this table plus its pinning test, and no other file moves. A carrier
+# syntax rejection is a serialization defect to fix, never a reason to change
+# who pays.
+_DHL_ACCOUNT_TYPE_SHIPPER = "shipper"
+_DHL_ACCOUNT_TYPE_PAYER = "payer"
+
+
+def _build_accounts(request: ShipmentRequest) -> List[dict]:
+    """Serialize the resolver's payer verdict into MyDHL's accounts array.
+
+    Decides nothing. ``request.transport_payer`` and ``request.billing_account``
+    were settled by resolve_dhl_billing_account() reading Customer Master; this
+    only writes them down in the carrier's vocabulary.
+
+    Sender-paid produces exactly the single-entry array it always has, so the
+    overwhelmingly common booking is byte-identical to before this existed.
+    """
+    accounts = [{
+        "typeCode": _DHL_ACCOUNT_TYPE_SHIPPER,
+        "number": request.shipper_account,
+    }]
+    payer = (getattr(request, "transport_payer", None)
+             or TRANSPORT_PAYER_SENDER).strip().lower()
+    billing = (getattr(request, "billing_account", None) or "").strip()
+    # Both conditions required: a non-sender payer with no account is a
+    # resolver bug, and emitting a payer entry with an empty number would ask
+    # DHL to bill nobody. Fall back to the shipper-only shape instead.
+    if payer != TRANSPORT_PAYER_SENDER and billing:
+        accounts.append({
+            "typeCode": _DHL_ACCOUNT_TYPE_PAYER,
+            "number": billing,
+        })
+    return accounts
+
 
 def _build_shipment_body(
     request: ShipmentRequest,
@@ -727,12 +789,7 @@ def _build_shipment_body(
         "plannedShippingDateAndTime": planned,
         "pickup": {"isRequested": False},
         "productCode": product_code or request.product_code or "P",
-        "accounts": [
-            {
-                "typeCode": "shipper",
-                "number": request.shipper_account,
-            }
-        ],
+        "accounts": _build_accounts(request),
         "outputImageProperties": {
             "printerDPI": 300,
             "encodingFormat": "pdf",

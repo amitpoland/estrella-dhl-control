@@ -38,11 +38,12 @@ source of truth.
 """
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .client_carrier_accounts_db import CarrierAccount, list_accounts
+from .client_carrier_accounts_db import CarrierAccount, list_accounts  # noqa: F401
 
 # Billing party — who transport charges are billed to.
 BILLING_SENDER = "sender"
@@ -164,6 +165,107 @@ def _select(choices: List[AccountChoice]):
     return None, True
 
 
+class PayerDeclarationUnavailable(Exception):
+    """Customer Master's payer declaration could not be read, or is unusable.
+
+    Distinct from "sender pays". Absence of a bill-to arrangement is an ANSWER;
+    being unable to tell is not, and the two must never collapse into each
+    other. Defaulting an unreadable declaration to sender-paid would charge a
+    party who never agreed to it, silently, on a live carrier account.
+    """
+
+
+def _dhl_accounts_any_state(db_path: Path, contractor_id: str) -> List[AccountChoice]:
+    """Every DHL account for a contractor, active or soft-deleted."""
+    accts = list_accounts(db_path, contractor_id, active=None)
+    return [_to_choice(a) for a in accts
+            if (a.carrier or "").strip().lower() == CARRIER_DHL]
+
+
+def resolve_declared_transport_payer(
+    db_path: Path,
+    receiver_contractor_id: Optional[str],
+) -> str:
+    """Who does Customer Master DECLARE pays transport for this receiver?
+
+    Customer Master's carrier account is the sole payer-selection authority, and
+    the declaration it carries is ``payment_type`` on the receiver's own active
+    DHL account:
+
+        payment_type='receiver'  → the client has a bill-to-receiver arrangement
+                                   with DHL; transport is billed to them.
+        payment_type='shipper'   → this is the client's OWN shipping account.
+                                   It is theirs to ship on, not ours to bill.
+        no DHL account at all    → no arrangement exists; sender pays.
+
+    Receiver-paid is never inferred from account OWNERSHIP — only from that
+    explicit declaration, which is the distinction the module docstring has
+    always required.
+
+    RAISES ``PayerDeclarationUnavailable`` rather than returning sender-paid
+    when the answer cannot be established:
+
+      * the account store cannot be read (lock, permissions, disk);
+      * a receiver-paid arrangement demonstrably EXISTS for this contractor but
+        no active account can currently speak for it — deactivated between the
+        operator's preflight and the booking, or several actives with no default.
+
+    That second case is the one worth being strict about. Returning sender-paid
+    there looks like "they have no arrangement", but the arrangement is right
+    there in Customer Master and merely unusable; the shipment would be billed
+    to the shipper for a charge the operator had explicitly assigned elsewhere,
+    with nothing raised and nothing logged. Fail closed and let the operator fix
+    the account.
+    """
+    if not receiver_contractor_id:
+        return BILLING_SENDER
+    try:
+        choices = list_dhl_accounts(db_path, receiver_contractor_id)
+        any_state = _dhl_accounts_any_state(db_path, receiver_contractor_id)
+    except sqlite3.OperationalError as exc:
+        # A store that has never held carrier accounts is not an unknown: there
+        # is no arrangement, so the sender pays. Only a store that EXISTS and
+        # cannot be read leaves the question genuinely open.
+        if "no such table" in str(exc).lower():
+            return BILLING_SENDER
+        raise PayerDeclarationUnavailable(
+            "The Customer Master carrier account could not be read, so who pays "
+            "for this shipment cannot be established."
+        ) from exc
+    except Exception as exc:
+        raise PayerDeclarationUnavailable(
+            "The Customer Master carrier account could not be read, so who pays "
+            "for this shipment cannot be established."
+        ) from exc
+
+    declares_receiver = any(
+        (c.billing_role or "").strip().lower() == BILLING_RECEIVER
+        for c in any_state
+    )
+    chosen, _needs_choice = _select(choices)
+
+    if chosen is None:
+        if declares_receiver:
+            raise PayerDeclarationUnavailable(
+                "This client has a receiver-paid DHL arrangement, but no single "
+                "active account can be used for it. Fix the account in Client "
+                "Master — the shipment will not be billed to the shipper instead."
+            )
+        return BILLING_SENDER
+
+    if (chosen.billing_role or "").strip().lower() == BILLING_RECEIVER:
+        return BILLING_RECEIVER
+    if declares_receiver:
+        # A receiver-paid arrangement exists but a DIFFERENT account won
+        # selection. Which one speaks for the client is genuinely ambiguous.
+        raise PayerDeclarationUnavailable(
+            "This client has both a receiver-paid and a shipper DHL account "
+            "active. Mark one as default in Client Master so who pays is "
+            "unambiguous."
+        )
+    return BILLING_SENDER
+
+
 def resolve_dhl_billing_account(
     db_path: Path,
     sender_contractor_id: Optional[str],
@@ -172,6 +274,7 @@ def resolve_dhl_billing_account(
     *,
     third_party_contractor_id: Optional[str] = None,
     selected_billing_account_id: Optional[int] = None,
+    sender_account_number: Optional[str] = None,
 ) -> ResolvedAccounts:
     """Resolve the shipping account and the billing (payer) account.
 
@@ -180,6 +283,16 @@ def resolve_dhl_billing_account(
 
     ``selected_billing_account_id`` lets the operator's explicit pick win when
     several active accounts exist — the resolver never guesses in that case.
+
+    ``sender_account_number`` supplies the shipping account directly for the
+    sender that has no Client Master contractor record. That is not a loophole:
+    there is no sender-side Client Master wiring yet, so the sender account
+    genuinely lives in server configuration (``DHL_EXPRESS_ACCOUNT_NUMBER``),
+    and this is the ONE place that fact enters the decision. It is accepted only
+    from the server — never from a request body — and it settles the SHIPPING
+    account only. It can never become the billing account for a non-sender
+    payer, so it cannot be used to route a charge anywhere Customer Master did
+    not declare. Omit it and the previous behaviour is unchanged.
     """
     party = (billing_party or DEFAULT_BILLING_PARTY).strip().lower()
     if party not in BILLING_PARTIES:
@@ -189,15 +302,25 @@ def resolve_dhl_billing_account(
                      f"Expected one of: {', '.join(BILLING_PARTIES)}."),
         )
 
-    if not sender_contractor_id:
+    configured_sender = (sender_account_number or "").strip()
+    if not sender_contractor_id and not configured_sender:
         return ResolvedAccounts(
             ok=False, billing_party=party, reason=REASON_NO_SENDER,
             message="No sender is selected for this shipment.",
         )
 
     # ── Step 1: sender account (the shipping account) ────────────────────
-    sender_choices = list_dhl_accounts(db_path, sender_contractor_id)
-    shipping, sender_ambiguous = _select(sender_choices)
+    if sender_contractor_id:
+        sender_choices = list_dhl_accounts(db_path, sender_contractor_id)
+        shipping, sender_ambiguous = _select(sender_choices)
+    else:
+        # Configured sender: exactly one account, nothing to disambiguate.
+        shipping = AccountChoice(
+            id=0, account_number=configured_sender,
+            account_name=None, billing_role="shipper", is_default=True,
+        )
+        sender_choices = [shipping]
+        sender_ambiguous = False
 
     if not sender_choices:
         return ResolvedAccounts(

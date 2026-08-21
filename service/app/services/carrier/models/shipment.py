@@ -28,6 +28,26 @@ class ShipmentState(str, Enum):
     FAILED = "failed"
 
 
+# ── Transport billing, in neutral business terms ──────────────────────────────
+# WHO PAYS THE TRANSPORT CHARGE. Deliberately carrier-agnostic: no carrier's
+# wire vocabulary appears here, because the domain must not learn one carrier's
+# contract. Each adapter maps these onto its own shape.
+#
+# These MIRROR dhl_account_resolver.BILLING_* by value so the resolver's verdict
+# survives the hand-off without a translation table. They are re-declared rather
+# than imported because the models module imports nothing from services — the
+# parity is pinned by test instead.
+TRANSPORT_PAYER_SENDER = "sender"
+TRANSPORT_PAYER_RECEIVER = "receiver"
+TRANSPORT_PAYER_THIRD_PARTY = "third_party"
+
+TRANSPORT_PAYERS = (
+    TRANSPORT_PAYER_SENDER,
+    TRANSPORT_PAYER_RECEIVER,
+    TRANSPORT_PAYER_THIRD_PARTY,
+)
+
+
 @dataclass
 class ShipmentRequest:
     batch_id: str
@@ -63,6 +83,22 @@ class ShipmentRequest:
     # inferred — None means "one package", derived from the scalar weight_kg +
     # dimensions above, which is exactly what every existing caller sends.
     packages: Optional[List[dict]] = None
+    # ── Transport billing ────────────────────────────────────────────────
+    # Set ONLY from resolve_dhl_billing_account()'s verdict, which reads the
+    # Customer Master carrier account. Nothing downstream may choose a payer:
+    # an adapter that picked one would be a second authority.
+    #
+    # Defaults reproduce today's sender-paid shape exactly, so every existing
+    # caller and stored row is unaffected.
+    transport_payer: str = TRANSPORT_PAYER_SENDER
+    # The payer's own carrier account, set only when the payer is not the
+    # sender. None means "the shipper account pays".
+    #
+    # DUTIES AND TAXES ARE A SEPARATE DECISION and are deliberately NOT
+    # modelled here. Conflating them is how a shipper ends up paying import
+    # duty it never agreed to; when Customer Master owns a duties payer it
+    # gets its own field, never a reuse of this one.
+    billing_account: Optional[str] = None
 
 
 @dataclass

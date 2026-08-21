@@ -127,6 +127,17 @@ class CoordinatorConfig:
     shadow_log_db_path: Path
 
 
+def _mask_account(number: Optional[str]) -> Optional[str]:
+    """Last four digits only, for the billing audit record.
+
+    Same shape AccountChoice.masked renders, so the stored row and the operator
+    screen read alike. None stays None: a sender-paid booking has no separate
+    payer account, and writing the shipper's number here would invent one.
+    """
+    tail = (number or "").strip()[-4:]
+    return f"•••• {tail}" if tail else None
+
+
 class CarrierCoordinator:
 
     def __init__(self, config: CoordinatorConfig) -> None:
@@ -254,6 +265,12 @@ class CarrierCoordinator:
                 getattr(request, "client_ref", None),
                 operator=operator,
                 provider=provider,
+                # Recorded from the request the resolver produced, so the row
+                # states who was billed for THIS booking. Masked to the last
+                # four: enough to reconcile a DHL invoice, never a credential.
+                transport_payer=getattr(request, "transport_payer", None),
+                billing_account_masked=_mask_account(
+                    getattr(request, "billing_account", None)),
             )
 
         # Adapter call — THE external provider write. Once this returns,

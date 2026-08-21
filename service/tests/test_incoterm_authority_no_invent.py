@@ -230,7 +230,7 @@ def test_booking_route_blocks_when_incoterm_unset(storage, monkeypatch):
 
     with patch(
         "app.api.routes_carrier_actions._resolve_shipment_accounts",
-        return_value=("ACC-001", {}),
+        return_value=("ACC-001", "sender", None, {}),
     ):
         client = TestClient(app)
         r = client.post(
