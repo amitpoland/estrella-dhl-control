@@ -171,6 +171,47 @@ GH_PROSE_RX = re.compile(
 # Splits a command into independently-classified segments.
 SEGMENT_SPLIT_RX = re.compile(r"&&|\|\||[;|\n]")
 
+def _split_segments(command):
+    """Split on shell separators that are NOT inside quotes.
+
+    `SEGMENT_SPLIT_RX` split on every `|`, including the ones inside a quoted
+    argument. `grep -rn "a\\|b" Deploy-PZ.ps1` was therefore torn into fragments,
+    one of which looked like a command that names the deployment script, and the
+    execution rule refused a plain grep. The shell does not treat a quoted pipe
+    as a separator and neither may we -- this is stricter fidelity to shell
+    semantics, not a relaxation: a quoted `|` was never a pipe.
+
+    An unterminated quote yields one long trailing segment, which the read-only
+    vocabulary will not recognise -- ambiguity still fails closed.
+    """
+    segments, buf, quote = [], [], None
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+        elif ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            i += 1
+        elif command.startswith("&&", i) or command.startswith("||", i):
+            segments.append("".join(buf))
+            buf = []
+            i += 2
+        elif ch in ";|\n":
+            segments.append("".join(buf))
+            buf = []
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    segments.append("".join(buf))
+    return segments
+
+
 # Command substitution / expansion — the segment's real content is not visible.
 SUBSTITUTION_RX = re.compile(r"\$\(|\$\{|`|@\(")
 
@@ -248,7 +289,7 @@ def _strip_heredoc_prose(command):
     """
     heads = {
         _segment_head(seg).split(" ", 1)[0]
-        for seg in SEGMENT_SPLIT_RX.split(command)
+        for seg in _split_segments(command)
         if seg.strip()
     }
     if heads & INTERPRETER_HEADS:
@@ -375,7 +416,7 @@ def _command_is_inert(command):
     message describing PZService control, a grep for a robocopy line. Checked
     before the whole-command rules, which otherwise match their own description.
     """
-    segments = [s for s in SEGMENT_SPLIT_RX.split(command) if s.strip()]
+    segments = [s for s in _split_segments(command) if s.strip()]
     return bool(segments) and all(_segment_is_inert(s) for s in segments)
 
 
@@ -423,7 +464,7 @@ def classify_command(command):
         )
 
     # --- per-segment classification ----------------------------------------
-    for segment in SEGMENT_SPLIT_RX.split(_strip_heredoc_prose(command)):
+    for segment in _split_segments(_strip_heredoc_prose(command)):
         if not segment.strip():
             continue
         seg_low = _normalise(segment)

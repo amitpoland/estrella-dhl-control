@@ -357,3 +357,63 @@ def test_redirecting_over_the_deploy_script_is_a_protected_write():
     even though its path carries no production token."""
     assert guard._redirects_into_protected(
         "echo pwned > .claude" + chr(92) + "deploy" + chr(92) + "Deploy-PZ.ps1")
+
+
+# ---------------------------------------------------------------------------
+# E3/E4 (2026-08-21). Two further defects of the same family.
+#
+# E3: the segment splitter split on every `|`, including quoted ones, so a
+#     grep whose PATTERN contained an alternation was torn into fragments and
+#     one fragment looked like a command naming the deployment script.
+# E4: doctrine requires commands the guard could not classify. A doctrine step
+#     that the guard refuses is not a step -- the two must stay coherent.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # the pipe is inside a quoted regex; the shell does not split there
+        "grep -rn 'deploy-audit" + chr(92) + "|DEPLOY_AUDIT' .claude/deploy/Deploy-PZ.ps1",
+        'grep -n "a' + chr(92) + '|b" ' + DEPLOY,
+        "grep -rn 'a|b' docs/ ; echo done",
+    ],
+)
+def test_a_quoted_pipe_is_not_a_shell_separator(command):
+    assert guard.classify_command(command) is None, command
+
+
+def test_an_unquoted_pipe_is_still_a_separator():
+    """Quote awareness must not lose real pipes: the interpreter rule depends
+    on seeing them."""
+    assert len(guard._split_segments("cat x | python -")) == 2
+    assert guard.classify_command(
+        "cat " + PROD + chr(92) + "version.txt | python -") is not None
+
+
+# Commands the governing doctrine REQUIRES. Each must be classifiable as
+# read-only, or the doctrine asks for something the guard forbids. git
+# hash-object was the first such gap: byte verification is mandatory after
+# every deploy, and the guard called it an unclassifiable production touch.
+DOCTRINE_REQUIRED = [
+    "git hash-object " + PROD + chr(92) + "app" + chr(92) + "services" + chr(92) + "x.py",
+    "git hash-object " + PROD_BASH + "/app/services/x.py",
+    "git ls-remote origin main",
+    "git rev-parse HEAD",
+    "git status --porcelain",
+    "git diff --name-only abc..def -- service/app",
+    "git merge-base --is-ancestor abc def",
+    "git branch -a --contains abc",
+    "git log --oneline abc..def",
+    "cat " + PROD + chr(92) + "version.txt",
+    "cat " + PROD_BASH + "/version.txt",
+    "diff -r " + PROD_BASH + "/app service/app",
+    "ls -la " + PROD_BASH + "/storage/carrier/",
+]
+
+
+@pytest.mark.parametrize("command", DOCTRINE_REQUIRED)
+def test_every_doctrine_required_command_is_classifiable_as_read_only(command):
+    """GUARD / DOCTRINE COHERENCE. If this fails, either the doctrine or the
+    guard is wrong -- never resolve it by skipping the doctrine step."""
+    assert guard.classify_command(command) is None, command
