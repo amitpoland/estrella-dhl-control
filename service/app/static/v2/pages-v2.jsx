@@ -588,6 +588,52 @@ function _dhlShortTs(iso) {
 
 function DhlTowerDrawer({ row, isAdmin, onClose, onViewShipment, onResolved }) {
   const milestones = row.milestones || [];
+  // The list row carries `milestones`, which is the STAGE authority: fixed
+  // workflow slots that drive stage classification and the duration KPIs. It is
+  // deliberately narrow -- for an inbound leg it keeps only two carrier stages
+  // and drops every intermediate checkpoint. Rendering it as though it were the
+  // timeline is what let this drawer show "At Destination · WARSZAWA - PL" above
+  // a timeline that ended at PZ generation: the carrier events proving the
+  // headline had been read and discarded.
+  //
+  // The detail endpoint composes both authorities (workflow + carrier
+  // checkpoints, merged and de-duplicated) and is fetched only when a drawer is
+  // actually opened, so the list is not charged for a timeline nobody read.
+  // milestones remain the fallback: a failed fetch must degrade to the old view,
+  // never to an empty one.
+  const [composed, setComposed] = React.useState(null);
+  const [composedFailed, setComposedFailed] = React.useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    const awb = row && row.awb;
+    if (!awb || !window.PzApi || !window.PzApi.getDhlLogisticsShipment) return;
+    setComposed(null);
+    setComposedFailed(false);
+    window.PzApi.getDhlLogisticsShipment(awb)
+      .then((d) => { if (!cancelled) setComposed((d && d.events) || []); })
+      .catch(() => { if (!cancelled) setComposedFailed(true); });
+    return () => { cancelled = true; };
+  }, [row && row.awb]);
+
+  // One display shape, whichever authority supplied the entries.
+  const timeline = (composed && composed.length)
+    ? composed.map((e) => ({
+        label: e.label || e.event || '',
+        ts: e.ts,
+        location: e.location || '',
+        // 'DHL' for a carrier checkpoint, the workflow actor otherwise. Source
+        // attribution stays this coarse on purpose -- store names and trigger
+        // sources are audit detail, not operator-facing clutter.
+        authority: e.actor || null,
+        duration: null,
+      }))
+    : milestones.map((m) => ({
+        label: m.label,
+        ts: m.timestamp_warsaw,
+        location: m.location || '',
+        authority: m.authority || null,
+        duration: m.duration_from_previous_human || null,
+      }));
   const [resolveOpen, setResolveOpen] = React.useState(false);
   const [reopenOpen, setReopenOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
@@ -770,19 +816,26 @@ function DhlTowerDrawer({ row, isAdmin, onClose, onViewShipment, onResolved }) {
 
         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Timeline</div>
         <div data-testid="dhl-tower-timeline">
-          {milestones.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No authoritative milestone timestamps.</div>}
-          {milestones.map((m, i) => (
+          {timeline.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No authoritative milestone timestamps.</div>}
+          {composedFailed && milestones.length > 0 && (
+            // Say which authority is on screen rather than presenting a partial
+            // list as if it were the whole movement history.
+            <div data-testid="dhl-tower-timeline-degraded" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 10 }}>
+              Workflow milestones only — carrier movement history could not be loaded.
+            </div>
+          )}
+          {timeline.map((m, i) => (
             <div key={i} style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
               <div style={{ width: 10, flex: '0 0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                 <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent)' }} />
-                {i < milestones.length - 1 && <div style={{ width: 2, flex: 1, background: 'var(--border)', marginTop: 2 }} />}
+                {i < timeline.length - 1 && <div style={{ width: 2, flex: 1, background: 'var(--border)', marginTop: 2 }} />}
               </div>
               <div style={{ flex: 1, minWidth: 0, paddingBottom: 8 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{m.label}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{_dhlShortTs(m.timestamp_warsaw)} · {m.authority || '—'}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{_dhlShortTs(m.ts)} · {m.authority || '—'}</div>
                 {m.location && <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{m.location}</div>}
-                {m.duration_from_previous_human && (
-                  <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 2 }}>+{m.duration_from_previous_human} from previous</div>
+                {m.duration && (
+                  <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 2 }}>+{m.duration} from previous</div>
                 )}
               </div>
             </div>

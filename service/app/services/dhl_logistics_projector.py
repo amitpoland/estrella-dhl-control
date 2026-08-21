@@ -2531,6 +2531,33 @@ def project_shipment_detail(awb: str) -> Optional[Dict[str, Any]]:
         row = project_inbound_row(audit)
         if row is None:
             return None
+        # The drawer's timeline must not contradict its own headline.
+        #
+        # transport_status / current_location come from the FULL carrier event
+        # stream (_apply_latest_carrier_authority), while `milestones` is built
+        # by _build_inbound_milestones, which maps only two carrier stages
+        # (arrived_pl, delivered) into fixed workflow slots and discards every
+        # intermediate checkpoint. So the header could read "At Destination,
+        # WARSZAWA - PL" while the visible timeline stopped at PZ generation --
+        # the carrier events that PROVE the header were read, then dropped.
+        #
+        # `milestones` is left exactly as it is: it carries the semantic
+        # stage_ids that drive _current_stage_from_milestones, _inbound_gaps and
+        # the duration KPIs, so re-pointing it at raw checkpoints would silently
+        # change stage classification. The composed stream is published beside it
+        # instead, from assemble_shipment_timeline -- the merge/dedup authority
+        # that already serves the shipment-detail timeline, so both surfaces
+        # answer from ONE composition rather than two diverging ones.
+        #
+        # Detail-only by design: assembling per row would make the Control Tower
+        # list pay for a timeline nobody has opened yet.
+        try:
+            row["events"] = assemble_shipment_timeline(
+                str(audit.get("batch_id") or path.parent.name), audit,
+            )
+        except Exception as exc:      # a projection must stay read-safe
+            log.debug("logistics_projector: timeline assembly failed: %s", exc)
+            row["events"] = []
         key = (row.get("direction") or "", row.get("awb") or "")
         return _apply_manual_resolution(row, _load_resolution_map().get(key))
     return None
