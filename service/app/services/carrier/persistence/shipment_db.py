@@ -167,6 +167,33 @@ _OUTBOUND_ONLY = (
     "(shipment_direction IS NULL OR LOWER(shipment_direction) != 'return')"
 )
 
+# Which competing row IS this leg's shipment.
+#
+# "Newest row wins" was right while one booking meant one row. It stopped being
+# right once the coordinator gained in-flight recovery: a PENDING row created
+# earlier is re-executed in place (_execute(is_recovery=True) does not insert),
+# so the row carrying the real AWB can be OLDER than a later shadow reservation
+# for the same leg. Ordering by creation time then hands every consumer the
+# shadow row and the live AWB disappears from the whole portal — Logistics,
+# Documents, readiness and the CMR/insurance projections all read through here.
+#
+# Booking authority, not recency, decides:
+#   1. a row carrying a real completed booking (tracking_ref + COMPLETE) wins;
+#   2. among those, a real carrier write outranks a simulated one;
+#   3. only then is the newest row preferred, which preserves the previous
+#      behaviour whenever no row is a completed booking.
+#
+# do_not_use is deliberately NOT ranked here: it retires a LABEL, not the
+# shipment record, and letting it change attribution would be a separate
+# behavioural decision from this ordering repair.
+_BOOKING_AUTHORITY_ORDER = (
+    "ORDER BY "
+    "CASE WHEN tracking_ref IS NOT NULL AND TRIM(tracking_ref) != '' "
+    "          AND LOWER(state) = 'complete' THEN 0 ELSE 1 END, "
+    "CASE WHEN simulated = 1 THEN 1 ELSE 0 END, "
+    "created_at DESC"
+)
+
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
@@ -591,9 +618,11 @@ def get_shipment_for_draft(
     shown another client's AWB/CMR (2026-07-16 cross-client AWB contamination).
 
     Resolution order:
-      1. Exact per-client match — the newest row with (batch_id, client_ref).
-         This is the correct path for any shipment booked after client_ref was
-         introduced.
+      1. Exact per-client match — the authoritative row for (batch_id,
+         client_ref), ranked by _BOOKING_AUTHORITY_ORDER: a completed booking
+         carrying a real tracking_ref outranks a shadow/pending reservation
+         however recently that reservation was created. This is the correct
+         path for any shipment booked after client_ref was introduced.
       2. Legacy single-client fallback — only when *allow_single_client_fallback*
          is True (caller has proven the batch maps to exactly one client draft)
          AND exactly one shipment row exists for the batch. That single row is
@@ -609,7 +638,7 @@ def get_shipment_for_draft(
             row = conn.execute(
                 "SELECT * FROM carrier_shipments "
                 f"WHERE batch_id = ? AND client_ref = ? AND {_OUTBOUND_ONLY} "
-                "ORDER BY created_at DESC LIMIT 1",
+                f"{_BOOKING_AUTHORITY_ORDER} LIMIT 1",
                 (batch_id, client_ref),
             ).fetchone()
             if row:
@@ -659,7 +688,11 @@ def list_outbound_rows_for_batches(
         rows = conn.execute(
             "SELECT * FROM carrier_shipments "
             f"WHERE batch_id IN ({placeholders}) AND {_OUTBOUND_ONLY} "
-            "ORDER BY created_at DESC",
+            # Same ranking as get_shipment_for_draft, for the same reason: the
+            # caller takes the FIRST matching row per (batch, client), so if the
+            # order differed the bulk projection would name a different shipment
+            # than the per-draft one for the same leg.
+            f"{_BOOKING_AUTHORITY_ORDER}",
             ids,
         ).fetchall()
     return [dict(r) for r in rows]
