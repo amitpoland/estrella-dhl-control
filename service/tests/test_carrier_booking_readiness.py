@@ -536,48 +536,101 @@ def test_readiness_carries_the_same_auth_guard_as_its_sibling_reads():
 
 
 # ── operator-facing contract pins (source-grep) ─────────────────────────────
+#
+# The projection above stays available as an INFORMATIONAL read. It is
+# deliberately NOT wired into the booking modal: a second composed view of
+# recipient / weight / box / value / description could disagree with the values
+# the booking POST actually sends, and the operator would be left reconciling
+# two truths. These pins keep the workflow collapsed to one path.
 
 _V2 = _ROOT / "app" / "static" / "v2"
 
 
-def test_modal_preflights_before_the_operator_fills_it_in():
+def _modal():
+    """The AwbGenerateModal body only — not the whole 10k-line page."""
     src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    assert "PzApi.getBookingReadiness" in src
-    for tid in ("awb-readiness-panel", "awb-readiness-existing",
-                "awb-readiness-release", "awb-readiness-warehouse",
-                "awb-readiness-already-booked", "awb-readiness-blockers"):
-        assert 'data-testid="' + tid + '"' in src, tid
-    api = (_V2 / "pz-api.js").read_text(encoding="utf-8")
-    assert "getBookingReadiness:" in api and "booking-readiness" in api
+    start = src.index("function AwbGenerateModal(")
+    return src[start:src.index("\nfunction ", start + 10)]
 
 
-def test_ui_shows_warehouse_as_downstream_not_as_a_blocker():
+def test_the_booking_modal_has_no_second_readiness_authority():
+    """One booking path: the modal never consults the readiness projection."""
+    modal = _modal()
+    for banned in ("getBookingReadiness", "booking-readiness", "readinessBlocksSubmit",
+                   "business_readiness", "live_release", "_rdyBlockers",
+                   "legAlreadyBooked", "awb-readiness-panel"):
+        assert banned not in modal, banned
+
+
+def test_submit_is_gated_only_by_real_transaction_safety():
+    """Duplicate protection, Customer Master confirmation and the carrier gate
+    are transaction safety. A composed readiness verdict is not."""
     src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    start = src.index('data-testid="awb-readiness-warehouse"')
-    assert "not required for origin dispatch" in src[start:start + 600]
-    # It must not participate in the submit gate.
-    gate = src[src.index("const readinessBlocksSubmit"):]
-    assert "warehouse" not in gate[:200].lower()
+    gate = [l for l in src.splitlines() if 'data-testid="awb-submit-btn"' in l
+            or ("disabled={loading" in l and "dhlBlocksSubmit" in l)]
+    joined = "\n".join(gate)
+    assert "dhlBlocksSubmit" in joined          # carrier account authority
+    assert "saveConfirm" in joined              # Customer Master confirmation
+    assert "legacyConfirm" in joined            # duplicate-AWB protection
+    assert "readiness" not in joined.lower()    # no second verdict
 
 
-def test_ui_keeps_business_readiness_and_live_release_separate():
-    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    assert "const releaseBlocked   = !!(_rdyRelease && !_rdyRelease.ready);" in src
-    start = src.index('data-testid="awb-readiness-release-blocked"')
-    panel = src[start:start + 800]
-    assert "shipment data above is unaffected" in panel
-    assert "CARRIER_LIVE_ALLOWLIST" not in panel
+def test_status_summary_reads_the_values_the_booking_will_send():
+    """The summary is computed from `form`, the same object the POST body is
+    built from, so the two can never disagree."""
+    modal = _modal()
+    block = modal[modal.index("const missingFields = (() => {"):]
+    block = block[:block.index("})();") + 5]
+    # Every check reads form.*, never a separate projection.
+    assert "form.weight_kg" in block and "form.declared_value" in block
+    assert "form.country_code" in block
+    for banned in ("readiness", "warehouse", "final_sales_invoice", "live_release"):
+        assert banned not in block.lower(), banned
 
 
-def test_ui_presents_an_already_booked_leg_instead_of_an_allowlist_prompt():
-    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    start = src.index('data-testid="awb-readiness-already-booked"')
-    panel = src[start:start + 800]
-    assert "already represents this shipment leg" in panel
-    assert "allowlist" not in panel.lower()
-    # The release warning is suppressed while the leg is already booked.
-    assert "releaseBlocked && !legAlreadyBooked" in src
+def test_summary_is_one_line_not_an_authority_checklist():
+    modal = _modal()
+    assert 'data-testid="awb-status-summary"' in modal
+    assert 'data-testid="awb-status-ready"' in modal
+    assert 'data-testid="awb-status-missing"' in modal
+    assert "Ready to create" in modal
+    assert "Complete {missingFields.length}" in modal
+    # The old governance panel and its rows are gone.
+    assert "AWB Preparation" not in modal
+    assert "_rdyRows" not in modal
 
+
+def test_warehouse_and_final_invoice_are_absent_from_the_booking_modal():
+    """They are not AWB prerequisites, so they drive nothing in this surface.
+
+    Checked against executable lines only: a comment stating that warehouse
+    receipt is NOT a prerequisite is documentation, not a dependency.
+    """
+    code = "\n".join(
+        line for line in _modal().splitlines()
+        if not line.lstrip().startswith(("//", "*", "/*"))
+    ).lower()
+    assert "warehouse" not in code
+    assert "final_sales_invoice" not in code
+    assert "live_release" not in code
+
+
+def test_client_ref_still_scopes_the_booking_to_one_customer_leg():
+    """DG GmbH and SAGAR SHAH must stay independent outbound legs."""
+    modal = _modal()
+    assert "client_ref:         prefill.client_name || null," in modal
+    # Recipient still comes from Customer Master server-side, never the form.
+    assert "No recipient_address" in modal
+
+
+# ── Restored backend regression pins ────────────────────────────────────────
+#
+# These guard the two defects that reached production (a dict consumed as a
+# string -> HTTP 500; `..factory` resolving to a module that does not exist)
+# and the batch_id trust boundary. They exercise the REAL builder with no stub
+# and fail on the unpatched code. They belong to the backend projection, which
+# survives as an informational read, so simplifying the modal must never take
+# them with it.
 
 def test_readiness_validates_batch_id_at_the_trust_boundary(storage):
     """batch_id reaches a filesystem path, so a traversal attempt is REFUSED.
@@ -601,7 +654,7 @@ def test_readiness_validates_batch_id_at_the_trust_boundary(storage):
             "/api/v1/carrier/" + BATCH + "/booking-readiness").status_code == 200
 
 
-# ── Lesson A: pin the REAL builder's return shape, with no stub ─────────────
+# â”€â”€ Lesson A: pin the REAL builder's return shape, with no stub â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # The readiness consumer called .strip() on this builder's return value. Every
 # stubbed test passed because the stub returned a bare string; production
 # raised AttributeError: 'dict' object has no attribute 'strip' on the first
@@ -624,7 +677,6 @@ def test_description_projection_real_shape_is_a_dict(tmp_path):
     # A bare string must never be the contract again.
     assert not isinstance(out, str)
 
-
 def test_release_state_resolves_the_real_carrier_factory():
     """_release_state must reach the REAL factory, not swallow an ImportError.
 
@@ -640,7 +692,7 @@ def test_release_state_resolves_the_real_carrier_factory():
     mod = importlib.import_module("app.services.carrier.factory")
     assert hasattr(mod, "get_adapter") and hasattr(mod, "CarrierConfig")
 
-    # And the wrong name must still not exist — if it ever does, this test is
+    # And the wrong name must still not exist â€” if it ever does, this test is
     # the place that says the two-dot form was never the right one.
     try:
         importlib.import_module("app.services.factory")
@@ -655,7 +707,6 @@ def test_release_state_resolves_the_real_carrier_factory():
     state = br._release_state("SHIPMENT_1_2026-08_aaaa1111", _s, "DHL")
     assert "No module named" not in str(state.get("capability_reason") or "")
 
-
 def test_readiness_normalises_the_real_description_shape(tmp_path):
     """_description_state survives the real builder's dict return."""
     from app.api.routes_carrier_actions import (
@@ -667,7 +718,7 @@ def test_readiness_normalises_the_real_description_shape(tmp_path):
         storage_root=tmp_path, batch_id="SHIPMENT_1_2026-08_aaaa1111",
         client_ref=None,
     )
-    # The normaliser accepts exactly what the builder emits — no AttributeError.
+    # The normaliser accepts exactly what the builder emits â€” no AttributeError.
     assert br._normalise_description(real) is None or isinstance(
         br._normalise_description(real), str)
     assert br._normalise_description(

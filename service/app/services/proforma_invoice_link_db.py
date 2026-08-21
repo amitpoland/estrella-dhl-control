@@ -2921,6 +2921,15 @@ def auto_create_draft_from_sales_packing(
 # superseded/approved drafts MUST NOT be edited.
 EDITABLE_STATES = ("draft", "editing", "post_failed")
 
+# States that accept SHIPPING-PREPARATION metadata (selected box, operator
+# net/gross/tare). Deliberately wider than EDITABLE_STATES: goods still have to
+# be boxed, weighed and dispatched after the commercial document is posted, so a
+# posted proforma must keep accepting those facts. It is NOT a general edit
+# permission -- the only writers allowed through this seam are the transport
+# ones below, they touch no price, line, customer, currency, posting state or
+# wFirma identity, and they PRESERVE the fiscal state they found.
+TRANSPORT_METADATA_STATES = EDITABLE_STATES + ("posted",)
+
 # States in which a draft may have an existing wFirma document MANUALLY linked
 # (Campaign 2B). Positive allowlist (not a denylist): only a posted, not-yet-
 # converted proforma is eligible — it has a wfirma_proforma_id (so the post-time
@@ -3354,6 +3363,35 @@ def _load_for_edit(
     return d
 
 
+def _load_for_transport_edit(
+    db_path:             Path,
+    draft_id:            int,
+    expected_updated_at: str,
+) -> ProformaDraft:
+    """Preamble for SHIPPING-PREPARATION metadata only (box, transport weights).
+
+    Same optimistic lock as :func:`_load_for_edit` -- a stale token still raises
+    ``DraftConflict``, because two operators must not silently overwrite each
+    other's measured weight. The only difference is the accepted state set: a
+    posted proforma is fiscally frozen but its parcel still has to be boxed and
+    weighed, so it accepts transport metadata.
+
+    Callers MUST preserve ``d.draft_state`` when committing. Promoting a posted
+    document to ``editing`` because someone picked a box would corrupt the fiscal
+    lifecycle, which is exactly what this seam exists to avoid.
+    """
+    d = get_draft_by_id(db_path, draft_id)
+    if d is None:
+        raise DraftNotFound(f"draft id={draft_id} not found")
+    if d.draft_state not in TRANSPORT_METADATA_STATES:
+        raise DraftNotEditable(
+            f"draft id={d.id} is in state {d.draft_state!r}; transport metadata "
+            f"accepts only {TRANSPORT_METADATA_STATES}"
+        )
+    _check_lock(d, expected_updated_at)
+    return d
+
+
 def update_draft_fields(
     db_path:              Path,
     draft_id:             int,
@@ -3694,7 +3732,7 @@ def set_draft_weight_override(
             "manual_tare_weight is required"
         )
 
-    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    d = _load_for_transport_edit(db_path, draft_id, expected_updated_at)
     before = {
         "manual_net_weight":   d.manual_net_weight,
         "manual_gross_weight": d.manual_gross_weight,
@@ -3705,7 +3743,7 @@ def set_draft_weight_override(
     now = _now_utc_iso()
     refreshed = _commit_draft_update(
         db_path, d.id,
-        new_state              = _next_state_after_edit(d.draft_state),
+        new_state              = d.draft_state,   # transport metadata never moves the fiscal state,
         new_manual_net_weight  = net,
         new_manual_gross_weight = gross,
         new_manual_tare_weight  = tare,
@@ -3766,11 +3804,11 @@ def set_draft_box_type(
         raise ValueError("operator is required")
     code = (str(box_type_code).strip() if box_type_code is not None else "") or None
 
-    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    d = _load_for_transport_edit(db_path, draft_id, expected_updated_at)
     before = {"box_type_code": d.box_type_code}
     refreshed = _commit_draft_update(
         db_path, d.id,
-        new_state         = _next_state_after_edit(d.draft_state),
+        new_state         = d.draft_state,   # transport metadata never moves the fiscal state,
         new_box_type_code = code,
     )
     _record_draft_event(
@@ -3800,7 +3838,7 @@ def clear_draft_weight_override(
     """
     if not (operator or "").strip():
         raise ValueError("operator is required")
-    d = _load_for_edit(db_path, draft_id, expected_updated_at)
+    d = _load_for_transport_edit(db_path, draft_id, expected_updated_at)
     before = {
         "manual_net_weight":   d.manual_net_weight,
         "manual_gross_weight": d.manual_gross_weight,
@@ -3809,7 +3847,7 @@ def clear_draft_weight_override(
     }
     refreshed = _commit_draft_update(
         db_path, d.id,
-        new_state              = _next_state_after_edit(d.draft_state),
+        new_state              = d.draft_state,   # transport metadata never moves the fiscal state,
         new_manual_net_weight  = None,
         new_manual_gross_weight = None,
         new_manual_tare_weight  = None,

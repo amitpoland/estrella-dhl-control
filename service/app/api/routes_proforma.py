@@ -10132,7 +10132,13 @@ def fetch_draft_nbp_rate(
     return JSONResponse(payload)
 
 
-@router.post("/draft/{draft_id}/weight-override", dependencies=[_auth_write])
+# _perm_proforma_edit added when the transport seam began accepting POSTED
+# documents: without it the logistics role could write shipping metadata onto a
+# posted fiscal document while being blocked from editing the same document's
+# remarks as a draft. logistics already holds proforma.edit, so this closes the
+# inversion without narrowing the dispatch workflow.
+@router.post("/draft/{draft_id}/weight-override",
+             dependencies=[_auth_write, _perm_proforma_edit])
 def set_draft_weight_override(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -10200,7 +10206,13 @@ def set_draft_weight_override(
     ))
 
 
-@router.post("/draft/{draft_id}/box-type", dependencies=[_auth_write])
+# _perm_proforma_edit added when the transport seam began accepting POSTED
+# documents: without it the logistics role could write shipping metadata onto a
+# posted fiscal document while being blocked from editing the same document's
+# remarks as a draft. logistics already holds proforma.edit, so this closes the
+# inversion without narrowing the dispatch workflow.
+@router.post("/draft/{draft_id}/box-type",
+             dependencies=[_auth_write, _perm_proforma_edit])
 def set_draft_box_type(
     draft_id:   int,
     body:       Dict[str, Any],
@@ -10245,7 +10257,13 @@ def set_draft_box_type(
     ))
 
 
-@router.post("/draft/{draft_id}/clear-weight-override", dependencies=[_auth_write])
+# _perm_proforma_edit added when the transport seam began accepting POSTED
+# documents: without it the logistics role could write shipping metadata onto a
+# posted fiscal document while being blocked from editing the same document's
+# remarks as a draft. logistics already holds proforma.edit, so this closes the
+# inversion without narrowing the dispatch workflow.
+@router.post("/draft/{draft_id}/clear-weight-override",
+             dependencies=[_auth_write, _perm_proforma_edit])
 def clear_draft_weight_override(
     draft_id:   int,
     body:       Dict[str, Any],

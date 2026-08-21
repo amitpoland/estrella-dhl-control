@@ -161,7 +161,7 @@ _V2 = pathlib.Path(__file__).resolve().parents[1] / "app" / "static" / "v2"
 
 def test_modal_persists_and_prefills_the_selection():
     src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
-    assert "persistBoxSelection(code, boxUpdatedAt, false)" in src, "selection is not persisted on change"
+    assert "persistBoxSelection(code, draftUpdatedAt, false)" in src, "selection is not persisted on change"
     assert "box_type_code: prefill.box_type_code || ''" in src, "modal does not prefill"
     assert "PzApi.setDraftBoxType" in src
     api = (_V2 / "pz-api.js").read_text(encoding="utf-8")
@@ -313,3 +313,47 @@ def test_successful_save_converges_the_parent_draft_token():
     assert "onDraftChanged" in src
     assert "onDraftChanged={() => draftHook && draftHook.reload && draftHook.reload()}" in src
     assert "if (typeof onDraftChanged === 'function') onDraftChanged();" in src
+
+
+# ── The modal must not hold an authoritative shipment fact in React state ────
+
+
+def test_modal_writes_a_corrected_weight_back_to_the_proforma_authority():
+    """Gross weight belongs to the proforma weight authority.
+
+    Before this, an operator correcting the weight in the booking modal changed
+    only React state: the AWB shipped the new weight while the proforma — and
+    therefore the Logistics view — kept the old one. Two truths for one shipment.
+    """
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    assert "const persistWeight = (kg, token, isRetry) =>" in src
+    # Written through the SAME API the Weights panel uses; no new endpoint.
+    assert "PzApi.setWeightOverride" in src
+    assert "manual_gross_weight: value" in src
+    # Persisted when the operator leaves the field, like the box selection.
+    assert "if (k === 'weight_kg') persistWeight(e.target.value, draftUpdatedAt, false);" in src
+
+
+def test_weight_write_reuses_the_one_bounded_occ_recovery():
+    """Same contract as the box write: refresh once, retry once, then stop."""
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    fn = src[src.index("const persistWeight ="):src.index("// When a box profile is selected")]
+    assert "r.status === 409 && !isRetry" in fn
+    assert "persistWeight(kg, d.updated_at, true)" in fn
+    # Already-canonical value converges without a second write.
+    assert "parseFloat(d.manual_gross_weight) === parseFloat(kg)" in fn
+    for banned in ("while (", "for (", "setInterval", "setTimeout"):
+        assert banned not in fn, banned
+
+
+def test_zero_weight_is_never_persisted_as_a_measurement():
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    fn = src[src.index("const persistWeight ="):src.index("// When a box profile is selected")]
+    assert "if (!(value > 0)) return;" in fn
+
+
+def test_one_draft_occ_token_serves_both_field_writes():
+    """Box and weight are two writes on one draft, so one token, one recovery."""
+    src = (_V2 / "proforma-detail.jsx").read_text(encoding="utf-8")
+    assert "const [draftUpdatedAt, setDraftUpdatedAt]" in src
+    assert "boxUpdatedAt" not in src

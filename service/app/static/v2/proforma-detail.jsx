@@ -1706,14 +1706,10 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
-  // Pre-booking readiness projection (GET .../booking-readiness). Read-only:
-  // it tells the operator what is missing BEFORE the modal is filled in,
-  // instead of surfacing a raw carrier 422 after the work is done.
-  const [readiness, setReadiness] = React.useState(null);
-  const [readinessState, setReadinessState] = React.useState('loading');
   // OCC token for persisting the box selection; refreshed from each response.
-  const [boxUpdatedAt, setBoxUpdatedAt] = React.useState(prefill.draft_updated_at || '');
+  const [draftUpdatedAt, setDraftUpdatedAt] = React.useState(prefill.draft_updated_at || '');
   const [boxSaveErr,   setBoxSaveErr]   = React.useState(null);
+  const [weightSaveErr, setWeightSaveErr] = React.useState(null);
   const [selectedCarrier, setSelectedCarrier] = React.useState('DHL');
   const [carrierTouched, setCarrierTouched] = React.useState(false);
   const [externalTracking, setExternalTracking] = React.useState('');
@@ -1786,8 +1782,29 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
   React.useEffect(() => {
     window.PzApi.listBoxTypes && window.PzApi.listBoxTypes()
       .then(r => {
-        setBoxTypes(r && r.ok && r.data && Array.isArray(r.data.box_types) ? r.data.box_types : []);
+        const list = (r && r.ok && r.data && Array.isArray(r.data.box_types))
+          ? r.data.box_types : [];
+        setBoxTypes(list);
         setBoxTypesLoaded(true);
+        // Hydrate the parcel dimensions from the box the draft already
+        // remembers. Box Master owns the measurements; the draft stores only
+        // the code, so on reopen the dimensions have to be read back from the
+        // catalogue. Without this the modal showed a selected box with blank
+        // L/W/H and a fully prepared shipment looked incomplete. Only fills
+        // blanks — a dimension the operator overrode is never overwritten.
+        const persisted = list.find(b => b.code === (prefill.box_type_code || ''));
+        if (persisted) {
+          setForm(prev => (
+            (prev.length_cm || prev.width_cm || prev.height_cm)
+              ? prev
+              : {
+                  ...prev,
+                  length_cm: (persisted.length_cm || '').toString(),
+                  width_cm:  (persisted.width_cm  || '').toString(),
+                  height_cm: (persisted.height_cm || '').toString(),
+                }
+          ));
+        }
       })
       .catch(() => { setBoxTypes([]); setBoxTypesLoaded(true); });
     window.PzApi.listCarrierServices && window.PzApi.listCarrierServices()
@@ -1841,21 +1858,6 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
         .catch(() => setMasterState('failed'));
     } else {
       setMasterState('missing-id');
-    }
-    // Booking readiness — the SAME authorities the booking POST consults,
-    // read before the operator invests any typing. A failed read arms
-    // 'failed' and shows nothing rather than implying everything is ready.
-    if (window.PzApi.getBookingReadiness) {
-      window.PzApi.getBookingReadiness(batchId, {
-        client_ref: prefill.client_name || '',
-        weight_kg: prefill.weight_kg || '',
-        declared_value: prefill.declared_value || '',
-      }).then(r => {
-        if (r && r.ok && r.data) { setReadiness(r.data); setReadinessState('loaded'); }
-        else setReadinessState('failed');
-      }).catch(() => setReadinessState('failed'));
-    } else {
-      setReadinessState('failed');
     }
     // Customer Master carrier accounts for the current draft contractor only.
     // listCarrierAccounts defaults to active-only (inactive/soft-deleted excluded).
@@ -2019,35 +2021,25 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
       });
   };
 
-  // Readiness-derived gates. Absent/failed readiness never invents a block --
-  // the existing server gates still fail closed on their own.
-  //
-  // business readiness and live release are INDEPENDENT axes. "Not released"
-  // means the production carrier write is not authorized for this shipment; it
-  // never means the shipment data is invalid, and the UI must not say so.
-  const _rdyBiz      = (readiness && readiness.business_readiness) || null;
-  const _rdyBlockers = (_rdyBiz && _rdyBiz.blockers) || [];
-  const _rdyWarnings = (_rdyBiz && _rdyBiz.warnings) || [];
-  const _rdyRelease  = (readiness && readiness.live_release) || null;
-  const _rdyExisting = (readiness && readiness.existing_booking) || null;
-  const _rdyWarehouse = (readiness && readiness.warehouse) || null;
-  // This leg already has a real AWB -- booking again would duplicate it.
-  const legAlreadyBooked = !!(_rdyExisting && _rdyExisting.blocks_duplicate_booking);
-  const releaseBlocked   = !!(_rdyRelease && !_rdyRelease.ready);
-  const readinessBlocksSubmit = _rdyBlockers.length > 0 || releaseBlocked;
-
-  // AWB preparation checklist -- one row per authority-backed fact, so a
-  // missing prerequisite is understandable BEFORE the POST.
-  const _rdyRows = readiness ? [
-    ['Proforma Invoice',   (readiness.proforma || {}).ready],
-    ['Recipient',          (readiness.recipient || {}).ready],
-    ['Actual gross weight',(readiness.weight || {}).ready],
-    ['Box Profile',        (readiness.box || {}).ready],
-    ['Packages',           (readiness.packages || {}).ready],
-    ['Declared value',     (readiness.declared_value || {}).ready],
-    ['Description',        (readiness.description || {}).ready],
-    ['Carrier account',    (readiness.carrier || {}).account_ready],
-  ] : [];
+  // Missing required fields, computed from the SAME form values handleSubmit
+  // validates and the booking POST sends. One source: the summary below and the
+  // booking itself cannot disagree. Deliberately NOT a second readiness
+  // authority -- warehouse receipt, final invoice and live-release state are
+  // not booking prerequisites and never appear here.
+  const missingFields = (() => {
+    if (isExternal) return [];
+    const m = [];
+    if (!form.weight_kg)      m.push('Gross weight');
+    if (!form.length_cm || !form.width_cm || !form.height_cm) m.push('Dimensions');
+    if (!form.declared_value) m.push('Declared value');
+    if (!form.name && !form.company_name) m.push('Recipient name');
+    if (!form.street)         m.push('Street');
+    if (!form.city)           m.push('City');
+    if (!form.country_code)   m.push('Country');
+    if (isDhl && !(form.phone || '').trim()) m.push('Receiver phone');
+    if (descriptionDirty && !(form.description || '').trim()) m.push('Description');
+    return m;
+  })();
 
   const _apiStatus = carrierStatus && carrierStatus.carrier_api_status;
   const isPending = !_apiStatus || _apiStatus === 'pending';
@@ -2062,7 +2054,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
   // an already-superseded updated_at to the next edit (and reopening the modal
   // shows the saved box without a page refresh).
   const adoptSavedDraft = (d) => {
-    if (d && d.updated_at) setBoxUpdatedAt(d.updated_at);
+    if (d && d.updated_at) setDraftUpdatedAt(d.updated_at);
     if (typeof onDraftChanged === 'function') onDraftChanged();
   };
 
@@ -2099,14 +2091,53 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
       // Another session already stored exactly this code — resolve as success
       // rather than spending a second write on an identical value.
       if ((d.box_type_code || '') === (code || '')) return adoptSavedDraft(d);
-      setBoxUpdatedAt(d.updated_at);
+      setDraftUpdatedAt(d.updated_at);
       return persistBoxSelection(code, d.updated_at, true);
+    });
+
+  // Gross weight belongs to the proforma/packing weight authority, never to this
+  // modal's React state. When the operator corrects it here because the scale
+  // disagreed, it is written back through the SAME weight-override API the
+  // Weights panel uses -- so the Logistics view and this modal cannot end up
+  // showing different weights for one shipment. Same bounded OCC recovery as the
+  // box selection: one canonical refresh, one retry, then stop.
+  const persistWeight = (kg, token, isRetry) => {
+    if (!prefill.draft_id || typeof window.PzApi.setWeightOverride !== 'function') return;
+    const value = parseFloat(kg);
+    // A zero or blank weight is a MISSING measurement, never a shipment fact.
+    if (!(value > 0)) return;
+    // Unchanged from what the authority already holds -> nothing to write.
+    if (parseFloat(prefill.weight_kg) === value) return;
+    setWeightSaveErr(null);
+    return window.PzApi.setWeightOverride(
+      prefill.draft_id,
+      { manual_gross_weight: value, reason: 'Corrected at AWB booking' },
+      token,
+    )
+      .then(r => {
+        if (r && r.ok) return adoptSavedDraft((r.data && r.data.draft) || null);
+        if (r && r.status === 409 && !isRetry) return recoverWeightConflict(kg);
+        throw new Error((r && (r.error || r.detail)) || 'Could not save the weight');
+      })
+      .catch(e => setWeightSaveErr((e && e.message) || 'Could not save the weight'));
+  };
+
+  const recoverWeightConflict = (kg) =>
+    window.PzApi.getDraft(prefill.draft_id).then(r => {
+      const d = (r && r.ok && r.data && r.data.draft) || null;
+      if (!d || !d.updated_at) {
+        throw new Error('Could not refresh the draft to save the weight');
+      }
+      // Another session already stored exactly this weight — converge, no rewrite.
+      if (parseFloat(d.manual_gross_weight) === parseFloat(kg)) return adoptSavedDraft(d);
+      setDraftUpdatedAt(d.updated_at);
+      return persistWeight(kg, d.updated_at, true);
     });
 
   // When a box profile is selected, auto-fill dimensions and flag override state
   const handleBoxSelect = (code) => {
     set('box_type_code', code);
-    persistBoxSelection(code, boxUpdatedAt, false);
+    persistBoxSelection(code, draftUpdatedAt, false);
     if (!code) return;
     const box = boxTypes.find(b => b.code === code);
     if (!box) return;
@@ -2687,6 +2718,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
                 <label htmlFor={`awb-${k}`} style={labelStyle}>{lbl}{req ? ' *' : ''}</label>
                 <input id={`awb-${k}`} type="number" min="0" step="0.1" value={form[k]}
                   onChange={e => k === 'weight_kg' ? set(k, e.target.value) : handleDimChange(k, e.target.value)}
+                  onBlur={e => { if (k === 'weight_kg') persistWeight(e.target.value, draftUpdatedAt, false); }}
                   style={inputStyle} data-testid={`awb-field-${k}`} />
               </div>
             ))}
@@ -2702,6 +2734,13 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
 
           {/* ── Declared Value ── */}
           <div style={sectionHead}>Declared Value</div>
+          {weightSaveErr && (
+            <div style={{ fontSize: 11, color: 'var(--badge-red-text)', marginTop: -8, marginBottom: 10 }}
+                 data-testid="awb-weight-save-error">
+              {weightSaveErr} — the weight applies to this booking, it was not saved on the proforma.
+            </div>
+          )}
+
           <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
               <label htmlFor="awb-declared_value" style={labelStyle}>Declared Value *</label>
@@ -2966,97 +3005,24 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
               this batch (or could not be ruled out); booking is HELD until the
               operator explicitly confirms creating a NEW shipment record.
               No DHL void, no auto-cancel — the prior AWB stays as it is. */}
-          {/* -- AWB preparation preflight ------------------------------
-              What the booking authorities already know, shown BEFORE the
-              operator fills the form -- so a missing requirement is a sentence
-              here, not a raw carrier 422 after the work is done.
-
-              Warehouse receipt is displayed as downstream information ONLY.
-              Goods are packed and weighed in India and the AWB is created
-              before they travel, so a pending destination receipt is the
-              expected state at booking time and never turns anything red. */}
-          {readinessState === 'loaded' && readiness && (
+          {/* One-line status, from the same values the booking will send.
+              No separate readiness workflow, no authority checklist. */}
+          {isApiBooking && (
             <div style={{
-              padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 8,
-              border: '1px solid var(--border)', marginBottom: 16,
-            }} data-testid="awb-readiness-panel">
-              <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>
-                AWB Preparation
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '3px 12px', fontSize: 11.5 }}>
-                {_rdyRows.map(([label, ok]) => (
-                  <React.Fragment key={label}>
-                    <div style={{ color: 'var(--text-2)' }}>{label}</div>
-                    <div style={{ color: ok ? 'var(--badge-green-text)' : 'var(--badge-amber-text)' }}>
-                      {ok ? 'Ready' : 'Missing'}
-                    </div>
-                  </React.Fragment>
-                ))}
-                <div style={{ color: 'var(--text-2)' }}>Existing AWB</div>
-                <div data-testid="awb-readiness-existing">
-                  {legAlreadyBooked
-                    ? `${_rdyExisting.carrier || ''} ${_rdyExisting.awb}`.trim()
-                    : 'None'}
-                </div>
-                <div style={{ color: 'var(--text-2)' }}>Live release</div>
-                <div data-testid="awb-readiness-release">
-                  {releaseBlocked ? 'Not authorized' : 'Authorized'}
-                </div>
-              </div>
-
-              {/* Downstream only -- never a booking prerequisite. */}
-              {_rdyWarehouse && (
-                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}
-                     data-testid="awb-readiness-warehouse">
-                  Warehouse receipt: {_rdyWarehouse.state}
-                  {_rdyWarehouse.expected_count
-                    ? ` (${_rdyWarehouse.received_count}/${_rdyWarehouse.expected_count} lines)` : ''}
-                  {' \u2014 not required for origin dispatch.'}
-                </div>
-              )}
-
-              {legAlreadyBooked && (
-                <div style={{ fontSize: 11.5, marginTop: 8 }}
-                     data-testid="awb-readiness-already-booked">
-                  <strong>Shipment leg already booked.</strong> {_rdyExisting.carrier || ''} AWB{' '}
-                  {_rdyExisting.awb} already represents this shipment leg, so no new
-                  AWB is required and nothing needs to be released.
-                  {_rdyExisting.tracking_status ? ` Currently: ${_rdyExisting.tracking_status}` : ''}
-                  {_rdyExisting.tracking_location ? ` (${_rdyExisting.tracking_location})` : ''}
-                </div>
-              )}
-
-              {!legAlreadyBooked && _rdyBlockers.length > 0 && (
-                <div style={{ fontSize: 11.5, marginTop: 8 }} data-testid="awb-readiness-blockers">
-                  <strong>Not ready to book yet</strong>
-                  <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
-                    {_rdyBlockers.map(b => (
-                      <li key={b.code} style={{ marginBottom: 3 }}>{b.message}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {!legAlreadyBooked && _rdyBlockers.length === 0 && (
-                <div style={{ fontSize: 11.5, marginTop: 8 }} data-testid="awb-readiness-ready">
-                  <strong>Ready to generate a real AWB</strong> -- every business
-                  prerequisite is satisfied.
-                </div>
-              )}
-              {_rdyWarnings.length > 0 && (
-                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}
-                     data-testid="awb-readiness-warnings">
-                  {_rdyWarnings.map(w => <div key={w.code}>{w.message}</div>)}
-                </div>
-              )}
-              {releaseBlocked && !legAlreadyBooked && (
-                <div style={{ fontSize: 11.5, marginTop: 8, color: 'var(--badge-amber-text)' }}
-                     data-testid="awb-readiness-release-blocked">
-                  Live {selectedCarrier} booking is not authorized for this shipment
-                  yet. Release this specific shipment through the governed
-                  live-booking process. The shipment data above is unaffected --
-                  everything can be prepared now.
-                </div>
-              )}
+              padding: '10px 14px', marginBottom: 16, borderRadius: 8,
+              background: 'var(--bg-subtle)', border: '1px solid var(--border)',
+              fontSize: 12,
+            }} data-testid="awb-status-summary">
+              {missingFields.length === 0
+                ? <span data-testid="awb-status-ready">
+                    <strong>Ready to create {selectedCarrier} AWB</strong>
+                    {' \u2014 all required shipment information is complete.'}
+                  </span>
+                : <span data-testid="awb-status-missing">
+                    Complete {missingFields.length}{' '}
+                    {missingFields.length === 1 ? 'field' : 'fields'}:{' '}
+                    {missingFields.join(', ')}.
+                  </span>}
             </div>
           )}
 
@@ -3103,7 +3069,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
               <Btn variant="primary" onClick={handleSubmit}
-                disabled={loading || (isDhl && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit || readinessBlocksSubmit))}
+                disabled={loading || (isDhl && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit))}
                 data-testid="awb-submit-btn">
                 {loading
                   ? (isExternal ? 'Saving…' : 'Creating AWB…')
@@ -6704,6 +6670,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       service:           ship ? (ship.service_code || null) : null,
       tracking_url:      ship ? (ship.tracking_url || null) : null,
       status:            ship ? (ship.state || ship.status || null) : null,
+      // Carried so a SIMULATED shipment can never be presented as a real one.
+      // The carrier read model has always returned these; the projection used
+      // to drop them, so a historical shadow booking showed its tracking_ref in
+      // Logistics indistinguishably from a live DHL AWB. This describes the
+      // stored RESULT only -- current capability comes from carrier_api_status.
+      mode:              ship ? (ship.mode || null) : null,
+      simulated:         ship ? !!ship.simulated : false,
       dimensions:        ship ? (ship.dimensions || null) : null,
       batch_ref:         liveDraft.batch_id || null,   // import identity — internal provenance only
       // Short, deterministic CMR document number from the ONE backend authority
@@ -6716,6 +6689,13 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
       effectiveWeight,
     };
   })();
+  // One place decides how a stored shipment result is described, so the label
+  // cannot drift between panels.
+  const _shipmentIsSimulated = !!(_transport.simulated || _transport.mode === 'shadow');
+  const _shipmentResultLabel = _shipmentIsSimulated
+    ? 'Historical test shipment \u00b7 shadow / simulated'
+    : null;
+
   const _ew = _transport.effectiveWeight;
 
 
@@ -7889,6 +7869,20 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                   authorities — never merge their timelines. Outbound uses the canonical
                   tracking backend keyed by carrierShipment.tracking_ref; inbound uses
                   import batch audit / clearance-status keyed by draft.batch_id. */}
+              {/* A stored SHADOW result is history, not a shipment in transit.
+                  Without this the tracking_ref of a simulated booking rendered
+                  exactly like a real DHL AWB. Says what the stored result IS; it
+                  does not describe current carrier capability, which comes from
+                  carrier_api_status. */}
+              {_shipmentResultLabel && (
+                <div style={{
+                  padding: '8px 12px', marginBottom: 8, borderRadius: 8, fontSize: 11.5,
+                  background: 'var(--bg-subtle)', border: '1px dashed var(--badge-amber-border)',
+                  color: 'var(--badge-amber-text)',
+                }} data-testid="pf-logistics-simulated-shipment">
+                  {_shipmentResultLabel} — this AWB was never handed to a carrier.
+                </div>
+              )}
               <OutboundShipmentTracking
                 awb={(carrierShipment && carrierShipment.tracking_ref) || (_transport && _transport.outbound_awb) || ''}
                 batchId={liveDraft.batch_id || (draft && draft.batch_id) || ''}
