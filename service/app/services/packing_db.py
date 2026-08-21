@@ -118,6 +118,71 @@ def line_key_is_incomplete(line: Dict[str, Any]) -> bool:
                 or _norm_key_part(line.get("product_code")))
 
 
+# Collision classes for one packing_line_key carried by more than one row.
+# The key is deliberately unscoped, so a collision is a QUESTION, never a verdict.
+DUPLICATE = "DUPLICATE"                  # withdraw the poorer document
+ADVANCE_FINAL = "ADVANCE_FINAL"          # link them; both are legitimate
+QUANTITY_MISMATCH = "QUANTITY_MISMATCH"  # flag; NEVER merge
+GENUINE = "GENUINE"                      # the key is wrong; escalate
+
+# Most severe first: a set of rows takes the worst class any pair produces.
+_SEVERITY = (GENUINE, QUANTITY_MISMATCH, DUPLICATE, ADVANCE_FINAL)
+
+
+def classify_collision_pair(a: Dict[str, Any], b: Dict[str, Any]) -> str:
+    """Classify two rows sharing one packing_line_key.
+
+    Each argument carries the row plus its document's ``doc_stage``,
+    ``source_file_hash`` and ``doc_total_quantity``.
+
+    Order is load-bearing and is the operator's ruling:
+
+      same doc_stage                          -> DUPLICATE
+      different doc_stage, same file hash     -> ADVANCE_FINAL
+      different doc_stage, quantities differ  -> QUANTITY_MISMATCH
+      otherwise                               -> GENUINE
+
+    Note the second rule fires BEFORE the third. Same bytes under two stages is
+    one document ingested twice, so it links even when the two ingestions
+    disagree on totals -- that disagreement is a parser-determinism defect
+    (identical bytes yielding 21 rows once and 24 another), not two documents
+    describing different goods. Classifying it as QUANTITY_MISMATCH would blame
+    the goods for a bug in the extractor.
+
+    ``quantity`` itself is INSIDE the key, so two colliding rows always agree on
+    it. QUANTITY_MISMATCH can therefore only mean the two DOCUMENTS disagree on
+    what they contain, which is why it reads doc_total_quantity and not quantity.
+    """
+    stage_a = _norm_key_part(a.get("doc_stage"))
+    stage_b = _norm_key_part(b.get("doc_stage"))
+    if stage_a == stage_b:
+        return DUPLICATE
+
+    hash_a = _norm_key_part(a.get("source_file_hash"))
+    hash_b = _norm_key_part(b.get("source_file_hash"))
+    if hash_a and hash_a == hash_b:
+        return ADVANCE_FINAL
+
+    total_a = _norm_key_part(a.get("doc_total_quantity"))
+    total_b = _norm_key_part(b.get("doc_total_quantity"))
+    if total_a != total_b:
+        return QUANTITY_MISMATCH
+
+    return GENUINE
+
+
+def classify_key_collision(rows: List[Dict[str, Any]]) -> str:
+    """Worst class across every pair. One clean pair does not excuse a bad one."""
+    if len(rows) < 2:
+        return ""
+    seen = {classify_collision_pair(rows[i], rows[j])
+            for i in range(len(rows)) for j in range(i + 1, len(rows))}
+    for cls in _SEVERITY:
+        if cls in seen:
+            return cls
+    return GENUINE
+
+
 def _compute_scan_code(line: Dict[str, Any]) -> str:
     """
     Compute the canonical scan_code for a packing row.
