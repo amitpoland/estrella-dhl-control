@@ -41,6 +41,83 @@ _db_path: Optional[Path] = None
 # Kept here so packing_db can populate the column at write time without
 # importing warehouse_db (which imports packing_db — would be circular).
 
+def _norm_key_part(value: Any) -> str:
+    """One normalisation for every key part. Numbers compare as numbers."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:  # 1, 1.0 and "1.00" are the same quantity and must key the same
+        number = float(text)
+    except (TypeError, ValueError):
+        return " ".join(text.upper().split())
+    return str(int(number)) if number.is_integer() else repr(number)
+
+
+def line_ordinals(lines: List[Dict[str, Any]]) -> List[int]:
+    """Position of each line WITHIN its own (invoice, product, design, qty) group.
+
+    Computed from source-file row order, which is the order the extractor yields.
+    Never read from ``pack_sr``: that column is absent from the supplier's
+    per-client form and present in the per-invoice form, so an identity built on
+    it changes shape between two files describing the same goods.
+    """
+    seen: Dict[tuple, int] = {}
+    out: List[int] = []
+    for line in lines:
+        group = (
+            _norm_key_part(line.get("invoice_no")),
+            _norm_key_part(line.get("product_code")),
+            _norm_key_part(line.get("design_no")),
+            _norm_key_part(line.get("quantity")),
+        )
+        seen[group] = seen.get(group, 0) + 1
+        out.append(seen[group])
+    return out
+
+
+def packing_line_key(line: Dict[str, Any], ordinal: int) -> str:
+    """Identity of a COMMERCIAL LINE. Not a barcode, and not a piece.
+
+    ``_compute_scan_code`` below answers "what did the operator just scan". It is
+    the printed barcode value, mirrored in routes_packing._barcode_value and
+    warehouse_db.scan_code_for_packing_line, and it is deliberately left alone:
+    labels already exist on boxes.
+
+    This answers a different question -- "is this the same commercial line I have
+    already stored" -- and needs the opposite property. Its SHAPE never varies:
+    every part is always present, empty when unknown. A key that gains or loses a
+    segment when an optional field is missing does not identify, it partitions.
+    That is how one line became two rows: the supplier's per-invoice form carries
+    pack_sr and the per-client form does not, so the two took different branches
+    of the dedup key and could never match each other.
+
+    Deliberately UNSCOPED -- no batch_id, no doc_stage. The same commercial line
+    arriving under an advance pseudo-batch and under its real shipment batch must
+    produce the SAME key; whether that is a duplicate or a legitimate
+    advance/final pair is a question for the collision classifier, not the key.
+    """
+    return "|".join((
+        _norm_key_part(line.get("invoice_no")),
+        _norm_key_part(line.get("product_code")),
+        _norm_key_part(line.get("design_no")),
+        _norm_key_part(line.get("quantity")),
+        str(int(ordinal)),
+    ))
+
+
+def line_key_is_incomplete(line: Dict[str, Any]) -> bool:
+    """True when the key rests on design and quantity alone.
+
+    123 live rows (9.3%) carry neither invoice_no nor product_code. Their key is
+    still stable, but it is too weak to bind money to, so allocation refuses them
+    rather than silently allocating against a guess.
+    """
+    return not (_norm_key_part(line.get("invoice_no"))
+                or _norm_key_part(line.get("product_code")))
+
+
 def _compute_scan_code(line: Dict[str, Any]) -> str:
     """
     Compute the canonical scan_code for a packing row.
@@ -182,6 +259,8 @@ def init_packing_db(db_path: Path) -> None:
         _add_column_if_missing(con, "packing_lines",     "unit_price",       "REAL NOT NULL DEFAULT 0.0")
         _add_column_if_missing(con, "packing_lines",     "total_value",      "REAL NOT NULL DEFAULT 0.0")
         _add_column_if_missing(con, "packing_lines",     "scan_code",        "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines",     "packing_line_key", "TEXT DEFAULT NULL")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pl_line_key ON packing_lines(packing_line_key)")
         # source_file_hash — added to packing_documents after initial schema;
         # guard ensures existing DBs pick it up without a manual migration.
         _add_column_if_missing(con, "packing_documents", "source_file_hash", "TEXT NOT NULL DEFAULT ''")
