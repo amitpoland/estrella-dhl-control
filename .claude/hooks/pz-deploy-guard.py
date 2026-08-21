@@ -60,7 +60,17 @@ import re
 # 'C:\PZ' as a path token: exact, or followed by \ or /. Case-insensitive.
 # Negative lookahead excludes C:\PZ-verify (followed by '-') and C:\PZAPP
 # (followed by alphanumeric). Also covers C:/PZ variants.
-PROD_PZ_RX = re.compile(r"c:[\\/]pz(?![\w\-])", re.IGNORECASE)
+# The SAME directory has three spellings on this host: the Windows form
+# (C:\\PZ), the forward-slash form (C:/PZ), and the MSYS/Git Bash mount form
+# (/c/PZ) -- which is what the Bash tool produces natively, so it is the form
+# an agent reaches for first. Recognising only the drive-letter spellings left
+# `cp -r service/app/. /c/PZ/app/` unguarded: a whole-tree production overwrite
+# the classifier called read-only. A guard that can be evaded by spelling is
+# not a guard. `(?![\w\-])` still keeps C:\\PZ-verify and /c/PZ-main out.
+PROD_PZ_RX = re.compile(
+    r"(?:(?<![\w\-])/cygdrive/c/|(?<![\w\-])/c/|c:[\\/])pz(?![\w\-])",
+    re.IGNORECASE,
+)
 
 # The canonical deployment script. Matched by NAME because the script is
 # configuration-driven: its command line carries no production path token, so the
@@ -136,7 +146,10 @@ READ_ONLY_HEADS = frozenset(
 GIT_READ_ONLY_SUBCOMMANDS = frozenset(
     "show diff log ls-files ls-tree cat-file grep blame status rev-parse "
     "describe show-ref merge-base shortlog name-rev rev-list whatchanged "
-    "diff-tree config".split()
+    # hash-object is how a deploy is byte-verified against the repo, and
+    # ls-remote/for-each-ref are pure queries. Their absence made the
+    # verification step of a deploy look like an unclassifiable write.
+    "diff-tree config hash-object ls-remote for-each-ref".split()
 )
 
 # git subcommands that write only inside the LOCAL REPOSITORY. They take file
@@ -193,6 +206,56 @@ def _is_prod_pz_path(text):
     return PROD_PZ_RX.search(text) is not None
 
 
+REDIRECT_TARGET_RX = re.compile(r"\d?>>?\s*(\"[^\"]*\"|'[^']*'|[^\s;&|<>]+)")
+
+
+def _redirects_into_protected(command):
+    """True only when a redirect's TARGET is inside the production tree.
+
+    The previous rule asked whether the command mentioned a production path
+    *anywhere* and contained a redirect *anywhere*, then treated two
+    independent facts as one. `cat >> notes.md <<'EOF'` whose body quotes the
+    production marker path satisfied both and was refused, though it writes to
+    notes.md. A protected path in a heredoc body, a grep pattern or an echo
+    string is prose; only the destination of a redirect is an operation.
+    """
+    stripped = BENIGN_REDIRECT_RX.sub("", command)
+    for target in REDIRECT_TARGET_RX.findall(stripped):
+        target = target.strip("\"'")
+        if (_is_prod_pz_path(target)
+                or DEPLOY_SCRIPT_RX.search(target)
+                or RUNTIME_CONFIG_SCRIPT_RX.search(target)):
+            return True
+    return False
+
+
+HEREDOC_RX = re.compile(r"<<-?\s*(['\"]?)(\w+)\1\n.*?^\2$", re.S | re.M)
+INTERPRETER_HEADS = frozenset(
+    "python python3 py powershell pwsh bash sh zsh node perl ruby cmd".split()
+)
+
+
+def _strip_heredoc_prose(command):
+    """Drop heredoc BODIES, which are data rather than operands.
+
+    `cat >> notes.md <<'MD' ... MD` whose body quotes a production path was read
+    as several nonsense segments ('marker at C:\\PZ\\version.txt'), none of them
+    provably read-only, and the fail-closed rule refused the whole command --
+    while it only ever writes notes.md.
+
+    The body is data ONLY when nothing executes it. If any segment head is an
+    interpreter the body is code, so it is left in place and classified in full.
+    """
+    heads = {
+        _segment_head(seg).split(" ", 1)[0]
+        for seg in SEGMENT_SPLIT_RX.split(command)
+        if seg.strip()
+    }
+    if heads & INTERPRETER_HEADS:
+        return command
+    return HEREDOC_RX.sub(lambda m: "<<" + m.group(2), command)
+
+
 def _segment_head(segment):
     """The executable word of a segment, lower-cased. '' when there is none.
 
@@ -231,8 +294,10 @@ def _segment_is_read_only(segment):
     if SUBSTITUTION_RX.search(segment):
         return False
 
-    stripped = BENIGN_REDIRECT_RX.sub("", segment)
-    if ANY_REDIRECT_RX.search(stripped):
+    # A redirect matters here only when it writes somewhere PROTECTED. Refusing
+    # every redirect made `grep ... > report.txt` and `echo ... > /tmp/note`
+    # unclassifiable the moment the text happened to mention a production path.
+    if _redirects_into_protected(segment):
         return False
 
     base = head.split(" ", 1)[0]
@@ -351,16 +416,14 @@ def classify_command(command):
             "read it without the pipe instead",
         )
 
-    if _is_prod_pz_path(low) and ANY_REDIRECT_RX.search(
-        BENIGN_REDIRECT_RX.sub("", command)
-    ):
+    if _redirects_into_protected(command):
         return _blocked(
             BLOCK_PRODUCTION_WRITE, "redirect-into-prod", "PRODUCTION_MUTATION",
             "redirecting output into C:\\PZ is a production write and is operator-only",
         )
 
     # --- per-segment classification ----------------------------------------
-    for segment in SEGMENT_SPLIT_RX.split(command):
+    for segment in SEGMENT_SPLIT_RX.split(_strip_heredoc_prose(command)):
         if not segment.strip():
             continue
         seg_low = _normalise(segment)
