@@ -17,6 +17,9 @@ mid-flight.
 | A-006 | 2026-08-21 | Pinned the two bad registry entries as `xfail(strict=False)` rather than raising `MAX_CONTAINING_REFS`. | Relax the threshold to 200; skip the entries | CHEAP | Suite goes green when the operator corrects them; the threshold never moves |
 | A-007 | 2026-08-21 | Published `23d3e1be` by cherry-picking onto a fresh branch instead of pushing its own branch. | Push `fix/ap-offset-status-uses-stale-gross` as the brief specified | CHEAP | Squash merge left `6ea4e83c` a non-ancestor of main; a branch push would have produced a phantom conflict. Cherry-pick `e723dff2` applied clean, 86 tests / 0 failures |
 | A-008 | 2026-08-21 | Classified two of three in-window storage exceptions (`treasury.sqlite-wal`, `-shm`) as benign SQLite sidecars and escalated only the third. | Report all three as findings | CHEAP | Sidecar files are written by the service on every transaction |
+| A-009 | 2026-08-22 | Treated `scan_code` as THE piece identity for the duplicate sweep. | Sweep on design_no+product_code; sweep on all columns | CHEAP | `advance_packing.py:39` states scan_code is the identity of a physical piece; `packing_db.py:44-58` defines it |
+| A-010 | 2026-08-22 | Rejected my own first duplicate sweep as a bad instrument and re-ran it. Grouping by design_no+product_code reported 199 duplicates; most are legitimate mixed lots (33 identical rings share a design and an invoice line). | Report 199 duplicates | CHEAP | Re-keyed on scan_code: 0 by that key, while 3 pieces are demonstrably double-ingested — which is how F-01 was found |
+| A-011 | 2026-08-22 | Wrote the census to the held docs branch rather than opening a W1 PR. | Open a PR (breaches the cap of 2 against 6 open); leave it only in chat (not durable) | CHEAP | PR DEBT doctrine; docs-only, 0 service/ bytes |
 
 ## Open — carried to wave-exit review
 
