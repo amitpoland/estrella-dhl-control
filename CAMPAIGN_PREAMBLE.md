@@ -182,3 +182,160 @@ Every session ends with:
 4. **NEXT BOUNDARY** — the single next step, and whose gate it is
 
 No suggested stops. No breaks. Time-neutral language.
+
+## PATH SPELLING NORMALISATION
+
+A path guard protects a DIRECTORY, not a string. Every spelling that resolves to the same target
+must normalise to one canonical form before matching. For the production tree that is at minimum
+`C:\PZ`, `C:/PZ`, `c:\pz`, `/c/PZ`, `/c/pz`, `//c/PZ`, `cygpath` forms, plus any 8.3 short form
+the environment can produce.
+
+**Test in the agent's dialect.** A guard's corpus must include the spelling the tool ACTUALLY
+emits, not the one a human types. The Bash tool emits `/c/PZ/...` natively; that was the one form
+missing, so the guard was absent exactly where it was needed.
+
+**Sibling safety.** Normalisation must not over-reach: `C:\PZ-main`, `C:\PZ-verify` and
+`C:\PZ-wt\*` are NOT the production tree. Prefix matching without a boundary is a new
+false-positive class.
+
+## GUARD SILENCE IS NOT EVIDENCE
+
+"Allowed" proves nothing unless the guard is proven to cover the FORM used. A guard that does not
+recognise a path is indistinguishable, in the transcript, from a guard that approved it. Never
+cite a guard's silence as an artifact. Safety claims about production rest on CONTENT evidence —
+byte verification, hashes, audit records — never on the absence of a block.
+
+## GUARD / DOCTRINE COHERENCE
+
+Every command this doctrine REQUIRES must be classifiable as read-only by the guard.
+`git hash-object` is mandatory for byte verification and was absent from the read-only
+vocabulary — doctrine demanded a command the guard could not classify. Maintain an explicit list
+of doctrine-required commands and a test asserting each one passes every guard. A doctrine step
+that cannot be executed is not a step.
+
+## SQUASH-TRAP DETECTION
+
+A recorded `expected_head` must be a BRANCH TIP. Detect violations by ref containment:
+
+    git branch -a --contains <sha> | wc -l
+
+A genuine branch tip appears in one or two refs. A main-side merge or squash commit appears in
+dozens. Threshold: more than five containing refs means the recorded SHA is main-side and the
+entry is an INCIDENT. Run this over the WHOLE registry, not the entry in front of you.
+
+## AUTONOMY CONTRACT
+
+**Default: decide and continue.** On an error, a bug, a missing table, an ambiguous contract, a
+failing test, an undocumented API behaviour or a design fork, you do NOT stop and ask. Convene the
+council, decide, record the decision in the ASSUMPTION LEDGER, apply it, verify the business logic
+still holds, and continue. Assumptions are reviewed in batch at wave exit, not one by one
+mid-flight. An operator interrupted forty times stops reading.
+
+**Escalate only on these seven.** Nothing else reaches the operator mid-wave:
+
+- **E1** Irreversible production action — deploy, merge, service restart, branch or worktree destroy
+- **E2** Any wFirma WRITE of any kind
+- **E3** A money or valuation POLICY choice — which valuation method, whether a credit is applied,
+  what an unallocated balance means. Computing under a stated policy is not a policy choice.
+- **E4** Legal or customs exposure — declared value, HS code, VAT treatment, WDT eligibility
+- **E5** Master-data identity MERGE — merging two customer or product masters. Irreversible
+  semantics. Detecting and reporting duplicates is autonomous; merging them is not.
+- **E6** Money spent, or a third-party commitment
+- **E7** Irreconcilable authority — two sources of truth disagree and the six sources cannot settle
+  which wins. Report both, recommend one, stop.
+
+Everything else is yours: schema reads, migrations authored (not applied to production),
+refactors, test writing, bug fixes, dependency choices, naming, file layout, endpoint shape, error
+handling, research, tooling, sub-agent delegation, retry strategy, worktree creation.
+
+**Assumption ledger.** Every autonomous decision is appended to `docs/campaign/ASSUMPTIONS.md`:
+`ID | date | decision | alternatives rejected | reversal cost (CHEAP/MEDIUM/EXPENSIVE) | evidence`.
+An EXPENSIVE reversal cost auto-promotes the item to the wave-exit review agenda, but still does
+not stop the wave. The operator overturns in batch.
+
+**Operator-friendliness test.** Before escalating, ask: can I state a defensible default, apply
+it, and let it be overturned cheaply? If yes, that is not an escalation — it is an assumption.
+Escalate only what cannot be cheaply undone.
+
+## STANDING COUNCIL
+
+On any error, bug, absence, ambiguity or design fork, convene the council BEFORE writing code.
+Delegate to sub-agents in parallel where the work is separable. Each returns findings with
+file:line evidence; you synthesise and decide. This happens inline — it is not an escalation.
+
+- **CARTOGRAPHER** — maps the affected surface. What already owns this concern? Where else is it
+  computed? Is there an existing resolver to extend instead of adding one?
+  Veto: *"this creates a second authority."*
+- **ARCHAEOLOGIST** — root cause only. History, blame, prior PRs, lessons. Has this been fixed
+  before? What regressed it? Veto: *"we tried this."*
+- **DOMAIN-CFO** — business correctness: accounting, customs, currency, VAT/WDT, NBP rate timing,
+  customs-value freeze. Veto: *"this is arithmetically or fiscally wrong."* Reviews EVERY slice,
+  not only financial ones — an inventory quantity is an accounting fact.
+- **ADVERSARY** — tries to break the proposed fix; writes the test that would catch the bypass the
+  fix creates. Veto: *"here is the hole you just opened."*
+- **OPERATOR-PROXY** — applies the AUTONOMY CONTRACT. Does this hit E1–E7? Its veto is the ONLY
+  one that stops the wave. If it says no, proceed.
+
+**Quorum:** CARTOGRAPHER + DOMAIN-CFO + OPERATOR-PROXY on every decision. ARCHAEOLOGIST when
+touching existing behaviour. ADVERSARY on every fix that changes a guard, a validator, a money
+path or an identity resolver.
+
+Council decisions go in the ASSUMPTION LEDGER with which agent dissented and why. A unanimous
+council is a signal the question was framed too narrowly — say so.
+
+Business-logic review is not a separate step: DOMAIN-CFO reviews inside the same council round.
+Never ship a fix that is technically correct and fiscally wrong.
+
+## LONG-RUN EXECUTION
+
+Hold the slice plan in a visible todo list across the whole run and update it as you go — it is
+the operator's only window into a long session. Delegate independent census and research legs to
+parallel sub-agents; do not serialise work that does not depend on itself. Checkpoint every
+completed slice with a commit in its worktree: a nine-minute run that loses its work to a crash is
+worse than three three-minute runs.
+
+Repair budget: three autonomous attempts per distinct failure, then council, then continue with
+the council's decision. The budget bounds retries, not persistence — you do not hand the problem
+back.
+
+## SQUASH-MERGE ANCESTRY
+
+This repository squash-merges. A branch tip therefore NEVER becomes an ancestor of main. Three
+consequences, all mandatory:
+
+**S1 — Content, not ancestry.** "Is X in main?" is answered by content — a test name, a blob hash,
+a diff — never by `git merge-base --is-ancestor` against a branch tip. Ancestry answers that
+question only between main-side commits.
+
+**S2 — Republish by cherry-pick.** Follow-up work sitting on an already-squash-merged branch must
+be republished by cherry-picking the specific commit onto a fresh branch off main. A branch push
+produces a PHANTOM CONFLICT: the merge-base falls back past the squash point and git re-applies
+changes already present in main. Before printing any push command for a branch whose parent work
+is already merged, test `git merge-base <branch_tip> origin/main`. If that base predates the
+merged work, the branch push is wrong — build the cherry-pick.
+
+**S3 — SHA authority.** A registry, gate file or campaign record stores the BRANCH-TIP SHA, never
+a main-side merge or squash commit. A main-side SHA is contained in dozens of branches and
+identifies nothing. If an existing record holds a main-side SHA, that is an INCIDENT to file, not
+a value to trust.
+
+**Durability test** (supersedes the `ls-remote` test): work is durable when its CONTENT is present
+in main — the named tests exist, the blob is reachable. A remote branch ref is not durability; a
+squash merge deletes it.
+
+## GUARD SEMANTICS
+
+A guard must classify by OPERATION, not by literal name occurrence in command text. A campaign
+slug, branch name or path appearing as an ARGUMENT to a read-only command is not an operation on
+the thing named. `git merge-base`, `git cat-file`, `git log`, `git rev-list`, `git ls-remote`,
+`git hash-object` and `gh * view` are read-only and must never be blocked by a name match.
+Equally, a protected name inside a heredoc body, a quoted string or a search pattern is prose, and
+a quoted `|` is not a shell separator.
+
+When a guard blocks a read-only command: do NOT invent a workaround and move on silently. Record
+it as a GUARD FALSE POSITIVE finding with the exact command and the guard's rule name. Working
+around it once to finish the task is acceptable; working around it repeatedly is a defect report
+you owe the operator.
+
+A false positive is a usability defect. A false NEGATIVE is a security defect, and it hides
+itself — see GUARD SILENCE IS NOT EVIDENCE.
