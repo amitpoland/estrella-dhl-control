@@ -606,6 +606,11 @@ function DhlTowerDrawer({ row, isAdmin, onClose, onViewShipment, onResolved }) {
   React.useEffect(() => {
     let cancelled = false;
     const awb = row && row.awb;
+    // Outbound only needs this for inbound legs: project_outbound_row already
+    // appends every carrier checkpoint to its milestones, so its headline and
+    // timeline read the same stream and there is nothing to reconcile. Fetching
+    // anyway would spend a round-trip to receive a payload with no `events`.
+    if (row && row.direction === 'outbound') return;
     if (!awb || !window.PzApi || !window.PzApi.getDhlLogisticsShipment) return;
     setComposed(null);
     setComposedFailed(false);

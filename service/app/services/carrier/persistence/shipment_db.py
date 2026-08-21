@@ -193,12 +193,19 @@ _OUTBOUND_ONLY = (
 # only among completed bookings makes the invariant exact: behaviour is
 # unchanged unless a completed booking exists, which is the whole defect.
 #
-# do_not_use is deliberately NOT ranked here: it retires a LABEL, not the
-# shipment record, and letting it change attribution would be a separate
-# behavioural decision from this ordering repair.
+# A RETIRED label is not the authoritative booking while a newer one is in
+# flight. do_not_use marks an AWB the operator has taken out of service, usually
+# because it is being replaced. Ranking it as a completed booking would promote
+# it over the newer PENDING row that supersedes it -- so CMR, the insurance
+# statement and Logistics would print the very label the operator just retired,
+# and the old created_at ordering did NOT do that. Excluding it from the
+# completed-booking rank does not hide it: when a retired row is the only row
+# for the leg it still falls through to the created_at ordering and is still
+# returned, which keeps documents resolvable for an already-shipped leg.
 _IS_COMPLETED_BOOKING = (
     "tracking_ref IS NOT NULL AND TRIM(tracking_ref) != '' "
-    "AND LOWER(state) = 'complete'"
+    "AND LOWER(state) = 'complete' "
+    "AND COALESCE(do_not_use, 0) = 0"
 )
 _BOOKING_AUTHORITY_ORDER = (
     "ORDER BY "

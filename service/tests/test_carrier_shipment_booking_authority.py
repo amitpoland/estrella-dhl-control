@@ -26,6 +26,7 @@ from app.services.carrier.persistence.shipment_db import (
     get_shipment_for_draft,
     init_db,
     insert_shipment,
+    mark_do_not_use,
     list_outbound_rows_for_batches,
     update_state,
 )
@@ -153,6 +154,38 @@ def test_a_completed_booking_without_a_tracking_ref_is_not_a_booking(tmp_path):
 
     row = get_shipment_for_draft(db, BATCH, CLIENT)
     assert row["idempotency_key"] == "newer-shadow"
+
+
+def test_a_retired_label_does_not_outrank_a_newer_booking(tmp_path):
+    """do_not_use retires an AWB, usually because it is being replaced."""
+    db = _db(tmp_path)
+    insert_shipment(db, _pending("retired"), BATCH, CLIENT)
+    _stamp(db, "retired", "2026-08-18T00:00:00.000Z")
+    update_state(db, "retired", ShipmentState.COMPLETE, tracking_ref="1111111111",
+                 mode=ShipmentMode.LIVE, simulated=False)
+    mark_do_not_use(db, BATCH, "1111111111", "replaced", operator="test")
+
+    # The replacement, still in flight.
+    insert_shipment(db, _pending("replacement"), BATCH, CLIENT)
+    _stamp(db, "replacement", "2026-08-20T00:00:00.000Z")
+
+    row = get_shipment_for_draft(db, BATCH, CLIENT)
+    assert row["idempotency_key"] == "replacement", (
+        "documents must not print the label the operator just retired"
+    )
+
+
+def test_a_retired_label_is_still_resolvable_when_it_is_the_only_row(tmp_path):
+    """Excluding it from the rank must not make an already-shipped leg unresolvable."""
+    db = _db(tmp_path)
+    insert_shipment(db, _pending("retired-only"), BATCH, CLIENT)
+    update_state(db, "retired-only", ShipmentState.COMPLETE,
+                 tracking_ref="2222222222", mode=ShipmentMode.LIVE, simulated=False)
+    mark_do_not_use(db, BATCH, "2222222222", "retired", operator="test")
+
+    row = get_shipment_for_draft(db, BATCH, CLIENT)
+    assert row is not None
+    assert row["tracking_ref"] == "2222222222"
 
 
 def test_non_bookings_keep_their_previous_relative_order(tmp_path):
