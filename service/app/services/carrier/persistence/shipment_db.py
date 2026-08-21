@@ -179,18 +179,31 @@ _OUTBOUND_ONLY = (
 #
 # Booking authority, not recency, decides:
 #   1. a row carrying a real completed booking (tracking_ref + COMPLETE) wins;
-#   2. among those, a real carrier write outranks a simulated one;
-#   3. only then is the newest row preferred, which preserves the previous
-#      behaviour whenever no row is a completed booking.
+#   2. among THOSE, a real carrier write outranks a simulated one;
+#   3. otherwise the newest row, exactly as before.
+#
+# Both CASE arms are qualified by the completed-booking predicate on purpose, so
+# rows that are NOT completed bookings keep their previous relative order. That
+# matters beyond presentation: coordinator.py:520 uses this selector for
+# duplicate protection and refuses a second external registration when the
+# returned row is in (complete, submitted, pending). An unqualified tiebreak
+# could reorder within the non-booking group and surface a FAILED row ahead of a
+# PENDING one -- 'failed' is not in that set, so the refusal would silently
+# become an acceptance and the leg could take a second registration. Ranking
+# only among completed bookings makes the invariant exact: behaviour is
+# unchanged unless a completed booking exists, which is the whole defect.
 #
 # do_not_use is deliberately NOT ranked here: it retires a LABEL, not the
 # shipment record, and letting it change attribution would be a separate
 # behavioural decision from this ordering repair.
+_IS_COMPLETED_BOOKING = (
+    "tracking_ref IS NOT NULL AND TRIM(tracking_ref) != '' "
+    "AND LOWER(state) = 'complete'"
+)
 _BOOKING_AUTHORITY_ORDER = (
     "ORDER BY "
-    "CASE WHEN tracking_ref IS NOT NULL AND TRIM(tracking_ref) != '' "
-    "          AND LOWER(state) = 'complete' THEN 0 ELSE 1 END, "
-    "CASE WHEN simulated = 1 THEN 1 ELSE 0 END, "
+    f"CASE WHEN {_IS_COMPLETED_BOOKING} THEN 0 ELSE 1 END, "
+    f"CASE WHEN {_IS_COMPLETED_BOOKING} AND simulated = 1 THEN 1 ELSE 0 END, "
     "created_at DESC"
 )
 

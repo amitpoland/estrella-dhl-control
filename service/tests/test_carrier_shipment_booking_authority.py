@@ -155,6 +155,34 @@ def test_a_completed_booking_without_a_tracking_ref_is_not_a_booking(tmp_path):
     assert row["idempotency_key"] == "newer-shadow"
 
 
+def test_non_bookings_keep_their_previous_relative_order(tmp_path):
+    """Ranking must not reorder rows that are NOT completed bookings.
+
+    coordinator.py:520 uses this selector for duplicate protection and refuses a
+    second external registration when the returned row is in
+    (complete, submitted, pending). If a tiebreak reordered within the
+    non-booking group it could surface a FAILED row ahead of a PENDING one --
+    'failed' is not in that set, so the refusal would silently become an
+    acceptance and the leg could take a second registration.
+    """
+    db = _db(tmp_path)
+    # Older FAILED row recorded as a real (non-simulated) attempt...
+    insert_shipment(db, _pending("failed-real"), BATCH, CLIENT)
+    _stamp(db, "failed-real", "2026-08-18T00:00:00.000Z")
+    update_state(db, "failed-real", ShipmentState.FAILED, error="boom",
+                 simulated=False)
+    # ...and a NEWER pending reservation.
+    insert_shipment(db, _pending("pending-new"), BATCH, CLIENT)
+    _stamp(db, "pending-new", "2026-08-20T00:00:00.000Z")
+
+    row = get_shipment_for_draft(db, BATCH, CLIENT)
+    assert row["idempotency_key"] == "pending-new", (
+        "a non-booking row must not be promoted over a newer one; duplicate "
+        "protection reads this state"
+    )
+    assert row["state"] == ShipmentState.PENDING.value
+
+
 def test_another_clients_live_booking_is_never_returned(tmp_path):
     """Ranking must not weaken the 2026-07-16 cross-client scope guarantee."""
     db = _db(tmp_path)
