@@ -8441,9 +8441,18 @@ function ServiceChargesPanel({ charges, commercialCharges, canEdit, draftState, 
           {c.label && (
             <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{c.label}</span>
           )}
-          {/* Slice-2: expose mapping-layer fields so the operator can see which
-              wFirma service ID and (insurance) rate are stored on the draft line. */}
-          {c.wfirma_service_id && (
+          {/* The wFirma service-product id is CONFIGURATION metadata, not a
+              business fact of this document: it names the registry row the
+              charge maps to, and nothing an operator reads on a posted proforma
+              depends on it. It stays visible while the draft is editable, where
+              the operator is actually choosing that mapping, and is hidden once
+              the document is posted -- the same boundary that already hides the
+              Service Product Registry panel itself.
+
+              Gated, not deleted (Lesson M): the value is unchanged on the draft,
+              still returned by the API, still in the audit trail, and still
+              rendered in the editable/configuration context that owns it. */}
+          {canEdit && c.wfirma_service_id && (
             <span data-testid={`charge-svc-id-${c.charge_type}`}
                   title="wFirma service-product ID stored on this draft charge line"
                   style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace' }}>

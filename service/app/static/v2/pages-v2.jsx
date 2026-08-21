@@ -606,16 +606,40 @@ function DhlTowerDrawer({ row, isAdmin, onClose, onViewShipment, onResolved }) {
   React.useEffect(() => {
     let cancelled = false;
     const awb = row && row.awb;
+    // Clear the previous row's stream BEFORE any early return below. These
+    // resets used to sit after the outbound guard, so opening an inbound row
+    // (which populates `composed`) and then an outbound row left the outbound
+    // drawer rendering the INBOUND leg's carrier events -- the exact cross-leg
+    // mixing this repair exists to prevent, reintroduced one layer up.
+    setComposed(null);
+    setComposedFailed(false);
     // Outbound only needs this for inbound legs: project_outbound_row already
     // appends every carrier checkpoint to its milestones, so its headline and
     // timeline read the same stream and there is nothing to reconcile. Fetching
     // anyway would spend a round-trip to receive a payload with no `events`.
     if (row && row.direction === 'outbound') return;
-    if (!awb || !window.PzApi || !window.PzApi.getDhlLogisticsShipment) return;
-    setComposed(null);
-    setComposedFailed(false);
+    if (!awb || !window.PzApi || !window.PzApi.getDhlLogisticsShipment) {
+      // The wrapper is genuinely unavailable — say so rather than showing a
+      // partial list as though it were the whole movement history.
+      setComposedFailed(true);
+      return;
+    }
+    // PzApi wraps every response: _call returns {ok:true, data} on success and
+    // {ok:false, status, error, type} on failure -- it RESOLVES in both cases
+    // and never rejects. An earlier revision read `d.events` off the envelope
+    // and relied on .catch(): `d.events` was always undefined so the composed
+    // stream silently became [], the drawer fell back to milestones, and
+    // because .catch() could never fire the degraded notice never appeared.
+    // The failure was invisible in exactly the surface it was meant to fix.
+    //
+    // Branch on `ok` explicitly, and treat a malformed success the same as a
+    // failure: a successful envelope must never be read as an empty timeline.
     window.PzApi.getDhlLogisticsShipment(awb)
-      .then((d) => { if (!cancelled) setComposed((d && d.events) || []); })
+      .then((result) => {
+        if (cancelled) return;
+        if (!result || !result.ok || !result.data) { setComposedFailed(true); return; }
+        setComposed(Array.isArray(result.data.events) ? result.data.events : []);
+      })
       .catch(() => { if (!cancelled) setComposedFailed(true); });
     return () => { cancelled = true; };
   }, [row && row.awb]);
