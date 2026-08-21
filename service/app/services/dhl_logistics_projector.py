@@ -106,6 +106,53 @@ _OUTBOUND_STAGE_LABELS = {
     "CLOSED": "Closed",
 }
 
+# DHL Express tracking type codes, as this account actually receives them.
+# Census: 962 events across storage/outputs/*/tracking_cache.json, 21 distinct
+# codes (campaign/evidence/W0). The raw cache carries the code in ev["status"];
+# it used to be discarded, so every carrier event landed as the literal stage
+# "event" and booking→acceptance, departure→destination and
+# destination→delivered could never close a single duration sample.
+#
+# One map, one normaliser: push and poll both enter through _carrier_stage_id.
+_DHL_TYPE_CODE_STAGES: Dict[str, str] = {
+    "SD": "shipment_created",         # Shipment information received
+    "PU": "pickup",                   # Shipment picked up
+    "SA": "acceptance",               # Shipment Accepted
+    "PL": "processed_at_facility",    # Processed at <facility>
+    "DF": "departed",                 # Departed a DHL facility
+    "AF": "arrived_facility",         # Arrived at DHL SORT facility (transit hub)
+    "AR": "arrived_destination",      # Arrived at DHL DELIVERY facility (in-country)
+    "WC": "out_for_delivery",         # Out with courier for delivery (in-country)
+    "AD": "scheduled_for_delivery",
+    "TR": "in_transit",
+    "SM": "in_transit",               # Scheduled to depart on next planned movement
+    "OK": "delivered",
+    "CC": "awaiting_collection",
+    "OH": "on_hold",
+    "ND": "delivery_attempt_failed",
+    "CA": "delivery_attempt_failed",
+    "RR": "clearance_event",
+    "UD": "clearance_event",
+    "CD": "clearance_event",
+    "IC": "clearance_processing",
+    "CR": "clearance_complete",
+}
+
+
+def _carrier_stage_id(ev: Dict[str, Any]) -> str:
+    """Normalise one carrier tracking event to a stage id.
+
+    Precedence: an already-normalised stage from the tracking store wins, then
+    the DHL type code, then the literal "event" for a code we have never seen.
+    An unknown code is left as "event" rather than guessed — a wrong stage id
+    would silently close a duration sample against the wrong milestone.
+    """
+    explicit = str(ev.get("normalized_stage") or ev.get("stage") or "").strip()
+    if explicit:
+        return explicit
+    code = str(ev.get("status") or ev.get("type_code") or ev.get("typeCode") or "").strip().upper()
+    return _DHL_TYPE_CODE_STAGES.get(code, "event")
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -1347,7 +1394,9 @@ def assemble_shipment_timeline(
     for ev in carrier_events:
         if not isinstance(ev, dict):
             continue
-        stage = str(ev.get("normalized_stage") or ev.get("stage") or "").strip()
+        stage = _carrier_stage_id(ev)
+        if stage == "event":
+            stage = ""
         desc = str(ev.get("description") or ev.get("status") or "").strip()
         rows.append({
             "ts": ev.get("event_time") or ev.get("timestamp") or ev.get("ts"),
@@ -1649,7 +1698,7 @@ def project_outbound_row(row: Dict[str, Any], *, now: Optional[datetime] = None)
         ts = _parse_iso(ev.get("event_time") or ev.get("timestamp") or ev.get("date"))
         if ts is None:
             continue
-        stage = str(ev.get("normalized_stage") or ev.get("stage") or "event")
+        stage = _carrier_stage_id(ev)
         dur = _hours_between(prev, ts)
         milestones.append({
             "stage_id": stage,
@@ -1914,6 +1963,10 @@ def _row_timestamp_map(row: Dict[str, Any]) -> Dict[str, Optional[datetime]]:
             "ARRIVED_DESTINATION_COUNTRY",
             "at_destination",
             "destination",
+            # DHL "out with courier" is already in the destination country, so
+            # it closes destination arrival for shipments whose delivery-facility
+            # event (AR) never arrives.
+            "out_for_delivery",
         ),
     )
     return {
