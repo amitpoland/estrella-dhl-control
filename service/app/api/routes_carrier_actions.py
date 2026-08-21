@@ -713,16 +713,12 @@ def resolve_dhl_accounts_endpoint(
     for choice in payload.get("choices", []):
         choice.pop("account_number", None)
 
-    # Sender-paid is the only billing party wired to DHL today; receiver and
-    # third-party resolve for display but cannot execute (see the note on
-    # _RECEIVER_BILLING_NOT_ENABLED).
-    party = (billing_party or BILLING_SENDER).strip().lower()
-    if resolved.ok and party != BILLING_SENDER:
-        payload["awb_blocked"] = True
-        payload["blocked_reason"] = "billing_party_not_enabled"
-        payload["message"] = _RECEIVER_BILLING_NOT_ENABLED
-    else:
-        payload["awb_blocked"] = not resolved.ok
+    # Receiver- and third-party transport billing execute as of 2026-08-21, so
+    # a resolved non-sender payer is no longer reported as blocked. The panel
+    # and the booking now answer alike; previously the panel displayed the
+    # receiver's account while the booking silently billed the shipper, and
+    # that split truth was the defect.
+    payload["awb_blocked"] = not resolved.ok
 
     return JSONResponse(payload)
 
@@ -773,49 +769,129 @@ def get_shipment_description_projection(
 # official specification or a sandbox response. Guessing it would either be
 # rejected by DHL or — worse — bill the wrong account. Silently falling back to
 # charging the sender is explicitly forbidden.
-_RECEIVER_BILLING_NOT_ENABLED = (
-    "Receiver billing is configured, but DHL receiver-account billing is not "
-    "yet enabled because the required MyDHL account type has not been verified."
+# SUPERSEDED 2026-08-21 — receiver and third-party transport billing execute.
+# The hold this message carried was never about the arrangement being unwanted;
+# it was that the carrier's billing contract had not been verified. DHL
+# documents receiver- and third-party transport billing, so the reason expired.
+# Kept as a named constant, not deleted, so the audit trail of why the block
+# existed and why it lifted stays readable (Lesson Q rule 5).
+#
+# What did NOT change: silently falling back to charging the sender when
+# Customer Master declared a receiver-paid arrangement is still forbidden —
+# that path raises DHL_ACCOUNT_UNRESOLVED. And duty/tax billing is still a
+# separate, unowned decision that this platform does not transmit.
+_RECEIVER_BILLING_WAS_BLOCKED_UNTIL_VERIFIED = (
+    "Receiver billing was held closed until the MyDHL account contract was "
+    "verified. Verified 2026-08-21; receiver-paid transport now executes."
 )
 
 
-def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings):
-    """Return ``(shipper_account, resolution_dict_or_None)``.
+def _resolve_receiver_contractor_id(*, storage_root, batch_id: str,
+                                    client_ref: Optional[str]) -> Optional[str]:
+    """The receiver's contractor id, from the draft — the server-side chain.
 
-    Raises HTTPException(422) when the operator must choose an account, when
-    the billing party owns no usable account, or when a non-sender billing
-    party is selected (not yet enabled — see module note above).
+    Same lookup ``_resolve_booking_incoterm`` uses: (batch_id, client_ref)
+    identifies the per-client proforma draft, and the draft owns
+    ``client_contractor_id``. Returns None when the draft or the id is absent,
+    which resolves to sender-paid rather than to a guess.
+    """
+    from pathlib import Path as _Path
+    from ..services import proforma_invoice_link_db as pildb
+
+    name = (client_ref or "").strip()
+    if not name:
+        return None
+    pf_db = _Path(storage_root) / "proforma_links.db"
+    if not pf_db.exists():
+        return None
+    try:
+        draft = pildb.get_draft(pf_db, batch_id, name)
+    except Exception:
+        return None
+    if draft is None:
+        return None
+    return (getattr(draft, "client_contractor_id", None) or "").strip() or None
+
+
+def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings, batch_id: str):
+    """Return ``(shipper_account, transport_payer, billing_account, resolution)``.
+
+    Raises HTTPException(422) when the operator must choose an account, when the
+    billing party owns no usable account, or when the caller asks for a billing
+    party Customer Master does not declare.
+
+    Receiver-paid transport is enabled (2026-08-21). The earlier hold existed
+    because the carrier's billing contract was unverified, not because the
+    arrangement was unwanted; DHL documents receiver- and third-party transport
+    billing, so the hold is superseded. Duty and tax billing is a SEPARATE
+    decision and is deliberately untouched here.
     """
     from ..services.dhl_account_resolver import (
         BILLING_SENDER,
         REASON_AMBIGUOUS,
+        resolve_declared_transport_payer,
         resolve_dhl_billing_account,
     )
     # Same SQLite file the Client Master carrier-account routes own — one
     # store, one authority (routes_client_carrier_accounts.py:42).
     _CARRIER_DB = settings.storage_root / "customer_master.sqlite"
 
-    party = (body.billing_party or BILLING_SENDER).strip().lower()
+    # ── Receiver identity: resolved HERE, from the draft, never from the body ─
+    #
+    # The payer decision routes a real charge, so the identity behind it must
+    # not arrive through the browser: a request could otherwise name any
+    # contractor and have their account billed. batch_id + client_ref already
+    # identify the draft, and the draft owns client_contractor_id — the same
+    # server-side chain _resolve_booking_incoterm uses. A body-supplied
+    # receiver_contractor_id is accepted only when it AGREES with the draft.
+    receiver_cid = _resolve_receiver_contractor_id(
+        storage_root=settings.storage_root,
+        batch_id=batch_id,
+        client_ref=body.client_ref,
+    ) or body.receiver_contractor_id
 
-    # No client context supplied → legacy path (explicit body account, then the
-    # controlled environment fallback). Unchanged behaviour for existing callers.
-    if not body.sender_contractor_id:
+    # ── Payer: declared by Customer Master, never by the caller ──────────────
+    # An explicit body billing_party is honoured only to NARROW the decision to
+    # sender-paid. It can never widen it to bill someone else, so the browser
+    # cannot turn a sender-paid shipment into a receiver-paid one.
+    declared = resolve_declared_transport_payer(_CARRIER_DB, receiver_cid)
+    if body.billing_party:
+        party = (body.billing_party or "").strip().lower()
+        if party != declared and party != BILLING_SENDER:
+            raise HTTPException(status_code=422, detail={
+                "error": ("The requested billing party is not what Customer "
+                          "Master declares for this client."),
+                "code": "DHL_BILLING_PARTY_NOT_DECLARED",
+                "billing_party": party,
+                "declared": declared,
+            })
+    else:
+        party = declared
+
+    # Sender-paid with no sender contractor is the long-standing configured
+    # path: the sender account lives in server configuration because no
+    # sender-side Client Master wiring exists. It is passed INTO the one
+    # resolver rather than short-circuiting around it, so every booking now
+    # carries a real resolver verdict instead of an unexamined fallback.
+    if not body.sender_contractor_id and party == BILLING_SENDER:
         acct = body.shipper_account or settings.dhl_express_account_number
         if acct and not body.shipper_account:
-            logger.warning(
-                "dhl_account_fallback: no sender_contractor_id supplied; using "
-                "DHL_EXPRESS_ACCOUNT_NUMBER environment fallback. The Client "
-                "Master carrier account is the canonical authority."
+            logger.info(
+                "dhl_account_configured_sender: no sender_contractor_id; "
+                "shipping on the configured DHL_EXPRESS_ACCOUNT_NUMBER. "
+                "Customer Master declares sender-paid for this client."
             )
-        return acct, None
+        return acct, BILLING_SENDER, None, None
 
     resolved = resolve_dhl_billing_account(
         _CARRIER_DB,
         body.sender_contractor_id,
-        body.receiver_contractor_id,
+        receiver_cid,
         party,
         third_party_contractor_id=body.third_party_contractor_id,
         selected_billing_account_id=body.billing_account_id,
+        sender_account_number=(
+            body.shipper_account or settings.dhl_express_account_number),
     )
 
     if not resolved.ok:
@@ -834,11 +910,11 @@ def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings):
         # Missing / invalid account for the chosen billing party → BLOCK.
         #
         # No environment fallback here, deliberately (operator ruling
-        # 2026-07-20). Once a sender contractor is selected, the Client Master
-        # account is the authority; silently billing DHL_EXPRESS_ACCOUNT_NUMBER
-        # instead would charge an account the operator never chose. The
-        # environment variable survives only for legacy callers that supply no
-        # sender context at all (handled above).
+        # 2026-07-20). The Client Master account is the authority; silently
+        # billing DHL_EXPRESS_ACCOUNT_NUMBER instead would charge an account
+        # the operator never chose. That matters most in exactly this branch:
+        # Customer Master declared a receiver-paid arrangement, so falling back
+        # to the shipper would quietly invert who pays.
         raise HTTPException(status_code=422, detail={
             "error": resolved.message,
             "code": "DHL_ACCOUNT_UNRESOLVED",
@@ -846,17 +922,21 @@ def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings):
             "billing_party": resolved.billing_party,
         })
 
-    # Resolved. Sender-paid is the only billing party wired to DHL today.
-    if party != BILLING_SENDER:
-        raise HTTPException(status_code=422, detail={
-            "error": _RECEIVER_BILLING_NOT_ENABLED,
-            "code": "DHL_BILLING_PARTY_NOT_ENABLED",
-            "billing_party": resolved.billing_party,
-            # Show the operator that the account WAS resolved, masked.
-            "resolved_billing_account": resolved.billing_account.masked,
-        })
+    # Resolved. The shipment MOVES on the shipping account and is BILLED to the
+    # billing account — separate concepts since the 2026-07-20 refinement. The
+    # payer account is returned only when it is genuinely someone other than the
+    # sender, so a sender-paid booking still produces the exact shape it always
+    # did and no adapter has to special-case it.
+    payer_account = None
+    if resolved.billing_party != BILLING_SENDER and resolved.billing_account:
+        payer_account = resolved.billing_account.account_number
 
-    return resolved.shipping_account.account_number, resolved.to_dict()
+    return (
+        resolved.shipping_account.account_number,
+        resolved.billing_party,
+        payer_account,
+        resolved.to_dict(),
+    )
 
 
 # ── Return DRAFT (Slice A) — prepare / get / patch; Live Create = HOLD ────────
@@ -1087,9 +1167,12 @@ def create_shipment(
     # missing account blocks — it never silently bills the environment account.
     if provider == "FEDEX":
         shipper_account = (body.shipper_account or "FEDEX").strip() or "FEDEX"
+        transport_payer = "sender"
+        payer_account = None
         billing_resolution = None
     else:
-        shipper_account, billing_resolution = _resolve_shipment_accounts(body, settings)
+        (shipper_account, transport_payer, payer_account,
+         billing_resolution) = _resolve_shipment_accounts(body, settings, batch_id)
         if not shipper_account:
             raise HTTPException(
                 status_code=422,
@@ -1228,6 +1311,10 @@ def create_shipment(
     request = ShipmentRequest(
         batch_id=batch_id,
         shipper_account=shipper_account,
+        # Carried, not decided: the resolver's verdict travels to the adapter
+        # so the adapter only has to serialize it.
+        transport_payer=transport_payer,
+        billing_account=payer_account,
         recipient_address=carrier_address,
         declared_value=body.declared_value,
         currency=body.currency,
