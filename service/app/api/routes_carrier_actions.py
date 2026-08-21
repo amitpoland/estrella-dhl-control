@@ -829,6 +829,7 @@ def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings, batch_id: 
     from ..services.dhl_account_resolver import (
         BILLING_SENDER,
         REASON_AMBIGUOUS,
+        PayerDeclarationUnavailable,
         resolve_declared_transport_payer,
         resolve_dhl_billing_account,
     )
@@ -864,10 +865,19 @@ def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings, batch_id: 
     # not declare who pays — otherwise a caller could name any contractor that
     # happens to hold a receiver-type account and have them billed. Sender-paid
     # is the safe direction: the shipper already agreed to be charged.
-    declared = (
-        resolve_declared_transport_payer(_CARRIER_DB, receiver_cid)
-        if draft_cid else BILLING_SENDER
-    )
+    try:
+        declared = (
+            resolve_declared_transport_payer(_CARRIER_DB, receiver_cid)
+            if draft_cid else BILLING_SENDER
+        )
+    except PayerDeclarationUnavailable as exc:
+        # Refuse rather than downgrade. A declared receiver-paid arrangement
+        # that cannot be honoured must never become a silent charge on the
+        # shipper — the operator assigned that cost elsewhere on purpose.
+        raise HTTPException(status_code=422, detail={
+            "error": str(exc),
+            "code": "DHL_PAYER_DECLARATION_UNAVAILABLE",
+        })
     if body.billing_party:
         party = (body.billing_party or "").strip().lower()
         if party != declared and party != BILLING_SENDER:

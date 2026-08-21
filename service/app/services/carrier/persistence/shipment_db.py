@@ -77,6 +77,15 @@ _ADDITIVE_COLUMNS = [
     # not whoever later replayed the idempotent request. NULL for legacy rows
     # booked before attribution existed (honest missing).
     ("booked_by", "TEXT"),
+    # WHO WAS BILLED for transport, written once at the PENDING anchor beside
+    # booked_by. Without these a receiver-paid booking is indistinguishable
+    # afterwards from a sender-paid one, so a disputed carrier invoice has no
+    # server-side evidence of the arrangement in force when it was booked.
+    # The account is stored MASKED (last four) — enough to reconcile against a
+    # DHL invoice, never enough to be a credential. NULL on legacy rows booked
+    # before the payer decision existed: honest missing, not "sender".
+    ("transport_payer", "TEXT"),
+    ("billing_account_masked", "TEXT"),
     # MyDHL shipmentNotification booking audit (no secrets — masks only).
     # Written once at COMPLETE when the coordinator persists the Create Shipment
     # request shape. Distinct from Estrella delivery-confirmation email.
@@ -406,6 +415,8 @@ def insert_shipment(
     *,
     operator: Optional[str] = None,
     provider: str = PROVIDER_DHL,
+    transport_payer: Optional[str] = None,
+    billing_account_masked: Optional[str] = None,
 ) -> None:
     """
     Record a new shipment idempotency entry.
@@ -443,8 +454,9 @@ def insert_shipment(
             """
             INSERT INTO carrier_shipments
                 (idempotency_key, batch_id, client_ref, mode, state, error, simulated,
-                 service_product, dimensions_json, booked_by, provider)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 service_product, dimensions_json, booked_by, provider,
+                 transport_payer, billing_account_masked)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.idempotency_key,
@@ -458,6 +470,11 @@ def insert_shipment(
                 result.dimensions_json,
                 operator,
                 provider,
+                # Written at the anchor beside booked_by, for the same reason:
+                # the record must name the arrangement the REAL booking used,
+                # not one a later replay happened to resolve.
+                transport_payer,
+                billing_account_masked,
             ),
         )
 

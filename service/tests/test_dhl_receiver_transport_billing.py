@@ -23,6 +23,7 @@ import json
 import pathlib
 import sqlite3
 import sys
+import unittest.mock as mock
 import types
 
 import pytest
@@ -36,6 +37,7 @@ from app.services.carrier.adapters.live import _build_accounts  # noqa: E402
 from app.services.carrier.models.shipment import ShipmentRequest  # noqa: E402
 from app.services.client_carrier_accounts_db import create_account, init_db  # noqa: E402
 from app.services.dhl_account_resolver import (  # noqa: E402
+    PayerDeclarationUnavailable,
     resolve_declared_transport_payer,
 )
 from app.services import proforma_invoice_link_db as pildb  # noqa: E402
@@ -138,10 +140,19 @@ def test_no_account_at_all_is_sender_paid(storage):
 
 
 def test_an_inactive_receiver_account_cannot_be_billed(storage):
+    """A soft-deleted receiver account is refused, not quietly downgraded.
+
+    Customer Master still holds a receiver-paid row, so the operator's intent is
+    on record; only the account is unusable. Reading that as "sender pays" would
+    charge the shipper for a cost that was deliberately assigned elsewhere. The
+    row is what makes it ambiguous, and clearing or re-typing it in Client
+    Master is the one-click fix — cheaper than a wrong carrier invoice.
+    """
     _account(storage, RECEIVER_PAYS, RECEIVER_ACCT,
              payment_type="receiver", active=False)
-    assert resolve_declared_transport_payer(
-        storage / "customer_master.sqlite", RECEIVER_PAYS) == "sender"
+    with pytest.raises(PayerDeclarationUnavailable):
+        resolve_declared_transport_payer(
+            storage / "customer_master.sqlite", RECEIVER_PAYS)
 
 
 def test_a_non_dhl_account_cannot_be_billed_for_dhl(storage):
@@ -152,17 +163,35 @@ def test_a_non_dhl_account_cannot_be_billed_for_dhl(storage):
 
 
 def test_ambiguous_accounts_fail_closed_rather_than_picking_one(storage):
-    """Two active receiver accounts, no default: do not guess a payer.
+    """Two active receiver accounts, no default: refuse, do not guess a payer.
 
-    Falling back to sender-paid leaves the charge where the shipper already
-    agreed to carry it; the operator resolves the ambiguity in Client Master.
+    An earlier version of this test asserted sender-paid here and called that
+    "failing closed". It is not: the client demonstrably HAS a receiver-paid
+    arrangement, so quietly billing the shipper instead is a wrong answer
+    delivered silently, not an abstention. Raising makes the operator resolve
+    the ambiguity in Client Master.
     """
     _account(storage, RECEIVER_PAYS, "144000001",
              payment_type="receiver", default=False)
     _account(storage, RECEIVER_PAYS, "144000002",
              payment_type="receiver", default=False)
-    assert resolve_declared_transport_payer(
-        storage / "customer_master.sqlite", RECEIVER_PAYS) == "sender"
+    with pytest.raises(PayerDeclarationUnavailable):
+        resolve_declared_transport_payer(
+            storage / "customer_master.sqlite", RECEIVER_PAYS)
+
+
+def test_an_unreadable_account_store_refuses_rather_than_assuming_sender(storage):
+    """"Cannot tell" must never collapse into "the shipper pays".
+
+    A lock or permissions blip on the account store is not evidence that the
+    client has no bill-to arrangement; treating it as such bills a party who
+    never agreed, with nothing raised.
+    """
+    with mock.patch("app.services.dhl_account_resolver.list_accounts",
+                    side_effect=sqlite3.OperationalError("database is locked")):
+        with pytest.raises(PayerDeclarationUnavailable):
+            resolve_declared_transport_payer(
+                storage / "customer_master.sqlite", RECEIVER_PAYS)
 
 
 def test_reading_the_declaration_does_not_mutate_customer_master(storage):
@@ -221,26 +250,41 @@ def test_the_two_legs_resolve_independently_on_one_batch(storage):
 
 
 def test_a_declared_receiver_with_no_usable_account_refuses(storage):
-    """Declared receiver-paid, account then withdrawn: refuse, never invert.
+    """Declared receiver-paid, account deactivated mid-flight: refuse, never invert.
 
-    Silently billing the shipper here would be the worst outcome of the whole
-    repair — the operator declared someone else pays and would be charged
-    without ever being told.
+    This is the worst outcome the whole repair exists to prevent. The operator
+    assigned this cost to the receiver; if the account becomes unusable between
+    their preflight check and the booking, billing the shipper instead — with no
+    error and no log line — charges Estrella for something it was never meant to
+    carry. An earlier version of this test asserted exactly that inversion and
+    called it correct.
     """
     acct_id = _account(storage, RECEIVER_PAYS, RECEIVER_ACCT,
                        payment_type="receiver")
     _draft(storage, "DG GmbH", RECEIVER_PAYS)
-    # Declaration is read, then the account is deactivated mid-flight.
     with sqlite3.connect(str(storage / "customer_master.sqlite")) as c:
         c.execute("UPDATE client_carrier_accounts SET active=0 WHERE id=?",
                   (acct_id,))
         c.commit()
-    acct, payer, billing, _res = _resolve_shipment_accounts(
-        _body(client_ref="DG GmbH"), _settings(storage), BATCH)
-    # With the account gone the declaration is gone too, so this resolves to
-    # sender-paid — and, crucially, never to "receiver-paid billed to Estrella".
-    assert payer == "sender"
-    assert billing is None
+
+    with pytest.raises(HTTPException) as e:
+        _resolve_shipment_accounts(
+            _body(client_ref="DG GmbH"), _settings(storage), BATCH)
+    assert e.value.status_code == 422
+    assert e.value.detail["code"] == "DHL_PAYER_DECLARATION_UNAVAILABLE"
+    assert ENV_SENDER not in repr(e.value.detail)
+
+
+def test_a_client_with_no_arrangement_at_all_is_simply_sender_paid(storage):
+    """Absence of an arrangement IS an answer, and differs from "cannot tell".
+
+    The refusal above must not spread to every client who has no DHL account —
+    that would block SAGAR SHAH, whose DAP terms mean seller-paid is correct.
+    """
+    _draft(storage, "SAGAR SHAH", SENDER_PAYS)
+    acct, payer, billing, _ = _resolve_shipment_accounts(
+        _body(client_ref="SAGAR SHAH"), _settings(storage), BATCH)
+    assert (payer, billing, acct) == ("sender", None, ENV_SENDER)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
