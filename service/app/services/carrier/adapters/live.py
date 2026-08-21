@@ -688,10 +688,26 @@ def select_product_code(requested: str, available: List[str]) -> str:
 # when transport is billed to someone else; DHL documents receiver- and
 # third-party transport billing in its Shipment Billing structure.
 #
-# DUTIES AND TAXES ARE NOT BILLED HERE. DHL treats the duty/tax payer as a
-# separate declaration, and so does this platform — Customer Master does not yet
-# own that decision, so this function must never emit a duties typeCode. Paying
-# someone's transport is not agreeing to pay their import duty.
+# DUTIES AND TAXES ARE NOT BILLED HERE. DHL carries the duty/tax payer as its
+# OWN typeCode ("duties-taxes"), separate from transport — and so does this
+# platform: Customer Master does not own that decision, so this function must
+# never emit it. Paying someone's transport is not agreeing to pay their duty.
+#
+# EVIDENCE for these values, and its limit (2026-08-21). DHL's public first-party
+# artifacts do NOT publish this enum: the Express Reference Data 3.3.1 workbook
+# carries product/service/incoterm code lists but no request-schema enums, and
+# the Reference Data Guide 3.3.1 is the workbook's companion. The raw schema sits
+# behind the portal's authenticated interactive reference, which this project
+# cannot reach. Three independent sources agree on shipper / payer /
+# duties-taxes, one of them (innoveit/python-dhl-api AccountType) validating
+# against DHL's 3.3.1 spec, and this repository's own earlier safety pins named
+# exactly these tokens as the candidates to verify.
+#
+# So "payer" is well-corroborated but NOT read from DHL's schema. That is why
+# every wire name lives here and nowhere else: if DHL rejects the shape, the
+# repair is this table plus its pinning test, and no other file moves. A carrier
+# syntax rejection is a serialization defect to fix, never a reason to change
+# who pays.
 _DHL_ACCOUNT_TYPE_SHIPPER = "shipper"
 _DHL_ACCOUNT_TYPE_PAYER = "payer"
 

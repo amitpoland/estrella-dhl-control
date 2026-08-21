@@ -844,17 +844,30 @@ def _resolve_shipment_accounts(body: "ShipmentRequestBody", settings, batch_id: 
     # identify the draft, and the draft owns client_contractor_id — the same
     # server-side chain _resolve_booking_incoterm uses. A body-supplied
     # receiver_contractor_id is accepted only when it AGREES with the draft.
-    receiver_cid = _resolve_receiver_contractor_id(
+    draft_cid = _resolve_receiver_contractor_id(
         storage_root=settings.storage_root,
         batch_id=batch_id,
         client_ref=body.client_ref,
-    ) or body.receiver_contractor_id
+    )
+    body_cid = (body.receiver_contractor_id or "").strip() or None
+    if draft_cid and body_cid and body_cid != draft_cid:
+        raise HTTPException(status_code=422, detail={
+            "error": ("The receiver in this request is not the client on the "
+                      "proforma draft for this shipment."),
+            "code": "DHL_RECEIVER_IDENTITY_MISMATCH",
+        })
+    receiver_cid = draft_cid or body_cid
 
     # ── Payer: declared by Customer Master, never by the caller ──────────────
-    # An explicit body billing_party is honoured only to NARROW the decision to
-    # sender-paid. It can never widen it to bill someone else, so the browser
-    # cannot turn a sender-paid shipment into a receiver-paid one.
-    declared = resolve_declared_transport_payer(_CARRIER_DB, receiver_cid)
+    # Escalating BEYOND sender-paid requires a DRAFT-CONFIRMED receiver. A body
+    # value that the draft could not corroborate resolves the account but may
+    # not declare who pays — otherwise a caller could name any contractor that
+    # happens to hold a receiver-type account and have them billed. Sender-paid
+    # is the safe direction: the shipper already agreed to be charged.
+    declared = (
+        resolve_declared_transport_payer(_CARRIER_DB, receiver_cid)
+        if draft_cid else BILLING_SENDER
+    )
     if body.billing_party:
         party = (body.billing_party or "").strip().lower()
         if party != declared and party != BILLING_SENDER:
