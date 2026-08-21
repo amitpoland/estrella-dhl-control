@@ -339,3 +339,28 @@ you owe the operator.
 
 A false positive is a usability defect. A false NEGATIVE is a security defect, and it hides
 itself — see GUARD SILENCE IS NOT EVIDENCE.
+
+## EVERY PIN MUST BE ABLE TO PASS
+
+A test that pins a known defect must turn GREEN when the defect is fixed.
+
+Imperative `pytest.xfail()` aborts before the assertion runs, so the check can never observe its
+own success — a corrected entry produces XFAIL forever, indistinguishable from an uncorrected one.
+Use the declarative form, or assert-and-expect-failure, so remediation is visible.
+
+**A check that cannot report "this is now fixed" is not watching anything.** It is recording a
+belief about the past.
+
+## RETIRE THE PROXY
+
+A proxy metric is valid only while the exact test is unavailable. The moment the exact test
+becomes possible, the proxy is **replaced** — not kept alongside it.
+
+A proxy that only works while the world is broken breaks the instant it is fixed, and reports
+that as a regression. Ref containment was a proxy for "is this a branch tip": a main-side merge
+commit and a branch tip that has since been merged both appear in dozens of refs, so it could not
+survive the correction it existed to prompt. Where the branch ref exists, the tip is a fact —
+compare against the fact.
+
+Ask of every heuristic: *what does this return once the problem is solved?* If the answer is
+"still red", it is not a check, it is a scar.
