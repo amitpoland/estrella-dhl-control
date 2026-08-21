@@ -211,25 +211,138 @@ def test_no_cross_currency_cost_merge():
 
 
 def test_bottleneck_uses_explicit_target_not_p90():
+    """Excess is measured against the configured target, never a cohort percentile.
+
+    Built through the real _transition_period_dto rather than a hand-shaped dict
+    (Lesson A): the ranking reads current_30d, publishable and contamination
+    fields that a fabricated stub silently lacked.
+    """
     now = datetime(2026, 8, 11, tzinfo=timezone.utc)
-    # Fabricate transition KPI with typical above target
-    kpis = {
-        "inbound": {
-            "poland_to_dhl_email": {
-                "id": "poland_to_dhl_email",
-                "label": "Poland arrival → DHL email",
-                "typical": 35.4,
-                "n": 23,
-                "target_hours": 24.0,
-                "excess_vs_target_hours": 11.4,
-                "delta_pct_vs_previous_30d": 5.0,
-            }
-        },
-        "outbound": {},
-    }
-    ranked = intel.build_bottleneck_ranking(kpis)
-    assert ranked[0]["excess_vs_target_hours"] == 11.4
-    assert ranked[0]["contribution_hours"] == round(11.4 * 23, 2)
+    # Six recent samples at 35.4h against a 24h target -> 11.4h excess.
+    samples = [
+        {"hours": 35.4, "end_ts": now - timedelta(days=d)}
+        for d in (1, 3, 5, 7, 9, 11)
+    ]
+    # A prior window with enough samples for the delta to be publishable.
+    samples += [
+        {"hours": 30.0, "end_ts": now - timedelta(days=d)}
+        for d in (35, 40, 45)
+    ]
+    dto = intel._transition_period_dto(
+        samples,
+        transition_id="poland_to_dhl_email",
+        label="Poland arrival → DHL email",
+        now=now,
+    )
+    dto["publishable"] = True
+    kpis = {"inbound": {"poland_to_dhl_email": dto}, "outbound": {}}
+
+    ranking = intel.build_bottleneck_ranking(kpis)
+    top = ranking["ranked"][0]
+    assert top["excess_vs_target_hours"] == 11.4
+    assert top["n"] == 6
+    assert top["window"] == "current_30d"
+    assert top["contribution_hours"] == round(11.4 * 6, 2)
+    # P90 of the full cohort is 35.4 as well; the point is that excess is
+    # target-relative, so it must equal typical - target and not the percentile.
+    assert top["excess_vs_target_hours"] == round(top["typical"] - top["target_hours"], 2)
+
+
+def test_stage_beating_target_is_never_ranked_as_a_bottleneck():
+    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    samples = [
+        {"hours": 6.0, "end_ts": now - timedelta(days=d)}
+        for d in (1, 2, 3, 4, 5, 6)
+    ]
+    dto = intel._transition_period_dto(
+        samples, transition_id="poland_to_dhl_email", label="x", now=now
+    )
+    dto["publishable"] = True
+    ranking = intel.build_bottleneck_ranking({"inbound": {"poland_to_dhl_email": dto}, "outbound": {}})
+    assert ranking["ranked"] == []
+    assert [e["reason"] for e in ranking["excluded"]] == ["meeting_target"]
+
+
+def test_single_shipment_cannot_carry_a_bottleneck_rank():
+    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    dto = intel._transition_period_dto(
+        [{"hours": 900.0, "end_ts": now - timedelta(days=2)}],
+        transition_id="booking_to_acceptance",
+        label="Booking → Acceptance",
+        now=now,
+    )
+    dto["publishable"] = True
+    ranking = intel.build_bottleneck_ranking({"inbound": {}, "outbound": {"booking_to_acceptance": dto}})
+    assert ranking["ranked"] == []
+    assert ranking["excluded"][0]["reason"] == "insufficient_recent_samples"
+
+
+def test_contaminated_stage_is_excluded_and_says_why():
+    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    samples = [
+        {"hours": 900.0, "end_ts": now - timedelta(days=d)}
+        for d in (1, 2, 3, 4, 5, 6)
+    ]
+    dto = intel._transition_period_dto(
+        samples, transition_id="dhl_email_to_dsk", label="DHL email → DSK", now=now
+    )
+    dto["publishable"] = False
+    dto["not_publishable_reason"] = "contaminated_ordering"
+    ranking = intel.build_bottleneck_ranking({"inbound": {"dhl_email_to_dsk": dto}, "outbound": {}})
+    assert ranking["ranked"] == []
+    assert ranking["excluded"][0]["reason"] == "contaminated_ordering"
+
+
+def test_delta_is_withheld_when_the_previous_window_is_too_thin():
+    """+1526.8% against a previous window of one shipment is noise wearing a
+    percentage sign. Below the floor the delta must be None and say why."""
+    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    samples = [{"hours": 130.0, "end_ts": now - timedelta(days=d)} for d in (1, 2, 3, 4, 5)]
+    samples.append({"hours": 8.12, "end_ts": now - timedelta(days=45)})
+    dto = intel._transition_period_dto(
+        samples, transition_id="booking_to_first_movement", label="x", now=now
+    )
+    assert dto["previous_30d"]["n"] == 1
+    assert dto["delta_pct_vs_previous_30d"] is None
+    assert dto["delta_suppressed_reason"] == "previous_window_n_1_below_3"
+
+
+def test_delta_is_published_once_the_previous_window_is_thick_enough():
+    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    samples = [{"hours": 40.0, "end_ts": now - timedelta(days=d)} for d in (1, 2, 3)]
+    samples += [{"hours": 20.0, "end_ts": now - timedelta(days=d)} for d in (35, 40, 45)]
+    dto = intel._transition_period_dto(
+        samples, transition_id="poland_to_dhl_email", label="x", now=now
+    )
+    assert dto["previous_30d"]["n"] == 3
+    assert dto["delta_pct_vs_previous_30d"] == 100.0
+    assert dto["delta_suppressed_reason"] is None
+
+
+def test_every_excluded_stage_is_published_never_silently_dropped():
+    """A ranking that drops stages without saying so reads as 'these are the
+    only stages', which is how a broken stage stops being looked at."""
+    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    slow = intel._transition_period_dto(
+        [{"hours": 200.0, "end_ts": now - timedelta(days=d)} for d in (1, 2, 3, 4, 5)],
+        transition_id="booking_to_delivered", label="a", now=now,
+    )
+    slow["publishable"] = True
+    fast = intel._transition_period_dto(
+        [{"hours": 1.0, "end_ts": now - timedelta(days=d)} for d in (1, 2, 3, 4, 5)],
+        transition_id="sad_to_pz", label="b", now=now,
+    )
+    fast["publishable"] = True
+    empty = intel._transition_period_dto([], transition_id="customs_cleared_to_pz", label="c", now=now)
+    empty["publishable"] = False
+    empty["not_publishable_reason"] = "insufficient_samples"
+
+    ranking = intel.build_bottleneck_ranking({
+        "inbound": {"sad_to_pz": fast, "customs_cleared_to_pz": empty},
+        "outbound": {"booking_to_delivered": slow},
+    })
+    assert len(ranking["ranked"]) == 1
+    assert len(ranking["ranked"]) + len(ranking["excluded"]) == 3
 
 
 def test_poland_to_dhl_email_kpi_population_unchanged_by_intelligence():

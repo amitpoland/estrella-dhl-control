@@ -22,9 +22,11 @@ import logging
 import math
 import re
 import statistics
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from . import dhl_logistics_targets as targets
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +52,9 @@ _DELIVERED_TIMELINE_EVENTS = frozenset({
 # dhl_email: timeline event names below are DISPLAY/REACHED hints only.
 # Duration KPIs must use resolve_dhl_email_kpi_timestamp() — never
 # dhl_inbox_scanned / clearance_started / log_event(now) discovery stamps.
+# The reporting window every "now" statistic is measured over.
+CURRENT_WINDOW_DAYS = 30
+
 _INBOUND_MILESTONES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("created", "Created / booked", ("batch_created", "awb_uploaded")),
     ("dhl_email", "DHL email received", ("dhl_email_received",)),
@@ -2045,116 +2050,181 @@ def _classify_poland_to_email_inversion(
     return "inverted_or_invalid"
 
 
+def _transition_sample(
+    row: Dict[str, Any],
+    key: str,
+    start_key: str,
+    end_key: str,
+) -> Tuple[Optional[float], Optional[datetime], Optional[str]]:
+    """Decide one row's contribution to one transition. The only such decision.
+
+    Returns (hours, end_ts, exclusion_reason). Exactly one of hours / reason is
+    set. This used to live twice — once in collect_transition_samples for the
+    values and once in _fixed_transition_analytics for the exclusion counts —
+    so a rule added to one silently did not apply to the other, and the
+    published exclusion counts could describe a different population than the
+    published median.
+    """
+    tsmap = _row_timestamp_map(row)
+    a = tsmap.get(start_key)
+    b = tsmap.get(end_key)
+
+    if a is None and b is None:
+        return None, None, "missing_%s_and_%s" % (start_key, end_key)
+    if a is None:
+        return None, None, "missing_%s" % start_key
+    if b is None:
+        if end_key == "dhl_email" and row.get("dhl_email_kpi_exclude_reason"):
+            return None, None, str(row.get("dhl_email_kpi_exclude_reason"))
+        return None, None, "missing_%s" % end_key
+
+    hours = _hours_between(a, b)
+
+    if hours is None and b < a:
+        if key == "poland_to_dhl_email":
+            inv = _classify_poland_to_email_inversion(row, a, b)
+            if inv == "pre_arrival_customs_contact":
+                # Customs were already contacted before the goods landed, so the
+                # wait *after* arrival is genuinely zero, not missing.
+                return 0.0, b, None
+            return None, b, inv
+        return None, b, "%s_before_%s" % (end_key, start_key)
+    if hours is None:
+        return None, b, "inverted_or_invalid"
+
+    if (
+        key == "origin_pickup_to_poland"
+        and tsmap.get("delivered") is not None
+        and tsmap["delivered"] < b
+    ):
+        return None, b, "lifecycle_mismatch_delivered_before_poland"
+
+    # A booking record typed in after the carrier was already carrying the
+    # parcel does not anchor a duration. Measured 2026-08-22: three shipments
+    # showed booking->delivered of 0.52h / 2.17h / 2.44h because the booking was
+    # created on 2026-07-14 for a parcel DHL had held since 2026-07-11. Those
+    # three set previous_30d.typical = 2.30h and produced a +7380% period delta
+    # that no sample-count floor would have caught.
+    if (
+        start_key == "booked"
+        and tsmap.get("first_movement") is not None
+        and tsmap["first_movement"] < a
+    ):
+        return None, b, "lifecycle_mismatch_booking_created_after_carrier_movement"
+
+    return float(hours), b, None
+
+
 def collect_transition_samples(
     rows: List[Dict[str, Any]],
     key: str,
     pair: str,
 ) -> List[Dict[str, Any]]:
-    """Collect valid transition hour samples using the frozen KPI event rules.
+    """Valid transition hour samples under the frozen KPI event rules.
 
-    Returns list of {hours, end_ts, awb, include_reason?}. Exclusions are omitted
-    from the list (caller may use _fixed_transition_analytics for exclusion counts).
+    Returns [{hours, end_ts, awb}]. Excluded rows are omitted; use
+    _fixed_transition_analytics for the counts and reasons behind them.
     """
     start_key, end_key = pair.split("|", 1)
     samples: List[Dict[str, Any]] = []
     for r in rows:
-        tsmap = _row_timestamp_map(r)
-        a = tsmap.get(start_key)
-        b = tsmap.get(end_key)
-        if a is None or b is None:
+        hours, end_ts, reason = _transition_sample(r, key, start_key, end_key)
+        if reason is not None or hours is None:
             continue
-        hours = _hours_between(a, b)
-        if (
-            hours is None
-            and key == "poland_to_dhl_email"
-            and a is not None
-            and b is not None
-            and b < a
-        ):
-            inv = _classify_poland_to_email_inversion(r, a, b)
-            if inv == "pre_arrival_customs_contact":
-                samples.append({
-                    "hours": 0.0,
-                    "end_ts": b,
-                    "awb": r.get("awb"),
-                    "include_reason": inv,
-                })
-            continue
-        if hours is None:
-            continue
-        if (
-            key == "origin_pickup_to_poland"
-            and tsmap.get("delivered") is not None
-            and b is not None
-            and tsmap["delivered"] < b
-        ):
-            continue
-        samples.append({
-            "hours": float(hours),
-            "end_ts": b,
-            "awb": r.get("awb"),
-        })
+        samples.append({"hours": hours, "end_ts": end_ts, "awb": r.get("awb")})
     return samples
+
+
+def _exclusion_kind(reason: str) -> str:
+    """Coverage gap or contamination?
+
+    They are not the same defect and must not share one percentage. A coverage
+    gap means we never recorded an endpoint, so the sample is smaller than the
+    cohort but every sample in it is true. Contamination means the two stamps we
+    do hold describe a sequence that cannot have happened - the end before the
+    start, or evidence belonging to another lifecycle. Those samples are not
+    merely absent, they are wrong, and they are what silently bends a median.
+    """
+    return "coverage" if reason.startswith("missing_") else "contamination"
 
 
 def _fixed_transition_analytics(
     rows: List[Dict[str, Any]],
     specs: Tuple[Tuple[str, str, str], ...],
+    *,
+    now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
+    cohort_n = len(rows)
+    now = now or _now_utc()
+    window_start = now - timedelta(days=CURRENT_WINDOW_DAYS)
     for key, label, pair in specs:
         start_key, end_key = pair.split("|", 1)
         samples: List[float] = []
         excluded: Dict[str, int] = {}
+        cohort_now = 0
+        contaminated_now = 0
         for r in rows:
-            tsmap = _row_timestamp_map(r)
-            a = tsmap.get(start_key)
-            b = tsmap.get(end_key)
-            if a is None and b is None:
-                reason = f"missing_{start_key}_and_{end_key}"
-            elif a is None:
-                reason = f"missing_{start_key}"
-            elif b is None:
-                if end_key == "dhl_email" and r.get("dhl_email_kpi_exclude_reason"):
-                    reason = str(r.get("dhl_email_kpi_exclude_reason"))
-                else:
-                    reason = f"missing_{end_key}"
+            hours, end_ts, reason = _transition_sample(r, key, start_key, end_key)
+            in_window = end_ts is not None and window_start <= end_ts < now
+            if in_window:
+                cohort_now += 1
+            if reason is None and hours is not None:
+                samples.append(hours)
             else:
-                hours = _hours_between(a, b)
-                if (
-                    hours is None
-                    and key == "poland_to_dhl_email"
-                    and a is not None
-                    and b is not None
-                    and b < a
-                ):
-                    inv = _classify_poland_to_email_inversion(r, a, b)
-                    if inv == "pre_arrival_customs_contact":
-                        # Already contacted before Poland — wait after arrival is 0.
-                        samples.append(0.0)
-                        continue
-                    reason = inv
-                elif hours is None:
-                    reason = "inverted_or_invalid"
-                elif (
-                    key == "origin_pickup_to_poland"
-                    and tsmap.get("delivered") is not None
-                    and b is not None
-                    and tsmap["delivered"] < b
-                ):
-                    reason = "lifecycle_mismatch_delivered_before_poland"
-                else:
-                    samples.append(hours)
-                    continue
-            excluded[reason] = excluded.get(reason, 0) + 1
+                excluded[reason] = excluded.get(reason, 0) + 1
+                if in_window and _exclusion_kind(reason) == "contamination":
+                    contaminated_now += 1
         stats = _cohort_stats(samples)
+        contaminated_n = sum(
+            n for reason, n in excluded.items() if _exclusion_kind(reason) == "contamination"
+        )
+        coverage_excluded_n = sum(excluded.values()) - contaminated_n
+        contamination_pct = (
+            round(100.0 * contaminated_n / cohort_n, 1) if cohort_n else 0.0
+        )
+        # Contamination must be measured over the same window as the statistic
+        # it guards. Measured 2026-08-22: six bookings typed in after the
+        # carrier already had the parcel were all ~38 days old, yet they blocked
+        # three stages whose current 30-day samples were entirely clean — and
+        # those three carried the only real bottleneck in the dataset
+        # (booking → first movement, +108h on 13 recent shipments). A gate that
+        # judges one population and gates another is not a safeguard, it is a
+        # second way to be wrong.
+        contamination_now_pct = (
+            round(100.0 * contaminated_now / cohort_now, 1) if cohort_now else 0.0
+        )
+        clean = contamination_now_pct <= targets.CONTAMINATION_BLOCK_PCT
+        n_samples = stats.get("n") or 0
+        # A duration statistic is publishable only when it rests on enough
+        # samples to have a median at all AND those samples are not describing
+        # an impossible ordering. Either failure renders the stage as a stated
+        # gap; neither is ever silently averaged into a headline.
+        if n_samples < 3:
+            reason_not_publishable = "insufficient_samples"
+        elif not clean:
+            reason_not_publishable = "contaminated_ordering"
+        else:
+            reason_not_publishable = None
+        publishable = reason_not_publishable is None
         out[key] = {
             "id": key,
             "label": label,
             "start_key": start_key,
             "end_key": end_key,
             **stats,
+            "cohort_n": cohort_n,
             "excluded_n": sum(excluded.values()),
+            "coverage_excluded_n": coverage_excluded_n,
+            "contaminated_n": contaminated_n,
+            "contamination_pct": contamination_pct,
+            "contamination_now_pct": contamination_now_pct,
+            "contaminated_now_n": contaminated_now,
+            "cohort_now_n": cohort_now,
+            "clean_data_sufficient": clean,
+            "contamination_block_pct": targets.CONTAMINATION_BLOCK_PCT,
+            "publishable": publishable,
+            "not_publishable_reason": reason_not_publishable,
             "exclusion_reason_counts": excluded,
         }
     return out
@@ -2455,8 +2525,8 @@ def project_logistics(
     analytics = {
         "inbound_transit_hours": in_stats,
         "outbound_transit_hours": out_stats,
-        "fixed_transitions_inbound": _fixed_transition_analytics(inbound_rows, _INBOUND_FIXED_TRANSITIONS),
-        "fixed_transitions_outbound": _fixed_transition_analytics(outbound_rows, _OUTBOUND_FIXED_TRANSITIONS),
+        "fixed_transitions_inbound": _fixed_transition_analytics(inbound_rows, _INBOUND_FIXED_TRANSITIONS, now=now),
+        "fixed_transitions_outbound": _fixed_transition_analytics(outbound_rows, _OUTBOUND_FIXED_TRANSITIONS, now=now),
         "data_quality_excluded": {
             "inbound_transit": in_excluded,
             "outbound_transit": out_excluded,
