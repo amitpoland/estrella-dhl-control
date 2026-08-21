@@ -32,13 +32,14 @@ REGISTRY = _LOCAL if _LOCAL.exists() else _CANONICAL
 # perhaps one worktree ref. Anything above this is main-side.
 MAX_CONTAINING_REFS = 5
 
-# Known offenders, recorded 2026-08-21 and awaiting an operator correction.
-# xfail(strict=False) so the suite goes GREEN the moment they are corrected --
-# never relax MAX_CONTAINING_REFS to make them pass.
-KNOWN_UNCORRECTED = {
-    "accounting-cfo-mis": "expected_head 2f04ae1c is PR #1264's merge commit (105 refs)",
-    "packing-advance": "expected_head dbd38d35 is PR #1287's merge commit (51 refs)",
-}
+# Both 2026-08-21 offenders were corrected on 2026-08-22, so no entry is
+# exempt any more and the assertion below stands unconditionally.
+#
+# The first version of this test carried them as `pytest.xfail(...)` calls.
+# That was wrong twice over: imperative xfail ABORTS the test before the
+# assertion runs, so a corrected entry could never XPASS and the check could
+# never observe its own success -- the very thing it was written to detect.
+# A check that cannot report "fixed" is not a check.
 
 
 def _entries():
@@ -49,6 +50,13 @@ def _entries():
     except ValueError:
         pytest.fail("operational registry is unreadable")
     return sorted((data.get("campaigns") or {}).items())
+
+
+def _branch_tip(branch):
+    out = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "--verify", "refs/heads/" + branch],
+        capture_output=True, text=True, timeout=30)
+    return out.stdout.strip() if out.returncode == 0 else None
 
 
 def _containing_refs(sha):
@@ -64,12 +72,33 @@ def _containing_refs(sha):
 def test_expected_head_is_a_branch_tip_not_a_main_side_sha(name, entry):
     if entry is None:
         pytest.skip("no operational registry on this host")
-    if name in KNOWN_UNCORRECTED:
-        pytest.xfail(KNOWN_UNCORRECTED[name])
     head = (entry.get("expected_head") or "").strip()
-    assert head, "%s has no expected_head" % name
+    if not head and not (entry.get("last_verified_head") or "").strip():
+        # SCOPE REGISTRATION (R12) requires the entry to exist BEFORE the first
+        # commit, and at that moment there is no branch tip to record. Both head
+        # fields empty is that state, and it is legitimate. One empty and one
+        # set is not, and falls through to the assertion below.
+        pytest.skip("%s: registered pre-first-commit, no tip yet (R12)" % name)
+    assert head, "%s has last_verified_head but no expected_head" % name
+
+    branch = (entry.get("branch") or "").strip()
+    tip = _branch_tip(branch) if branch else None
+    if tip:
+        # The EXACT test. Containment was only ever a proxy for it, and the proxy
+        # is ambiguous: a main-side merge commit and a branch tip that has since
+        # been merged both appear in dozens of refs. The branch ref is the fact,
+        # so use the fact wherever the branch still exists.
+        assert tip.startswith(head) or head.startswith(tip[:len(head)]), (
+            "%s: expected_head %s is not the tip of %s (tip is %s). A registry "
+            "records the BRANCH TIP; a main-side merge or squash commit "
+            "identifies nothing (registry rule `sha_authority`)."
+            % (name, head[:12], branch, tip[:12]))
+        return
+
+    # Branch deleted (the usual squash-merge outcome): fall back to containment.
+    # A genuine tip is carried by one or two refs; a main-side commit by dozens.
     refs = _containing_refs(head)
     assert len(refs) <= MAX_CONTAINING_REFS, (
-        "%s: expected_head %s is contained by %d refs -- that is a main-side "
-        "commit, not a branch tip (registry rule `sha_authority`)"
-        % (name, head[:12], len(refs)))
+        "%s: branch %r no longer exists and expected_head %s is contained by %d "
+        "refs -- that is a main-side commit, not a branch tip"
+        % (name, branch, head[:12], len(refs)))
