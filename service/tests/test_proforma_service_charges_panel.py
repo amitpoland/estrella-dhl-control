@@ -313,16 +313,36 @@ def test_apply_button_not_rendered_when_already_applied():
     assert "btn-apply-charge-" in _JSX_TEXT
     assert "Already applied" in _JSX_TEXT
 
-    # The ternary structure: alreadyApplied ? <text> : <button>
-    # Find the relative positions to confirm they're in separate branches.
-    idx_applied = _JSX_TEXT.index("Already applied")
-    idx_apply_btn = _JSX_TEXT.index("btn-apply-charge-")
-    # The Already-applied branch is a ternary arm; the Apply button is the else arm.
-    # They must not be in the same render path — the ternary operator "?" separates them.
-    segment = _JSX_TEXT[min(idx_applied, idx_apply_btn):max(idx_applied, idx_apply_btn)]
-    assert "?" in segment or "alreadyApplied" in segment, (
-        "Slice-2: 'Already applied' and btn-apply-charge must be in mutually "
-        "exclusive ternary branches (separated by alreadyApplied conditional)"
+    # This assertion used to slice _JSX_TEXT between the two strings and check
+    # that the slice contained "?" or "alreadyApplied". In an 8000-line JSX file
+    # that slice spans hundreds of lines and always contains both, so the pin
+    # passed unconditionally -- it could not distinguish "the two are in mutually
+    # exclusive branches" from "both strings appear somewhere in the file". It
+    # is replaced here with the structural check the docstring always claimed.
+    #
+    # The rendered shape is:
+    #     ) : alreadyApplied ? (
+    #           <span>Already applied (...)</span>     <- TRUE arm
+    #     ) : (
+    #           ... {canEdit && <button btn-apply-charge-... >}   <- ELSE arm
+    #     )
+    # so the contract is simply: the button must NOT be inside the true arm.
+    start = _JSX_TEXT.index(": alreadyApplied ? (")
+    else_arm_at = _JSX_TEXT.index(") : (", start)
+    true_arm = _JSX_TEXT[start:else_arm_at]
+
+    assert "Already applied" in true_arm, (
+        "the alreadyApplied true-arm must render the 'Already applied' text"
+    )
+    assert "btn-apply-charge-" not in true_arm, (
+        "Slice-2: btn-apply-charge must NOT be inside the alreadyApplied "
+        "true-arm -- rendering it there re-offers Apply for a charge already on "
+        "the draft and walks straight into the POST /service-charges dup guard"
+    )
+    # ...and it must genuinely live in the else arm that follows.
+    else_arm = _JSX_TEXT[else_arm_at:else_arm_at + 4000]
+    assert "btn-apply-charge-" in else_arm, (
+        "btn-apply-charge must be rendered in the not-already-applied else arm"
     )
 
 

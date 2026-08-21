@@ -75,6 +75,23 @@ def test_get_dhl_logistics_shipment_goes_through_the_wrapped_call():
 # ── the consumer ─────────────────────────────────────────────────────────────
 
 
+def _strip_js_comments(src: str) -> str:
+    """Drop // line comments so assertions examine CODE, not prose.
+
+    The effect's own comments quote the defect they exist to explain (`d.events`),
+    which a naive scan reads as a live call site. Only `//` to end-of-line is
+    handled, and only when not preceded by `:` so a `https://` inside a string is
+    left alone -- enough for this block, which contains no URLs or block comments.
+    """
+    out = []
+    for line in src.splitlines():
+        idx = line.find("//")
+        while idx > 0 and line[idx - 1] == ":":
+            idx = line.find("//", idx + 2)
+        out.append(line if idx < 0 else line[:idx])
+    return "\n".join(out)
+
+
 def _drawer_effect() -> str:
     """The DhlTowerDrawer fetch effect, isolated."""
     src = _pages()
@@ -91,11 +108,26 @@ def test_the_drawer_reads_events_from_the_envelope_data():
 
 
 def test_the_drawer_does_not_read_events_off_the_envelope_itself():
-    """The exact defect: `d.events` on a {ok, data} envelope is always undefined."""
-    effect = _drawer_effect()
-    assert not re.search(r"\bd\s*&&\s*d\.events\b", effect), (
-        "reading .events directly off the PzApi envelope silently yields an "
-        "empty timeline -- read result.data.events"
+    """EVERY `.events` read in the effect must come from result.data.
+
+    The original pin matched only the literal `d && d.events` -- the defect
+    exactly as it happened to be written, and nothing else. A regression spelled
+    `response.events`, `data.events` or `result.events` would have sailed past
+    it, and so would a competing envelope-level read added ALONGSIDE the correct
+    one, because the positive pin would still find result.data.events and stay
+    green.
+
+    Enumerating every read makes the assertion exhaustive instead of
+    example-shaped.
+    """
+    effect = _strip_js_comments(_drawer_effect())
+    reads = re.findall(r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.events\b", effect)
+    assert reads, "the effect must read .events from somewhere"
+    wrong = [r for r in reads if r != "result.data"]
+    assert not wrong, (
+        "every .events read must be result.data.events; found %r. The PzApi "
+        "envelope is {ok, data}, so reading .events at the envelope level "
+        "silently yields an empty timeline." % (wrong,)
     )
 
 
