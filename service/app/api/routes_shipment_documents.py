@@ -40,6 +40,22 @@ from fastapi.responses import JSONResponse, Response
 
 from ..core.security import require_api_key
 
+# The document family is imported here, at startup, on one thread — never on
+# first request. These modules import nothing from the application (they are
+# leaves), so there is no cycle to trip and no authority runs upward; what an
+# eager import buys is that no worker thread can ever be the one to build them.
+# A lazy first import inside a FastAPI threadpool endpoint is how production
+# got "cannot import name 'resolve_document_parties' from partially
+# initialized module" — the same race already fixed for storage_health in
+# routes_debug.py (PR #582, "BUG 2"). CPython's "(circular import)" wording is
+# a guess; the cycle it names does not exist. Pin: tests/test_document_import_authority.py
+from ..services.commercial_cmr import export_cmr_document_for_draft, render_cmr_html
+from ..services.commercial_packing_list import (
+    build_commercial_packing_document,
+    export_packing_list_pdf_for_draft,
+)
+from ..services.commercial_packing_list_html import render_commercial_packing_list_html
+
 router = APIRouter(prefix="/api/v1/shipment-documents", tags=["shipment-documents"])
 
 log = logging.getLogger(__name__)
@@ -98,7 +114,6 @@ def _render_commercial_packing_list_pdf(draft_id: int) -> tuple[bytes, str]:
     No second field mapping or renderer.
     """
     from ..services import proforma_invoice_link_db as pildb
-    from ..services.commercial_packing_list import export_packing_list_pdf_for_draft
 
     storage_root = _storage_root()
     draft = pildb.get_draft_by_id(_proforma_db(), int(draft_id))
@@ -170,7 +185,6 @@ def get_packing_list_json(
     """Canonical Packing List document model (same projection as PDF/email)."""
     from ..services import proforma_invoice_link_db as pildb
     from ..services.carrier import doc_package
-    from ..services.commercial_packing_list import build_commercial_packing_document
 
     storage_root = _storage_root()
     draft = pildb.get_draft_by_id(_proforma_db(), int(draft_id))
@@ -210,8 +224,6 @@ def get_packing_list_html(
     """Canonical Packing List HTML — same presentation Chrome prints to PDF."""
     from ..services import proforma_invoice_link_db as pildb
     from ..services.carrier import doc_package
-    from ..services.commercial_packing_list import build_commercial_packing_document
-    from ..services.commercial_packing_list_html import render_commercial_packing_list_html
 
     storage_root = _storage_root()
     draft = pildb.get_draft_by_id(_proforma_db(), int(draft_id))
@@ -302,7 +314,6 @@ def get_cmr_json(
     draft_id: int, _auth: None = Depends(require_api_key),
 ) -> JSONResponse:
     """Canonical CMR document model — Preview / Logistics consume this projection."""
-    from ..services.commercial_cmr import export_cmr_document_for_draft
 
     document = export_cmr_document_for_draft(
         draft_id=int(draft_id),
@@ -321,7 +332,6 @@ def get_cmr_html(
     draft_id: int, _auth: None = Depends(require_api_key),
 ) -> Response:
     """Canonical CMR HTML — same presentation Chrome prints to PDF."""
-    from ..services.commercial_cmr import export_cmr_document_for_draft, render_cmr_html
 
     document = export_cmr_document_for_draft(
         draft_id=int(draft_id),
