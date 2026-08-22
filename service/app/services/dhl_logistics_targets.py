@@ -95,3 +95,65 @@ def targets_payload() -> Dict[str, Any]:
         "bottleneck_min_n": BOTTLENECK_MIN_N,
         "delta_min_previous_n": DELTA_MIN_PREVIOUS_N,
     }
+
+
+# ── Statistical independence policy ──────────────────────────────────────────
+# Several parcels handed over in one drop are ONE observation of how long that
+# handover took, scanned several times. Counting the scans as independent
+# inflates every figure derived from them.
+#
+# The policy is keyed by the TERMINATING EVENT, not by direction and not by
+# metric name, because burst structure is a property of what the carrier does
+# at that event. It is enabled ONLY where the live gap distribution shows two
+# separated populations -- a scan burst, then nothing, then the next real
+# event. Measured 2026-08-22 over the live outbound population:
+#
+#   acceptance   bursts 0, 2, 2, 2, 2, 2, 9 s | next observed gap 1080 s
+#                -> separated by two orders of magnitude. CLUSTERED.
+#   delivered    bursts 0, 0 s                | next observed gap 3481 s
+#                -> separated. CLUSTERED.
+#   departed     0 x16, then 430, 720 s       | next 915, 1009, 1530 s
+#                -> CONTINUOUS across 900 s. NOT CLUSTERED.
+#   processed_at_facility
+#                0 x16, 18, 33, 233, 349,
+#                503, 697, 858 s              | next 960, 960, 986 s
+#                -> CONTINUOUS across 900 s. NOT CLUSTERED.
+#
+# This REPLACES the single global threshold proposed in #1328, whose comment
+# asserted "between handovers minimum 4.5 hours" and "departed has no sub-hour
+# gaps at all". Re-measurement disproved both: the next acceptance gap is 1080 s,
+# not 4.5 h, and departed carries eighteen sub-900 s gaps. A global rule would
+# have manufactured an independence boundary the data does not support for two
+# of the four stages.
+#
+# 900 s is retained for the two enabled events because it sits far above their
+# observed burst cadence (9 s) and far below their next observed real gap
+# (1080 s) -- deliberately NOT merging that 1080 s pair, since an ambiguous pair
+# merged understates independence rather than overstating it.
+#
+# A terminating event absent from this table keeps exact-event semantics. Do not
+# add one without publishing the gap distribution that justifies it.
+INDEPENDENCE_POLICY_BY_TERMINATING_EVENT = {
+    "acceptance": 900,
+    "delivered": 900,
+}
+
+# The bands above were measured on OUTBOUND events only. Inbound has not been
+# measured, and rule: a stage without a proven boundary keeps its existing
+# semantics -- so the policy does not silently reach across scopes.
+INDEPENDENCE_MEASURED_SCOPES = ("outbound",)
+
+# Raw-to-independent ratio at or above which the count is labelled as inflated,
+# so no reader takes a bare N as evidence of that many observations.
+INDEPENDENCE_INFLATION_FLAG_RATIO = 1.5
+
+
+def independence_tolerance_seconds(terminating_event, scope):
+    """Seconds within which two terminating events are one physical event.
+
+    None means: no proven burst boundary for this event type in this scope, so
+    events stay exactly as observed. None is the default and the safe answer.
+    """
+    if scope not in INDEPENDENCE_MEASURED_SCOPES:
+        return None
+    return INDEPENDENCE_POLICY_BY_TERMINATING_EVENT.get(terminating_event)

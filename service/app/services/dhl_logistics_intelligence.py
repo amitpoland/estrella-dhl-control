@@ -89,6 +89,57 @@ def _fmt_duration(hours: Optional[float]) -> Optional[str]:
     return projector._fmt_duration(hours)  # noqa: SLF001
 
 
+def _independent_groups(samples, tolerance_seconds):
+    """Group samples that describe ONE physical terminating event.
+
+    ``tolerance_seconds`` is None for every event type without a proven burst
+    boundary; then each sample stands alone and this returns the population
+    unchanged. That default is the whole point -- clustering is opt-in per
+    terminating event, on published evidence, never a blanket rule.
+
+    Ordering is by ``end_ts``: two terminating events closer together than the
+    tolerance are one handover scanned twice. Samples without an ``end_ts``
+    cannot be placed on the timeline and are each kept as their own observation
+    rather than being swept into a neighbouring group.
+
+    This is a STATISTICAL WEIGHT decision. It does not touch, rewrite or
+    deduplicate any stored tracking event -- raw event identity belongs to
+    ``tracking_normalizer._dedup_key`` and is not this layer's business.
+    """
+    if not samples:
+        return []
+    if not tolerance_seconds:
+        return [[s] for s in samples]
+    placed = sorted((s for s in samples if s.get("end_ts")), key=lambda s: s["end_ts"])
+    loose = [[s] for s in samples if not s.get("end_ts")]
+    groups = []
+    for sample in placed:
+        if groups and (sample["end_ts"] - groups[-1][-1]["end_ts"]).total_seconds() <= tolerance_seconds:
+            groups[-1].append(sample)
+        else:
+            groups.append([sample])
+    return groups + loose
+
+
+def _per_group_typical(groups):
+    """The median of per-group medians.
+
+    A group is one observation however many parcels it was scanned as, so nine
+    repeats of one slow handover no longer outvote four fast ones.
+    """
+    per_group = []
+    for g in groups:
+        hours = sorted(float(x["hours"]) for x in g)
+        mid = len(hours) // 2
+        per_group.append(hours[mid] if len(hours) % 2 else (hours[mid - 1] + hours[mid]) / 2.0)
+    if not per_group:
+        return None
+    per_group.sort()
+    mid = len(per_group) // 2
+    value = per_group[mid] if len(per_group) % 2 else (per_group[mid - 1] + per_group[mid]) / 2.0
+    return round(float(value), 2)
+
+
 def _cohort_stats(hours_list: List[float]) -> Dict[str, Any]:
     return projector._cohort_stats(hours_list)  # noqa: SLF001
 
@@ -303,6 +354,8 @@ def _transition_period_dto(
     transition_id: str,
     label: str,
     now: datetime,
+    terminating_event: Optional[str] = None,
+    scope: str = "",
 ) -> Dict[str, Any]:
     target = targets.target_hours(transition_id)
     all_hours = [float(s["hours"]) for s in samples]
@@ -310,7 +363,26 @@ def _transition_period_dto(
 
     cur_start = now - timedelta(days=30)
     prev_start = now - timedelta(days=60)
-    current = [float(s["hours"]) for s in samples if s.get("end_ts") and cur_start <= s["end_ts"] < now]
+    current_samples = [s for s in samples if s.get("end_ts") and cur_start <= s["end_ts"] < now]
+    current = [float(s["hours"]) for s in current_samples]
+
+    # Statistical independence, by terminating event, on published evidence.
+    tolerance = targets.independence_tolerance_seconds(terminating_event, scope)
+    groups = _independent_groups(current_samples, tolerance)
+    n_shipments = len(current_samples)
+    n_independent = len(groups)
+    independence_basis = (
+        "burst_tolerance_%ds" % tolerance if tolerance else "exact_event"
+    )
+    inflation_ratio = (
+        round(n_shipments / n_independent, 2) if n_independent else None
+    )
+    inflation_flagged = bool(
+        tolerance
+        and inflation_ratio is not None
+        and inflation_ratio >= targets.INDEPENDENCE_INFLATION_FLAG_RATIO
+    )
+    ranking_typical = _per_group_typical(groups) if tolerance else None
     previous = [float(s["hours"]) for s in samples if s.get("end_ts") and prev_start <= s["end_ts"] < cur_start]
     cur_stats = _cohort_stats(current)
     prev_stats = _cohort_stats(previous)
@@ -372,8 +444,36 @@ def _transition_period_dto(
         "delta_suppressed_reason": delta_suppressed,
         "excess_vs_target_hours": excess_vs_target,
         "n": all_stats.get("n"),
+        # Both counts are always published. A bare N is what let one handover
+        # scanned five times read as five observations.
+        "n_shipments": n_shipments,
+        "n_independent": n_independent,
+        "independence_basis": independence_basis,
+        "independence_tolerance_seconds": tolerance,
+        "inflation_ratio": inflation_ratio,
+        "inflation_flagged": inflation_flagged,
+        "observation_noun": _observation_noun(terminating_event, n_independent),
+        "ranking_typical": ranking_typical,
         "excluded_n": None,  # filled by caller from projector analytics when available
     }
+
+
+# What the stage actually terminates on. A count is meaningless without its
+# noun: "13" is not evidence, "6 collections" is.
+_OBSERVATION_NOUNS = {
+    "acceptance": ("collection", "collections"),
+    "delivered": ("delivery", "deliveries"),
+    "departed": ("departure", "departures"),
+    "destination": ("arrival", "arrivals"),
+    "first_movement": ("collection", "collections"),
+    "pz": ("receipt", "receipts"),
+}
+
+
+def _observation_noun(terminating_event: Optional[str], n: int) -> str:
+    singular, plural = _OBSERVATION_NOUNS.get(
+        terminating_event or "", ("observation", "observations"))
+    return singular if n == 1 else plural
 
 
 _DATA_QUALITY_FIELDS = (
@@ -414,7 +514,9 @@ def build_transition_kpis(
     inbound: Dict[str, Any] = {}
     for key, label, pair in projector._INBOUND_FIXED_TRANSITIONS:  # noqa: SLF001
         samples = projector.collect_transition_samples(inbound_rows, key, pair)  # noqa: SLF001
-        dto = _transition_period_dto(samples, transition_id=key, label=label, now=now)
+        dto = _transition_period_dto(
+            samples, transition_id=key, label=label, now=now,
+            terminating_event=pair.split("|")[-1], scope="inbound")
         base = (analytics.get("fixed_transitions_inbound") or {}).get(key) or {}
         _attach_data_quality(dto, base)
         inbound[key] = dto
@@ -422,7 +524,9 @@ def build_transition_kpis(
     outbound: Dict[str, Any] = {}
     for key, label, pair in projector._OUTBOUND_FIXED_TRANSITIONS:  # noqa: SLF001
         samples = projector.collect_transition_samples(outbound_rows, key, pair)  # noqa: SLF001
-        dto = _transition_period_dto(samples, transition_id=key, label=label, now=now)
+        dto = _transition_period_dto(
+            samples, transition_id=key, label=label, now=now,
+            terminating_event=pair.split("|")[-1], scope="outbound")
         base = (analytics.get("fixed_transitions_outbound") or {}).get(key) or {}
         _attach_data_quality(dto, base)
         outbound[key] = dto
@@ -449,7 +553,13 @@ def _ranking_exclusion(dto: Dict[str, Any]) -> Optional[str]:
     if dto.get("publishable") is False:
         return dto.get("not_publishable_reason") or "not_publishable"
     cur = dto.get("current_30d") or {}
-    n_now = cur.get("n") or 0
+    # Where an independence authority exists for this terminating event, the
+    # floor counts INDEPENDENT observations. Otherwise it counts what it always
+    # counted -- a stage with no proven burst boundary keeps its semantics.
+    if dto.get("independence_tolerance_seconds"):
+        n_now = dto.get("n_independent") or 0
+    else:
+        n_now = cur.get("n") or 0
     if n_now < targets.BOTTLENECK_MIN_N:
         return "insufficient_recent_samples"
     if cur.get("typical") is None or dto.get("target_hours") is None:
@@ -485,8 +595,28 @@ def build_bottleneck_ranking(transition_kpis: Dict[str, Any]) -> Dict[str, Any]:
                 continue
 
             cur = dto["current_30d"]
-            excess = round(float(cur["typical"]) - float(dto["target_hours"]), 2)
-            n_now = cur.get("n") or 0
+            # Where an independence authority exists, the stage is ranked on the
+            # median of per-observation medians -- nine repeats of one slow
+            # handover must not outvote four fast ones. Where it does not, the
+            # existing row median stands unchanged.
+            typical_for_rank = dto.get("ranking_typical")
+            if typical_for_rank is None:
+                typical_for_rank = cur.get("typical")
+            excess = round(float(typical_for_rank) - float(dto["target_hours"]), 2)
+            if excess <= 0:
+                # Removing inflation can move a stage back under target. It is
+                # then not a bottleneck, and saying so is the point.
+                excluded.append({
+                    "id": tid, "scope": scope, "label": dto.get("label"),
+                    "reason": "meeting_target_on_independent_observations",
+                    "n": dto.get("n"),
+                    "current_30d_n": cur.get("n"),
+                    "contamination_pct": dto.get("contamination_pct"),
+                })
+                continue
+            n_now = dto.get("n_independent") or 0
+            if not dto.get("independence_tolerance_seconds"):
+                n_now = cur.get("n") or 0
             ranked.append({
                 "id": tid,
                 "scope": scope,
@@ -494,6 +624,12 @@ def build_bottleneck_ranking(transition_kpis: Dict[str, Any]) -> Dict[str, Any]:
                 "excess_vs_target_hours": excess,
                 "excess_human": _fmt_duration(excess),
                 "n": n_now,
+                "n_shipments": dto.get("n_shipments"),
+                "n_independent": dto.get("n_independent"),
+                "observation_noun": dto.get("observation_noun"),
+                "independence_basis": dto.get("independence_basis"),
+                "inflation_ratio": dto.get("inflation_ratio"),
+                "inflation_flagged": dto.get("inflation_flagged"),
                 "n_all_time": dto.get("n"),
                 "window": "current_30d",
                 "contribution_hours": round(excess * float(n_now), 2),
@@ -698,16 +834,10 @@ def build_management_summary(
             "stage": business_label(top["id"], top.get("label")) if top else None,
             "excess_hours": top.get("excess_vs_target_hours") if top else None,
             "excess_human": top.get("excess_human") if top else None,
-            "shipments": top.get("n") if top else None,
-            "headline": (
-                "%s is taking %s longer than target, on %d recent shipment%s" % (
-                    business_label(top["id"], top.get("label")),
-                    top.get("excess_human") or ("%sh" % top.get("excess_vs_target_hours")),
-                    top.get("n") or 0,
-                    plural(top.get("n") or 0),
-                )
-                if top else "No step is provably running slow right now"
-            ),
+            "shipments": top.get("n_shipments") if top else None,
+            "independent_observations": top.get("n_independent") if top else None,
+            "observation_noun": top.get("observation_noun") if top else None,
+            "headline": _top_headline(top),
             "steps_not_measurable": len([
                 e for e in excluded
                 if e.get("reason") in (
@@ -739,6 +869,29 @@ def build_management_summary(
         "intervention_queue_count": len(intervention),
         "window_days": 30,
     }
+
+
+def _top_headline(top: Optional[Dict[str, Any]]) -> str:
+    """The one sentence a manager reads. It must not quote a bare N.
+
+    "on 13 recent shipments" was true and misleading: those thirteen parcels
+    were six collections. The count is named by what the stage terminates on,
+    and where the two differ the sentence carries both, so nobody reads the
+    parcel count as evidence of that many observations.
+    """
+    if not top:
+        return "No step is provably running slow right now"
+    stage = business_label(top["id"], top.get("label"))
+    longer = top.get("excess_human") or ("%sh" % top.get("excess_vs_target_hours"))
+    independent = top.get("n_independent") or 0
+    shipments = top.get("n_shipments") or 0
+    noun = top.get("observation_noun") or "observations"
+    if top.get("independence_basis") == "exact_event" or independent == shipments:
+        return "%s is taking %s longer than target, on %d recent %s" % (
+            stage, longer, independent or shipments, noun)
+    return "%s is taking %s longer than target, on %d %s (%d shipment%s)" % (
+        stage, longer, independent, noun, shipments,
+        "" if shipments == 1 else "s")
 
 
 def build_cost_intelligence(outbound_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
