@@ -321,39 +321,58 @@ def test_unmapped_customer_blocks_through_the_one_recipient_authority(storage, m
 # ── business readiness vs live release are independent ──────────────────────
 
 
-def test_business_ready_true_with_live_release_false_is_valid(storage):
+def test_business_ready_and_live_release_stay_separate_axes(storage):
+    """Two axes, still independent — but live_release now answers "can this
+    process reach the carrier at all", not "was this batch released".
+
+    MIGRATED 2026-08-22: this previously asserted live_release.ready is False
+    because the allowlist was empty. The allowlist no longer decides anything,
+    so with status=live and credentials present the honest answer is True.
+    """
     _seed_draft(storage, CLIENT_A, box="BOX-A", batch=PLAIN_BATCH)
     proj = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A)
     assert proj["business_readiness"]["ready"] is True
     assert proj["live_release"]["specifically_allowlisted"] is False
-    assert proj["live_release"]["ready"] is False
+    assert proj["live_release"]["ready"] is True
+    assert proj["live_release"]["reason"] is None
+
+    # ...and the axes really are separate: a non-live MODE leaves business
+    # readiness untouched.
+    shadow = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A,
+                      settings_over={"carrier_api_status": "shadow"})
+    assert shadow["business_readiness"]["ready"] is True
+    assert shadow["live_release"]["ready"] is False
 
 
-def test_release_reason_never_suggests_widening_the_allowlist(storage):
+def test_release_reason_never_sends_the_operator_to_a_release_process(storage):
+    """MIGRATED: the reason must not mention the allowlist OR the governed
+    per-shipment release, because neither exists any more. Telling an operator
+    to release a shipment that nothing releases is fake readiness."""
     _seed_draft(storage, CLIENT_A, batch=PLAIN_BATCH)
-    reason = _project(storage, batch=PLAIN_BATCH,
-                      client_ref=CLIENT_A)["live_release"]["reason"]
-    assert "governed live-booking process" in reason
-    assert "*" not in reason and "CARRIER_LIVE_ALLOWLIST" not in reason
+    for status in ("shadow", "pending"):
+        reason = _project(storage, batch=PLAIN_BATCH, client_ref=CLIENT_A,
+                          settings_over={"carrier_api_status": status},
+                          )["live_release"]["reason"] or ""
+        assert reason, status
+        for banned in ("*", "CARRIER_LIVE_ALLOWLIST", "allowlist",
+                       "governed live-booking process", "Release this"):
+            assert banned not in reason, (status, banned, reason)
 
 
-def test_allowlist_reading_matches_the_live_gate_exactly(storage):
-    """One string, two readers — they must never disagree about a batch."""
-    from app.services.carrier.adapters.live import DhlExpressLiveAdapter
-    from app.services.carrier.factory import CarrierConfig
-    from app.services.carrier.models.shipment import CarrierAllowlistError
-
-    for raw in ("", "  ", BATCH, "other," + BATCH, "other", "*", " " + BATCH + " , other "):
-        adapter = DhlExpressLiveAdapter(CarrierConfig(status="live", live_allowlist=raw))
-        try:
-            adapter._check_allowlist(BATCH)
-            gate_allows = True
-        except CarrierAllowlistError:
-            gate_allows = False
+def test_the_allowlist_string_changes_nothing_the_projection_reports(storage):
+    """Was: "one string, two readers — they must never disagree". There is now
+    exactly ZERO readers of that string on the booking path, so the pin becomes
+    the stronger one — the projection is INVARIANT under it."""
+    baseline = None
+    for raw in ("", "  ", BATCH, "other," + BATCH, "other", "*",
+                " " + BATCH + " , other "):
         projected = _project(
             storage, settings_over={"carrier_live_allowlist": raw},
-        )["live_release"]["specifically_allowlisted"]
-        assert projected == gate_allows, raw
+        )["live_release"]
+        assert projected["specifically_allowlisted"] is False, raw
+        if baseline is None:
+            baseline = projected
+        assert projected == baseline, raw
 
 
 # ── server-side duplicate guard on the booking endpoint ─────────────────────
@@ -486,7 +505,10 @@ def test_readiness_endpoint_is_registered_and_creates_nothing(storage):
     assert body["batch_id"] == PLAIN_BATCH
     assert body["customer_scope"] == CLIENT_A
     assert body["business_readiness"]["ready"] is True
-    assert body["live_release"]["ready"] is False        # allowlist closed, correctly
+    # MIGRATED 2026-08-22: was False because the allowlist was closed. Nothing
+    # closes per-batch any more; status=live + credentials ⇒ honestly ready.
+    assert body["live_release"]["ready"] is True
+    assert body["live_release"]["specifically_allowlisted"] is False
     assert body["warehouse"]["booking_dependency"] is False
     coord.create_shipment.assert_not_called()
 

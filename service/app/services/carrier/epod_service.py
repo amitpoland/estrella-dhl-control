@@ -87,11 +87,10 @@ def ensure_epod_result(batch_id: str, tracking_ref: str) -> EpodResult:
     try:
         from .credentials.consumer_bridge import express_carrier_config_kwargs
 
-        kwargs = express_carrier_config_kwargs("epod")
-        # Historical ePOD soft-open when allowlist unset (parity with prior "*").
-        if not (kwargs.get("live_allowlist") or "").strip():
-            kwargs["live_allowlist"] = "*"
-        cfg = CarrierConfig(**kwargs)
+        # The historical "*" soft-open is gone with the gate it opened: the
+        # booking allowlist was retired 2026-08-22. Fetching proof of delivery
+        # for an already-delivered shipment is a read, not a booking.
+        cfg = CarrierConfig(**express_carrier_config_kwargs("epod"))
         adapter = get_adapter(cfg)
     except Exception as exc:
         return EpodResult("error", detail=f"adapter:{exc}")

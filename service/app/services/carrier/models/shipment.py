@@ -145,7 +145,33 @@ class CarrierConfigError(Exception):
 
 
 class CarrierAllowlistError(Exception):
-    """Raised when a batch_id is not on the live allowlist."""
+    """Raised when a batch_id is not on the live allowlist.
+
+    RETIRED from operator booking authorization (2026-08-22). The per-batch
+    allowlist was a release control that had been promoted into transaction
+    authority: it refused legitimate operator bookings that had already
+    satisfied every business authority. Booking authorization is now
+    authorized operator + valid shipment data + no active duplicate
+    (CarrierDuplicateBookingError). The class is kept because the route still
+    maps it defensively and callers outside booking may still raise it.
+    """
+
+
+class CarrierDuplicateBookingError(CarrierGateError):
+    """This canonical shipment leg already has an active booking.
+
+    THE duplicate rule, enforced at the coordinator so every caller is bound:
+    the same leg must not receive a second AWB. Carries the existing row so
+    the route can surface the AWB the operator already has instead of an
+    opaque refusal.
+
+    A CarrierGateError subclass on purpose: any caller that only handles the
+    broad type still REFUSES the booking. Fail-closed by inheritance.
+    """
+
+    def __init__(self, message: str, existing: Optional[dict] = None) -> None:
+        super().__init__(message)
+        self.existing = existing or {}
 
 
 class CarrierProviderStateUnknownError(Exception):

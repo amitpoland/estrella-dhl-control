@@ -624,6 +624,64 @@ def get_client_shipment(
     return _row(row)
 
 
+def get_active_booking_for_leg(
+    db_path: Path, batch_id: str, client_ref: Optional[str] = None
+) -> Optional[dict]:
+    """The booking that is ALREADY in force for this canonical shipment leg.
+
+    THE duplicate-protection read. "In force" is not a new idea invented here:
+    it is _IS_COMPLETED_BOOKING, the same predicate _BOOKING_AUTHORITY_ORDER
+    already uses to decide which competing row IS this leg's shipment — a real
+    tracking_ref, state complete, and not marked do-not-use. Defining it twice
+    is how the ranking and the guard would drift apart, so it is defined once
+    and read here.
+
+    Narrowed by one explicit clause: simulated rows are excluded. What this
+    guard protects is the operator from a second CHARGEABLE AWB, and a shadow
+    ``SIM-*`` reference is not a shipment anyone can hand to a courier. Letting
+    a simulation block a real booking would be the same over-blocking this
+    guard replaced the carrier_live_allowlist to end. A customer-arranged
+    external registration is NOT simulated — it names a real parcel already in
+    the carrier's hands — so it blocks, correctly.
+
+    Leg identity is (batch_id, client_ref) when the caller names a client, and
+    the batch alone when it does not. A blank client_ref does NOT collapse to
+    "any row for the batch": an unscoped booking request is a batch-level leg
+    and must see batch-level rows, which is exactly what the else-branch does.
+
+    Why this exists separately from the coordinator's idempotency key: the key
+    hashes weight, declared value, currency and account, so correcting a weight
+    from 2.4 to 2.5 kg computes a NEW key and the replay path never fires. That
+    is a second chargeable AWB for one parcel. The key answers "is this the
+    same REQUEST"; this answers "is this the same SHIPMENT", and only the
+    second one is duplicate protection.
+
+    do_not_use is the operator's release valve, not a loophole: retiring a
+    misprinted or superseded label is an explicit, attributed, audited act
+    (mark_do_not_use), after which this returns None and the leg is bookable
+    again. Read-only — never mutates state.
+    """
+    scoped = (client_ref or "").strip()
+    with _connect(db_path) as conn:
+        if scoped:
+            row = conn.execute(
+                "SELECT * FROM carrier_shipments "
+                f"WHERE batch_id = ? AND client_ref = ? AND {_OUTBOUND_ONLY} "
+                f"AND {_IS_COMPLETED_BOOKING} AND COALESCE(simulated, 0) = 0 "
+                "ORDER BY created_at DESC LIMIT 1",
+                (batch_id, scoped),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM carrier_shipments "
+                f"WHERE batch_id = ? AND {_OUTBOUND_ONLY} "
+                f"AND {_IS_COMPLETED_BOOKING} AND COALESCE(simulated, 0) = 0 "
+                "ORDER BY created_at DESC LIMIT 1",
+                (batch_id,),
+            ).fetchone()
+    return _row(row)
+
+
 def get_shipment_for_draft(
     db_path: Path,
     batch_id: str,

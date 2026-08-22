@@ -2,8 +2,17 @@
 DhlExpressLiveAdapter — Phase D implementation.
 
 Guards (run before every API call):
-  1. Allowlist check  — batch_id must be in carrier_live_allowlist, or allowlist == {"*"}
-  2. Credential check — api_key + api_secret + account_number must be set
+  1. Credential check — api_key + api_secret + account_number must be set
+
+The per-batch carrier_live_allowlist was RETIRED from this path on 2026-08-22.
+It was a release control that had been promoted into transaction authority: a
+shipment that had satisfied every business authority was still refused until an
+operator edited .env and restarted the service. Booking authorization is now
+authorized operator + valid shipment data + no active duplicate, and duplicate
+protection lives where it belongs — CarrierCoordinator refuses a second AWB for
+a leg that already holds one, whatever the request parameters say.
+CARRIER_API_STATUS is still the kill switch: this adapter is only constructed
+at all when it is "live".
 
 HTTP: httpx.Client with BasicAuth(api_key, api_secret), timeout 30s.
 Endpoint: POST {api_url}/mydhlapi/shipments         (production, DHL_EXPRESS_USE_SANDBOX=false)
@@ -37,7 +46,6 @@ import httpx
 
 from .base import AbstractCarrierAdapter
 from ..models.shipment import (
-    CarrierAllowlistError,
     CarrierConfigError,
     CarrierGateError,
     CarrierProviderStateUnknownError,
@@ -91,15 +99,10 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
 
     def __init__(self, config: "CarrierConfig") -> None:
         self._config = config
-        raw = config.live_allowlist or ""
-        self._allowlist: frozenset[str] = frozenset(
-            b.strip() for b in raw.split(",") if b.strip()
-        )
 
     # ── public interface ──────────────────────────────────────────────────────
 
     def create_shipment(self, request: ShipmentRequest) -> ShipmentResult:
-        self._check_allowlist(request.batch_id)
         self._check_credentials()
 
         # DHL requires receiverDetails.contactInformation.phone (minLength 1).
@@ -475,21 +478,6 @@ class DhlExpressLiveAdapter(AbstractCarrierAdapter):
         return {"status": "not_found", "detail": "no_pdf_in_response"}
 
     # ── private guards ────────────────────────────────────────────────────────
-
-    def _check_allowlist(self, batch_id: str) -> None:
-        if not self._allowlist:
-            raise CarrierAllowlistError(
-                "carrier_live_allowlist is empty — live calls require at least one "
-                "batch_id or '*' in CARRIER_LIVE_ALLOWLIST."
-            )
-        if "*" in self._allowlist:
-            return  # wildcard — all batches allowed
-        if batch_id not in self._allowlist:
-            raise CarrierAllowlistError(
-                f"batch_id {batch_id!r} is not in carrier_live_allowlist. "
-                "Release this specific shipment through the governed "
-                "live-booking process — never widen the allowlist to permit all."
-            )
 
     def _api_path(self) -> str:
         """Return the DHL MyDHL API path prefix based on sandbox flag.

@@ -68,6 +68,7 @@ from ..services.carrier.cmr_number import cmr_document_number
 from ..services.carrier.models.shipment import (
     CarrierAllowlistError,
     CarrierConfigError,
+    CarrierDuplicateBookingError,
     CarrierGateError,
     CarrierProviderStateUnknownError,
     ShipmentRequest,
@@ -1365,14 +1366,41 @@ def create_shipment(
         result = coordinator.create_shipment(
             request, operator=operator, provider=provider,
         )
+    except CarrierDuplicateBookingError as exc:
+        # The leg already holds an AWB. Same rule and same response code as the
+        # pre-flight resolve_existing_leg_awb refusal above — one duplicate
+        # rule, one contract — but reached from the coordinator, which sees the
+        # per-customer bookings that pre-flight deliberately delegates to it.
+        #
+        # MUST precede `except CarrierGateError`: this is a SUBCLASS, so a
+        # broad handler placed first would swallow it and drop existing_awb.
+        _existing = getattr(exc, "existing", None) or {}
+        raise HTTPException(status_code=422, detail={
+            "error": str(exc),
+            "code": "SHIPMENT_LEG_ALREADY_BOOKED",
+            "batch_id": batch_id,
+            "client_ref": (body.client_ref or None),
+            "existing_awb": _existing.get("tracking_ref"),
+            "existing_awb_provider": _existing.get("provider"),
+            "existing_awb_source": "carrier_shipments",
+            "provider": provider,
+            "guidance": (
+                "No carrier request was sent — the existing booking is read "
+                "before the provider is contacted, so no AWB was created and "
+                "nothing was charged. Nothing needs to be released or "
+                "allowlisted. If the existing label must be replaced, mark it "
+                "DO NOT USE first; that releases this leg for re-booking."
+            ),
+        })
     except CarrierGateError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except CarrierAllowlistError as exc:
-        # The live-carrier allowlist is an operational configuration gate,
-        # not a server fault. CarrierAllowlistError and CarrierConfigError
-        # are SIBLINGS of CarrierGateError, not subclasses — without
-        # these two handlers they escape as an unexplained HTTP 500 and the
-        # operator is told nothing about why the booking was refused.
+        # RETIRED from the booking path (2026-08-22): the DHL and FedEx
+        # adapters no longer consult carrier_live_allowlist, so nothing on
+        # this path raises it any more. The handler stays because
+        # CarrierAllowlistError is a SIBLING of CarrierGateError, not a
+        # subclass — if any caller outside booking ever raises it again, this
+        # is the difference between an honest 422 and an unexplained HTTP 500.
         raise HTTPException(
             status_code=422,
             detail={
@@ -1380,11 +1408,8 @@ def create_shipment(
                 "code": "CARRIER_LIVE_ALLOWLIST_BLOCKED",
                 "provider": provider,
                 "guidance": (
-                    "No live carrier request was sent — the allowlist is "
-                    "checked before the provider is contacted, so no AWB was "
-                    "created and nothing was charged. Release this specific "
-                    "shipment through the governed live-booking process, then "
-                    "retry. Never widen the allowlist to permit all batches."
+                    "No live carrier request was sent, so no AWB was created "
+                    "and nothing was charged."
                 ),
             },
         )

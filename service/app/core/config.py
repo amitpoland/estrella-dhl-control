@@ -207,9 +207,10 @@ class Settings(BaseSettings):
     dhl_api_key:         Optional[str] = Field(default=None)
     fedex_client_id:     Optional[str] = Field(default=None)
     fedex_client_secret: Optional[str] = Field(default=None)
-    # FedEx production Ship kill switch. False = sandbox. Turning it on does
-    # NOT release a booking on its own: carrier_live_allowlist must also name
-    # the batch (FedExSandboxAdapter._check_production_allowed).
+    # FedEx production Ship kill switch. False = sandbox. This is CONFIGURATION
+    # — is FedEx production set up at all — not a per-shipment release; with it
+    # on and production credentials resolvable, FedEx booking is open to the
+    # operator (FedExSandboxAdapter._check_production_allowed).
     fedex_allow_production: bool = Field(default=False)
     # UPS OAuth client credentials (sandbox). Production booking is blocked in
     # the adapter regardless of what is configured here.
@@ -394,14 +395,26 @@ class Settings(BaseSettings):
     # Status gate — controls carrier API adapter selection.
     # "pending" (default): all carrier routes return 503; no API calls possible.
     # "shadow":            DhlExpressShadowAdapter used; responses are simulated.
-    # "live":              DhlExpressLiveAdapter used; requires allowlist entry.
+    # "live":              DhlExpressLiveAdapter used; real carrier bookings.
+    #
+    # This is THE carrier kill switch. It is service-wide and deliberately not
+    # per-shipment: an operator with a valid, non-duplicate shipment may book
+    # without anyone releasing that shipment individually.
     carrier_api_status: str = Field(default="pending")
 
     # PLT (Paperless Trade) gate — independent of carrier_api_status.
     carrier_plt_status: str = Field(default="pending")
 
-    # Comma-separated batch_ids allowed for live carrier calls.
-    # Empty = no live calls permitted even when carrier_api_status=live.
+    # RETIRED as booking authority 2026-08-22. Historically a comma-separated
+    # per-batch release list; it had been promoted from a release control into
+    # transaction authority and refused legitimate operator bookings that had
+    # already satisfied every business authority. No adapter reads it now.
+    #
+    # KEPT because service/scripts/review_launch.py asserts on the env var when
+    # standing up a review server, and because deleting a Settings field that
+    # production .env still sets is a separate, riskier change. Setting it has
+    # NO effect on whether a booking is permitted. Re-attaching authority to it
+    # requires an operator decision recorded in PROJECT_STATE.md DECISIONS.
     carrier_live_allowlist: str = Field(default="")
 
     # DHL Express API credentials — all None by default (no live capability).

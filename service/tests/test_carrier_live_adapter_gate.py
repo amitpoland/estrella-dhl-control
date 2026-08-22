@@ -14,7 +14,6 @@ import pytest
 from app.services.carrier.adapters.live import DhlExpressLiveAdapter
 from app.services.carrier.factory import CarrierConfig, get_adapter
 from app.services.carrier.models.shipment import (
-    CarrierAllowlistError,
     CarrierConfigError,
     CarrierGateError,
     ShipmentRequest,
@@ -60,38 +59,44 @@ def test_factory_unknown_status_raises_gate_error():
         get_adapter(CarrierConfig(status="active"))
 
 
-# ── allowlist guard ───────────────────────────────────────────────────────────
+# ── allowlist guard — RETIRED 2026-08-22 ─────────────────────────────────────
+#
+# These pins previously asserted that an empty or non-matching
+# carrier_live_allowlist raised CarrierAllowlistError before anything else.
+# That guard was removed: a per-batch release list had been promoted into
+# transaction authority and was refusing legitimate operator bookings. The
+# pins are MIGRATED, not weakened — they now assert the opposite behaviour on
+# purpose, so a silent re-introduction of the gate fails here.
+#
+# The protection that replaced it is CarrierCoordinator's leg guard; it is
+# pinned in test_carrier_booking_authorization.py, which is where a claim
+# about duplicate safety belongs.
 
 
-def test_empty_allowlist_raises_allowlist_error():
-    adapter = _live_adapter(allowlist="")
-    with pytest.raises(CarrierAllowlistError, match="empty"):
+@pytest.mark.parametrize("allowlist", [
+    "",                              # the case that used to block everything
+    "BATCH-PERMITTED",               # populated but omits this batch
+    " BATCH-002 , BATCH-003 ",       # whitespace/multi-entry, still omits it
+])
+def test_the_allowlist_no_longer_decides_whether_a_batch_may_book(allowlist):
+    """Whatever the allowlist says, the next guard reached is CREDENTIALS."""
+    adapter = _live_adapter(allowlist=allowlist, api_key=None, api_secret=None)
+    with pytest.raises(CarrierConfigError):
         adapter.create_shipment(_req("BATCH-001"))
 
 
-def test_batch_not_in_allowlist_raises_allowlist_error():
-    adapter = _live_adapter(allowlist="BATCH-PERMITTED")
-    with pytest.raises(CarrierAllowlistError, match="BATCH-001"):
-        adapter.create_shipment(_req("BATCH-001"))
-
-
-def test_batch_in_allowlist_passes_allowlist_guard():
+def test_a_listed_batch_reaches_the_credential_guard_too():
+    """Listed and unlisted batches are now indistinguishable to the adapter."""
     adapter = _live_adapter(allowlist="BATCH-001", api_key=None, api_secret=None)
-    # passes allowlist, fails on missing creds — correct progression
     with pytest.raises(CarrierConfigError):
         adapter.create_shipment(_req("BATCH-001"))
 
 
-def test_allowlist_trims_whitespace():
-    adapter = _live_adapter(allowlist=" BATCH-001 , BATCH-002 ", api_key=None, api_secret=None)
-    with pytest.raises(CarrierConfigError):
-        adapter.create_shipment(_req("BATCH-001"))
-
-
-def test_allowlist_multi_entry():
-    adapter = _live_adapter(allowlist="BATCH-001,BATCH-002", api_key=None, api_secret=None)
-    with pytest.raises(CarrierConfigError):
-        adapter.create_shipment(_req("BATCH-002"))
+def test_the_adapter_exposes_no_allowlist_state():
+    """Structural: removed, not merely bypassed by configuration."""
+    adapter = _live_adapter(allowlist="BATCH-001")
+    assert not hasattr(adapter, "_allowlist")
+    assert not hasattr(adapter, "_check_allowlist")
 
 
 # ── credential guard ──────────────────────────────────────────────────────────
@@ -163,11 +168,15 @@ def test_config_error_message_does_not_contain_credential_value():
     assert "super-secret" not in str(exc.value)
 
 
-def test_allowlist_error_does_not_contain_api_key():
-    adapter = _live_adapter(api_key="my-api-key-value", api_secret="s", allowlist="BATCH-OTHER")
-    with pytest.raises(CarrierAllowlistError) as exc:
+def test_config_error_from_an_unlisted_batch_does_not_contain_api_key():
+    """Was an allowlist-error leak pin. An unlisted batch no longer produces an
+    allowlist error at all, so the same leak question is asked of the guard it
+    now reaches instead — the credential guard."""
+    adapter = _live_adapter(api_key="", api_secret="my-api-secret-value",
+                            allowlist="BATCH-OTHER")
+    with pytest.raises(CarrierConfigError) as exc:
         adapter.create_shipment(_req("BATCH-001"))
-    assert "my-api-key-value" not in str(exc.value)
+    assert "my-api-secret-value" not in str(exc.value)
 
 
 # ── sandbox URL routing ───────────────────────────────────────────────────────

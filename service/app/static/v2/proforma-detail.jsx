@@ -2312,7 +2312,18 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
         } else {
           const msg = (r && (r.error || (r.data && (r.data.detail || r.data.error))))
             || 'AWB creation failed — check backend logs.';
-          setApiError(typeof msg === 'object' ? JSON.stringify(msg) : msg);
+          // This route's refusals are STRUCTURED 422 details (already-booked,
+          // not-configured, provider-state-unknown). JSON.stringify'ing the
+          // whole object put a wall of braces in front of the operator and
+          // buried the two fields written for them — what happened, and what
+          // to do about it. Read those; fall back to the dump only for a shape
+          // this does not recognise, so nothing is ever silently swallowed.
+          setApiError(
+            (msg && typeof msg === 'object')
+              ? ([msg.error, msg.guidance].filter(Boolean).join(' ')
+                 || JSON.stringify(msg))
+              : msg
+          );
         }
         setLoading(false);
       })
