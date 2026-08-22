@@ -175,3 +175,31 @@ def test_a_document_that_claims_nothing_is_left_alone(tmp_path):
         row = c.execute("SELECT id, extraction_status, parser_diagnostic_json "
                         "FROM packing_documents WHERE id='d1'").fetchone()
         assert pdb._status_against_stored_rows(c, row) == "complete"
+
+
+# ── Orphans: goods with no document accounting for them ──────────────────────
+
+def test_the_only_live_delete_path_leaves_no_orphans(tmp_path):
+    """Exactly one code path in the application deletes a packing_documents row,
+    and it deletes the lines first. Pinned so a future 'just remove the row'
+    cannot quietly become the second one."""
+    con = _init(tmp_path)
+    _doc(con, "d1")
+    con.commit()
+    pdb.upsert_packing_lines(_rows("d1", 3))
+    pdb.delete_packing_document_and_lines("d1")
+    assert pdb.orphan_packing_lines() == []
+
+
+def test_an_orphan_is_reported_with_its_dead_document_id(tmp_path):
+    """Production holds 245 of these, 15% of the table, and nothing surfaced them."""
+    con = _init(tmp_path)
+    _doc(con, "d1")
+    con.commit()
+    pdb.upsert_packing_lines(_rows("d1", 3))
+    with pdb._connect() as c:
+        c.execute("DELETE FROM packing_documents WHERE id='d1'")   # what the FK would refuse
+    found = pdb.orphan_packing_lines()
+    assert len(found) == 1
+    assert found[0]["packing_document_id"] == "d1"
+    assert found[0]["rows_orphaned"] == 3

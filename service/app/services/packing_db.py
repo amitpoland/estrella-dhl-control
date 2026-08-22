@@ -1355,6 +1355,33 @@ def _reconcile_document_status(con: sqlite3.Connection,
             (ROWS_ABSORBED if held else ROWS_LOST, now, doc_id, *_OUTCLAIMING))
 
 
+def orphan_packing_lines() -> List[Dict[str, Any]]:
+    """Lines whose document no longer exists. Goods with nothing accounting for them.
+
+    Production holds 245 of these -- 15% of ``packing_lines`` -- all in one batch
+    under one dead document id, and nothing surfaced them. The schema does declare
+    ``FOREIGN KEY (packing_document_id) REFERENCES packing_documents(id)``, but
+    :func:`_connect` never issues ``PRAGMA foreign_keys=ON``, which SQLite requires
+    per connection. Five sibling stores in this codebase do issue it
+    (``reservation_db``, ``intake_lineage``, ``correction_registry``,
+    ``delivery_confirmation_db``, ``carrier/persistence/shipment_db``); this one
+    does not, so the constraint is decorative.
+
+    Enabling it is a change to write semantics on a database that already violates
+    the constraint, so it is not done here. This makes the violation observable
+    instead, grouped by the document id the rows point at.
+    """
+    if _db_path is None:
+        return []
+    with _connect() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT l.packing_document_id AS packing_document_id, l.batch_id AS batch_id, "
+            "       COUNT(*) AS rows_orphaned "
+            "FROM packing_lines l WHERE NOT EXISTS "
+            "  (SELECT 1 FROM packing_documents d WHERE d.id = l.packing_document_id) "
+            "GROUP BY 1, 2 ORDER BY rows_orphaned DESC")]
+
+
 def link_advance_final_documents(con=None) -> int:
     """R17: record every advance/final pair sharing a file hash, WITH variance.
 
