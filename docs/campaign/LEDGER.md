@@ -251,6 +251,59 @@ construction. Second gap: `confirm_allocation` has no route caller yet, so the
 guarantee holds at the service boundary only until S2c wires the UI — and **S2c has
 not started**, contrary to the addendum's premise.
 
+## STALE-AUTHORITY AUDIT — #1322 / #1324 / #1326 vs main@`fd4c79a7` (2026-08-22)
+
+`fd4c79a7` **is** the #1323 merge commit: *retire the cancelled allocation authority
+from main*. It removed 11 `packing_lines` columns, four writer functions
+(`set_allocation_suggestion`, `confirm_allocation`, `clear_allocation`,
+`allocation_is_stale`) and 528 lines of allocation tests, and ADDED a sentinel suite
+`test_packing_allocation_authority_retired.py` whose third test greps **the whole
+deployed `app/` tree** for that vocabulary. All three PRs were cut before it.
+
+Classification is by each PR's **own added lines**, not by what its stale file
+contains — the file-level screen flags #1324 too, and #1324 adds none.
+
+| PR | added lines touching retired vocabulary | verdict |
+|---|---:|---|
+| #1322 | **4** — reads `allocation_source`, `allocated_customer_id` | **DROP implementation / PORT intent** |
+| #1324 | **0** | **PORT delta onto current main** |
+| #1326 | **2** — redefines `confirm_allocation`, plus 3 new `allocation_*` columns | **DROP implementation / DEFER intent** |
+
+**#1326 — CONFLICTING AUTHORITY.** `allocation_warning`, the modified
+`confirm_allocation` and the three override columns all hang off a subject that no
+longer exists. It would fail the sentinel on `confirm_allocation` alone. Its business
+intent (OVERRIDE, DON'T BLOCK + record the override) is doctrine and survives; it has
+**no subject on current main**, so it is deferred, not ported. F-35's two other
+refusal candidates are where that doctrine next applies.
+
+**#1322 — DROP the implementation, PORT the intent.** Its 4 lines are a *fallback
+reader for retired fields* (governance rule 3). But the defect shape is real and
+current: `packing_dedupe_repair` ranks a DUPLICATE group's survivor by generic field
+count and deletes the losing document's rows, so it can still discard the row carrying
+an **operator review confirmation** — `operator_review_status='confirmed'` +
+`operator_confirmed_at/by`, which survive #1323 and are the current operator decision.
+`packing_dedupe_repair.py` is **byte-unchanged** between `26a480d2` and `fd4c79a7`, so
+the port is a clean re-expression, not a rewrite.
+
+**#1324 — PORT, cleanly.** Adds `_status_against_stored_rows`, `_reconcile_document_status`,
+`orphan_packing_lines`, `ROWS_ABSORBED/ORPHANED/LOST`. Every anchor it needs survives on
+`fd4c79a7` (`upsert_packing_lines`, `get_packing_status_for_shipment_document`,
+`line_key_is_incomplete`, `packing_line_key`, the cross-document absorb,
+`delete_packing_document_and_lines`) and **#1323 did not touch `upsert_packing_lines`**.
+
+**ALREADY DELIVERED — do not rebuild.** The replacement plan's steps 8 and 9 (structural
+regression pins + a stale-branch sentinel) exist on main as
+`test_packing_allocation_authority_retired.py`: no allocation writer, init does not
+migrate the columns, `idx_pl_allocated_customer` absent, whole-tree source pin, and a
+normal packing flow with no allocation prerequisite. **Adding a second sentinel would
+itself be the duplicate authority this campaign exists to remove.**
+
+**Council answer, ahead of the question.** *Can an existing production DB be mutated
+merely by starting the service?* **Yes, by design** — `_add_column_if_missing` runs in
+`init_packing_db`, and that is exactly how S0's `packing_line_key` reached production
+between 13:07 and 14:47 today. That mechanism is why merging a stale branch is a schema
+event, not a code event.
+
 ## FINDINGS
 
 | id | sev | finding | evidence | fixed by | magnitudes |
