@@ -3,8 +3,7 @@
 Programme: wFirma authority → Treasury → Inventory → CFO, plus the inbound-flow rebuild.
 Updated at every node transition. A run with no ledger update is invisible work.
 
-**State of record (2026-08-22):** `origin/main` `9b0d3819` · production `3748daae` (one merge
-behind) · `C:\PZ-main` restored to `main`, clean.
+**State of record (2026-08-22, v5 run 1):** `origin/main` == production == `7a241604` (PR #1311 carrier work merged and deployed by the operator lane) · `C:\PZ-main` pinned to `main`, clean · all seven branches pushed, five PRs open: #1314 guard · #1315 definition tests · #1316 docs+census+ledger · #1317 contractor identity · #1318 line identity.
 
 ## NODES
 
@@ -12,8 +11,9 @@ behind) · `C:\PZ-main` restored to `main`, clean.
 |---|---|---|---|---|---|
 | U1 deploy-source restore | **MERGED** | — | — | `C:\PZ-main` on `main`, `== origin/main`, clean; allocation branch moved to `C:\PZ-wt\packing-allocation` | 2026-08-22 |
 | U4 registry corrections | **MERGED** | — | — | both squash-trap entries corrected; standing check 3 passed / 1 skipped | 2026-08-22 |
-| U2/U5 push + merge held branches | **BLOCKED** (`git push` denied by harness classifier) | five branches | — | — | — |
-| S0 line identity | **ACTIVE** | `fix/packing-line-identity` | HELD | key `76a6a821`, classifier `189c3c2d`, repair `35b50a45`, pin `1fb84dc9`; 105 tests green. Key REDESIGN pending — see D-06 | — |
+| U2 push branches | **MERGED** | seven branches | — | all remote refs durable | 2026-08-22 |
+| U5 merge train 1 | **BLOCKED** (council merge gate: default-OFF, signer key operator-held; guard PR touches `.claude/hooks/` = protected path, never auto-mergeable by design) | — | #1314 | — | — |
+| S0 line identity | **CODE-COMPLETE** | `fix/packing-line-identity` | #1318 | group key + write-time absorb + L1 fix + R17 links `3fb172d6`; 116 packing tests green incl. every legacy pin; live-data pin re-measured (774 keys, 51 cross-doc, 0 GENUINE); S2 hand-off written. Data applies await the storage-variant gate (repo guard denies agent storage writes — same class as the merge gate) | 2026-08-22 |
 | P0 parser determinism | QUEUED | — | — | identical bytes → 21 vs 24 rows | — |
 | M0 master consolidation | QUEUED | — | — | — | — |
 | S1 · S4a · S2 · S3 · S4 · S5 | QUEUED | — | — | — | — |
@@ -42,6 +42,7 @@ behind) · `C:\PZ-main` restored to `main`, clean.
 | ST-03 | 08-21 | STOP 4 | `test.api2.wfirma.pl` sandbox credentials | two wFirma gaps |
 | ST-04 | 08-21 | STOP 3 | goods-registry name for diamond-set items | S5 only |
 | ST-05 | 08-21 | (registry) | `accounting-cfo-mis` worktree/branch field — which was intended | registry closure |
+| ST-06 | 08-22 | (mechanism) | The merge/deploy lane is structurally operator-held: `gh pr merge` is guarded by the council-authorized merge gate (fail-closed, default-OFF, HMAC key outside the repo), and the guard-fix PR touches `.claude/hooks/`, a protected path that is NEVER auto-mergeable by design. §1-A harness allows cannot override a repo-side cryptographic gate. To open the lane: merge the five PRs by hand, or enable the signer per `merge_authorization.py`. Trains 1–2 and the storage applies queue behind this. Raised once. | Trains 1–2, storage applies |
 
 ## FINDINGS
 
