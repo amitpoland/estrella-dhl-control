@@ -1,0 +1,5 @@
+INFO:     127.0.0.1:56262 - "GET /api/v1/dhl/logistics/projection?view=active&direction=all HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57186 - "GET /api/v1/dhl/logistics/projection?view=active&direction=all HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57186 - "GET /api/v1/dhl/logistics/projection?view=active&direction=all HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57348 - "GET /api/v1/dhl/logistics/projection?view=active&direction=all HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57477 - "GET /api/v1/dhl/logistics/projection?view=active&direction=all HTTP/1.1" 200 OK
