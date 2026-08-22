@@ -20,7 +20,7 @@ Updated at every node transition. A run with no ledger update is invisible work.
 | S0R quarantine allocation safety | **CODE-COMPLETE** | `fix/quarantine-preserves-operator-binding` | #1322 | `ed05f4f9`; floors PZ 296/260 and carrier 965/604 read from junitxml at base `26a480d2`; 4 failures, 0 new -- 3 registered carrier known-failures + one packing print-CSS test proven pre-existing in a detached worktree at exactly `26a480d2` | 2026-08-22 |
 | S1 ingestion contract | **CODE-COMPLETE** | `fix/a-packing-document-must-not-outclaim-its-rows` | #1324 | `5e98ce5a`; applied to all 104 live documents, exactly one changes; floors PZ 296/260 and carrier 979/604 at base `21082d77`; 5 failures, 0 new — 3 registered carrier known-failures + 2 proven pre-existing in a clean tree at `21082d77` | 2026-08-22 |
 | OVERRIDE POSTURE (backend) | **CODE-COMPLETE** | `fix/override-dont-block-advance-allocation` | #1326 (stacked on #1324) | `f828151e`; advance-stage refusal → warn-and-record with a mandatory reason; 6 new pins; floors PZ 296/260, carrier 979/604; 1977 passed, 5 failures 0 new | 2026-08-22 |
-| PACKING AUTHORITY REPLACEMENT | **FROZEN — awaiting operator merge** | `fix/packing-authority-replacement` | #1330 | `663d8fe5`; replaces #1322/#1324/#1326 (all closed with reasons). `origin/main` IS an ancestor, so the **merge result tree == the branch tree** and every proof below already binds the merged payload: 4 files, 0 retired vocabulary in added runtime lines, 0 new `_add_column_if_missing`, 0 #1326 names; fresh init 39 cols / 0 allocation-family / 6 indexes / no allocation index; #1323 sentinel green; 37 focused tests green; floors PZ 296/260 carrier 979/604, 1956 passed, failing node-ID set IDENTICAL to the registered baseline (0 new) | 2026-08-22 |
+| PACKING AUTHORITY REPLACEMENT | **✅ DEPLOYED_VERIFIED** | `fix/packing-authority-replacement` | #1330 | `663d8fe5`; replaces #1322/#1324/#1326 (all closed with reasons). `origin/main` IS an ancestor, so the **merge result tree == the branch tree** and every proof below already binds the merged payload: 4 files, 0 retired vocabulary in added runtime lines, 0 new `_add_column_if_missing`, 0 #1326 names; fresh init 39 cols / 0 allocation-family / 6 indexes / no allocation index; #1323 sentinel green; 37 focused tests green; floors PZ 296/260 carrier 979/604, 1956 passed, failing node-ID set IDENTICAL to the registered baseline (0 new) | 2026-08-22 |
 | CMR party-authority cycle | **CLOSED — MONITORED LATENT INCIDENT (outcome B)** | branch deleted unmerged | — | premise disproven (F-36), pattern measured (F-38), mechanism NOT reproduced in two attempts. **No runtime file was ever edited.** Reopen trigger in F-38 | 2026-08-22 |
 | S4a · S2 · S3 · S4 · S5 | QUEUED | — | — | — | — |
 | W4-Z AR/AP zombie census | **MERGED** | — | — | census complete: 772 AR / 2176 AP rows; scope, basis and currency integrity all CLEAN | 2026-08-22 |
@@ -402,6 +402,43 @@ observed healthy on five live drafts — and only for as long as that stays true
 reopen trigger is written to detect exactly the case where it stops being true, and it
 is the one thing in this entry that must not be forgotten: **a closed latent incident
 without a trigger is an abandoned one.**
+
+## RELEASE CLOSURE — #1330 DEPLOYED_VERIFIED (2026-08-22)
+
+Deployed at **`96b17f0811ccdf9487166813917c293ff35b0b8c`**, Scope App, backup unit
+`96b17f08...-20260822-202503`. Read-only acceptance A–G, no production write of any kind.
+
+| check | result |
+|---|---|
+| `version.txt` == reviewed SHA | ✅ |
+| PZService / health | RUNNING · 200 auth local · 401 anon · 200 public auth |
+| deployed blobs vs reviewed `663d8fe5` | `2491f2ea` · `60241354` — **hash-identical** |
+| retired writers / column names in deployed source | **0 / 0** |
+| `packing.db` bytes before → after | **1,519,616 → 1,519,616** (page_size 4096, page_count 371) |
+| live schema | 39 columns · **0 allocation-family** · 6 indexes · no allocation index |
+| `packing_line_quarantine` | **ABSENT** — `dry_run=True`, zero callers |
+| `939ae11b` | stored `complete` **unchanged**; projection returns **`rows_orphaned`** |
+| whole corpus | 104 documents → **exactly one corrected**, 97 unchanged |
+| behaviour suites on deployed bytes | **82 passed** |
+| `pz_stderr.log` after restart | 203 bytes, 4 startup lines, **0 tracebacks** |
+
+**The database did not move by a single byte.** That is the strongest statement this
+release could make: it changes what the system *says* about the rows, never the rows.
+The stored `extraction_status` on `939ae11b` is still `complete` — history is not
+rewritten — while the projection now answers `rows_orphaned`, which is precisely the
+distinction F-31 established: the goods are stored under a dead document id, and calling
+that "lost" would have queued a re-ingest of 245 pieces the database already holds.
+
+**Incidental, recorded not acted on:** this restart produced **zero** "partially
+initialized module" errors. The CMR monitored latent incident's reopen trigger is an
+occurrence that is *not* the first ASGI traceback of its process; a clean restart is not
+that trigger and does not reopen it — it is one more observation consistent with the
+once-per-process model, and one restart is not a disproof either.
+
+**Three backlog items carried, none blocking:** public-repo PII scrub of test fixtures
+(10+ files, pre-existing) · return-shape contract docs for
+`get_packing_status_for_shipment_document` · runbook note that `quarantine_duplicates`
+defaults to `dry_run=True` with zero callers.
 
 ## FINDINGS
 
