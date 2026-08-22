@@ -308,3 +308,73 @@ both the branch-name block and the Lesson D requirement.
 Pushing this branch to a **public** remote is an outward-facing, irreversible act, and its content
 was PII-contaminated until minutes ago. The Chair does not take that step on standing
 authorisation — it goes to the Operator with the security re-verification attached.
+
+---
+
+## Entry 008 — 2026-08-22 — CHAIR — gate GO, pushed, PR open, HELD at operator-only merge
+
+### Seven-agent gate — COMPLETE
+
+`deploy-lead-coordinator` verdict: **READY-TO-DEPLOY**, risk **LOW**.
+
+It concurred that the gate still binds despite the SHA change, on the byte-identical-payload
+proof, citing the operating model's runtime-payload rule directly. It resolved the two
+outstanding conditions explicitly:
+
+1. The security blocker was **resolved, not overridden** — the reviewer itself re-verified and
+   cleared it before coordination. That distinction matters: a non-overridable class stayed
+   non-overridable.
+2. Release-manager CONDITIONAL is discharged by the **mandatory merge-first path**. Deploying
+   directly from `C:\PZ-wt\ct-master` is **FORBIDDEN under this verdict** — it would trigger both
+   the branch-not-`main` block and Lesson D LOCAL-COMMIT-ONLY without disclosure.
+
+### Operator authorised the public push
+
+Final pre-push scan before the irreversible step: **81 `campaign/` blobs across all 10 commits,
+zero AWB-shaped numbers, zero known party names.**
+
+- Pushed: `campaign/ct-master` → `origin`
+- PR: **#1313** → `main`
+
+### HELD — operator-only boundaries
+
+Three controls stopped the Chair, all correctly:
+
+| Boundary | Guard / cause |
+|---|---|
+| `gh pr merge` | `BLOCK_DEPLOY_OPERATOR_ONLY` — autonomous merge is default-off |
+| `Deploy-PZ.ps1` (even `-WhatIf`) | `BLOCK_DEPLOY_OPERATOR_ONLY` — deploy execution is operator-only |
+| `PZService` restart | session is not elevated (`IsInRole(Administrator) = False`) |
+
+None was routed around. This is HOLD condition 2 (access the session cannot safely obtain),
+combined with an explicit operator-only control.
+
+### Remaining sequence
+
+1. **Operator merges PR #1313** to `main`.
+2. **Chair writes** `C:\PZ-secrets\deploy-gate\latest.json` — schema v1, `target_sha` = the merge
+   commit, 7 agent entries, `lead_verdict: GO`, 6-hour expiry.
+3. **Operator runs** `Deploy-PZ.ps1 -Release` from `C:\PZ-main` in an elevated shell. It resolves
+   `origin/main` itself, validates the gate evidence, proves production identity, deploys,
+   restarts, validates, and prints one of ALREADY CURRENT / DEPLOYED / ROLLED BACK / FAILED SAFE.
+
+**Pre-deploy live-check baseline** captured against production at `3748daae`
+(`campaign/evidence/W6/release/pre-deploy-live-checks.md`) so a post-deploy 200 proves the shape
+is unchanged rather than merely that something answered:
+
+| Check | Status | Keys |
+|---|---|---|
+| `/api/v1/health` | 200 | `status`, `engine`, `environment`, `detail` |
+| `/api/v1/dhl/logistics/projection` | 200 | `rows`, `count`, `kpis`, `analytics`, `intelligence` |
+| `/api/v1/carrier/status` | 200 | `carrier_api_status`, `carrier_plt_status` |
+
+**Rollback**, pinned to production `3748daae`:
+`git revert --no-commit 3748daae..HEAD && git commit` then re-run the sync. `Deploy-PZ.ps1` also
+carries its own manifest-validated rollback via `-Rollback -Unit`.
+
+### Campaign hygiene
+
+Temporary verification server (uvicorn :8099) stopped and confirmed down; no orphaned
+pytest/uvicorn processes; `PZService` untouched throughout (`STATE: RUNNING`, never stopped).
+The storage replica and the throwaway local verifier account exist **only** in the session
+scratchpad and were never written to production.
