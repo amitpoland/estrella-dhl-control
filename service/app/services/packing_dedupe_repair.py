@@ -15,6 +15,10 @@ Deliberately NOT here:
     declaration rather than from packing lines, so no customs value can move.
   * anything that touches wFirma. Verified: the affected batches carry only
     ``status='pending'`` reservation drafts with a NULL ``wfirma_reservation_id``.
+  * an operator's confirmation. `operator_review_status='confirmed'` is a human
+    decision about a specific row, and generic completeness scoring knows nothing
+    about it. A confirmation therefore outranks completeness, and a group whose
+    surplus still carries one the survivor lacks is deferred rather than decided.
   * inventory_state. A row there is an assertion about physical goods; five of the
     surplus scan_codes read WAREHOUSE_STOCK. Retracting those is a warehouse
     question, and this module reports them rather than deciding them.
@@ -116,16 +120,47 @@ def _find_duplicate_groups(con: sqlite3.Connection) -> List[Dict[str, Any]]:
         # Keep the RICHEST document's rows, not the first-inserted: the
         # per-invoice form carries pack_sr and the per-client form does not,
         # and insertion order would otherwise decide which record survives.
+        # A confirmation outranks completeness. Measured on the production
+        # shape, the two differ by ONE point -- the per-invoice form carries
+        # serial, bag, tray and batch number, the per-client form the operator
+        # confirmed carries none of them -- so completeness decided which human
+        # decision survived, by a margin nobody chose.
         ranked_docs = sorted(
             per_doc,
-            key=lambda d: max(_richness(r) for r in per_doc[d]),
+            key=lambda d: (any(_operator_confirmed(r) for r in per_doc[d]),
+                           max(_richness(r) for r in per_doc[d])),
             reverse=True)
         kept_doc = ranked_docs[0]
         surplus = [r for d in ranked_docs[1:] for r in per_doc[d]]
+        # Ranking settles one confirmation. Two documents both carrying one is a
+        # disagreement between two humans, and a repair does not adjudicate that.
+        confirmed_surplus = [str(r["id"]) for r in surplus if _operator_confirmed(r)]
         groups.append({"key": key, "collision_class": cls,
                        "kept": per_doc[kept_doc][0], "kept_doc": kept_doc,
-                       "surplus": surplus})
+                       "surplus": surplus,
+                       "operator_confirmed_surplus": confirmed_surplus})
     return groups
+
+
+_CONFIRMED = "confirmed"
+
+
+def _operator_confirmed(row: sqlite3.Row) -> bool:
+    """Did a human explicitly confirm THIS row?
+
+    Only ``operator_review_status == 'confirmed'`` counts. A populated
+    ``operator_confirmed_by`` or a draft/pending status is not a decision, and
+    must not acquire the protection a decision gets -- otherwise every row that
+    accumulated metadata becomes unrepairable and the repair quietly stops
+    working.
+
+    The allocation columns that once carried this meaning were retired in #1323
+    and are deliberately not consulted: there is one human-decision authority on
+    a packing line now, and this is it.
+    """
+    if "operator_review_status" not in row.keys():
+        return False
+    return str(row["operator_review_status"] or "").strip().lower() == _CONFIRMED
 
 
 def _richness(row: sqlite3.Row) -> tuple:
@@ -140,7 +175,9 @@ def quarantine_duplicates(con: sqlite3.Connection, *, repair_ref: str,
                           reason: str, clock, dry_run: bool = True) -> Dict[str, Any]:
     """Move surplus copies into quarantine. ``dry_run`` reports without writing."""
     groups = find_duplicate_groups(con)
-    surplus = [(g, s) for g in groups for s in g["surplus"]]
+    deferred = [g for g in groups if g["operator_confirmed_surplus"]]
+    surplus = [(g, s) for g in groups if not g["operator_confirmed_surplus"]
+               for s in g["surplus"]]
     report = {
         "repair_ref": repair_ref,
         "groups": len(groups),
@@ -148,6 +185,9 @@ def quarantine_duplicates(con: sqlite3.Connection, *, repair_ref: str,
         "batches": sorted({s["batch_id"] for _g, s in surplus}),
         "dry_run": dry_run,
         "quarantined": 0,
+        "deferred_groups": len(deferred),
+        "deferred_operator_confirmed": sorted(
+            lid for g in deferred for lid in g["operator_confirmed_surplus"]),
     }
     if dry_run or not surplus:
         return report

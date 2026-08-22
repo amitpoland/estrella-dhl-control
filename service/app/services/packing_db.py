@@ -700,11 +700,11 @@ def get_packing_status_for_shipment_document(
     placeholders = ",".join("?" * len(pdoc_ids))
     with _connect() as con:
         rows = con.execute(
-            f"SELECT extraction_status FROM packing_documents "
-            f"WHERE id IN ({placeholders})",
+            f"SELECT id, extraction_status, parser_diagnostic_json "
+            f"FROM packing_documents WHERE id IN ({placeholders})",
             tuple(pdoc_ids),
         ).fetchall()
-    statuses = [str((r["extraction_status"] or "")).strip().lower() for r in rows]
+        statuses = [_status_against_stored_rows(con, r) for r in rows]
     if not statuses:
         return ""
     if "complete" in statuses:
@@ -713,6 +713,79 @@ def get_packing_status_for_shipment_document(
     if non_empty:
         return non_empty[0]
     return "empty"
+
+
+def _status_against_stored_rows(con: sqlite3.Connection, row: sqlite3.Row) -> str:
+    """This document's status, refused the word ``complete`` when its own
+    diagnostic says it parsed rows the database does not hold.
+
+    The registry answers ``complete`` if ANY resolved document is complete, so
+    one over-claiming document reports a shipment's packing as complete while
+    the batch holds none of its goods. Measured: ``939ae11b`` -- Global packing
+    PDF, ``rows_extracted`` 245, ``rows_skipped`` 0, $3,172, 505g -- stored zero
+    lines, status ``complete``, and its batch has no packing lines at all.
+
+    The parse claim is read from the diagnostic each parser already writes
+    (``rows_extracted`` for the supplier parsers, ``row_count`` for the EJL
+    extractor). No claim recorded means nothing to contradict, and the stored
+    status stands: this refuses a specific false statement, it does not invent
+    a stricter one.
+
+    Three ways a claim can go unmet, and they are NOT the same operational fact:
+
+    ``rows_absorbed``
+        a sibling registration of the same bytes holds the rows. Benign.
+    ``rows_orphaned``
+        the batch holds rows belonging to no live document. **The goods are
+        stored**; the link that accounts for them is broken. Measured: all 245
+        rows of ``939ae11b``'s parse are in ``packing_lines`` under document id
+        ``c838d434``, which no longer exists -- the only 245 orphans in a table
+        of 1598. Calling that "lost" would send someone to re-ingest goods the
+        database already holds, which is the duplication failure rather than
+        the missing-goods one.
+    ``rows_lost``
+        nothing anywhere holds them.
+    """
+    status = str((row["extraction_status"] or "")).strip().lower()
+    if status not in ("complete", "extracted"):
+        return status
+    try:
+        diag = json.loads(row["parser_diagnostic_json"] or "{}") or {}
+    except Exception:
+        return status
+    claimed = diag.get("rows_extracted")
+    if claimed is None:
+        claimed = diag.get("row_count")
+    try:
+        claimed = int(claimed)
+    except (TypeError, ValueError):
+        return status
+    if claimed <= 0:
+        return status
+    live = con.execute(
+        "SELECT COUNT(*) FROM packing_lines WHERE packing_document_id=?",
+        (row["id"],)).fetchone()[0]
+    if live:
+        return status
+    held = con.execute(
+        "SELECT 1 FROM packing_lines l JOIN packing_documents d "
+        "ON d.id = l.packing_document_id WHERE d.source_file_hash = "
+        "(SELECT source_file_hash FROM packing_documents WHERE id=?) "
+        "AND l.packing_document_id != ? LIMIT 1",
+        (row["id"], row["id"])).fetchone()
+    if held:
+        return ROWS_ABSORBED
+    # Rows in this batch that belong to NO live document. The goods are stored;
+    # what is broken is the link to the document that accounts for them. Saying
+    # "lost" here would send someone to re-ingest goods the database already
+    # holds, which is the duplication failure, not the missing-goods one.
+    orphaned = con.execute(
+        "SELECT 1 FROM packing_lines l WHERE l.batch_id = "
+        "(SELECT batch_id FROM packing_documents WHERE id=?) "
+        "AND NOT EXISTS (SELECT 1 FROM packing_documents d "
+        "                WHERE d.id = l.packing_document_id) LIMIT 1",
+        (row["id"],)).fetchone()
+    return ROWS_ORPHANED if orphaned else ROWS_LOST
 
 
 def update_packing_document_diagnostic(document_id: str, diagnostic: Dict[str, Any]) -> bool:
@@ -879,6 +952,9 @@ def upsert_packing_lines(
     inserted = 0
     now = _now_iso()
     _fb_seen: Dict[tuple, int] = {}
+    # Which document offered which keys. Read after the loop so a document's
+    # status can be reconciled against what the write actually left behind.
+    _offered: Dict[str, List[str]] = {}
     with _lock:
         with _connect() as con:
             for line in lines:
@@ -909,6 +985,9 @@ def upsert_packing_lines(
                 # design+quantity coincidence across shipments must not eat a
                 # real line.
                 _key = packing_line_key(line)
+                _offered.setdefault(
+                    str(line.get("packing_document_id") or ""), []
+                ).append("" if line_key_is_incomplete(line) else _key)
                 if not line_key_is_incomplete(line) and not force_reextract:
                     _doc_id = str(line.get("packing_document_id") or "")
                     _my_stage_row = con.execute(
@@ -1150,7 +1229,90 @@ def upsert_packing_lines(
                     ),
                 )
                 inserted += 1
+            _reconcile_document_status(con, _offered, now)
     return inserted
+
+
+ROWS_ABSORBED = "rows_absorbed"
+ROWS_ORPHANED = "rows_orphaned"
+ROWS_LOST     = "rows_lost"
+_OUTCLAIMING  = ("complete", "extracted", "pending")
+
+
+def _reconcile_document_status(con: sqlite3.Connection,
+                               offered: Dict[str, List[str]],
+                               now: str) -> None:
+    """A document must not out-claim the rows the write left behind.
+
+    ``extraction_status`` is written from the PARSE, before a single row is
+    stored, and nothing corrected it afterwards. Measured in production:
+    ``939ae11b`` parsed 245 rows, skipped 0, totalled $3,172 and 505g, stored
+    ZERO lines, and stayed ``complete`` -- and because
+    :func:`get_packing_status_for_shipment_document` answers ``complete`` when
+    ANY resolved row is complete, the Document Registry reported that
+    shipment's packing as complete while the batch held none of its goods.
+
+    Rows offered but none live is one of two different things, and they must
+    not read alike:
+
+    ``rows_absorbed``
+        another live document already holds these keys -- the cross-document
+        absorb doing its job on a re-registered file. Expected, benign, and
+        previously indistinguishable from loss.
+    ``rows_lost``
+        nothing anywhere holds them. Goods were parsed and are not stored.
+
+    A key too thin to identify anything (:func:`line_key_is_incomplete`) is
+    never evidence of absorption: absence of proof resolves to ``rows_lost``,
+    which is the direction that gets looked at.
+    """
+    for doc_id, keys in offered.items():
+        if not doc_id:
+            continue
+        if con.execute("SELECT COUNT(*) FROM packing_lines WHERE packing_document_id=?",
+                       (doc_id,)).fetchone()[0]:
+            continue
+        usable = sorted({k for k in keys if k})
+        held = False
+        for i in range(0, len(usable), 400):          # SQLite parameter ceiling
+            chunk = usable[i:i + 400]
+            if con.execute(
+                "SELECT 1 FROM packing_lines WHERE packing_document_id != ? "
+                "AND packing_line_key IN (%s) LIMIT 1" % ",".join("?" * len(chunk)),
+                (doc_id, *chunk)).fetchone():
+                held = True
+                break
+        con.execute(
+            "UPDATE packing_documents SET extraction_status=?, updated_at=? "
+            "WHERE id=? AND LOWER(TRIM(extraction_status)) IN (?,?,?)",
+            (ROWS_ABSORBED if held else ROWS_LOST, now, doc_id, *_OUTCLAIMING))
+
+
+def orphan_packing_lines() -> List[Dict[str, Any]]:
+    """Lines whose document no longer exists. Goods with nothing accounting for them.
+
+    Production holds 245 of these -- 15% of ``packing_lines`` -- all in one batch
+    under one dead document id, and nothing surfaced them. The schema does declare
+    ``FOREIGN KEY (packing_document_id) REFERENCES packing_documents(id)``, but
+    :func:`_connect` never issues ``PRAGMA foreign_keys=ON``, which SQLite requires
+    per connection. Five sibling stores in this codebase do issue it
+    (``reservation_db``, ``intake_lineage``, ``correction_registry``,
+    ``delivery_confirmation_db``, ``carrier/persistence/shipment_db``); this one
+    does not, so the constraint is decorative.
+
+    Enabling it is a change to write semantics on a database that already violates
+    the constraint, so it is not done here. This makes the violation observable
+    instead, grouped by the document id the rows point at.
+    """
+    if _db_path is None:
+        return []
+    with _connect() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT l.packing_document_id AS packing_document_id, l.batch_id AS batch_id, "
+            "       COUNT(*) AS rows_orphaned "
+            "FROM packing_lines l WHERE NOT EXISTS "
+            "  (SELECT 1 FROM packing_documents d WHERE d.id = l.packing_document_id) "
+            "GROUP BY 1, 2 ORDER BY rows_orphaned DESC")]
 
 
 def link_advance_final_documents(con=None) -> int:
