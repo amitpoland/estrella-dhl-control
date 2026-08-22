@@ -1091,10 +1091,7 @@ function DhlTowerDrawer({ row, isAdmin, onClose, onViewShipment, onResolved }) {
               batch_id: row.batch_id,
               awb: row.awb,
               tracking_no: row.awb,
-              // Same rule as the tracking card above: the row's carrier or
-              // nothing. The detail page re-derives carrier from the API, so a
-              // default here only mislabels the page while it loads.
-              carrier: row.carrier || '',
+              carrier: row.carrier || 'DHL',
               status: row.status || null,
             })}
             style={{ ..._dhlBtnStyle(), marginTop: 8, width: '100%' }}
