@@ -119,7 +119,12 @@
   function EJOutboundTrackingCard(props) {
     var awb = props.awb || '';
     var batchId = props.batchId || '';
-    var carrier = props.carrier || 'DHL';
+    // NO DEFAULT. This line used to read `props.carrier || 'DHL'`, which turned
+    // an honest "unknown" into DHL and then SENT that invention to the backend
+    // as an explicit ?carrier=DHL -- pre-empting server-side detection and, with
+    // DHL tracking active, firing a real DHL API call for a UPS 1Z reference.
+    // Empty means unknown; the backend detects it from the reference shape.
+    var carrier = (props.carrier || '').trim();
     var draftId = props.draftId || null;
     var reloadNonce = props.reloadNonce;
     var testIdRoot = props.testIdRoot || 'ej-outbound-tracking';
@@ -203,7 +208,13 @@
       : [];
     var statusLabel = (tracking && (tracking.status_label || tracking.status)) || '';
     var tone = statusTone(statusLabel);
-    var carrierLabel = (tracking && tracking.carrier) || carrier || 'DHL';
+    // Backend-canonical name wins (it normalises FEDEX -> FedEx); then whatever
+    // the caller supplied; then nothing. Never a default carrier.
+    var carrierLabel = (tracking && tracking.carrier) || carrier || '';
+    var carrierText = carrierLabel ? String(carrierLabel).toUpperCase() : 'UNKNOWN CARRIER';
+    // DHL-only copy (MyDHL notification, DHL help text) renders under this flag
+    // ONLY. It is not a fallback -- an unknown carrier is not DHL.
+    var isDhl = String(carrierLabel).toUpperCase() === 'DHL';
     var awbShow = (tracking && tracking.tracking_no) || awb;
     var lastEvent = tracking ? eventText(tracking.last_event) : '';
     var loc = (tracking && tracking.last_location) || '';
@@ -260,7 +271,7 @@
               <span data-testid={testIdRoot + '-carrier'} style={{
                 fontSize: 12, fontWeight: 800, letterSpacing: '0.04em', color: 'var(--text-2)',
                 padding: '4px 8px', borderRadius: 6, background: 'var(--bg-subtle)', border: '1px solid var(--border)',
-              }}>{String(carrierLabel).toUpperCase()}</span>
+              }}>{carrierText}</span>
               <span data-testid={testIdRoot + '-awb'} style={{
                 fontSize: 14, fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: 'var(--text)',
               }}>AWB {awbShow}</span>
@@ -295,7 +306,7 @@
               {tracking.tracking_url ? (
                 <a href={tracking.tracking_url} target="_blank" rel="noopener noreferrer"
                   data-testid={testIdRoot + '-url'} style={Object.assign({}, btn, { color: 'var(--accent)', borderColor: 'var(--accent)' })}>
-                  {'Open ' + String(carrierLabel).toUpperCase() + ' tracking ↗'}
+                  {'Open ' + carrierText + ' tracking ↗'}
                 </a>
               ) : null}
               <span data-testid={testIdRoot + '-freshness'} style={{ fontSize: 11, color: 'var(--text-3)' }}>
@@ -324,9 +335,11 @@
               </div>
             ) : null}
 
-            <div data-testid={testIdRoot + '-dhl-notify-note'} style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
-              DHL carrier email/SMS: requested on booking when recipient contact is present (MyDHL shipmentNotification) — separate from Estrella delivery confirmation.
-            </div>
+            {isDhl && (
+              <div data-testid={testIdRoot + '-dhl-notify-note'} style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+                DHL carrier email/SMS: requested on booking when recipient contact is present (MyDHL shipmentNotification) — separate from Estrella delivery confirmation.
+              </div>
+            )}
           </div>
         )}
 
@@ -336,7 +349,7 @@
               <span data-testid={testIdRoot + '-carrier'} style={{
                 fontSize: 12, fontWeight: 800, letterSpacing: '0.04em', color: 'var(--text-2)',
                 padding: '4px 8px', borderRadius: 6, background: 'var(--bg-subtle)', border: '1px solid var(--border)',
-              }}>{String(carrier || 'DHL').toUpperCase()}</span>
+              }}>{carrierText}</span>
               <span data-testid={testIdRoot + '-awb'} style={{
                 fontSize: 14, fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: 'var(--text)',
               }}>AWB {awb}</span>
@@ -346,18 +359,16 @@
                 fontSize: 12, fontWeight: 800, letterSpacing: '0.03em', textTransform: 'uppercase',
               }}>PENDING</span>
             </div>
+            {/* This branch is reached only when the SERVER returned nothing at all
+                (transport/auth failure) -- not when a carrier reports "no data",
+                which arrives as a normal envelope above. It previously asserted
+                DHL identity and built a DHL URL inline, which is how a UPS
+                reference came to display as DHL. The public tracking URL has one
+                authority (tracking_service.tracking_url_for) and it lives behind
+                the response we did not get, so no link is invented here. */}
             <div style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 10 }}>
-              Live tracking unavailable{err ? (' — ' + String(err).replace(/\.\s*$/, '')) : ''}. You can still open DHL's public tracker.
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-              <a
-                href={'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=' + encodeURIComponent(awb)}
-                target="_blank" rel="noopener noreferrer"
-                data-testid={testIdRoot + '-url'}
-                style={Object.assign({}, btn, { color: 'var(--accent)', borderColor: 'var(--accent)' })}
-              >
-                Open DHL tracking ↗
-              </a>
+              Live tracking unavailable{err ? (' — ' + String(err).replace(/\.\s*$/, '')) : ''}.
+              {' '}Retry to reload{carrierLabel ? (' the ' + carrierText + ' tracking link') : ' tracking'}.
             </div>
             <details style={{ marginTop: 8 }}>
               <summary style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer' }}>Diagnostic</summary>
@@ -366,9 +377,11 @@
               </div>
             </details>
             {draftId ? <LifecycleStrip trackingStatus="" delivery={delivery} /> : null}
-            <div data-testid={testIdRoot + '-dhl-notify-note'} style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
-              DHL carrier email/SMS: requested on booking when recipient contact is present (MyDHL shipmentNotification) — separate from Estrella delivery confirmation.
-            </div>
+            {isDhl && (
+              <div data-testid={testIdRoot + '-dhl-notify-note'} style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+                DHL carrier email/SMS: requested on booking when recipient contact is present (MyDHL shipmentNotification) — separate from Estrella delivery confirmation.
+              </div>
+            )}
           </div>
         )}
 

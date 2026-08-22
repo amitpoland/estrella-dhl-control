@@ -247,6 +247,29 @@ def supports_tracking(carrier: str) -> bool:
     }
 
 
+# Every carrier name this authority answers to, mapped to its ONE canonical
+# spelling. carrier_shipments.provider stores "FEDEX" while this module has
+# always compared against "FedEx", so a real FedEx shipment failed the exact
+# match and was demoted to a public link — losing tracking that is provisioned
+# and working. Callers normalise here rather than each guessing a spelling.
+_CANONICAL_CARRIERS = {
+    "DHL": "DHL",
+    "FEDEX": "FedEx",
+    "FEDERAL EXPRESS": "FedEx",
+    "UPS": "UPS",
+}
+
+
+def canonical_carrier(carrier: str) -> str:
+    """Canonical carrier name, or "" when this authority does not recognise it.
+
+    "" is a real answer: an unrecognised carrier stays unrecognised. It must
+    never be resolved to a default, because every default is one carrier's
+    identity silently printed over another's.
+    """
+    return _CANONICAL_CARRIERS.get((carrier or "").strip().upper(), "")
+
+
 # ── FedEx status mapping ──────────────────────────────────────────────────────
 
 _FEDEX_STATUS_MAP: Dict[str, tuple[str, str]] = {
@@ -1188,7 +1211,11 @@ def _get_tracking_status(
       HTTP connection is opened.
     """
     tracking_no = (tracking_no or "").strip()
-    carrier     = (carrier or "Unknown").strip()
+    # Normalise ONCE, here: this is the single function all six callers reach.
+    # An unrecognised carrier keeps the caller's own words (or "Unknown") so the
+    # response echoes what was actually asked for, and never a substituted name.
+    _raw_carrier = (carrier or "").strip()
+    carrier      = canonical_carrier(_raw_carrier) or (_raw_carrier or "Unknown")
 
     if not tracking_no:
         return {

@@ -48,11 +48,12 @@ No live DHL calls in shadow mode.
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -724,14 +725,34 @@ def resolve_dhl_accounts_endpoint(
     return JSONResponse(payload)
 
 
-@router.get("/services", summary="List available DHL Express product codes (static catalogue)")
-def list_carrier_services(_auth: None = Depends(require_api_key)) -> JSONResponse:
-    """Returns the static DHL Express product code catalogue.
+@router.get("/services", summary="List service/product codes for a carrier")
+def list_carrier_services(
+    carrier: str = Query(default=""),
+    _auth: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Service catalogue for ``carrier``. Defaults to DHL when unspecified.
 
-    No live DHL call is made. Use this to populate the service dropdown in the AWB modal.
-    Availability for a specific shipment requires a DHL /rates query (not yet implemented).
+    DHL keeps its existing static catalogue byte-for-byte -- the parameter is
+    additive, so every existing caller gets exactly what it got before. Any
+    other carrier resolves from Carrier Master and returns [] when nothing is
+    configured. [] is the honest answer that makes the modal disable booking;
+    it is never backfilled with DHL codes, which the FedEx adapter would reject
+    anyway (FEDEX_SERVICE_NOT_SELECTED).
+
+    No live carrier call is made.
     """
-    return JSONResponse(_DHL_SERVICES)
+    provider = shipment_db.normalize_provider_code(carrier or "") or shipment_db.PROVIDER_DHL
+    if provider == shipment_db.PROVIDER_DHL:
+        return JSONResponse(_DHL_SERVICES)
+    # Any other carrier: [] — and deliberately WITHOUT consulting operator-editable
+    # master data. Rule 3 of test_master_data_hard_rules forbids the carrier runtime
+    # from reading the local carrier config table, because a service code chosen
+    # there would silently drive live shipment creation. So the carrier runtime has
+    # no authoritative non-DHL catalogue, and says so by returning nothing rather
+    # than borrowing DHL's codes. The modal turns [] into a disabled control with a
+    # stated reason; the FedEx adapter would reject a DHL code anyway
+    # (FEDEX_SERVICE_NOT_SELECTED).
+    return JSONResponse([])
 
 
 @router.get(

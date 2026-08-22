@@ -1108,7 +1108,7 @@ function _trackingStatusTone(label) {
   return { bg: 'var(--badge-neutral-bg)', fg: 'var(--text)', bd: 'var(--border-subtle)' };
 }
 
-function DhlTrackingCard({ batchId, awb, reloadNonce }) {
+function DhlTrackingCard({ batchId, awb, carrier, reloadNonce }) {
   // Consolidated with Proforma Logistics — one outbound tracking presentation
   // (estrella-outbound-tracking.jsx). Still uses GET /api/v1/tracking/{awb}.
   const Card = window.EJOutboundTrackingCard;
@@ -1124,7 +1124,9 @@ function DhlTrackingCard({ batchId, awb, reloadNonce }) {
       <Card
         awb={awb}
         batchId={batchId}
-        carrier="DHL"
+        // shipment.carrier (carrier_shipments.provider), never a hardcoded 'DHL'.
+        // '' means unknown and defers detection to the backend.
+        carrier={carrier || ''}
         reloadNonce={reloadNonce}
         testIdRoot="dhl-tracking"
       />
@@ -1333,7 +1335,7 @@ function DhlTab({ d, shipment, sadUploaded, dhlEmailReceived, replySent, batchId
   const dhlConsoleUrl = batchId ? ('/v2/dhl?batch_id=' + encodeURIComponent(batchId)) : '/v2/dhl';
   return (
     <>
-      <DhlTrackingCard batchId={batchId} awb={shipment && shipment.awb} reloadNonce={reloadNonce} />
+      <DhlTrackingCard batchId={batchId} awb={shipment && shipment.awb} carrier={shipment && shipment.carrier} reloadNonce={reloadNonce} />
       <DhlReadinessCard batchId={batchId} reloadNonce={reloadNonce} />
       <SectionLabel>Step 1 · DHL clearance email & reply</SectionLabel>
       <PanelCard

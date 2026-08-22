@@ -64,7 +64,7 @@ def _auto_carrier(tracking_no: str) -> str:
     return "Unknown"
 
 
-def _classify_tracking_error(exc: Exception) -> Dict[str, Any]:
+def _classify_tracking_error(exc: Exception, carrier: str = "") -> Dict[str, Any]:
     """
     Convert a downstream tracking exception into a structured, actionable
     error envelope.  The dashboard uses ``status`` to render a config banner
@@ -80,40 +80,44 @@ def _classify_tracking_error(exc: Exception) -> Dict[str, Any]:
     """
     msg = str(exc) or repr(exc)
     low = msg.lower()
+    # The carrier that actually failed. This block used to say "DHL" for every
+    # carrier, so a FedEx or UPS failure was reported to the operator as a DHL
+    # outage. Falls back to a neutral word rather than to any carrier's name.
+    who = (carrier or "").strip() or "Carrier"
     # httpx.HTTPStatusError includes the status code in the message
     if "401" in msg or "unauthorized" in low or "invalid api key" in low:
         return {
             "status":   "unauthorized",
             "fallback_available": True,
-            "message":  "DHL API credential invalid or missing. Stored timeline will still display.",
+            "message":  f"{who} API credential invalid or missing. Stored timeline will still display.",
             "raw":      msg[:200],
         }
     if "403" in msg or "forbidden" in low:
         return {
             "status":   "unauthorized",
             "fallback_available": True,
-            "message":  "DHL API access forbidden. Check credential scope.",
+            "message":  f"{who} API access forbidden. Check credential scope.",
             "raw":      msg[:200],
         }
     if "429" in msg or "rate limit" in low or "too many" in low:
         return {
             "status":   "rate_limited",
             "fallback_available": True,
-            "message":  "DHL API rate limit reached. Stored timeline will still display.",
+            "message":  f"{who} API rate limit reached. Stored timeline will still display.",
             "raw":      msg[:200],
         }
     if any(c in msg for c in ("500", "502", "503", "504")):
         return {
             "status":   "carrier_error",
             "fallback_available": True,
-            "message":  "DHL API upstream error. Try again shortly.",
+            "message":  f"{who} API upstream error. Try again shortly.",
             "raw":      msg[:200],
         }
     if any(t in low for t in ("timeout", "connect", "dns", "name or service", "ssl")):
         return {
             "status":   "network_error",
             "fallback_available": True,
-            "message":  "Could not reach DHL API. Stored timeline will still display.",
+            "message":  f"Could not reach the {who} API. Stored timeline will still display.",
             "raw":      msg[:200],
         }
     return {
@@ -130,10 +134,13 @@ def _build_error_envelope(
     exc: Exception,
 ) -> Dict[str, Any]:
     """Build the structured error envelope returned on tracking failures."""
-    info = _classify_tracking_error(exc)
+    from ..services.tracking_service import canonical_carrier
+
+    named = canonical_carrier(carrier) or (carrier or "").strip() or "Unknown"
+    info = _classify_tracking_error(exc, named if named != "Unknown" else "")
     return {
         "tracking_no":         tracking_no,
-        "carrier":             carrier or "Unknown",
+        "carrier":             named,
         "available":           False,
         "ok":                  False,
         "source":              info["status"],   # back-compat: 'source' was 'error'
