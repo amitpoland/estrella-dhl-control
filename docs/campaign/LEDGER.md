@@ -19,6 +19,7 @@ Updated at every node transition. A run with no ledger update is invisible work.
 | X1 description generator | **CODE-COMPLETE** | `fix/plain-is-not-a-stone` | #1320 | `472122a5`; golden regression 160/160; 2 pre-existing failures proven pre-existing by stash comparison; ENGINE FILE — Lesson J declared in the PR | 2026-08-22 |
 | S0R quarantine allocation safety | **CODE-COMPLETE** | `fix/quarantine-preserves-operator-binding` | #1322 | `ed05f4f9`; floors PZ 296/260 and carrier 965/604 read from junitxml at base `26a480d2`; 4 failures, 0 new -- 3 registered carrier known-failures + one packing print-CSS test proven pre-existing in a detached worktree at exactly `26a480d2` | 2026-08-22 |
 | S1 ingestion contract | **CODE-COMPLETE** | `fix/a-packing-document-must-not-outclaim-its-rows` | #1324 | `5e98ce5a`; applied to all 104 live documents, exactly one changes; floors PZ 296/260 and carrier 979/604 at base `21082d77`; 5 failures, 0 new — 3 registered carrier known-failures + 2 proven pre-existing in a clean tree at `21082d77` | 2026-08-22 |
+| OVERRIDE POSTURE (backend) | **CODE-COMPLETE** | `fix/override-dont-block-advance-allocation` | #1326 (stacked on #1324) | `f828151e`; advance-stage refusal → warn-and-record with a mandatory reason; 6 new pins; floors PZ 296/260, carrier 979/604; 1977 passed, 5 failures 0 new | 2026-08-22 |
 | S4a · S2 · S3 · S4 · S5 | QUEUED | — | — | — | — |
 | W4-Z AR/AP zombie census | **MERGED** | — | — | census complete: 772 AR / 2176 AP rows; scope, basis and currency integrity all CLEAN | 2026-08-22 |
 | TB-1 contractor identity | **ACTIVE** | `fix/ar-ap-contractor-identity` | HELD | `c7ce03c9`, 6 new tests, 72 accounting-hub tests green | 2026-08-22 |
@@ -216,6 +217,40 @@ the application, and it cannot speak for ad-hoc database edits, which is precise
 these 245 rows most likely arose. The pin narrows the future, it does not explain the
 past, and this ledger says so rather than implying a closed case.
 
+## SELF-ANALYSIS — 2026-08-22 override posture (ARCHAEOLOGIST + ADVERSARY co-signed)
+
+**What the rule changed, and what it did not.** Applying the operator-knowledge test
+to every refusal in `packing_db` produced four verdicts, not one: the advance-stage
+refusal FAILS it (F-34, converted); the expected-count and unconfirmed-release
+refusals are weak candidates left standing (F-35, recorded rather than quietly
+converted); Customer Master membership and the reprocess rollback PASS it and stay
+hard. **The audit's value was the two it did not change** — a rule that converts
+everything is the same failure as a rule that blocks everything, in the other
+direction.
+
+**The premise, restated in code.** `doc_stage` is derived from the document the
+operator uploaded. The old refusal read that field and concluded something about the
+physical world — that the goods do not exist. It could not know that. Naming the
+asymmetry converts a philosophical rule into a mechanical test anyone can apply:
+*what field is this block reading, and who put it there?*
+
+**The trace is the deliverable.** Three columns now carry the warning shown, the
+reason given and a `weak_identity` flag, next to the operator and timestamp the
+schema already had. The refusal produced none of it, so every advance-line allocation
+decision made until now is unrecoverable — not wrong, unrecorded. That is the cost of
+a block, stated as a measurement rather than a slogan.
+
+**ARCHAEOLOGIST**: the refusal arrived with #1312 and was pinned the same day by
+`test_an_advance_line_cannot_be_confirmed`. That test was correct for the policy it
+was written under; it is superseded in the same commit with the reason attached, not
+deleted. **ADVERSARY**: `reason` is free text the caller supplies, so nothing stops
+`"x"`. Enforcing quality would need a vocabulary the operator has not given, and a
+length rule only teaches people to type `"xxxxxxxx"` — so the field is mandatory, not
+validated, and this ledger says so rather than implying the record is trustworthy by
+construction. Second gap: `confirm_allocation` has no route caller yet, so the
+guarantee holds at the service boundary only until S2c wires the UI — and **S2c has
+not started**, contrary to the addendum's premise.
+
 ## FINDINGS
 
 | id | sev | finding | evidence | fixed by | magnitudes |
@@ -238,7 +273,7 @@ past, and this ledger says so rather than implying a closed case.
 | F-31 | **HIGH** | **(Consolidates F-03 — the magnitudes column found the collision the moment it existed: `245` appears in F-03, F-28, F-31 and F-32. F-03 filed the orphans at census time and said `no FK declared`; nothing joined it to F-23.)** **The 245 rows were never lost — they are stored and unlinked, and that is a different defect with the opposite repair.** Every row of `939ae11b`'s parse is in `packing_lines` under document id `c838d434`, which no longer exists in `packing_documents`: the only 245 orphans in a table of 1598, carrying the Global parser's own `088/2026-2027-N` product codes. Persistence worked; the link that accounts for the goods was severed afterwards. A fix built on F-28 would have told an operator to re-ingest 245 pieces the database already holds — the duplication failure, not the missing-goods one. **The campaign already held this fact**: `245 orphan quarantine + FK` sat in the storage-applies backlog and was never joined to F-23 | orphan census over the live corpus: `packing_lines` 1598 total, 245 orphaned, all in one batch under one dead document id | S1 corrected in #1324 (`rows_orphaned`); the orphan rows themselves remain a separate open defect | 245 orphans of 1598 rows; document id c838d434; codes 088/2026-2027-N |
 | F-32 | **RESOLVED — no live writer; the DEFENCE is missing** | **Exactly one code path in the application deletes a `packing_documents` row** (`delete_packing_document_and_lines`) **and it deletes the lines first, in the same connection** — so no live writer can produce this state, and the ordering is now pinned. What has no defence is the database: the schema DOES declare `FOREIGN KEY (packing_document_id) REFERENCES packing_documents(id)` — F-03's *"no FK declared"* was itself wrong — but `_connect()` never issues `PRAGMA foreign_keys=ON`, which SQLite requires per connection. Five sibling stores here do issue it (`reservation_db`, `intake_lineage`, `correction_registry`, `delivery_confirmation_db`, `carrier/persistence/shipment_db`); this one does not, so the constraint is decorative. Enabling it mutates write semantics on a database that already violates it — highest bar under EVIDENCE SCALES WITH THE MUTATION, and not taken unilaterally | one `DELETE FROM packing_documents` in the whole app; zero `foreign_keys` pragmas in `packing_db.py` | #1324 pins the delete ordering and adds `orphan_packing_lines()`; **enabling the pragma is an open operator decision** |
 | F-33 | LOW | ~~A document can be removed without its lines~~ — superseded by F-32's answer. Kept as the question that produced it | — original text: **A document can be removed without its lines.** Whatever removed `c838d434` left 245 `packing_lines` rows behind, so the FK is not enforced in practice. `delete_packing_document` does delete lines first, which means the removal did not go through it | the orphans exist | open — find the writer, then decide relink vs quarantine | 245 rows survived their document; 1 dead document id |
-| F-34 | **HIGH** | **A hard block fails the operator-knowledge test in the allocation path.** `confirm_allocation` refuses an advance-stage line outright — *"the goods do not exist yet"* — but `doc_stage` is derived from the very document the operator uploaded, and whether the goods exist is exactly what the operator knows and the system cannot: we never open the box. Under OVERRIDE, DON'T BLOCK this is the less-informed party vetoing the better-informed one, and the refusal leaves no trace of the decision it prevented | `packing_db.confirm_allocation`, one `raise ValueError` on `_line_doc_stage(...) == 'advance'` | converting to warn-and-record with a mandatory reason | 1 block; doc_stage advance; no record left |
+| F-34 | **HIGH — FIXED #1326** | **A hard block fails the operator-knowledge test in the allocation path.** `confirm_allocation` refuses an advance-stage line outright — *"the goods do not exist yet"* — but `doc_stage` is derived from the very document the operator uploaded, and whether the goods exist is exactly what the operator knows and the system cannot: we never open the box. Under OVERRIDE, DON'T BLOCK this is the less-informed party vetoing the better-informed one, and the refusal leaves no trace of the decision it prevented | `packing_db.confirm_allocation`, one `raise ValueError` on `_line_doc_stage(...) == 'advance'` | converting to warn-and-record with a mandatory reason | 1 block; doc_stage advance; no record left |
 | F-35 | MED | Two further refusals are weaker candidates, recorded so the audit is complete rather than convenient: **expected-count mismatch** on design assignment (`no partial stamp`) and **release refused** when named rows are not `confirmed`. Both are system-side bookkeeping the operator can re-issue against, and neither destroys information, so neither is converted now. Two refusals that ARE correct and stay hard: a `customer_id` absent from Customer Master (the system does know its own Master, and MASTER-FIRST binds) and the reprocess update-count rollback (atomicity, not judgement) | 4 refusals classified in `packing_db` | none — recorded | 2 convert-candidates, 2 stay-hard |
 | F-29 | MED | **The three `SHIPMENT_PXT*` batches in the production packing DB are corrupt-file test fixtures** — `pack.xlsx` BadZipFile, `pack.pdf` "No /Root object", `pack.xls` with literal `smok` bytes. All correctly `empty` with a real `failure_reason`, so the ingestion contract is not missing; it works. **Dismissal evidence (re-checked under the new rule):** all three batches hold zero `packing_lines`, so nothing real is behind them. Screening "batches with documents but zero lines" returns 4 and only ONE is real — the screen would have quadrupled this finding | zero-line document census over the live DB | test fixtures in production storage: backlog | 4 zero-line batches → 1 real; 3 fixture batches SHIPMENT_PXT* |
 | F-30 | LOW | A NEW red landed on main outside both metered globs: `test_intake_add_document_packing_persist.py::test_persist_helper_superset_mapping_and_transit_seed` — `match_strategy` is now an extra key against a superset pin. Proven at clean `21082d77`, so it arrived with #1312/#1318, unregistered | isolated run in a clean tree at the exact SHA | backlog: register or repoint the pin | 1 test; key match_strategy; SHA 21082d77 |
