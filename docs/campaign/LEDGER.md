@@ -17,6 +17,7 @@ Updated at every node transition. A run with no ledger update is invisible work.
 | P0 parser determinism | **RESOLVED — dissolved, not solved** | — | — | experiment 2026-08-22: two same-path runs over the identical bytes → 24 rows both times, byte-identical output. STAGE_DEPENDENT, and the dependency IS L1: the raw parse has 24 rows with 3 adjacent same-(design,qty) repeats and no serial; the final-path upsert's multiplicity-blind fallback swallowed exactly those 3 (24→21), while the advance path stores raw. source_file_hash RULED SOUND as a dedupe key. S0's L1 fix closes the root cause | 2026-08-22 |
 | M0 master consolidation | **RESCOPED — 2 of 3 items withdrawn** | — | — | VAT codes and product→towar verified at code level as NOT duplicate authorities (see D-08, D-09). Only the customer-master write-path item survives, and it now carries Track B's duplicate-cid findings and PR #1247 | 2026-08-22 |
 | X1 description generator | **CODE-COMPLETE** | `fix/plain-is-not-a-stone` | #1320 | `472122a5`; golden regression 160/160; 2 pre-existing failures proven pre-existing by stash comparison; ENGINE FILE — Lesson J declared in the PR | 2026-08-22 |
+| S0R quarantine allocation safety | **CODE-COMPLETE** | `fix/quarantine-preserves-operator-binding` | #1322 | `ed05f4f9`; floors PZ 296/260 and carrier 965/604 read from junitxml at base `26a480d2`; 4 failures, 0 new -- 3 registered carrier known-failures + one packing print-CSS test proven pre-existing in a detached worktree at exactly `26a480d2` | 2026-08-22 |
 | S1 · S4a · S2 · S3 · S4 · S5 | QUEUED | — | — | — | — |
 | W4-Z AR/AP zombie census | **MERGED** | — | — | census complete: 772 AR / 2176 AP rows; scope, basis and currency integrity all CLEAN | 2026-08-22 |
 | TB-1 contractor identity | **ACTIVE** | `fix/ar-ap-contractor-identity` | HELD | `c7ce03c9`, 6 new tests, 72 accounting-hub tests green | 2026-08-22 |
@@ -80,6 +81,41 @@ ref-containment for branch tips, `stored < parsed` for lost lines.
 neither is a regression of earlier work. **ADVERSARY**: the X1 fix keys off *falsy Polish
 translation*, which would silently reclassify a real stone added without a translation —
 pinned by `test_absence_keys_are_exactly_the_none_valued_ones`.
+
+## SELF-ANALYSIS — 2026-08-22 S0R (ARCHAEOLOGIST + ADVERSARY co-signed)
+
+**What the run proved.** A new shape, distinct from the absence/screen family:
+a *property that holds by accident*. Operator allocations survived the dedup
+repair in every case anyone had looked at, and the reason was that a bound row
+carries two more populated fields while the survivor is chosen by counting
+populated fields. Nothing in the repair knew what an allocation was. Three
+unrelated fields on the competing document reverse it, and the per-invoice /
+per-client pair differs by exactly that much in production.
+
+**Which instrument was wrong — mine, and it still paid.** The S2 hand-off item I
+wrote and committed said allocation must be re-keyed from `line_id` to
+`packing_line_key` because a rowid does not survive re-ingestion. `line_id` is a
+`uuid4` that the dedup UPDATE branch *reuses*, so the binding already survives;
+material change is caught by `compute_source_revision` + `allocation_is_stale`.
+The item is withdrawn as D-10 rather than deleted. Going to verify a defect that
+was not there found a real one a layer over — **that is luck, not method**, and
+naming it as luck is the point: a wrong premise that pays once will be trusted
+twice.
+
+**Doctrine implied, drafted and committed this run:** *A PROPERTY THAT HOLDS BY
+ACCIDENT IS NOT A GUARANTEE.* When a system does the right thing, name the rule
+that makes it do so; if the mechanism was built for something else, the property
+is a coincidence with a good track record. Make it real or record it as absent —
+never leave it standing as reassurance.
+
+**ARCHAEOLOGIST**: the repair module predates #1312 by construction, so this is a
+first occurrence and not a regression of earlier work; no prior fix touched the
+survivor-selection rule. **ADVERSARY**: the deferral compares
+`allocated_customer_id` as text, so two rows bound to one customer under different
+id spellings would defer — the fail-safe direction, and it costs a repair rather
+than a decision. The opposite risk, a rule that defers everything and quietly
+disables the repair, is pinned by `test_an_identical_binding_on_both_copies_is_not_a_conflict`
+and `test_a_supplier_suggestion_is_not_a_decision`.
 
 ## FINDINGS
 
