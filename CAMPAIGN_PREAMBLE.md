@@ -406,3 +406,24 @@ suspect it was not disambiguating.
 
 Compounding rule, already doctrine: the more alarming the result, the higher the
 instrument's bar. A 31× overstatement is exactly the kind of number nobody re-checks.
+
+## A PROPERTY THAT HOLDS BY ACCIDENT IS NOT A GUARANTEE
+
+When a system does the right thing, ask which rule makes it do so. If the answer
+is a mechanism that was built for something else, the property is not guaranteed —
+it is a coincidence with a good track record, and it will end without warning and
+without a diff that mentions it.
+
+The tell is a correct outcome nobody can attribute. "Operator allocations survive
+the dedup repair" was true in the cases anyone had looked at, and the reason was
+that a bound row has two more populated fields and the survivor is chosen by
+counting populated fields. Nothing in the repair knew what an allocation was.
+Three unrelated fields on the other document reversed it.
+
+So: an accidental property must be either **made real** — state the rule, implement
+it, pin it — or **recorded as absent**. The one thing it must not be is left
+standing as reassurance, because it reads exactly like a guarantee from the outside,
+and its failures are invisible until someone counts what is gone.
+
+Corollary for reviews: "this already works" is a claim about mechanism, not about
+observations. Ask which function makes it work. If none can be named, it doesn't.
