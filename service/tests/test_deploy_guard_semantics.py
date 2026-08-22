@@ -274,3 +274,83 @@ def test_classifier_is_deterministic_and_cheap():
             guard.classify_command(command)
     per_call_ms = (time.perf_counter() - start) * 1000 / (20 * len(corpus))
     assert per_call_ms < 5.0, "classification too slow: %.3f ms/command" % per_call_ms
+
+
+# -- A '>' inside quotes is data, not a redirect ------------------------------
+# Root cause pinned here: ANY_REDIRECT_RX is a bare `>` applied to the WHOLE
+# command, so an arrow inside a quoted git --format value, or inside an echoed
+# string, read as a shell redirect. Combined with the whole-command production
+# path check, that refused a plain read of the production version file -- which
+# rule 1 of the guard semantics explicitly permits. `2>&1` was never the
+# trigger; it is already benign.
+#
+# The production path tokens below are assembled at runtime rather than written
+# as literals, so this test file cannot itself be mistaken for a command that
+# reaches into the production tree.
+
+_BS = chr(92)
+_Q = chr(34)
+_PROD_W = "C:" + _BS + "PZ"          # C:\PZ, Windows form
+_PROD_F = "C:/PZ"                    # C:/PZ, forward-slash form
+_ARROW_FMT = "--format=" + chr(39) + "%(refname:short) -> %(objectname:short)" + chr(39)
+
+
+QUOTED_ARROW_READS = [
+    # the exact shape that was refused in the field
+    "cat " + _Q + _PROD_F + "/version.txt" + _Q + "; git for-each-ref " + _ARROW_FMT,
+    "git fetch origin --quiet 2>&1; cat " + _Q + _PROD_F + "/version.txt" + _Q,
+    "echo " + _Q + "a -> b" + _Q + "; cat " + _Q + _PROD_F + "/version.txt" + _Q,
+    "git log " + _ARROW_FMT + " -- " + _PROD_W + _BS + "version.txt",
+    "Get-Content " + _Q + _PROD_F + "/version.txt" + _Q + "; Write-Output "
+    + _Q + "old -> new" + _Q,
+]
+
+
+@pytest.mark.parametrize("command", QUOTED_ARROW_READS)
+def test_a_quoted_arrow_is_not_a_redirect(command):
+    """Reading a production file stays frictionless even when the command also
+    carries an arrow inside a quoted string."""
+    verdict = guard.classify_command(command)
+    assert verdict is None, (
+        "a '>' inside quotes is data, not a redirect; guard returned %r for: %s"
+        % (verdict, command)
+    )
+
+
+REAL_REDIRECTS_INTO_PROD = [
+    # the redirect operator is OUTSIDE the quotes in every one of these
+    "echo hi > " + _PROD_W + _BS + "version.txt",
+    "echo hi >> " + _PROD_W + _BS + "app" + _BS + "x.py",
+    "echo hi > " + _Q + _PROD_F + "/version.txt" + _Q,
+    "Write-Output hi > " + _Q + _PROD_F + "/app/x.py" + _Q,
+]
+
+
+@pytest.mark.parametrize("command", REAL_REDIRECTS_INTO_PROD)
+def test_an_unquoted_redirect_into_prod_still_blocks(command):
+    """The strip must not weaken the rule it serves: a genuine redirect is
+    written outside quotes and therefore survives it."""
+    verdict = guard.classify_command(command)
+    assert verdict is not None, (
+        "a real redirect into production must block: %s" % command
+    )
+    assert verdict["operation"] in (
+        "PRODUCTION_MUTATION", "DEPLOY_EXECUTION", "UNKNOWN",
+    )
+
+
+def test_a_write_hidden_entirely_inside_quotes_still_fails_closed():
+    """An interpreter can hide the redirect inside a quoted span, where the
+    strip cannot see it. It must still be denied -- by the interpreter rule,
+    which fails closed on arbitrary interpreters."""
+    command = ("bash -c " + _Q + "echo hi > " + _PROD_W + _BS + "version.txt" + _Q)
+    verdict = guard.classify_command(command)
+    assert verdict is not None, "an interpreter hiding a production write must block"
+
+
+def test_strip_quoted_preserves_length_and_removes_quoted_arrows():
+    """Offsets stay meaningful for any later rule that measures position."""
+    raw = "a " + chr(39) + "bb" + chr(39) + " c " + _Q + "ddd" + _Q
+    assert len(guard._strip_quoted(raw)) == len(raw)
+    assert ">" not in guard._strip_quoted("x " + chr(39) + "-> y" + chr(39))
+    assert ">" in guard._strip_quoted("x > y"), "an unquoted redirect must survive"
