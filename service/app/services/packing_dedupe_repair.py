@@ -15,6 +15,9 @@ Deliberately NOT here:
     declaration rather than from packing lines, so no customs value can move.
   * anything that touches wFirma. Verified: the affected batches carry only
     ``status='pending'`` reservation drafts with a NULL ``wfirma_reservation_id``.
+  * an operator's allocation. Since #1312 a binding lives ON the row, so the copy
+    this module would delete can be the copy an operator decided. It defers those
+    groups and names them rather than picking a survivor for a human.
   * inventory_state. A row there is an assertion about physical goods; five of the
     surplus scan_codes read WAREHOUSE_STOCK. Retracting those is a warehouse
     question, and this module reports them rather than deciding them.
@@ -122,10 +125,39 @@ def _find_duplicate_groups(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             reverse=True)
         kept_doc = ranked_docs[0]
         surplus = [r for d in ranked_docs[1:] for r in per_doc[d]]
+        kept = per_doc[kept_doc][0]
+        # A binding the survivor does not already hold would be DESTROYED by
+        # quarantining. An identical binding on both copies loses nothing, and
+        # a binding only on the survivor loses nothing either.
+        kept_binding = _operator_binding(kept)
+        bound = [r for r in surplus
+                 if _operator_binding(r) is not None
+                 and _operator_binding(r) != kept_binding]
         groups.append({"key": key, "collision_class": cls,
-                       "kept": per_doc[kept_doc][0], "kept_doc": kept_doc,
-                       "surplus": surplus})
+                       "kept": kept, "kept_doc": kept_doc,
+                       "surplus": surplus,
+                       "operator_bound_surplus": [str(r["id"]) for r in bound]})
     return groups
+
+
+_OPERATOR_ALLOCATED = "operator_allocated"
+
+
+def _operator_binding(row: sqlite3.Row) -> Optional[str]:
+    """The customer an OPERATOR bound this row to, or None.
+
+    ``supplier_preallocated`` is deliberately not a binding: it is the supplier's
+    claim, and deferring on advisory data would stall every repair. Tolerates a
+    schema predating the allocation columns -- this module ran before they existed.
+    """
+    keys = row.keys()
+    if "allocation_source" not in keys:
+        return None
+    if (row["allocation_source"] or "") != _OPERATOR_ALLOCATED:
+        return None
+    if "allocated_customer_id" not in keys:
+        return ""
+    return str(row["allocated_customer_id"] or "")
 
 
 def _richness(row: sqlite3.Row) -> tuple:
@@ -140,7 +172,9 @@ def quarantine_duplicates(con: sqlite3.Connection, *, repair_ref: str,
                           reason: str, clock, dry_run: bool = True) -> Dict[str, Any]:
     """Move surplus copies into quarantine. ``dry_run`` reports without writing."""
     groups = find_duplicate_groups(con)
-    surplus = [(g, s) for g in groups for s in g["surplus"]]
+    deferred = [g for g in groups if g["operator_bound_surplus"]]
+    surplus = [(g, s) for g in groups if not g["operator_bound_surplus"]
+               for s in g["surplus"]]
     report = {
         "repair_ref": repair_ref,
         "groups": len(groups),
@@ -148,6 +182,9 @@ def quarantine_duplicates(con: sqlite3.Connection, *, repair_ref: str,
         "batches": sorted({s["batch_id"] for _g, s in surplus}),
         "dry_run": dry_run,
         "quarantined": 0,
+        "deferred_groups": len(deferred),
+        "deferred_operator_bound": sorted(
+            lid for g in deferred for lid in g["operator_bound_surplus"]),
     }
     if dry_run or not surplus:
         return report
