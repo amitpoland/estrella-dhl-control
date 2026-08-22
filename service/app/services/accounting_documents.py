@@ -129,7 +129,16 @@ def normalize_invoice_node(inv: ET.Element) -> Optional[Dict[str, Any]]:
         "contractor/name",
         "contractor_detail/altname",
     )
-    contractor_id = _text(inv, "contractor/id", "contractor_detail/id")
+    # contractor/id ONLY. contractor_detail is a per-invoice SNAPSHOT of the
+    # contractor as it looked when that document was issued, and its id changes
+    # from invoice to invoice for the same real party. Falling back to it does
+    # not recover a missing id -- it invents a new party per document, which is
+    # the mechanism that manufactures duplicate contractors.
+    #
+    # An absent contractor/id means the document was raised against a party with
+    # no CRM record. That is a real condition worth seeing, so it stays empty
+    # rather than being filled with a number that identifies nothing.
+    contractor_id = _text(inv, "contractor/id")
     raw_state = _text(inv, "paymentstate", "state")
     paid = _text(inv, "alreadypaid")
     remaining = _text(inv, "remaining")
@@ -208,7 +217,8 @@ def normalize_warehouse_node(
         "date": _text(wd, "date"),
         "party_name": party or "—",
         "party": party or "—",
-        "contractor_id": _text(wd, "contractor/id", "contractor_detail/id"),
+        # contractor/id only -- see normalize_invoice_node above.
+        "contractor_id": _text(wd, "contractor/id"),
         "currency": wh_ccy or "—",
         "net": _accounting_currency_amount(wd, wh_ccy, "netto"),
         "gross": _text(wd, "brutto") or "—",
