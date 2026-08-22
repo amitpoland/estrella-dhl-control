@@ -181,6 +181,41 @@ this document's. That is deliberate — it states what is verifiable — but it 
 batch with unrelated orphans could mask a genuine loss. Named here rather than
 implied by the word.
 
+## SELF-ANALYSIS — 2026-08-22 S1b (ARCHAEOLOGIST + ADVERSARY co-signed)
+
+**The mechanism paid on its first write.** The `magnitudes` column was added and
+backfilled, and the string `245` immediately collided across **F-03, F-28, F-31 and
+F-32**. F-03 filed the orphan rows at census time — *"245 orphan packing_lines (15%)
+reference a non-existent document"* — and F-23 was filed later from a document-side
+query, and the two were never confronted. The operator's diagnosis was exact: not a
+measurement failure, a cross-reference failure. One column caught it.
+
+**And F-03 was itself wrong.** It says *"no FK declared"*. The FK **is** declared in
+the DDL; what is missing is `PRAGMA foreign_keys=ON` in `_connect()`, which SQLite
+requires per connection and which five sibling stores in this codebase do issue.
+"Declared" and "enforced" are different facts, and the second one is the defence. A
+finding filed against the wrong one sends the repair to the wrong file.
+
+**Cause before symptom, as ruled — and the cause turned out not to be a writer.**
+Exactly one code path deletes a `packing_documents` row and it deletes lines first.
+So the orphan-maker is not running; the orphans came from outside that function, and
+what allows it is the unenforced constraint. Repairing the orphans first would have
+been wrong for the reason the ruling gave, and hunting a live writer would have been
+wrong too — the ordering ruling was right and its premise was not.
+
+**Evidence scaled to the mutation, applied to my own next step.** Turning the pragma
+on is a write-semantics change to a live database that already holds 245 violations;
+under the new rule that is the highest bar, so it is recorded as an operator decision
+rather than taken. What ships instead creates nothing and hides nothing:
+`orphan_packing_lines()` plus a pin that the one delete path leaves no orphans.
+
+**ARCHAEOLOGIST**: `_connect()` has never issued the pragma — this is original, not a
+regression, and the DDL's FK has been decorative since the table existed.
+**ADVERSARY**: pinning "exactly one delete path" is a source-shape claim; it holds for
+the application, and it cannot speak for ad-hoc database edits, which is precisely how
+these 245 rows most likely arose. The pin narrows the future, it does not explain the
+past, and this ledger says so rather than implying a closed case.
+
 ## FINDINGS
 
 | id | sev | finding | evidence | fixed by | magnitudes |
@@ -201,7 +236,8 @@ implied by the word.
 | F-22 | MED | **Corpus re-scan complete: 4 L1 victims, 12 lines recoverable.** 91 of 101 live documents re-parsed and compared (10 source files no longer on disk). Victims — `6e1a7e7c` 4 lines (`…3109419880`), `57581182` 4 lines (`…8722845401`), `0164ed48` 3 lines (`…6696117050`), `84c50d39` 1 line (`…1196338404`). All four: FINAL stage, xlsx, shortfall equal to the serial-less repeat surplus EXACTLY. First **under-count** class in this campaign — goods present, record missing; surfaces as phantom shortage in S3. Recovery is re-ingest through S0-fixed code, under declared-delta acceptance | re-scan with E1–E5 declared in advance; E1 ✅ E3 ✅ E4 ✅ (deficit 3), E5 ✅ after separating never-ingested documents | S0 deploy + re-ingest | 371 screened → 12 real; 4 documents; 91 of 101 re-parsed; 10 files absent |
 | F-28 | **WITHDRAWN → see F-31** | **(First correction, itself wrong.) F-23 was wrong in the direction that matters, and the correction is worse than the finding.** It was recorded as a PDF parsed to 245 *noise* rows — a garbage parse, low stakes. The document's own diagnostic says `rows_extracted` 245, `rows_skipped` 0, `failure_reason` null, `total_qty` 245, `total_fob_usd` 3172, gross 505.102g, net 453.212g. The parse SUCCEEDED and totalled; the rows were lost between it and persistence, and the document reads `complete` on a shipment whose batch holds no packing lines at all. Because the registry answers `complete` if ANY resolved document is complete, that shipment's packing reports complete. Under-count class, like F-22 — goods present, record missing — not a noise class | full-corpus predicate over 104 live documents: exactly 1 changes (`939ae11b`, `complete` → `rows_lost`), 97 unchanged | S1 ✅ #1324; row recovery still behind the S0 deploy | 245; $3,172; 505.102g; 453.212g; 939ae11b; 104 documents; 1 changed |
 | F-31 | **HIGH** | **(Consolidates F-03 — the magnitudes column found the collision the moment it existed: `245` appears in F-03, F-28, F-31 and F-32. F-03 filed the orphans at census time and said `no FK declared`; nothing joined it to F-23.)** **The 245 rows were never lost — they are stored and unlinked, and that is a different defect with the opposite repair.** Every row of `939ae11b`'s parse is in `packing_lines` under document id `c838d434`, which no longer exists in `packing_documents`: the only 245 orphans in a table of 1598, carrying the Global parser's own `088/2026-2027-N` product codes. Persistence worked; the link that accounts for the goods was severed afterwards. A fix built on F-28 would have told an operator to re-ingest 245 pieces the database already holds — the duplication failure, not the missing-goods one. **The campaign already held this fact**: `245 orphan quarantine + FK` sat in the storage-applies backlog and was never joined to F-23 | orphan census over the live corpus: `packing_lines` 1598 total, 245 orphaned, all in one batch under one dead document id | S1 corrected in #1324 (`rows_orphaned`); the orphan rows themselves remain a separate open defect | 245 orphans of 1598 rows; document id c838d434; codes 088/2026-2027-N |
-| F-32 | MED | **A document can be removed without its lines.** Whatever removed `c838d434` left 245 `packing_lines` rows behind, so the FK is not enforced in practice. `delete_packing_document` does delete lines first, which means the removal did not go through it | the orphans exist | open — find the writer, then decide relink vs quarantine | 245 rows survived their document; 1 dead document id |
+| F-32 | **RESOLVED — no live writer; the DEFENCE is missing** | **Exactly one code path in the application deletes a `packing_documents` row** (`delete_packing_document_and_lines`) **and it deletes the lines first, in the same connection** — so no live writer can produce this state, and the ordering is now pinned. What has no defence is the database: the schema DOES declare `FOREIGN KEY (packing_document_id) REFERENCES packing_documents(id)` — F-03's *"no FK declared"* was itself wrong — but `_connect()` never issues `PRAGMA foreign_keys=ON`, which SQLite requires per connection. Five sibling stores here do issue it (`reservation_db`, `intake_lineage`, `correction_registry`, `delivery_confirmation_db`, `carrier/persistence/shipment_db`); this one does not, so the constraint is decorative. Enabling it mutates write semantics on a database that already violates it — highest bar under EVIDENCE SCALES WITH THE MUTATION, and not taken unilaterally | one `DELETE FROM packing_documents` in the whole app; zero `foreign_keys` pragmas in `packing_db.py` | #1324 pins the delete ordering and adds `orphan_packing_lines()`; **enabling the pragma is an open operator decision** |
+| F-33 | LOW | ~~A document can be removed without its lines~~ — superseded by F-32's answer. Kept as the question that produced it | — original text: **A document can be removed without its lines.** Whatever removed `c838d434` left 245 `packing_lines` rows behind, so the FK is not enforced in practice. `delete_packing_document` does delete lines first, which means the removal did not go through it | the orphans exist | open — find the writer, then decide relink vs quarantine | 245 rows survived their document; 1 dead document id |
 | F-29 | MED | **The three `SHIPMENT_PXT*` batches in the production packing DB are corrupt-file test fixtures** — `pack.xlsx` BadZipFile, `pack.pdf` "No /Root object", `pack.xls` with literal `smok` bytes. All correctly `empty` with a real `failure_reason`, so the ingestion contract is not missing; it works. **Dismissal evidence (re-checked under the new rule):** all three batches hold zero `packing_lines`, so nothing real is behind them. Screening "batches with documents but zero lines" returns 4 and only ONE is real — the screen would have quadrupled this finding | zero-line document census over the live DB | test fixtures in production storage: backlog | 4 zero-line batches → 1 real; 3 fixture batches SHIPMENT_PXT* |
 | F-30 | LOW | A NEW red landed on main outside both metered globs: `test_intake_add_document_packing_persist.py::test_persist_helper_superset_mapping_and_transit_seed` — `match_strategy` is now an extra key against a superset pin. Proven at clean `21082d77`, so it arrived with #1312/#1318, unregistered | isolated run in a clean tree at the exact SHA | backlog: register or repoint the pin | 1 test; key match_strategy; SHA 21082d77 |
 | F-27 | **HIGH** | **A dedup repair can delete an operator's allocation.** #1312 put the binding ON `packing_lines`; `packing_dedupe_repair` picks the survivor of a DUPLICATE group by generic field-richness, ranked per DOCUMENT by its single richest row, then DELETEs every row of the losing document. So the copy an operator bound can be the copy that goes, and the survivor carries no binding. The binding *partially* defends itself — the allocation columns are populated fields, so a bound row scores higher — but that is an accident of field counting, not a rule: a richer document still outranks it, and the fixture proving this is a 3-field difference. Never applied to storage, so nothing is lost yet | failing test first: `quarantined == 1` on a group whose only bound row was the surplus; premise pinned so it cannot silently stop testing anything | repair defers the group and names the rows; `fix/quarantine-preserves-operator-binding` | 38 duplicate groups; 39 surplus rows; 3-field richness margin |
