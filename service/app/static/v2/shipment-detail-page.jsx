@@ -1530,6 +1530,28 @@ function _pzActionError(res) {
   return 'HTTP ' + (res.status || '?');
 }
 
+// Render the backend's pz_preview diagnostics. React decides nothing here — it
+// only reads the canonical fields the preview authority already returns.
+// `blockers` rows are objects ({code, message, …}), NOT strings.
+function _pzPreviewReasons(p) {
+  if (!p) return 'Preview not ready';
+  const out = [];
+  (p.blockers || []).forEach((b) => {
+    out.push(typeof b === 'string' ? b : (b.message || b.code || 'blocked'));
+  });
+  const unresolved = p.unresolved_product_codes || [];
+  if (unresolved.length) {
+    out.push(`${unresolved.length} product code(s) not yet mapped to wFirma goods: ${unresolved.join(', ')}`);
+  }
+  const conflicts = p.price_conflicts || [];
+  if (conflicts.length) {
+    out.push(`price conflict on: ${conflicts.join(', ')}`);
+  }
+  if (p.engine_error) out.push(p.engine_error);
+  if (!out.length && p.pz_lifecycle && p.pz_lifecycle.reason) out.push(p.pz_lifecycle.reason);
+  return out.join('; ') || p.error || 'Preview not ready';
+}
+
 function PzActionsPanel({ d, sadUploaded, batchId, onReload, setActiveTab }) {
   const [busy, setBusy] = React.useState('');
   const [msg, setMsg] = React.useState(null);
@@ -1539,6 +1561,7 @@ function PzActionsPanel({ d, sadUploaded, batchId, onReload, setActiveTab }) {
   const [confirmOpen, setConfirmOpen] = React.useState(false); // confirm PZ number
   const [adoptOpen, setAdoptOpen] = React.useState(false);
   const [pzInput, setPzInput] = React.useState('');
+  const [preview, setPreview] = React.useState(null);   // canonical pz_preview response
 
   const loadFiles = React.useCallback(async () => {
     if (!batchId) return;
@@ -1546,7 +1569,17 @@ function PzActionsPanel({ d, sadUploaded, batchId, onReload, setActiveTab }) {
     setFiles(r.ok ? (r.data && r.data.files) || r.data || {} : null);
   }, [batchId]);
 
+  // Single readiness authority — V2 reads the same pz_preview V1 reads.
+  const loadPreview = React.useCallback(async () => {
+    if (!batchId) return null;
+    const r = await window.PzApi.wfirmaPzPreview(batchId);
+    const p = r && r.ok ? r.data : null;
+    setPreview(p);
+    return p;
+  }, [batchId]);
+
   React.useEffect(() => { loadFiles(); }, [loadFiles, d.pzFileGenerated, d.pzDocId]);
+  React.useEffect(() => { loadPreview(); }, [loadPreview, d.pzFileGenerated, d.pzDocId]);
 
   const run = async (key, fn, okText) => {
     setBusy(key); setMsg(null);
@@ -1599,6 +1632,15 @@ function PzActionsPanel({ d, sadUploaded, batchId, onReload, setActiveTab }) {
   const adoptState = busy === 'adopt' ? 'running'
     : (booked ? 'completed' : (fileGenerated ? 'available' : 'blocked'));
 
+  // Resolve Products — the backend lifecycle authority decides whether this
+  // action applies at all (hide_resolve_products), same rule as V1.
+  const lifecycle = (preview && preview.pz_lifecycle) || null;
+  const showResolve = !booked && !(lifecycle && lifecycle.hide_resolve_products);
+  const unresolvedCodes = (preview && preview.unresolved_product_codes) || [];
+  const resolveState = busy === 'resolve' ? 'running'
+    : (fileGenerated ? 'available' : 'blocked');
+  const previewNotReady = !!(preview && preview.ready === false && !preview.already_created);
+
   const B = (props) => <DhlActionButton {...props} />;
 
   const submitNumber = async (mode) => {
@@ -1622,15 +1664,54 @@ function PzActionsPanel({ d, sadUploaded, batchId, onReload, setActiveTab }) {
       return;
     }
     const pdata = prev && prev.data;
+    if (pdata) setPreview(pdata);
+    if (pdata && pdata.already_created) {
+      setMsg({ ok: true, text: 'Already booked in wFirma (doc id ' + (pdata.wfirma_pz_doc_id || '—') + ').' });
+      setConfirmExport(false);
+      return;
+    }
     if (pdata && pdata.ready === false) {
-      const reasons = (pdata.blocking_reasons || pdata.blockers || []).join('; ') || pdata.error || 'Preview not ready';
-      setMsg({ ok: false, text: 'Export blocked: ' + reasons });
+      setMsg({ ok: false, text: 'Export blocked: ' + _pzPreviewReasons(pdata) });
       setConfirmExport(false);
       return;
     }
     const ok = await run('export', () => window.PzApi.wfirmaPzCreate(batchId),
       'wFirma PZ create request completed.');
-    if (ok) setConfirmExport(false);
+    if (ok) { setConfirmExport(false); await loadPreview(); }
+  };
+
+  // Canonical product identity resolution — search wFirma, adopt an existing
+  // good, create only when the operator write gate is open. All of that lives
+  // in the backend; this only fires it, reports what it did, and re-reads the
+  // preview. A code that stays unresolved is a known next action, never a
+  // silent dead end: the create gate is read from the capabilities authority.
+  const doResolveProducts = async () => {
+    setBusy('resolve'); setMsg(null);
+    const res = await window.PzApi.wfirmaProductsResolve(batchId);
+    setBusy('');
+    if (!res || !res.ok) { setMsg({ ok: false, text: _pzActionError(res) }); return; }
+    const r = res.data || {};
+    const parts = [
+      `searched ${r.considered ?? 0}`,
+      `already mapped ${r.already_mapped ?? 0}`,
+      `adopted ${r.found_and_mapped ?? 0}`,
+      `created ${r.created ?? 0}`,
+    ];
+    const missing = r.missing_codes || [];
+    const failed = r.failed_details || [];
+    if (missing.length) {
+      const cap = await window.PzApi.getWfirmaCapabilities();
+      const canCreate = !!(cap && cap.ok && cap.data && cap.data.create_product_allowed);
+      parts.push(canCreate
+        ? `not in wFirma and not created: ${missing.join(', ')}`
+        : `not in wFirma: ${missing.join(', ')} — creating new goods is disabled `
+          + `(WFIRMA_CREATE_PRODUCT_ALLOWED); an operator must enable it before these can be created`);
+    }
+    failed.forEach((f) => parts.push(`${f.product_code}: ${f.error}${f.reason ? ' — ' + f.reason : ''}`));
+    const p = await loadPreview();
+    const done = !missing.length && !failed.length && p && p.ready !== false;
+    setMsg({ ok: !!done, text: parts.join(' · ') });
+    if (done) { await loadFiles(); if (onReload) onReload(); }
   };
 
   return (
@@ -1667,6 +1748,14 @@ function PzActionsPanel({ d, sadUploaded, batchId, onReload, setActiveTab }) {
           state={dlPState}
           reason="PZ PDF not available yet — Run PZ first."
           onClick={() => run('pdf', () => window.PzApi.downloadBatchFile(pdfEntry.url, pdfEntry.name || 'pz.pdf'), 'PDF download started.')} />
+        {showResolve && (
+          <B label={unresolvedCodes.length ? `Resolve Products (${unresolvedCodes.length})` : 'Resolve Products'}
+            icon="⚙" testid="resolve-products"
+            route={'POST /api/v1/upload/shipment/' + batchId + '/wfirma/products/resolve'}
+            state={resolveState}
+            reason="Generate PZ files before resolving products."
+            onClick={doResolveProducts} />
+        )}
         <B label="Export to wFirma" icon="↗" testid="export-wfirma"
           variant={exportState === 'available' ? 'gold' : 'outline'}
           route={'POST /api/v1/upload/shipment/' + batchId + '/wfirma/pz_create'}
@@ -1679,6 +1768,17 @@ function PzActionsPanel({ d, sadUploaded, batchId, onReload, setActiveTab }) {
           reason={booked ? 'Already booked / adopted.' : 'Generate PZ files before marking exported.'}
           onClick={() => { setConfirmOpen(false); setAdoptOpen(true); setPzInput(d.pzNumber || d.pzDocId || ''); }} />
       </div>
+
+      {previewNotReady && (
+        <div data-testid="pz-preview-blockers" style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--badge-amber-bg)', border: '1px solid var(--badge-amber-border)' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--badge-amber-text)', marginBottom: 4 }}>
+            wFirma export not ready
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)' }} data-testid="pz-preview-blockers-text">
+            {_pzPreviewReasons(preview)}
+          </div>
+        </div>
+      )}
 
       {confirmRegen && (
         <div data-testid="regenerate-pz-confirm" role="alertdialog" style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: 'var(--card)', border: '1px solid var(--badge-amber-border)' }}>
