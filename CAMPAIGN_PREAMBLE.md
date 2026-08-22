@@ -427,3 +427,32 @@ and its failures are invisible until someone counts what is gone.
 
 Corollary for reviews: "this already works" is a claim about mechanism, not about
 observations. Ask which function makes it work. If none can be named, it doesn't.
+
+## A DISMISSAL NEEDS EVIDENCE TOO
+
+An alarming finding gets re-checked because it is alarming. A finding that lets you
+move on gets re-checked by nobody. That asymmetry biases every screen toward
+under-detection.
+
+So: any classification that REDUCES the scope of a problem — "noise", "test data",
+"never ingested", "pre-existing", "benign" — carries the same evidence burden as an
+alarm. Name the artifact that makes it benign. "It looked like nothing" is not one.
+
+Applied to this campaign's own dismissals, the rule paid three times in one pass:
+
+- *"the repair was never applied to storage"* — **held**, and now cited: production
+  `packing.db` has no `packing_line_quarantine`, no `packing_doc_links`, and no
+  `packing_line_key` column at all.
+- *"not lost goods, the rows live under a sibling document"* — **held**, and the
+  artifact is better than the claim: the file is named `…packing list of 20pcs…`
+  and the first registration of those bytes holds exactly 20 lines.
+- *"245 noise rows"* — **overturned twice.** First the parser's own diagnostic said
+  the parse succeeded and totalled 245 pieces, $3,172 and 505g, which made it an
+  under-count, not noise. Then the row census said the goods were never lost at
+  all: all 245 sit in `packing_lines` under a document id that no longer exists.
+  A fix built on the first correction would have told an operator to re-ingest 245
+  pieces the database already holds.
+
+Note the shape of that last one: **each re-check moved the finding, and the final
+answer was neither the original nor the first correction.** A dismissal is not
+retired by being questioned once.
