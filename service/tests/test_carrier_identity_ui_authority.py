@@ -241,6 +241,29 @@ def test_the_control_tower_passes_the_rows_own_carrier():
     assert "carrier: row.carrier || ''" in _src(_PAGES)
 
 
+@pytest.mark.parametrize("path", [_TRACK_CARD, _PAGES, _SHIPMENT_PAGE, _PROFORMA])
+def test_no_surface_defaults_a_carrier_to_dhl_anywhere(path):
+    """Whole-file guard, not one line.
+
+    The gate found a SECOND `|| 'DHL'` surviving 44 lines below the one this
+    campaign fixed — the same invention pattern, in the same file. Pinning only
+    the line the report named is what leaves the next one in place.
+    """
+    # ONE documented exemption, and it is a different concept. This is the
+    # Customer Master BOOKING PREFERENCE default: when a customer has no default
+    # carrier account, a NEW booking defaults to DHL. That invents nothing about a
+    # shipment that already has a carrier -- which is what this guard exists to
+    # stop. test-baseline.md line 39 records the same distinction.
+    allowed = ("_AWB_CM_CARRIER_REV",)
+    offenders = [
+        f"{path.name}:{n}: {line.strip()[:80]}"
+        for n, line in _code_lines(path)
+        if ("|| 'DHL'" in line or '|| "DHL"' in line)
+        and not any(token in line for token in allowed)
+    ]
+    assert not offenders, "a carrier still defaults to DHL:\n" + "\n".join(offenders)
+
+
 # ── the booking modal: FedEx must not wear DHL's words ──────────────────────
 
 # Copy that names DHL and is NOT rendered behind a DHL-only condition.
