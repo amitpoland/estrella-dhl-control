@@ -55,6 +55,129 @@ _db_path: Optional[Path] = None
 # Kept here so packing_db can populate the column at write time without
 # importing warehouse_db (which imports packing_db — would be circular).
 
+def _norm_key_part(value: Any) -> str:
+    """One normalisation for every key part. Numbers compare as numbers."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:  # 1, 1.0 and "1.00" are the same quantity and must key the same
+        number = float(text)
+    except (TypeError, ValueError):
+        return " ".join(text.upper().split())
+    return str(int(number)) if number.is_integer() else repr(number)
+
+
+def packing_line_key(line: Dict[str, Any]) -> str:
+    """Identity of a COMMERCIAL LINE GROUP. Not a barcode, not a piece, not a row.
+
+    ``_compute_scan_code`` below answers "what did the operator just scan" -- the
+    printed barcode, mirrored in routes_packing._barcode_value and
+    warehouse_db.scan_code_for_packing_line, and deliberately untouched: labels
+    already exist on boxes.
+
+    This answers "is this the same commercial line I have already stored", and
+    its SHAPE never varies: four parts, always present, empty when unknown.
+
+    There is deliberately NO ordinal. Two independent failures proved it cannot
+    exist here: computed within the incoming list it collapses when callers
+    upsert one line at a time (every line becomes ordinal 1), and ranked against
+    stored rows it makes the key a function of ingestion history -- IDENTITY
+    STABILITY violated more subtly than the pack_sr bug this replaced. A pure
+    function of the row cannot separate two lines of a lot, because they are
+    identical in every non-barred field. So the key identifies the GROUP, and
+    how many rows share it is a COUNT -- the same shape the allocation ruling
+    (R8) chose: quantity-scoped, no row explosion.
+
+    Deliberately UNSCOPED -- no batch_id, no doc_stage. The same line arriving
+    under an advance pseudo-batch and its real shipment batch must produce the
+    same key; what a cross-document collision MEANS is the classifier's job.
+    """
+    return "|".join((
+        _norm_key_part(line.get("invoice_no")),
+        _norm_key_part(line.get("product_code")),
+        _norm_key_part(line.get("design_no")),
+        _norm_key_part(line.get("quantity")),
+    ))
+
+
+def line_key_is_incomplete(line: Dict[str, Any]) -> bool:
+    """True when the key rests on design and quantity alone.
+
+    123 live rows (9.3%) carry neither invoice_no nor product_code. Their key is
+    still stable, but it is too weak to bind money to, so allocation refuses them
+    rather than silently allocating against a guess.
+    """
+    return not (_norm_key_part(line.get("invoice_no"))
+                or _norm_key_part(line.get("product_code")))
+
+
+# Collision classes for one packing_line_key carried by more than one row.
+# The key is deliberately unscoped, so a collision is a QUESTION, never a verdict.
+DUPLICATE = "DUPLICATE"                  # withdraw the poorer document
+ADVANCE_FINAL = "ADVANCE_FINAL"          # link them; both are legitimate
+QUANTITY_MISMATCH = "QUANTITY_MISMATCH"  # flag; NEVER merge
+GENUINE = "GENUINE"                      # the key is wrong; escalate
+
+# Most severe first: a set of rows takes the worst class any pair produces.
+_SEVERITY = (GENUINE, QUANTITY_MISMATCH, DUPLICATE, ADVANCE_FINAL)
+
+
+def classify_collision_pair(a: Dict[str, Any], b: Dict[str, Any]) -> str:
+    """Classify two rows sharing one packing_line_key.
+
+    Each argument carries the row plus its document's ``doc_stage``,
+    ``source_file_hash`` and ``doc_total_quantity``.
+
+    Order is load-bearing and is the operator's ruling:
+
+      same doc_stage                          -> DUPLICATE
+      different doc_stage, same file hash     -> ADVANCE_FINAL
+      different doc_stage, quantities differ  -> QUANTITY_MISMATCH
+      otherwise                               -> GENUINE
+
+    Note the second rule fires BEFORE the third. Same bytes under two stages is
+    one document ingested twice, so it links even when the two ingestions
+    disagree on totals -- that disagreement is a parser-determinism defect
+    (identical bytes yielding 21 rows once and 24 another), not two documents
+    describing different goods. Classifying it as QUANTITY_MISMATCH would blame
+    the goods for a bug in the extractor.
+
+    ``quantity`` itself is INSIDE the key, so two colliding rows always agree on
+    it. QUANTITY_MISMATCH can therefore only mean the two DOCUMENTS disagree on
+    what they contain, which is why it reads doc_total_quantity and not quantity.
+    """
+    stage_a = _norm_key_part(a.get("doc_stage"))
+    stage_b = _norm_key_part(b.get("doc_stage"))
+    if stage_a == stage_b:
+        return DUPLICATE
+
+    hash_a = _norm_key_part(a.get("source_file_hash"))
+    hash_b = _norm_key_part(b.get("source_file_hash"))
+    if hash_a and hash_a == hash_b:
+        return ADVANCE_FINAL
+
+    total_a = _norm_key_part(a.get("doc_total_quantity"))
+    total_b = _norm_key_part(b.get("doc_total_quantity"))
+    if total_a != total_b:
+        return QUANTITY_MISMATCH
+
+    return GENUINE
+
+
+def classify_key_collision(rows: List[Dict[str, Any]]) -> str:
+    """Worst class across every pair. One clean pair does not excuse a bad one."""
+    if len(rows) < 2:
+        return ""
+    seen = {classify_collision_pair(rows[i], rows[j])
+            for i in range(len(rows)) for j in range(i + 1, len(rows))}
+    for cls in _SEVERITY:
+        if cls in seen:
+            return cls
+    return GENUINE
+
+
 def _compute_scan_code(line: Dict[str, Any]) -> str:
     """
     Compute the canonical scan_code for a packing row.
@@ -196,6 +319,17 @@ def init_packing_db(db_path: Path) -> None:
         _add_column_if_missing(con, "packing_lines",     "unit_price",       "REAL NOT NULL DEFAULT 0.0")
         _add_column_if_missing(con, "packing_lines",     "total_value",      "REAL NOT NULL DEFAULT 0.0")
         _add_column_if_missing(con, "packing_lines",     "scan_code",        "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines",     "packing_line_key", "TEXT DEFAULT NULL")
+        con.execute("""CREATE TABLE IF NOT EXISTS packing_doc_links (
+            doc_a TEXT NOT NULL,
+            doc_b TEXT NOT NULL,
+            kind  TEXT NOT NULL,
+            total_variance      REAL NOT NULL DEFAULT 0,
+            line_count_variance INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (doc_a, doc_b, kind)
+        )""")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pl_line_key ON packing_lines(packing_line_key)")
         # source_file_hash — added to packing_documents after initial schema;
         # guard ensures existing DBs pick it up without a manual migration.
         _add_column_if_missing(con, "packing_documents", "source_file_hash", "TEXT NOT NULL DEFAULT ''")
@@ -811,6 +945,7 @@ def upsert_packing_lines(
         return 0
     inserted = 0
     now = _now_iso()
+    _fb_seen: Dict[tuple, int] = {}
     with _lock:
         with _connect() as con:
             for line in lines:
@@ -821,6 +956,48 @@ def upsert_packing_lines(
                 bag_id    = line.get("bag_id", "")
                 pack_sr   = line.get("pack_sr")           # source-list serial
                 unit_price= float(line.get("unit_price", 0) or 0)
+
+                # ── Cross-document absorb (shape-invariant key) ──────────
+                # The historical dedup keys below branch on pack_sr, so the
+                # per-invoice and per-client forms of ONE commercial line could
+                # never match each other -- 38 duplicate groups reached
+                # production that way. The group key does not vary with any
+                # optional field, so it matches across both forms and across
+                # batches.
+                #
+                # Absorb ONLY when another document of the SAME stage already
+                # holds this key with multiplicity my document has not reached:
+                # same stage is the classifier's DUPLICATE rule, and it needs
+                # no totals, so it is decidable mid-ingestion. Different-stage
+                # matches (advance vs final) are legitimate pairs -- both are
+                # stored, and the post-ingestion linker records them (R17).
+                # Rows too thin to carry identity (neither invoice_no nor
+                # product_code) are never absorbed on this key -- a
+                # design+quantity coincidence across shipments must not eat a
+                # real line.
+                _key = packing_line_key(line)
+                if not line_key_is_incomplete(line) and not force_reextract:
+                    _doc_id = str(line.get("packing_document_id") or "")
+                    _my_stage_row = con.execute(
+                        "SELECT doc_stage FROM packing_documents WHERE id=?",
+                        (_doc_id,)).fetchone()
+                    _my_stage = _my_stage_row[0] if _my_stage_row else ""
+                    _other = con.execute(
+                        """SELECT COUNT(*) FROM packing_lines l
+                           JOIN packing_documents d ON d.id = l.packing_document_id
+                           WHERE l.packing_line_key = ?
+                             AND l.packing_document_id != ?
+                             AND d.doc_stage IS ?
+                             AND (d.withdrawn_reason IS NULL
+                                  OR TRIM(d.withdrawn_reason) = '')""",
+                        (_key, _doc_id, _my_stage)).fetchone()[0]
+                    if _other:
+                        _mine = con.execute(
+                            "SELECT COUNT(*) FROM packing_lines "
+                            "WHERE packing_line_key=? AND packing_document_id=?",
+                            (_key, _doc_id)).fetchone()[0]
+                        if _mine < _other:
+                            continue  # within the duplicate's multiplicity
 
                 # ── Primary dedup ────────────────────────────────────────
                 # Each row in the source packing list is a DISTINCT physical
@@ -842,17 +1019,26 @@ def upsert_packing_lines(
                         (batch_id, inv_no, pack_sr),
                     ).fetchone()
                 else:
-                    existing = con.execute(
+                    # L1: this fallback key is IDENTICAL for every row of a lot
+                    # (no serial to tell them apart), so matching "the first
+                    # stored row" swallowed every subsequent lot line -- goods
+                    # silently lost. Count how many times THIS call has used
+                    # this key and demand a distinct stored row per occurrence.
+                    _fb_key = (batch_id, inv_no, inv_pos, design_no, bag_id,
+                               unit_price)
+                    _fb_seen[_fb_key] = _fb_seen.get(_fb_key, 0) + 1
+                    _fb_rows = con.execute(
                         """SELECT id, operator_review_status, product_code,
                                   invoice_line_position FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND invoice_line_position IS ?
                              AND design_no=? AND bag_id=?
                              AND unit_price=?
-                           LIMIT 1""",
-                        (batch_id, inv_no, inv_pos, design_no, bag_id,
-                         unit_price),
-                    ).fetchone()
+                           ORDER BY rowid""",
+                        _fb_key,
+                    ).fetchall()
+                    existing = (_fb_rows[_fb_seen[_fb_key] - 1]
+                                if len(_fb_rows) >= _fb_seen[_fb_key] else None)
 
                 # Secondary dedup: same position + same bag_id, design_no may differ.
                 # Covers two cases:
@@ -933,6 +1119,7 @@ def upsert_packing_lines(
                                metal=?, karat=?, stone_type=?, remarks=?,
                                extracted_confidence=?, requires_manual_review=?,
                                match_strategy=?, scan_code=?,
+                               packing_line_key=?,
                                unit_price_eur=?, metal_color=?, quality_string=?,
                                size=?, diamond_weight=?, color_weight=?,
                                updated_at=?
@@ -966,6 +1153,7 @@ def upsert_packing_lines(
                             1 if line.get("requires_manual_review") else 0,
                             line.get("match_strategy") or None,
                             scan_code or None,
+                            _key,
                             float(line.get("unit_price_eur", 0) or 0),
                             str(line.get("metal_color", "") or ""),
                             str(line.get("quality_string", "") or ""),
@@ -988,10 +1176,11 @@ def upsert_packing_lines(
                             metal, karat, stone_type, remarks,
                             extracted_confidence, requires_manual_review, match_strategy,
                             pack_sr, unit_price, total_value, scan_code,
+                            packing_line_key,
                             unit_price_eur, metal_color, quality_string,
                             size, diamond_weight, color_weight,
                             created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         line_id, line.get("packing_document_id", ""),
                         batch_id,
@@ -1017,6 +1206,7 @@ def upsert_packing_lines(
                         unit_price,
                         float(line.get("total_value", 0) or 0),
                         scan_code or None,
+                        _key,
                         float(line.get("unit_price_eur", 0) or 0),
                         str(line.get("metal_color", "") or ""),
                         str(line.get("quality_string", "") or ""),
@@ -1028,6 +1218,82 @@ def upsert_packing_lines(
                 )
                 inserted += 1
     return inserted
+
+
+def link_advance_final_documents(con=None) -> int:
+    """R17: record every advance/final pair sharing a file hash, WITH variance.
+
+    Same bytes under two stages is one document ingested twice; both records are
+    legitimate and the classifier links them rather than withdrawing either.
+    But linking must never absorb a discrepancy: the known production pair
+    extracted 24 rows as advance and 21 as final from IDENTICAL bytes, and that
+    disagreement is a parser defect the link has to carry, not hide. Each link
+    therefore records total_variance and line_count_variance, and the advance
+    document's empty linked_batch_id is pointed at the final document's batch.
+
+    Idempotent; safe to run after every ingestion and over history.
+    """
+    if con is None:
+        if _db_path is None:
+            return 0
+        with _lock:
+            with _connect() as own:
+                return link_advance_final_documents(own)
+    made = 0
+    now = _now_iso()
+    pairs = con.execute(
+        """SELECT a.id a_id, b.id b_id, a.batch_id a_batch, b.batch_id b_batch
+           FROM packing_documents a
+           JOIN packing_documents b
+             ON a.source_file_hash = b.source_file_hash
+            AND a.source_file_hash IS NOT NULL
+            AND TRIM(a.source_file_hash) != ''
+            AND a.id < b.id
+            AND a.doc_stage IS NOT b.doc_stage""").fetchall()
+    for a_id, b_id, a_batch, b_batch in pairs:
+        tot = {}
+        cnt = {}
+        for d in (a_id, b_id):
+            row = con.execute(
+                "SELECT COALESCE(SUM(quantity),0), COUNT(*) FROM packing_lines "
+                "WHERE packing_document_id=?", (d,)).fetchone()
+            tot[d], cnt[d] = float(row[0] or 0), int(row[1])
+        cur = con.execute(
+            """INSERT OR IGNORE INTO packing_doc_links
+               (doc_a, doc_b, kind, total_variance, line_count_variance,
+                created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (a_id, b_id, "ADVANCE_FINAL",
+             abs(tot[a_id] - tot[b_id]), abs(cnt[a_id] - cnt[b_id]), now))
+        made += cur.rowcount or 0
+        # auto-link history: the advance document's batch points at the final's
+        for adv, fin_batch in ((a_id, b_batch), (b_id, a_batch)):
+            stage = con.execute(
+                "SELECT doc_stage FROM packing_documents WHERE id=?",
+                (adv,)).fetchone()[0]
+            if (stage or "").lower() == "advance":
+                con.execute(
+                    """UPDATE packing_documents SET linked_batch_id=?
+                       WHERE id=? AND (linked_batch_id IS NULL
+                                       OR TRIM(linked_batch_id) = '')""",
+                    (fin_batch, adv))
+    return made
+
+
+def advance_final_links(con=None) -> List[Dict[str, Any]]:
+    """Read-only: every recorded advance/final link with its variance."""
+    if con is None:
+        if _db_path is None:
+            return []
+        with _lock:
+            with _connect() as own:
+                return advance_final_links(own)
+    rows = con.execute(
+        "SELECT doc_a, doc_b, kind, total_variance, line_count_variance, "
+        "created_at FROM packing_doc_links ORDER BY created_at").fetchall()
+    cols = ["doc_a", "doc_b", "kind", "total_variance", "line_count_variance",
+            "created_at"]
+    return [dict(zip(cols, r)) for r in rows]
 
 
 def assign_product_code_to_unassigned_design(
