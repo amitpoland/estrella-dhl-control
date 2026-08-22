@@ -59,29 +59,51 @@ def test_production_is_refused_without_the_flag():
         _fedex(production=False)._check_production_allowed(_BATCH)
 
 
-def test_the_flag_alone_does_not_release_a_booking():
-    """An empty allowlist blocks even with the kill switch turned on."""
-    with pytest.raises(CarrierGateError, match="carrier_live_allowlist is empty"):
-        _fedex(production=True, allowlist="")._check_production_allowed(_BATCH)
+# ── the allowlist clause — RETIRED 2026-08-22 ────────────────────────────────
+#
+# The three pins below previously asserted that an empty, wildcard, or
+# non-matching carrier_live_allowlist refused a FedEx production booking. That
+# clause was removed: it was a per-batch release list acting as transaction
+# authority, refusing operator work that had already satisfied every business
+# authority. MIGRATED, not deleted — they now assert the inverse, so a silent
+# re-introduction fails here. The configuration gate (the flag + credentials)
+# is untouched and pinned above and below.
 
 
-def test_a_wildcard_allowlist_is_refused():
-    """DHL honours "*"; FedEx never does — release is one batch at a time."""
-    with pytest.raises(CarrierGateError, match="wildcard"):
-        _fedex(production=True, allowlist="*")._check_production_allowed(_BATCH)
+@pytest.fixture
+def fedex_credentials(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.carrier.adapters.fedex._fedex_fields",
+        lambda *_a, **_k: {"client_id": "cid", "client_secret": "sec"},
+    )
 
 
-def test_a_batch_outside_the_allowlist_is_refused():
+@pytest.mark.parametrize("allowlist", ["", "*", _OTHER_BATCH])
+def test_the_allowlist_no_longer_gates_a_fedex_production_booking(
+    allowlist, fedex_credentials
+):
+    """Empty, wildcard and omits-this-batch all permit the booking now."""
+    _fedex(production=True, allowlist=allowlist)._check_production_allowed(_BATCH)
+
+
+def test_the_configuration_gate_answers_the_same_for_every_batch(fedex_credentials):
+    """"Not a release list" means operationally: no per-batch decision exists."""
     adapter = _fedex(production=True, allowlist=_OTHER_BATCH)
-    with pytest.raises(CarrierGateError, match="not in"):
-        adapter._check_production_allowed(_BATCH)
+    for batch in (_BATCH, _OTHER_BATCH, "SHIPMENT_SYNTHETIC_0003"):
+        adapter._check_production_allowed(batch)
 
 
-def test_both_gates_cleared_releases_the_batch_and_only_that_batch():
-    adapter = _fedex(production=True, allowlist=f"{_OTHER_BATCH},{_BATCH}")
-    adapter._check_production_allowed(_BATCH)          # allowed: no raise
-    with pytest.raises(CarrierGateError):
-        adapter._check_production_allowed("SHIPMENT_SYNTHETIC_0003")
+def test_production_credentials_are_still_required(monkeypatch):
+    """Configuration still fails CLOSED — as a CONFIGURATION error, never as a
+    batch that needs releasing."""
+    from app.services.carrier.models.shipment import CarrierConfigError
+
+    monkeypatch.setattr(
+        "app.services.carrier.adapters.fedex._fedex_fields",
+        lambda *_a, **_k: {"client_id": "", "client_secret": ""},
+    )
+    with pytest.raises(CarrierConfigError, match="FEDEX_NOT_CONFIGURED"):
+        _fedex(production=True)._check_production_allowed(_BATCH)
 
 
 def test_the_base_url_and_credential_environment_follow_the_gate():
@@ -106,14 +128,20 @@ def test_production_credentials_are_never_read_on_a_sandbox_booking(monkeypatch)
 
 
 def test_a_blocked_booking_never_reaches_fedex(monkeypatch):
-    """The gate fires before the token request, not after."""
+    """The gate fires before the token request, not after.
+
+    MIGRATED 2026-08-22: the blocking condition is now the CONFIGURATION gate
+    (flag off) rather than an allowlist miss. The property under test is
+    unchanged and is the one that matters — a refusal opens no connection, so
+    nothing can be charged.
+    """
     def _explode(*a, **kw):  # pragma: no cover - must never run
         raise AssertionError("a blocked FedEx booking opened an HTTP connection")
 
     monkeypatch.setattr("app.services.carrier.adapters.fedex.httpx.post", _explode)
     monkeypatch.setattr(
         "app.services.carrier.adapters.fedex._fedex_fields",
-        lambda *_a, **_k: {"client_id": "cid", "client_secret": "sec"},
+        lambda *_a, **_k: {"client_id": "", "client_secret": ""},
     )
     from app.services.carrier.models.shipment import ShipmentRequest
 
@@ -135,7 +163,9 @@ def test_a_blocked_booking_never_reaches_fedex(monkeypatch):
         incoterm="DAP",
         description="Jewellery",
     )
-    with pytest.raises(CarrierGateError, match="FEDEX_PRODUCTION_BLOCKED"):
+    from app.services.carrier.models.shipment import CarrierConfigError
+
+    with pytest.raises(CarrierConfigError, match="FEDEX_NOT_CONFIGURED"):
         _fedex(production=True, allowlist=_OTHER_BATCH).create_shipment(request)
 
 
@@ -151,24 +181,23 @@ def test_ups_has_no_production_field_so_ups_stays_sandbox_only():
 # ── DHL regression: the shared abstraction still behaves as it did ───────────
 
 
-def test_dhl_live_allowlist_semantics_are_unchanged():
-    """DHL keeps its own wildcard tolerance and its own exception type.
+def test_dhl_and_fedex_retired_the_allowlist_together():
+    """MIGRATED 2026-08-22. Was: "DHL keeps its own wildcard tolerance and its
+    own exception type" — asserting the two carriers gated differently.
 
-    FedEx raises CarrierGateError for every gate refusal (its established
-    error contract); DHL raises the sibling CarrierAllowlistError. Both map
-    to 422 in routes_carrier_actions — the point here is that adding the
-    FedEx gate moved neither.
+    They no longer gate on the allowlist at all, and the pin that matters is
+    that they were retired TOGETHER: leaving one carrier gated would mean the
+    same shipment is bookable or not depending on which carrier the operator
+    picks, which is exactly the inconsistency this campaign removed.
     """
     from app.services.carrier.adapters.live import DhlExpressLiveAdapter
-    from app.services.carrier.models.shipment import CarrierAllowlistError
 
-    wildcard = DhlExpressLiveAdapter(CarrierConfig(status="live", live_allowlist="*"))
-    wildcard._check_allowlist(_BATCH)                       # DHL still honours "*"
+    dhl = DhlExpressLiveAdapter(CarrierConfig(status="live", live_allowlist=""))
+    assert not hasattr(dhl, "_check_allowlist")
+    assert not hasattr(dhl, "_allowlist")
 
-    named = DhlExpressLiveAdapter(CarrierConfig(status="live", live_allowlist=_BATCH))
-    named._check_allowlist(_BATCH)
-    with pytest.raises(CarrierAllowlistError):
-        named._check_allowlist(_OTHER_BATCH)
+    fedex = _fedex(production=True, allowlist="")
+    assert not hasattr(fedex, "_allowlist")
 
 
 # ── UPS: a link, and nothing that pretends to be more ───────────────────────

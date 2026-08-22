@@ -5,15 +5,19 @@ OAuth (official): POST {base}/oauth/token
 Sandbox base: https://apis-sandbox.fedex.com
 Production base: https://apis.fedex.com
 
-Sandbox is the default and needs nothing. Production booking passes the same
-two gates the DHL live adapter passes, read from the same settings: the
-``fedex_allow_production`` flag AND ``carrier_live_allowlist`` naming this
-exact batch_id. The wildcard "*" is refused here even though the DHL adapter
-honours it — a FedEx production booking is released one batch at a time.
+Sandbox is the default and needs nothing. Production booking requires FedEx to
+be configured for production — the ``fedex_allow_production`` flag plus resolvable
+production credentials. Both are CONFIGURATION, not per-shipment release: missing
+either is a configuration error, never a batch that needs releasing.
+
+The per-batch ``carrier_live_allowlist`` clause was RETIRED from this path on
+2026-08-22 alongside the DHL one, for the same reason — it refused legitimate
+operator bookings that had already satisfied every business authority. Duplicate
+protection is CarrierCoordinator's leg guard, which binds FedEx and DHL alike.
 
 Credentials via resolve_carrier_credentials(fedex, ship_rate, <environment>)
 when migrated; otherwise Settings.fedex_client_id/secret (unmigrated). The
-environment follows the gate: production credentials are only ever read on a
+environment follows the flag: production credentials are only ever read on a
 booking that already cleared it.
 
 Does not implement a second credential store, coordinator or tracking client:
@@ -146,7 +150,7 @@ def _fedex_documents(body: dict) -> dict:
 
 
 class FedExSandboxAdapter(AbstractCarrierAdapter):
-    """FedEx Ship. Sandbox by default; production only through the two gates.
+    """FedEx Ship. Sandbox by default; production only when configured for it.
 
     Name kept for the source-grep authority pins that assert FedEx routes here
     rather than falling back to DHL; ``_check_production_allowed`` is the
@@ -168,34 +172,26 @@ class FedExSandboxAdapter(AbstractCarrierAdapter):
         return "production" if self._allow_production else "sandbox"
 
     def _check_production_allowed(self, batch_id: str) -> None:
-        """Both gates, or no production call is made. Mirrors the DHL live gate.
+        """Refuse a production booking FedEx is not configured for.
+
+        Configuration only — the flag, then credentials. Neither is a
+        per-shipment release, so neither answer ever depends on which batch is
+        being booked; batch_id is accepted for call-shape stability with the
+        coordinator and deliberately not consulted.
 
         Refuses before the token is fetched, so a blocked booking never even
         reaches FedEx with production credentials.
         """
+        del batch_id  # configuration is not per-shipment; see docstring.
         if not self._allow_production:
             raise CarrierGateError(
                 "FEDEX_PRODUCTION_BLOCKED: fedex_allow_production is off — "
                 "set FEDEX_ALLOW_PRODUCTION=true to open FedEx production booking."
             )
-        raw = getattr(self._config, "live_allowlist", "") or ""
-        allowlist = frozenset(p.strip() for p in raw.split(",") if p.strip())
-        if not allowlist:
-            raise CarrierGateError(
-                "FEDEX_PRODUCTION_BLOCKED: carrier_live_allowlist is empty — "
-                "a production booking requires the batch to be named in it."
-            )
-        if "*" in allowlist:
-            raise CarrierGateError(
-                "FEDEX_PRODUCTION_BLOCKED: carrier_live_allowlist is a wildcard — "
-                "FedEx production is released one batch_id at a time, never all."
-            )
-        if batch_id not in allowlist:
-            raise CarrierGateError(
-                f"FEDEX_PRODUCTION_BLOCKED: batch_id {batch_id!r} is not in "
-                "carrier_live_allowlist. Add this batch through the controlled "
-                "live-booking process — never widen the allowlist to permit all."
-            )
+        # Credentials are configuration too: resolve them here so a misconfigured
+        # FedEx fails as CARRIER_NOT_CONFIGURED before any token round-trip,
+        # rather than surfacing mid-booking as an opaque OAuth failure.
+        self._credentials()
 
     def _credentials(self) -> tuple[str, str]:
         fields = _fedex_fields(self._environment())

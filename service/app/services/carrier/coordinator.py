@@ -20,6 +20,23 @@ Shadow-mode flow for create_shipment():
   7. shadow_log_db.append_entry(redacted)
   8. return COMPLETE result
 
+Duplicate guarantee (two rules, both enforced here, neither optional):
+
+  * SAME REQUEST  — the idempotency key matches a COMPLETE row, so the stored
+    result is replayed and the adapter is never re-invoked.
+  * SAME SHIPMENT — the leg (batch_id + client_ref) already holds a booking
+    that is in force, so CarrierDuplicateBookingError is raised BEFORE the
+    PENDING insert and before the adapter. This is the rule the key alone
+    cannot express: the key hashes weight/value/currency/account, so a
+    corrected weight computes a NEW key and would otherwise book a SECOND
+    chargeable AWB for one parcel.
+
+Booking authorization is: authorized operator + valid shipment data + no
+active duplicate. It is NOT a per-batch release list. The carrier_live_allowlist
+was retired from this path on 2026-08-22 — it had been promoted from a release
+control into transaction authority and was refusing legitimate operator work.
+CARRIER_API_STATUS remains the kill switch (pending → 503, shadow → simulated).
+
 Retry guarantee: a second call with the same request never reaches the adapter.
 No live AWBs, no label bytes, no HTTP.
 """
@@ -33,6 +50,7 @@ from typing import FrozenSet, Optional
 
 from .factory import CarrierConfig, get_adapter
 from .models.shipment import (
+    CarrierDuplicateBookingError,
     CarrierGateError,
     CarrierProviderStateUnknownError,
     ShipmentMode,
@@ -46,6 +64,7 @@ from .models.shipment import (
 from .persistence.redactor import redact_response
 from .persistence.shadow_log_db import append_entry as _shadow_log_append
 from .persistence.shadow_log_db import init_db as _init_shadow_log
+from .persistence.shipment_db import get_active_booking_for_leg as _db_active_booking
 from .persistence.shipment_db import get_shipment as _db_get
 from .persistence.shipment_db import get_shipment_by_batch_id as _db_get_by_batch
 from .persistence.shipment_db import get_shipment_for_draft as _db_get_for_draft
@@ -178,8 +197,54 @@ class CarrierCoordinator:
                 request, key, existing, operator=operator, provider=provider,
             )
 
+        # No row for THIS key. That is not the same as "this leg is unbooked":
+        # the key hashes the request parameters, so an operator who corrects a
+        # weight and re-submits arrives here with a fresh key for a leg that
+        # already holds a real AWB. Ask the leg, not the key, before inserting
+        # the PENDING anchor or touching the adapter.
+        self._refuse_duplicate_leg(request)
+
         return self._execute(
             request, key, is_recovery=False, operator=operator, provider=provider,
+        )
+
+    def _refuse_duplicate_leg(self, request: ShipmentRequest) -> None:
+        """Raise if this canonical leg already holds a booking that is in force.
+
+        Runs before the PENDING insert, so a refused attempt leaves no row and
+        nothing is charged — the adapter is never reached and no carrier
+        request is sent.
+
+        A read failure must NOT be read as "no duplicate": that is the
+        wrong-in-your-favour error, and its cost is a real second AWB. An
+        unreadable store fails CLOSED with an honest reason.
+        """
+        try:
+            booked = _db_active_booking(
+                self._config.shipment_db_path,
+                request.batch_id,
+                getattr(request, "client_ref", None),
+            )
+        except Exception as exc:
+            raise CarrierDuplicateBookingError(
+                "Cannot confirm whether this shipment leg is already booked "
+                f"(carrier shipment store unreadable: {exc}). Refusing rather "
+                "than risking a second chargeable AWB. Resolve the store, then "
+                "retry — no carrier request was sent."
+            ) from exc
+
+        if not booked:
+            return
+
+        raise CarrierDuplicateBookingError(
+            "This shipment leg already has {0} AWB {1}. No new AWB is "
+            "required. To replace it, mark {1} DO NOT USE first — that is an "
+            "attributed, audited action and releases the leg for re-booking. "
+            "Nothing is cancelled or voided at the carrier.".format(
+                (booked.get("provider") or "an existing"),
+                booked.get("tracking_ref"),
+            ),
+            existing=booked,
         )
 
     # ── private ───────────────────────────────────────────────────────────────

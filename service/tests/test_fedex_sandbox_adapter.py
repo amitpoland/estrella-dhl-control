@@ -39,12 +39,17 @@ def _creds_and_cache(monkeypatch):
     fedex_mod._token_cache.clear()
 
 
-def test_production_booking_blocked():
+def test_production_booking_blocked_without_the_configuration_flag():
+    """MIGRATED 2026-08-22. Previously the flag was turned ON here and the
+    booking was still blocked, because the (now retired) carrier_live_allowlist
+    clause was empty. The allowlist no longer gates anything; the flag does, and
+    it is configuration rather than a per-shipment release."""
     cfg = CarrierConfig(status="live")
-    cfg.fedex_allow_production = True  # type: ignore[attr-defined]
+    assert cfg.fedex_allow_production is False      # default: sandbox
     adapter = FedExSandboxAdapter(cfg)
     with pytest.raises(CarrierGateError, match="FEDEX_PRODUCTION_BLOCKED"):
-        adapter.create_shipment(_req())
+        adapter._check_production_allowed(_req().batch_id)
+    assert adapter._base_url() == "https://apis-sandbox.fedex.com"
 
 
 def test_oauth_cached_single_flight():

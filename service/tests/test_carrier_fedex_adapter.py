@@ -58,14 +58,22 @@ def _adapter(*, production: bool = False) -> FedExSandboxAdapter:
 # ── The production gate ───────────────────────────────────────────────────────
 
 
-def test_production_booking_stays_hard_blocked(monkeypatch):
+def test_production_booking_is_blocked_without_the_configuration_flag(monkeypatch):
+    """MIGRATED 2026-08-22. This asserted FEDEX_PRODUCTION_BLOCKED with the flag
+    ON, because the (now retired) allowlist clause was empty. The flag itself is
+    the surviving gate, so that is what is pinned: it is CONFIGURATION — is
+    FedEx production set up — never a per-shipment release.
+    """
     monkeypatch.setattr(
         "app.services.carrier.adapters.fedex._fedex_fields",
         lambda *_a, **_k: {"client_id": "cid", "client_secret": "sec"},
     )
     with pytest.raises(CarrierGateError) as exc:
-        _adapter(production=True).create_shipment(_request())
+        _adapter(production=False)._check_production_allowed("SHIPMENT_SYNTHETIC_0001")
     assert "FEDEX_PRODUCTION_BLOCKED" in str(exc.value)
+
+    # Flag on + credentials resolvable ⇒ the operator books; no batch is named.
+    _adapter(production=True)._check_production_allowed("SHIPMENT_SYNTHETIC_0001")
 
 
 def test_sandbox_is_the_default_base_url():

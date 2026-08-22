@@ -4,7 +4,7 @@ CarrierFactory — selects the correct adapter from carrier_api_status.
 Rules:
   "pending" → CarrierGateError (explicit, loud — not a fallback)
   "shadow"  → DhlExpressShadowAdapter
-  "live"    → DhlExpressLiveAdapter (further gated by allowlist + credentials)
+  "live"    → DhlExpressLiveAdapter (further gated by credentials)
   anything else → CarrierGateError (unknown state is always an error)
 
 No silent downgrade. If the status is unexpected the call fails loudly
@@ -29,11 +29,19 @@ class CarrierConfig:
     api_url: str = "https://express.api.dhl.com"
     use_sandbox: bool = False
     account_number: Optional[str] = None
-    live_allowlist: str = ""                       # comma-separated batch_ids; empty = no live
-    # FedEx production Ship. Off by default; on its own it is not enough —
-    # the batch must also be named in live_allowlist. UPS has no equivalent
-    # field on purpose: UpsSandboxAdapter reads ups_allow_production via
-    # getattr, so leaving it absent keeps UPS sandbox-only and unbookable.
+    # RETIRED as booking authority 2026-08-22. No adapter reads it any more:
+    # a per-batch release list had been promoted into transaction authority and
+    # was refusing legitimate operator bookings. Duplicate protection moved to
+    # CarrierCoordinator's leg guard, and CARRIER_API_STATUS remains the kill
+    # switch. The field is KEPT, not deleted, because every caller constructs
+    # CarrierConfig with it and Settings still carries it for the review
+    # harness; it is now inert, and nothing may re-attach authority to it
+    # without an operator decision recorded in PROJECT_STATE.md DECISIONS.
+    live_allowlist: str = ""
+    # FedEx production Ship. Off by default. This is CONFIGURATION — whether
+    # FedEx production is set up at all — not a per-shipment release. UPS has no
+    # equivalent field on purpose: UpsSandboxAdapter reads ups_allow_production
+    # via getattr, so leaving it absent keeps UPS sandbox-only and unbookable.
     fedex_allow_production: bool = False
 
 

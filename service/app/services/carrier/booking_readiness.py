@@ -42,10 +42,16 @@ today -- an unresolvable recipient, a missing measured weight, a missing declare
 value, an unset Incoterm, an unresolvable carrier account. Everything else is a
 ``warning``: surfaced to the operator, never a gate.
 
-``live_release`` is a SEPARATE axis from ``business_readiness``. A shipment can
-be fully prepared and business-ready while the production carrier write has not
-been authorized. That is the normal state, not invalid shipment data, and the UI
-must never conflate the two.
+``live_release`` is a SEPARATE axis from ``business_readiness``: it answers
+"can this process reach the carrier at all", i.e. mode and capability, and never
+"is this shipment's data valid". The UI must not conflate the two.
+
+Since 2026-08-22 it is NOT a per-shipment release. The per-batch
+``carrier_live_allowlist`` was retired from booking authorization, so this axis
+no longer reports whether one batch was individually released -- it reports
+``carrier_api_status`` and whether the factory hands back a usable adapter.
+Reporting a batch "not released" when nothing releases batches any more would be
+exactly the fake readiness this module exists to prevent.
 """
 from __future__ import annotations
 
@@ -298,23 +304,22 @@ def _warehouse_state(batch_id: str) -> Dict[str, Any]:
 
 
 def _release_state(batch_id: str, settings, provider: str = "DHL") -> Dict[str, Any]:
-    """Live production-release state for ONE provider. NEVER suggests "*".
+    """Live carrier MODE + capability for ONE provider. Never per-shipment.
 
-    Independent of business readiness: "not released" means the production
-    carrier write has not been authorized for this shipment, NOT that the
-    shipment data is invalid.
+    Independent of business readiness: a not-live answer means this process is
+    not configured to reach the carrier, NOT that the shipment data is invalid.
 
     Capability and credential state come from the carrier factory + credential
     resolver -- the same authorities Carrier Master renders -- so this can never
     report a provider ready that the factory would refuse.
+
+    batch_id is accepted for call-shape stability and deliberately NOT read:
+    nothing about carrier mode or capability varies per batch now that the
+    per-batch allowlist is retired, and reading it would re-invent the
+    per-shipment release this module no longer has.
     """
-    # Parsed exactly as DhlExpressLiveAdapter.__init__ parses it, so the
-    # preflight and the gate can never disagree about the same string
-    # (pinned by test_booking_readiness_allowlist_matches_the_live_gate).
-    raw = getattr(settings, "carrier_live_allowlist", "") or ""
-    allowlist = {b.strip() for b in str(raw).split(",") if b.strip()}
+    del batch_id  # see docstring — mode/capability are not per-shipment.
     status = (getattr(settings, "carrier_api_status", "") or "").strip().lower()
-    allowlisted = bool(allowlist) and (batch_id in allowlist or "*" in allowlist)
 
     # Capability = "would the factory hand back a usable adapter for this
     # provider right now". Asking it is the only honest answer; a stored flag
@@ -335,7 +340,6 @@ def _release_state(batch_id: str, settings, provider: str = "DHL") -> Dict[str, 
                 api_key=getattr(settings, "dhl_express_api_key", None),
                 api_secret=getattr(settings, "dhl_express_api_secret", None),
                 account_number=getattr(settings, "dhl_express_account_number", None),
-                live_allowlist=raw,
             ),
             provider=provider,
         )
@@ -344,17 +348,35 @@ def _release_state(batch_id: str, settings, provider: str = "DHL") -> Dict[str, 
     except Exception as exc:
         capability_reason = str(exc) or type(exc).__name__
 
+    live_mode = status == "live"
+    ready = bool(capability_ready and live_mode)
+    if ready:
+        reason = None
+    elif not capability_ready:
+        reason = (
+            "This carrier is not usable from this service right now: "
+            "{0}. Fix the carrier configuration in Carrier Master.".format(
+                capability_reason or "no adapter could be created")
+        )
+    else:
+        reason = (
+            "Carrier mode is {0!r}, so bookings are simulated rather than sent "
+            "to the carrier. This is a service-wide mode, not a per-shipment "
+            "release — no individual shipment needs releasing.".format(
+                status or "unset")
+        )
     return {
         "carrier_api_status": status or None,
-        "specifically_allowlisted": allowlisted,
         "credentials_ready": capability_ready,
         "capability_ready": capability_ready,
         "adapter": adapter_name,
         "capability_reason": capability_reason,
-        "ready": bool(allowlisted and capability_ready and status == "live"),
-        "reason": (None if (allowlisted and capability_ready) else
-                   "Live booking is not released for this shipment. Release this "
-                   "specific shipment through the governed live-booking process."),
+        # Permanent contract, pinned by test: booking authorization is never a
+        # per-batch release list, so this key is always False. Kept (rather than
+        # dropped) so a stale consumer reads an honest False instead of KeyError.
+        "specifically_allowlisted": False,
+        "ready": ready,
+        "reason": reason,
     }
 
 

@@ -86,10 +86,10 @@ def ensure_waybill_persisted(
     try:
         from .credentials.consumer_bridge import express_carrier_config_kwargs
 
-        kwargs = express_carrier_config_kwargs("documents")
-        if not (kwargs.get("live_allowlist") or "").strip():
-            kwargs["live_allowlist"] = "*"
-        cfg = CarrierConfig(**kwargs)
+        # No allowlist coercion: the booking allowlist was retired 2026-08-22
+        # and nothing consults it. This is a READ (fetch an existing document),
+        # which never passed through the booking gate in the first place.
+        cfg = CarrierConfig(**express_carrier_config_kwargs("documents"))
         adapter = get_adapter(cfg)
     except Exception as exc:
         return DocumentImageResult("error", detail=f"adapter:{exc}")

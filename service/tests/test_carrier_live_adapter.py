@@ -242,17 +242,27 @@ class TestAllowlist:
             result = adapter.create_shipment(request)
         assert result.tracking_ref == "AWB-WILD"
 
-    def test_empty_allowlist_blocks_all(self):
-        config = _make_config(live_allowlist="")
-        adapter = DhlExpressLiveAdapter(config)
-        with pytest.raises(CarrierAllowlistError, match="carrier_live_allowlist is empty"):
-            adapter.create_shipment(_make_request())
+    # MIGRATED 2026-08-22 — these two asserted that an empty allowlist blocked
+    # everything and a populated one blocked unlisted batches. The gate was
+    # retired (a release list acting as transaction authority), so they now
+    # assert that those same configurations BOOK. Duplicate protection moved to
+    # CarrierCoordinator; see test_carrier_booking_authorization.py.
 
-    def test_specific_allowlist_blocks_unlisted_batch(self):
-        config = _make_config(live_allowlist="BATCH-ALLOWED")
-        adapter = DhlExpressLiveAdapter(config)
-        with pytest.raises(CarrierAllowlistError, match="not in carrier_live_allowlist"):
-            adapter.create_shipment(_make_request("BATCH-OTHER"))
+    def test_empty_allowlist_no_longer_blocks(self, tmp_path):
+        adapter = DhlExpressLiveAdapter(_make_config(live_allowlist=""))
+        with _mock_settings(tmp_path), patch("httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__enter__.return_value
+            mock_client.post.return_value = _mock_dhl_success("AWB-EMPTY-LIST")
+            result = adapter.create_shipment(_make_request())
+        assert result.tracking_ref == "AWB-EMPTY-LIST"
+
+    def test_an_unlisted_batch_no_longer_blocks(self, tmp_path):
+        adapter = DhlExpressLiveAdapter(_make_config(live_allowlist="BATCH-ALLOWED"))
+        with _mock_settings(tmp_path), patch("httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__enter__.return_value
+            mock_client.post.return_value = _mock_dhl_success("AWB-UNLISTED")
+            result = adapter.create_shipment(_make_request("BATCH-OTHER"))
+        assert result.tracking_ref == "AWB-UNLISTED"
 
     def test_specific_allowlist_permits_listed_batch(self, tmp_path):
         config = _make_config(live_allowlist="BATCH-001")
