@@ -21,6 +21,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Party authority, imported eagerly: it is a stdlib-only leaf with no path back
+# here, so this cannot cycle — and it means no threadpool worker is ever the
+# thread that first builds it. See tests/test_document_import_authority.py.
+from .commercial_document_parties import resolve_document_parties
+
 log = logging.getLogger(__name__)
 
 
@@ -57,7 +62,6 @@ def _buyer_shipto_from_customer(
     Prefer ``resolve_document_parties(draft=..., company=..., customer=...)``.
     This helper cannot see draft overrides; it only fills CM fallbacks.
     """
-    from .commercial_document_parties import resolve_document_parties
 
     _seller, buyer, shipto = resolve_document_parties(
         draft=None,
@@ -227,8 +231,6 @@ def build_commercial_packing_document(
             or (draft.get("issue_date") if isinstance(draft, dict) else None)
             or ""
         ).strip()
-
-    from .commercial_document_parties import resolve_document_parties
 
     # ONE party projection for packing + CMR (Preview consumes the same helper).
     seller, buyer, shipto = resolve_document_parties(

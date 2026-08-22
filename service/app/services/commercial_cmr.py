@@ -16,6 +16,11 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Party authority, imported eagerly: it is a stdlib-only leaf with no path back
+# here, so this cannot cycle — and it means no threadpool worker is ever the
+# thread that first builds it. See tests/test_document_import_authority.py.
+from .commercial_document_parties import resolve_document_parties
+
 log = logging.getLogger(__name__)
 
 _ISO2_COUNTRY = {
@@ -64,7 +69,6 @@ def _item_category_label(item_type: str) -> str:
 
 def _buyer_shipto(customer: Any) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Thin compatibility delegate — prefer resolve_document_parties with draft."""
-    from .commercial_document_parties import resolve_document_parties
 
     _seller, buyer, shipto = resolve_document_parties(
         draft=None, company=None, customer=customer, delivery_addr=None,
@@ -169,7 +173,6 @@ def build_cmr_document(
     cmr_number: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the canonical CMR document model (sole CMR business projection)."""
-    from .commercial_document_parties import resolve_document_parties
 
     raw_lines: List[Dict[str, Any]] = []
     if draft is not None:
