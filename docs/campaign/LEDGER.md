@@ -20,6 +20,7 @@ Updated at every node transition. A run with no ledger update is invisible work.
 | S0R quarantine allocation safety | **CODE-COMPLETE** | `fix/quarantine-preserves-operator-binding` | #1322 | `ed05f4f9`; floors PZ 296/260 and carrier 965/604 read from junitxml at base `26a480d2`; 4 failures, 0 new -- 3 registered carrier known-failures + one packing print-CSS test proven pre-existing in a detached worktree at exactly `26a480d2` | 2026-08-22 |
 | S1 ingestion contract | **CODE-COMPLETE** | `fix/a-packing-document-must-not-outclaim-its-rows` | #1324 | `5e98ce5a`; applied to all 104 live documents, exactly one changes; floors PZ 296/260 and carrier 979/604 at base `21082d77`; 5 failures, 0 new — 3 registered carrier known-failures + 2 proven pre-existing in a clean tree at `21082d77` | 2026-08-22 |
 | OVERRIDE POSTURE (backend) | **CODE-COMPLETE** | `fix/override-dont-block-advance-allocation` | #1326 (stacked on #1324) | `f828151e`; advance-stage refusal → warn-and-record with a mandatory reason; 6 new pins; floors PZ 296/260, carrier 979/604; 1977 passed, 5 failures 0 new | 2026-08-22 |
+| PACKING AUTHORITY REPLACEMENT | **FROZEN — awaiting operator merge** | `fix/packing-authority-replacement` | #1330 | `663d8fe5`; replaces #1322/#1324/#1326 (all closed with reasons). `origin/main` IS an ancestor, so the **merge result tree == the branch tree** and every proof below already binds the merged payload: 4 files, 0 retired vocabulary in added runtime lines, 0 new `_add_column_if_missing`, 0 #1326 names; fresh init 39 cols / 0 allocation-family / 6 indexes / no allocation index; #1323 sentinel green; 37 focused tests green; floors PZ 296/260 carrier 979/604, 1956 passed, failing node-ID set IDENTICAL to the registered baseline (0 new) | 2026-08-22 |
 | S4a · S2 · S3 · S4 · S5 | QUEUED | — | — | — | — |
 | W4-Z AR/AP zombie census | **MERGED** | — | — | census complete: 772 AR / 2176 AP rows; scope, basis and currency integrity all CLEAN | 2026-08-22 |
 | TB-1 contractor identity | **ACTIVE** | `fix/ar-ap-contractor-identity` | HELD | `c7ce03c9`, 6 new tests, 72 accounting-hub tests green | 2026-08-22 |
@@ -303,6 +304,41 @@ merely by starting the service?* **Yes, by design** — `_add_column_if_missing`
 `init_packing_db`, and that is exactly how S0's `packing_line_key` reached production
 between 13:07 and 14:47 today. That mechanism is why merging a stale branch is a schema
 event, not a code event.
+
+## SELF-ANALYSIS — 2026-08-22 replacement freeze (ARCHAEOLOGIST + ADVERSARY co-signed)
+
+**The fail-first requirement earned its place twice before it proved anything.** The
+first fixture could not store the second row at all — S0's cross-document absorb
+refuses it at write time. The second used `force_reextract`, which re-points the
+existing row instead of inserting a duplicate. Only the third, writing the *stored*
+historical shape, reproduced the defect. Two false starts that a
+confirm-the-hypothesis approach would have read as "no defect" and closed. **The
+premise test is what caught both**, because it failed loudly instead of the outcome
+test passing quietly.
+
+**And the defect was real, by one point.** `(16, 1)` against `(15, 0)`: the
+confirmation's own three columns nearly rescue it. The same shape as the allocation
+case before it — *a property that holds by accident* — which is why the rule now says
+confirmation outranks completeness rather than hoping the arithmetic keeps working.
+
+**The premise test had to be rewritten, not deleted.** After the fix it failed,
+because it pinned the pre-fix *outcome*. Repointing it at `_richness` kept its guard
+role without pinning behaviour that no longer exists — a pin that describes the
+mechanism survives the fix; one that describes the outcome cannot.
+
+**Stopped at the boundary, not around it.** The merge command is guard-blocked
+(operator-only, council signer default-off) and was not worked around. Governance
+rule 9 says the seven-agent gate runs **only** on the merged SHA, so the gate is NOT
+being run early even though the payload is provably identical — a rule that is
+convenient to bend is exactly the one worth keeping.
+
+**ARCHAEOLOGIST**: the replacement carries no stale history; #1324's delta was applied
+as an isolated patch onto current main and went in cleanly, which is itself the proof
+that it never depended on the retired authority. **ADVERSARY**: the surviving risk is
+not in this diff. The confirmed-decision preference is pinned in tests, but the
+*production* duplicate population has never been checked for how many groups carry a
+confirmation on the losing side — that number is unknown, and post-deploy acceptance
+should measure it rather than assume the tests cover the shape that exists.
 
 ## FINDINGS
 
