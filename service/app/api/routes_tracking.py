@@ -45,8 +45,16 @@ def _resolve_cache_dir(batch_id: str) -> Path:
     return fallback
 
 
+# UPS: "1Z" + 6-char shipper number + 2-digit service + 8-digit package id.
+# Checked before the digit-length rules because a UPS ref carries letters and
+# would otherwise reduce to a digit count that looks like another carrier.
+_UPS_REF_RE = re.compile(r"^1Z[0-9A-Z]{16}$", re.IGNORECASE)
+
+
 def _auto_carrier(tracking_no: str) -> str:
-    """Detect carrier from tracking number digit length."""
+    """Detect carrier from tracking number shape."""
+    if _UPS_REF_RE.match((tracking_no or "").strip().replace(" ", "")):
+        return "UPS"
     digits = re.sub(r"[^\d]", "", tracking_no)
     n = len(digits)
     if n == 10:

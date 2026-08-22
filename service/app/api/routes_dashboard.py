@@ -78,6 +78,22 @@ def _detect_carrier(tracking_no: str, awb_filename: str = "") -> Dict[str, str]:
     digits = re.sub(r"[^\d]", "", t)
     n   = len(digits)
 
+    # UPS first: a UPS ref carries letters, so the digit-length rules below
+    # would otherwise misread it. URL comes from the one tracking-URL
+    # resolver — never a second copy of the UPS link.
+    # Word-bounded on the filename: "ups" is a substring of groups/backups/
+    # pickups, unlike "dhl"/"fedex" below, so a bare `in` would misfile them.
+    if (
+        re.match(r"^1Z[0-9A-Z]{16}$", t.replace(" ", ""), re.IGNORECASE)
+        or re.search(r"\bups\b", fn)
+    ):
+        from ..services.tracking_service import tracking_url_for
+        return {
+            "carrier": "UPS",
+            "tracking_url": tracking_url_for("UPS", t),
+            "tracking_label": "Track on UPS",
+        }
+
     # DHL: 10-digit waybill, OR filename/tracking contains DHL hints
     is_dhl = (
         n == 10
