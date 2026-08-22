@@ -429,3 +429,100 @@ def test_no_module_outside_packing_db_writes_the_allocation_columns():
 def test_line_id_must_exist(pdb):
     with pytest.raises(ValueError, match="no packing line"):
         pdb.confirm_allocation("no-such-line", CUSTOMER_ID, operator="jigar")
+
+
+# ── a reparse must not erase what a human decided ────────────────────────────
+
+def _reparse_rows(pdb, batch_id, doc_id, rows):
+    """The shape routes_dhl_clearance hands to the replace helper."""
+    return [{"packing_document_id": doc_id, "batch_id": batch_id,
+             "invoice_no": "INV-1", "invoice_line_position": r["pos"],
+             "design_no": r["design"], "quantity": r["qty"],
+             "unit_price": 25.0, "item_type": "RING", "metal": "14KT",
+             "pack_sr": r["sr"]} for r in rows]
+
+
+def test_a_reparse_preserves_a_confirmed_allocation(pdb, tmp_path):
+    """routes_dhl_clearance force-reparse used to DELETE the batch's lines with
+    direct SQL, which erased every operator decision on it. The allocation is a
+    decision about physical goods and a human made it — a regenerate click must
+    not be the thing that loses it."""
+    bid = "SHIPMENT_REPARSE_1"
+    doc_id = pdb.upsert_packing_document(
+        batch_id=bid, invoice_no="INV-1", source_file_path="p.xlsx",
+        source_file_hash="h-reparse-1", extraction_status="ok")
+    pdb.upsert_packing_lines(_reparse_rows(pdb, bid, doc_id, [
+        {"pos": 1, "design": "D-100", "qty": 10, "sr": 1},
+        {"pos": 2, "design": "D-200", "qty": 5, "sr": 2}]))
+    lines = {l["design_no"]: l["id"] for l in pdb.get_packing_lines_for_batch(bid)}
+    pdb.confirm_allocation(lines["D-100"], CUSTOMER_ID, operator="jigar")
+
+    out = pdb.replace_batch_packing_lines(bid, _reparse_rows(pdb, bid, doc_id, [
+        {"pos": 1, "design": "D-100", "qty": 10, "sr": 1},
+        {"pos": 2, "design": "D-200", "qty": 5, "sr": 2}]))
+
+    after = {l["design_no"]: l for l in pdb.get_packing_lines_for_batch(bid)}
+    assert after["D-100"]["allocated_customer_id"] == CUSTOMER_ID
+    assert after["D-100"]["allocation_source"] == "operator_allocated"
+    assert after["D-100"]["allocation_confirmed_by"] == "jigar"
+    assert out["decisions_preserved"] == 1
+    assert out["decisions_dropped"] == 0
+
+
+def test_a_reparse_preserves_an_operator_product_confirmation(pdb):
+    """The same delete already destroyed PR-2 product-review confirmations —
+    a live defect that predates allocation. upsert_packing_lines deliberately
+    carries that pair across a re-extract; deleting first defeated it."""
+    bid = "SHIPMENT_REPARSE_2"
+    doc_id = pdb.upsert_packing_document(
+        batch_id=bid, invoice_no="INV-1", source_file_path="p.xlsx",
+        source_file_hash="h-reparse-2", extraction_status="ok")
+    rows = _reparse_rows(pdb, bid, doc_id, [{"pos": 1, "design": "D-100",
+                                             "qty": 10, "sr": 1}])
+    rows[0]["product_code"] = "PC-1"
+    pdb.upsert_packing_lines(rows)
+    pdb.confirm_product_review(bid, "PC-1", operator="jigar")
+
+    pdb.replace_batch_packing_lines(bid, rows)
+
+    after = pdb.get_packing_lines_for_batch(bid)[0]
+    assert after["operator_review_status"] == "confirmed"
+    assert after["operator_confirmed_by"] == "jigar"
+
+
+def test_a_decision_whose_line_vanished_is_reported_not_silently_lost(pdb):
+    """If the new parse no longer carries the line, the decision cannot be put
+    back — the goods it described are not claimed by the source any more. That
+    is reportable, not forgettable."""
+    bid = "SHIPMENT_REPARSE_3"
+    doc_id = pdb.upsert_packing_document(
+        batch_id=bid, invoice_no="INV-1", source_file_path="p.xlsx",
+        source_file_hash="h-reparse-3", extraction_status="ok")
+    pdb.upsert_packing_lines(_reparse_rows(pdb, bid, doc_id, [
+        {"pos": 1, "design": "D-100", "qty": 10, "sr": 1},
+        {"pos": 2, "design": "D-200", "qty": 5, "sr": 2}]))
+    lines = {l["design_no"]: l["id"] for l in pdb.get_packing_lines_for_batch(bid)}
+    pdb.confirm_allocation(lines["D-200"], CUSTOMER_ID, operator="jigar")
+
+    # revised list drops D-200 entirely
+    out = pdb.replace_batch_packing_lines(bid, _reparse_rows(pdb, bid, doc_id, [
+        {"pos": 1, "design": "D-100", "qty": 10, "sr": 1}]))
+
+    assert out["decisions_dropped"] == 1
+    assert out["decisions_preserved"] == 0
+    assert out["dropped"][0]["allocated_customer_id"] == CUSTOMER_ID
+
+
+def test_the_clearance_reparse_no_longer_deletes_packing_lines_directly(pdb):
+    """Source pin: the one writer claim is about writes, but a DELETE erases
+    the same columns. No module outside packing_db may delete packing_lines."""
+    app_dir = _ROOT / "app"
+    offenders = []
+    for py in app_dir.rglob("*.py"):
+        if py.name == "packing_db.py":
+            continue
+        text = py.read_text(encoding="utf-8", errors="ignore")
+        for n, line in enumerate(text.splitlines(), 1):
+            if "DELETE FROM packing_lines" in line.upper().replace("  ", " "):
+                offenders.append(f"{py.relative_to(_ROOT)}:{n}")
+    assert offenders == [], f"packing_lines deleted outside packing_db: {offenders}"

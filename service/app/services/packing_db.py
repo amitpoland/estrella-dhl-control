@@ -1554,6 +1554,145 @@ def allocation_is_stale(line: Dict[str, Any]) -> bool:
     return bool(current and current != snapshot)
 
 
+# ── Operator decisions survive a reparse ─────────────────────────────────────
+# Every column below records something a HUMAN decided about a packing line, as
+# opposed to something the parser extracted. upsert_packing_lines already goes
+# out of its way to carry the product-review pair across a re-extraction (see
+# the ``_confirmed`` branch above) — but a caller that DELETEs the batch first
+# defeats that entirely, because the row the upsert would have matched is gone.
+_OPERATOR_DECISION_COLUMNS = (
+    "operator_review_status", "operator_confirmed_at", "operator_confirmed_by",
+    "operator_source_revision",
+    "allocation_source", "suggested_customer_name", "suggested_customer_id",
+    "allocated_customer_id", "allocation_confirmed_at", "allocation_confirmed_by",
+    "allocation_source_revision", "allocation_strategy",
+    "allocation_cleared_at", "allocation_cleared_by", "allocation_cleared_reason",
+)
+
+
+def _decision_key(row: Dict[str, Any]) -> tuple:
+    """Identity of a stored packing row for decision carry-over.
+
+    Mirrors the dedup key upsert_packing_lines uses — pack_sr when the source
+    list supplied a serial, otherwise position + design + bag + price — so a row
+    the upsert would have recognised as "the same logical row" is the row whose
+    decisions come back.
+    """
+    inv = str(row.get("invoice_no") or "")
+    sr = row.get("pack_sr")
+    if sr is not None:
+        try:
+            return (inv, "sr", float(sr))
+        except (TypeError, ValueError):
+            return (inv, "sr", str(sr))
+    return (
+        inv, "pos", row.get("invoice_line_position"),
+        str(row.get("design_no") or ""), str(row.get("bag_id") or ""),
+        float(row.get("unit_price") or 0.0),
+    )
+
+
+def _carries_a_decision(row: Dict[str, Any]) -> bool:
+    if str(row.get("operator_review_status") or "").strip():
+        return True
+    if str(row.get("allocation_source") or "").strip():
+        return True
+    return bool(row.get("allocated_customer_id"))
+
+
+def replace_batch_packing_lines(
+    batch_id:        str,
+    line_records:    List[Dict[str, Any]],
+    *,
+    force_reextract: bool = True,
+) -> Dict[str, Any]:
+    """Re-extract a batch's packing lines WITHOUT discarding operator decisions.
+
+    This is the ``clear_batch`` helper the force-reparse path in
+    routes_dhl_clearance asked for in a comment and, lacking it, open-coded as
+    ``DELETE FROM packing_lines WHERE batch_id = ?`` against packing_db's file.
+    That delete bypassed this module's lock and every decision-preserving branch
+    in :func:`upsert_packing_lines`, so one operator pressing "regenerate"
+    silently erased product-review confirmations — and would erase customer
+    allocations — for the whole batch, with no record that anything was lost.
+
+    What this does instead: capture the decision columns of every row that
+    carries one, delete, re-extract, then put each decision back on the row the
+    upsert recreated for the same logical line. A decision whose line is NOT in
+    the new parse cannot be restored — the goods it described are no longer
+    claimed by the source document — so it is REPORTED in ``dropped`` rather
+    than disappearing quietly. The caller decides what to tell the operator;
+    this function refuses to be the place a human decision vanishes unlogged.
+
+    Returns ``{"stored", "deleted", "decisions_preserved", "decisions_dropped",
+    "dropped": [...]}``.
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    bid = str(batch_id or "").strip()
+    if not bid:
+        raise ValueError("batch_id is required")
+
+    saved: Dict[tuple, Dict[str, Any]] = {}
+    with _lock:
+        with _connect() as con:
+            for r in con.execute(
+                "SELECT * FROM packing_lines WHERE batch_id=?", (bid,)
+            ).fetchall():
+                row = dict(r)
+                if _carries_a_decision(row):
+                    saved[_decision_key(row)] = {
+                        c: row.get(c) for c in _OPERATOR_DECISION_COLUMNS
+                    }
+            deleted = con.execute(
+                "DELETE FROM packing_lines WHERE batch_id=?", (bid,)
+            ).rowcount
+
+    # Outside the lock: upsert_packing_lines takes it itself and threading.Lock
+    # is not re-entrant.
+    stored = upsert_packing_lines(line_records, force_reextract=force_reextract)
+
+    preserved = 0
+    set_clause = ", ".join(f"{c}=?" for c in _OPERATOR_DECISION_COLUMNS)
+    with _lock:
+        with _connect() as con:
+            for r in con.execute(
+                "SELECT * FROM packing_lines WHERE batch_id=?", (bid,)
+            ).fetchall():
+                row = dict(r)
+                keep = saved.pop(_decision_key(row), None)
+                if keep is None:
+                    continue
+                con.execute(
+                    f"UPDATE packing_lines SET {set_clause}, updated_at=? WHERE id=?",
+                    tuple(keep[c] for c in _OPERATOR_DECISION_COLUMNS)
+                    + (_now_iso(), row["id"]),
+                )
+                preserved += 1
+
+    dropped = [
+        {
+            "invoice_no":             k[0],
+            "allocated_customer_id":  v.get("allocated_customer_id"),
+            "operator_review_status": v.get("operator_review_status"),
+            "allocation_source":      v.get("allocation_source"),
+        }
+        for k, v in saved.items()
+    ]
+    if dropped:
+        log.warning(
+            "[%s] reparse dropped %d operator decision(s) whose line is absent "
+            "from the new parse: %s", bid, len(dropped), dropped,
+        )
+    return {
+        "stored":              stored,
+        "deleted":             deleted,
+        "decisions_preserved": preserved,
+        "decisions_dropped":   len(dropped),
+        "dropped":             dropped,
+    }
+
+
 def get_line_counts_for_batch(batch_id: str) -> Dict[str, int]:
     """
     Return ``{packing_document_id: line_count}`` for all documents in *batch_id*.

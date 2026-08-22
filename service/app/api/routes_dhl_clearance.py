@@ -1112,35 +1112,28 @@ def _force_reparse_global_packing(batch_id: str) -> int:
     # delete + upsert pattern matches what the operator's "Reparse
     # Packing" endpoint does internally; we just call it from the
     # force-regenerate path so the operator doesn't need two clicks.
-    import sqlite3 as _sql
+    # packing_db.replace_batch_packing_lines is that helper. The direct
+    # `DELETE FROM packing_lines WHERE batch_id = ?` this used to open-code
+    # bypassed packing_db's lock and, worse, every decision-preserving branch
+    # in upsert_packing_lines: an operator's product-review confirmations for
+    # the whole batch were erased by one regenerate click, and a customer
+    # allocation would go the same way. The helper carries those decisions
+    # across the re-extract and reports any it could not place.
     try:
-        # Best-effort delete of stale rows (packing_db doesn't expose a
-        # clear_batch helper; use direct SQL with the same connection
-        # pattern packing_db uses).
-        db_path = getattr(_pdb, "_db_path", None)
-        if db_path:
-            with _sql.connect(str(db_path)) as con:
-                con.execute(
-                    "DELETE FROM packing_lines WHERE batch_id = ?",
-                    (batch_id,),
-                )
-                con.commit()
-    except Exception as exc:
-        log.warning(
-            "[%s] force_reparse: stale row delete failed (proceeding "
-            "with upsert anyway): %s", batch_id, exc,
+        result = _pdb.replace_batch_packing_lines(
+            batch_id, all_rows, force_reextract=True,
         )
-
-    try:
-        n = _pdb.upsert_packing_lines(all_rows, force_reextract=True)
     except Exception as exc:
-        log.warning("[%s] force_reparse: upsert failed: %s", batch_id, exc)
+        log.warning("[%s] force_reparse: replace failed: %s", batch_id, exc)
         return 0
+    n = int(result.get("stored") or 0)
 
     log.info(
         "[%s] force_reparse: refreshed %d packing_lines rows from "
-        "%d PDF(s) using live parser",
+        "%d PDF(s) using live parser; %d operator decision(s) preserved, "
+        "%d dropped",
         batch_id, n, len(pdfs),
+        result.get("decisions_preserved", 0), result.get("decisions_dropped", 0),
     )
     return n
 
