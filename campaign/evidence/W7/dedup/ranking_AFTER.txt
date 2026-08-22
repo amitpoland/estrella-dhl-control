@@ -1,24 +1,23 @@
-AFTER — CT-DEDUP-S1, gated and ranked on independent observations
-generated_at_utc: 2026-08-22T02:25:13.917764+00:00
+AFTER — CT-DEDUP-S1 + D-1 gap clustering (INDEPENDENT_EVENT_GAP_SECONDS=900)
+generated_at_utc: 2026-08-22T02:34:56.313178+00:00
 
 #   scope     stage                           excess   Nind  Nrows  inflate noun                
 --------------------------------------------------------------------------------------------
-1   outbound  booking_to_acceptance           +94.11     12     13     1.08 collection events   
-2   outbound  booking_to_delivered            +85.69     12     12      1.0 deliveries          
+1   outbound  booking_to_delivered            +85.69     12     12      1.0 deliveries          
+2   outbound  booking_to_acceptance           +69.66      6     13     2.17 collection events   
 3   outbound  booking_to_first_movement       +59.44      5     13      2.6 collection events   
 
-management headline:
-    Label printed, DHL took the parcel is taking 3d 22h 7m longer than target - 12 collection events (13 shipments)
+headline:
+    Whole export, booking to delivered is taking 3d 13h 41m longer than target - 12 deliveries (12 shipments)
 
-outbound inflation (all stages):
-   booking_to_acceptance        n=13  n_ind=12   ratio=1.08   inflated=False
+all outbound stages:
+   booking_to_acceptance        n=13  n_ind=6    ratio=2.17   inflated=True
    acceptance_to_departure      n=13  n_ind=4    ratio=3.25   inflated=True
-   departure_to_destination     n=12  n_ind=12   ratio=1.0    inflated=False
+   departure_to_destination     n=12  n_ind=11   ratio=1.09   inflated=False
    destination_to_delivered     n=12  n_ind=12   ratio=1.0    inflated=False
    booking_to_delivered         n=12  n_ind=12   ratio=1.0    inflated=False
    booking_to_first_movement    n=13  n_ind=5    ratio=2.6    inflated=True
    pickup_to_delivery           n=2   n_ind=2    ratio=1.0    inflated=False
    departure_to_delivery        n=13  n_ind=13   ratio=1.0    inflated=False
 
-inbound untouched (n_independent must be None on all 8):
-    {'origin_pickup_to_poland': None, 'poland_to_dhl_email': None, 'dhl_email_to_dsk': None, 'dsk_to_agency_sad': None, 'sad_to_customs_cleared': None, 'customs_cleared_to_pz': None, 'sad_to_pz': None, 'origin_pickup_to_delivered': None}
+inbound (must be all None): {'origin_pickup_to_poland': None, 'poland_to_dhl_email': None, 'dhl_email_to_dsk': None, 'dsk_to_agency_sad': None, 'sad_to_customs_cleared': None, 'customs_cleared_to_pz': None, 'sad_to_pz': None, 'origin_pickup_to_delivered': None}

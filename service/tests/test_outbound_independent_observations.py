@@ -8,6 +8,14 @@ Measured on the production replica, 2026-08-22 (campaign/evidence/W7/dedup):
 
     booking_to_first_movement   13 shipments   5 collection events   2.60x
     acceptance_to_departure     13 shipments   4 departures          3.25x
+    booking_to_acceptance       13 shipments   6 collection events   2.17x
+
+booking_to_acceptance needed the gap tolerance to show up at all: DHL scans a
+multi-parcel handover parcel by parcel, so one drop lands as five "Shipment
+Accepted" stamps 2-9 seconds apart. Exact-timestamp de-dup called those five
+independent observations. Measured gaps split cleanly - 2..9s within a
+handover, then nothing until 4.5h - so INDEPENDENT_EVENT_GAP_SECONDS collapses
+the burst and leaves every genuine event alone.
 
 Ranking on rows put booking_to_first_movement second at +108.10h. Ranked on its
 5 independent collection events it is +59.44h and third. Inbound measured 1.00x
@@ -27,12 +35,16 @@ SRC = Path(__file__).resolve().parents[1] / "app" / "services" / "dhl_logistics_
 
 
 def _samples(spec):
-    """spec: list of (days_ago, hours, shared_event_key)."""
+    """spec: list of (days_ago, hours, shared_event_key).
+
+    Rows sharing a key share one terminating timestamp exactly; different keys
+    are spaced 6h apart, comfortably beyond INDEPENDENT_EVENT_GAP_SECONDS, so
+    they are genuinely separate events rather than one scan burst.
+    """
     out = []
     for days, hours, key in spec:
-        end = NOW - timedelta(days=days)
-        # rows sharing a key share one terminating event
-        out.append({"hours": float(hours), "end_ts": end.replace(microsecond=key)})
+        end = NOW - timedelta(days=days, hours=6 * key)
+        out.append({"hours": float(hours), "end_ts": end})
     return out
 
 

@@ -50,6 +50,24 @@ LANE_TARGETS_HOURS: Dict[str, float] = {
 # five genuinely disordered stages from the eleven that are merely sparse.
 CONTAMINATION_BLOCK_PCT = 10.0
 
+# Two terminating events closer together than this are one physical event.
+#
+# DHL scans a multi-parcel handover parcel by parcel, so one drop produces
+# several "Shipment Accepted" stamps seconds apart. Exact-timestamp de-dup
+# counts those as independent observations; they are one.
+#
+# Measured 2026-08-22 over all outbound acceptance events. Gaps between
+# consecutive distinct timestamps fall in two disjoint bands with nothing
+# between them:
+#     within a handover : 2, 2, 2, 2, 2, 9 seconds, then one at 1080 s
+#     between handovers : minimum 4.5 hours
+# 900 s sits far above the scan cadence and far below the next real handover,
+# and deliberately does NOT merge the 1080 s pair - that gap is ambiguous, and
+# merging an ambiguous pair would understate independence rather than overstate
+# it. departed / first_movement have no sub-hour gaps at all, so this changes
+# nothing for them.
+INDEPENDENT_EVENT_GAP_SECONDS = 900
+
 # Minimum samples before a stage may be ranked as a bottleneck, and minimum
 # samples in the prior window before a period-over-period delta is publishable.
 BOTTLENECK_MIN_N = 5
@@ -94,4 +112,5 @@ def targets_payload() -> Dict[str, Any]:
         "contamination_block_pct": CONTAMINATION_BLOCK_PCT,
         "bottleneck_min_n": BOTTLENECK_MIN_N,
         "delta_min_previous_n": DELTA_MIN_PREVIOUS_N,
+        "independent_event_gap_seconds": INDEPENDENT_EVENT_GAP_SECONDS,
     }

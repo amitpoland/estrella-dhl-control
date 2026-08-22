@@ -322,15 +322,26 @@ def _independent(samples: List[Dict[str, Any]]) -> Tuple[int, Optional[float]]:
     and ranking on the row count put it second at +108.1h when the independent
     figure is +59.4h. Inbound is 1.00x on all eight stages and is not clustered.
     """
-    clusters: Dict[Any, List[float]] = {}
-    for smp in samples:
-        end = smp.get("end_ts")
-        if end is None:
-            continue
-        clusters.setdefault(end, []).append(float(smp["hours"]))
-    if not clusters:
+    dated = sorted(
+        ((smp["end_ts"], float(smp["hours"])) for smp in samples if smp.get("end_ts") is not None),
+        key=lambda x: x[0],
+    )
+    if not dated:
         return 0, None
-    per_event = [statistics.median(v) for v in clusters.values()]
+    # Single-linkage over the terminating timestamp. Exact equality is too
+    # strict: a five-parcel handover is scanned parcel by parcel and lands as
+    # five stamps seconds apart, which exact de-dup counts as five independent
+    # observations of how long collection took. It is one.
+    gap = timedelta(seconds=targets.INDEPENDENT_EVENT_GAP_SECONDS)
+    clusters: List[List[float]] = [[dated[0][1]]]
+    last = dated[0][0]
+    for end, hours in dated[1:]:
+        if end - last <= gap:
+            clusters[-1].append(hours)
+        else:
+            clusters.append([hours])
+        last = end
+    per_event = [statistics.median(v) for v in clusters]
     typical = (
         statistics.median(per_event) if len(per_event) >= 3 else statistics.mean(per_event)
     )

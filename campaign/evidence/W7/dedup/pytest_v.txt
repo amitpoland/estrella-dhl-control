@@ -120,4 +120,4 @@ app\api\routes_dhl_clearance.py:4424
     class ProactiveDispatchRequest(BaseModel):
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-======================= 105 passed, 1 warning in 5.03s ========================
+======================= 105 passed, 1 warning in 4.75s ========================
