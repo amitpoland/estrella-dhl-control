@@ -16,6 +16,7 @@ Updated at every node transition. A run with no ledger update is invisible work.
 | S0 line identity | **CODE-COMPLETE** | `fix/packing-line-identity` | #1318 | group key + write-time absorb + L1 fix + R17 links `3fb172d6`; 116 packing tests green incl. every legacy pin; live-data pin re-measured (774 keys, 51 cross-doc, 0 GENUINE); S2 hand-off written. Data applies await the storage-variant gate (repo guard denies agent storage writes — same class as the merge gate) | 2026-08-22 |
 | P0 parser determinism | **RESOLVED — dissolved, not solved** | — | — | experiment 2026-08-22: two same-path runs over the identical bytes → 24 rows both times, byte-identical output. STAGE_DEPENDENT, and the dependency IS L1: the raw parse has 24 rows with 3 adjacent same-(design,qty) repeats and no serial; the final-path upsert's multiplicity-blind fallback swallowed exactly those 3 (24→21), while the advance path stores raw. source_file_hash RULED SOUND as a dedupe key. S0's L1 fix closes the root cause | 2026-08-22 |
 | M0 master consolidation | QUEUED | — | — | — | — |
+| X1 description generator | **CODE-COMPLETE** | `fix/plain-is-not-a-stone` | #1320 | `472122a5`; golden regression 160/160; 2 pre-existing failures proven pre-existing by stash comparison; ENGINE FILE — Lesson J declared in the PR | 2026-08-22 |
 | S1 · S4a · S2 · S3 · S4 · S5 | QUEUED | — | — | — | — |
 | W4-Z AR/AP zombie census | **MERGED** | — | — | census complete: 772 AR / 2176 AP rows; scope, basis and currency integrity all CLEAN | 2026-08-22 |
 | TB-1 contractor identity | **ACTIVE** | `fix/ar-ap-contractor-identity` | HELD | `c7ce03c9`, 6 new tests, 72 accounting-hub tests green | 2026-08-22 |
@@ -44,6 +45,39 @@ Updated at every node transition. A run with no ledger update is invisible work.
 | ST-05 | 08-21 | (registry) | `accounting-cfo-mis` worktree/branch field — which was intended | registry closure |
 | ST-06 | 08-22 | (ruled, split) | **Operator ruling:** `#1314` (guard/hooks) merged BY HAND, once — an agent must never hold the power to merge changes to its own guards, because a self-modifiable enforcement layer turns the merge lane itself into a bypass. `#1315`–`#1318` move to the signer permanently. Protected paths (hooks / guards / permissions) never go on the signer. | trains 1–2 until the hand-merge + signer are done |
 
+## SELF-ANALYSIS — 2026-08-22 run (ARCHAEOLOGIST + ADVERSARY co-signed)
+
+**What the run proved.** Three defects resolved into one shape: a *classifier that
+cannot express absence*. L1 could not distinguish "second line of a lot" from "row I
+already stored". PLAIN could not distinguish "no stones" from "a stone named PLAIN".
+Both put an absence claim into a vocabulary of presence claims and let first-match-wins
+decide. F-01's `pack_sr` was the same disease a layer up: an optional field allowed to
+change the SHAPE of an identity.
+
+**Which instrument was wrong.** The corpus re-scan, again — third time this campaign.
+`stored < parsed` conflated *L1 ate lines* with *never ingested* and with *a PDF fed to
+an xlsx parser*, reporting **371** where the truth was **12**. A 31× overstatement, on a
+result alarming enough that nobody would have re-checked it. The disambiguating pass
+found the real number AND produced two new findings (F-23, F-24) that the merged number
+would have buried. ADVERSARY notes the pattern: every over-broad instrument this campaign
+has been a *screen* mistaken for a *finding* — `product_code` matches for row references,
+ref-containment for branch tips, `stored < parsed` for lost lines.
+
+**Doctrine implied.** Two rules, drafted and committed this run:
+
+- **ABSENCE IS NOT A VALUE IN THE VOCABULARY OF PRESENCE.** A sentinel meaning *none of
+  these* must never sit in the same match list as the things it negates. Evaluate it only
+  after every positive candidate has failed. Pin the split so a future entry cannot join
+  the wrong side silently.
+- **A SCREEN IS NOT A FINDING.** A broad query that selects candidates must be labelled a
+  screen and followed by a disambiguating pass before any count is reported. The count a
+  screen produces is an upper bound, never a result.
+
+**ARCHAEOLOGIST**: no prior fix attempted either of these; both are first occurrences, so
+neither is a regression of earlier work. **ADVERSARY**: the X1 fix keys off *falsy Polish
+translation*, which would silently reclassify a real stone added without a translation —
+pinned by `test_absence_keys_are_exactly_the_none_valued_ones`.
+
 ## FINDINGS
 
 | id | sev | finding | evidence | fixed by |
@@ -62,6 +96,7 @@ Updated at every node transition. A run with no ledger update is invisible work.
 | F-19 | **HIGH** | 13 AR + 2 AP ZOMBIE positions: unpaid invoices AND unlinked credits in one currency. The payment matcher applies payment facts only — there is no correction-to-invoice path, so `correction_of_id` is set by wFirma and ignored by the aggregator | Z2: EUR 4 / PLN 1 / USD 8 AR; USD 2 AP. Railing PLN 557,610 against a PLN 31,297 credit | W4-Z10 decision package |
 | F-20 | MED | 3 exact-match orphaned credits — the unallocated-pair signature, invoice gross equal to the credit to the cent. The oldest is **four years** old | UAB Tomas Gold $52,940 (2021); Esency Diamonds $9,323.74 (2024); Juliany EOOD $2,843.00 (2026). All carry `correction_of_id` | needs a ruling: refund owed, or write-off |
 | F-22 | MED | **Corpus re-scan complete: 4 L1 victims, 12 lines recoverable.** 91 of 101 live documents re-parsed and compared (10 source files no longer on disk). Victims — `6e1a7e7c` 4 lines (`…3109419880`), `57581182` 4 lines (`…8722845401`), `0164ed48` 3 lines (`…6696117050`), `84c50d39` 1 line (`…1196338404`). All four: FINAL stage, xlsx, shortfall equal to the serial-less repeat surplus EXACTLY. First **under-count** class in this campaign — goods present, record missing; surfaces as phantom shortage in S3. Recovery is re-ingest through S0-fixed code, under declared-delta acceptance | re-scan with E1–E5 declared in advance; E1 ✅ E3 ✅ E4 ✅ (deficit 3), E5 ✅ after separating never-ingested documents | S0 deploy + re-ingest |
+| F-25 | **HIGH** | **X1 is a customs-description defect, not a cosmetic one, and far wider than reported.** `PLAIN` maps to `None` in `STONE_ABBR` to mean *no stones*, but sits in the same longest-first, first-match-wins list as real stones — ahead of `DIAM`, `DIA`, `CLS`, `CZ`, `LGD`, `LG`, `LAB`. Any description carrying PLAIN **and** a stone abbreviation lost the stone, and the fallback only rescued the full word `DIAMOND`. The brief called it 'trailing blocks render as plain'; measurement shows **text order is irrelevant — key order decides**: `DIA RING PLAIN BAND` failed identically to `PLAIN RING WITH DIA`. Every multi-item block mixing a plain piece with a set piece understated the customs description | repro over 9 inputs, expectations declared first; E1–E4 all confirmed | X1 ✅ `472122a5` |
 | F-23 | MED | A **PDF run through the xlsx packing extractor**: `939ae11b` (`Global-inv-088 sggd.pdf`) parses to 245 noise rows and stored zero. Its batch has **no packing lines at all**, so a shipment carries a packing document that produced nothing and nothing flagged it | re-scan; batch has 0 lines across 1 document | S1 (ingestion contract) |
 | F-24 | LOW | Redundant document registrations: three documents of one file (`148 EJL-26-27-148`) each store zero rows while their batch holds 135 lines across 6 documents. Not lost goods — the rows live under a sibling document — but the registrations are noise the group key now makes visible | re-scan | S1 |
 | F-21 | HIGH | The legacy fallback dedup key is identical for every row of a lot when `pack_sr` is absent, so it **over-dedupes and silently loses goods**. Live today, independent of S0 | surfaced by `test_dedup_pack_sr_distinct_serials_inserted` while wiring S0 | S0 redesign |

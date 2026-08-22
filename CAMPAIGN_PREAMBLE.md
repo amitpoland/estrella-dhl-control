@@ -364,3 +364,45 @@ compare against the fact.
 
 Ask of every heuristic: *what does this return once the problem is solved?* If the answer is
 "still red", it is not a check, it is a scar.
+
+## ABSENCE IS NOT A VALUE IN THE VOCABULARY OF PRESENCE
+
+A sentinel meaning *none of these* must never sit in the same match list as the things it
+negates. Put it there and first-match-wins will let the absence claim beat a real one, on
+whatever ordering the list happens to use.
+
+Evaluate an absence claim only after every positive candidate has failed — it can only be
+true if nothing else matched. And pin the split, so a new entry cannot silently join the
+wrong side: the rule usually keys off some proxy for emptiness (a `None`, a falsy field),
+and the next value added without that field inherits the negation by accident.
+
+Two instances, one shape. `PLAIN` mapped to `None` in the stone vocabulary and outranked
+`DIA`, `DIAM`, `CLS`, `CZ`, `LGD`, `LG` and `LAB` because the list was sorted
+longest-first — every mixed description understated its customs stones. The dedup key
+before it could not express "this row is the *second* of a lot" as distinct from "this row
+is one I already hold", and swallowed the difference.
+
+The generalisation: **an identity vocabulary that cannot say "none" will say "wrong"**.
+
+## A SCREEN IS NOT A FINDING
+
+A broad query that selects candidates is a SCREEN. Its output is an upper bound, never a
+result. Label it as a screen, then run a disambiguating pass that separates the phenomena
+it merged — and report only what survives.
+
+Three times in one campaign a screen was nearly reported as a finding:
+
+- `product_code` appearing downstream — proved the *lot* was live, not that a duplicated
+  *row* was referenced.
+- ref-containment for "is this a branch tip" — a merged tip and a main-side commit both
+  appear in dozens of refs.
+- `stored < parsed` for "L1 ate lines" — merged *lines eaten* with *never ingested* and
+  *a PDF fed to a spreadsheet parser*, reporting **371** where the truth was **12**.
+
+Each time the disambiguating pass both corrected the number and produced findings the
+merged number would have buried. That is the tell: a screen hides detail, so separating it
+adds findings rather than removing them. If a disambiguating pass produces nothing new,
+suspect it was not disambiguating.
+
+Compounding rule, already doctrine: the more alarming the result, the higher the
+instrument's bar. A 31× overstatement is exactly the kind of number nobody re-checks.
