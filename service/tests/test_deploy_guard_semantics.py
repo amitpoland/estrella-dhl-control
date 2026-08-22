@@ -274,3 +274,146 @@ def test_classifier_is_deterministic_and_cheap():
             guard.classify_command(command)
     per_call_ms = (time.perf_counter() - start) * 1000 / (20 * len(corpus))
     assert per_call_ms < 5.0, "classification too slow: %.3f ms/command" % per_call_ms
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-21. Six more false positives measured in one session, plus one false
+# NEGATIVE that mattered far more than all of them: the guard knew the
+# production tree as C:\\PZ and C:\\PZ/, but not as /c/PZ -- the MSYS mount form
+# the Bash tool emits natively, and therefore the spelling an agent reaches for
+# first. `cp -r service/app/. /c/PZ/app/` classified as read-only.
+#
+# All seven share one shape: the guard decided by where a NAME appeared in the
+# command text rather than by what the command DOES to the thing named.
+# ---------------------------------------------------------------------------
+
+PROD = "C:" + chr(92) + "PZ"
+PROD_BASH = "/c/PZ"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # a protected path inside a heredoc BODY is data; the write goes to notes.md
+        "cat >> notes.md <<'MD'" + chr(10) + "marker at " + PROD + chr(92)
+        + "version.txt" + chr(10) + "MD",
+        # ... and inside a quoted echo argument it is prose; the write goes to /tmp
+        "echo 'see " + PROD + chr(92) + "version.txt' > /tmp/note.txt",
+        # byte-verifying a deployment is the whole point of the deployment doctrine
+        "git hash-object " + PROD + chr(92) + "app" + chr(92) + "services"
+        + chr(92) + "main.py",
+        "diff -r " + PROD_BASH + "/app service/app",
+        # a redirect to an UNprotected target does not make an inspection a write
+        "grep -rn 'Deploy-PZ.ps1 -Release' docs/ > /tmp/hits.txt",
+    ],
+)
+def test_reading_stays_frictionless_when_the_name_is_not_the_target(command):
+    """A protected name in a heredoc body, a quoted string, or beside an
+    unprotected redirect target is prose. Only an operand or a redirect TARGET
+    is an operation."""
+    assert guard.classify_command(command) is None, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo x > " + PROD_BASH + "/version.txt",
+        "cp evil.py " + PROD_BASH + "/app/main.py",
+        "cp -r service/app/. " + PROD_BASH + "/app/",
+        "rm " + PROD_BASH + "/storage/carrier/carrier_shipments.db",
+        "mv build " + PROD_BASH + "/app",
+    ],
+)
+def test_the_git_bash_spelling_of_production_is_still_production(command):
+    """THE false negative. /c/PZ, C:\\PZ and C:/PZ are one directory. A guard
+    that can be evaded by spelling the path differently is not a guard."""
+    verdict = guard.classify_command(command)
+    assert verdict is not None, "production write went unguarded: " + command
+    assert verdict["authority_required"] == "operator"
+
+
+@pytest.mark.parametrize(
+    "sibling",
+    [PROD_BASH + "-main/app", PROD_BASH + "-verify", PROD + "-verify",
+     PROD + "-wt" + chr(92) + "slice"],
+)
+def test_widening_the_path_vocabulary_did_not_swallow_sibling_trees(sibling):
+    """C:\\PZ-verify and /c/PZ-main are working trees, not production."""
+    assert guard._is_prod_pz_path(sibling.lower()) is False
+
+
+def test_a_heredoc_that_an_interpreter_executes_is_still_code():
+    """The heredoc body is data only when nothing runs it. Feed the same body to
+    python and it is code again -- otherwise stripping bodies would become the
+    evasion it exists to prevent."""
+    body = "import shutil; shutil.rmtree('" + PROD_BASH + "/app')"
+    command = "python - <<'PY'" + chr(10) + body + chr(10) + "PY"
+    assert guard._strip_heredoc_prose(command) == command
+    assert guard.classify_command(command) is not None
+
+
+def test_redirecting_over_the_deploy_script_is_a_protected_write():
+    """Overwriting the deployment authority is a write to a protected surface,
+    even though its path carries no production token."""
+    assert guard._redirects_into_protected(
+        "echo pwned > .claude" + chr(92) + "deploy" + chr(92) + "Deploy-PZ.ps1")
+
+
+# ---------------------------------------------------------------------------
+# E3/E4 (2026-08-21). Two further defects of the same family.
+#
+# E3: the segment splitter split on every `|`, including quoted ones, so a
+#     grep whose PATTERN contained an alternation was torn into fragments and
+#     one fragment looked like a command naming the deployment script.
+# E4: doctrine requires commands the guard could not classify. A doctrine step
+#     that the guard refuses is not a step -- the two must stay coherent.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # the pipe is inside a quoted regex; the shell does not split there
+        "grep -rn 'deploy-audit" + chr(92) + "|DEPLOY_AUDIT' .claude/deploy/Deploy-PZ.ps1",
+        'grep -n "a' + chr(92) + '|b" ' + DEPLOY,
+        "grep -rn 'a|b' docs/ ; echo done",
+    ],
+)
+def test_a_quoted_pipe_is_not_a_shell_separator(command):
+    assert guard.classify_command(command) is None, command
+
+
+def test_an_unquoted_pipe_is_still_a_separator():
+    """Quote awareness must not lose real pipes: the interpreter rule depends
+    on seeing them."""
+    assert len(guard._split_segments("cat x | python -")) == 2
+    assert guard.classify_command(
+        "cat " + PROD + chr(92) + "version.txt | python -") is not None
+
+
+# Commands the governing doctrine REQUIRES. Each must be classifiable as
+# read-only, or the doctrine asks for something the guard forbids. git
+# hash-object was the first such gap: byte verification is mandatory after
+# every deploy, and the guard called it an unclassifiable production touch.
+DOCTRINE_REQUIRED = [
+    "git hash-object " + PROD + chr(92) + "app" + chr(92) + "services" + chr(92) + "x.py",
+    "git hash-object " + PROD_BASH + "/app/services/x.py",
+    "git ls-remote origin main",
+    "git rev-parse HEAD",
+    "git status --porcelain",
+    "git diff --name-only abc..def -- service/app",
+    "git merge-base --is-ancestor abc def",
+    "git branch -a --contains abc",
+    "git log --oneline abc..def",
+    "cat " + PROD + chr(92) + "version.txt",
+    "cat " + PROD_BASH + "/version.txt",
+    "diff -r " + PROD_BASH + "/app service/app",
+    "ls -la " + PROD_BASH + "/storage/carrier/",
+]
+
+
+@pytest.mark.parametrize("command", DOCTRINE_REQUIRED)
+def test_every_doctrine_required_command_is_classifiable_as_read_only(command):
+    """GUARD / DOCTRINE COHERENCE. If this fails, either the doctrine or the
+    guard is wrong -- never resolve it by skipping the doctrine step."""
+    assert guard.classify_command(command) is None, command

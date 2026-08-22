@@ -60,7 +60,17 @@ import re
 # 'C:\PZ' as a path token: exact, or followed by \ or /. Case-insensitive.
 # Negative lookahead excludes C:\PZ-verify (followed by '-') and C:\PZAPP
 # (followed by alphanumeric). Also covers C:/PZ variants.
-PROD_PZ_RX = re.compile(r"c:[\\/]pz(?![\w\-])", re.IGNORECASE)
+# The SAME directory has three spellings on this host: the Windows form
+# (C:\\PZ), the forward-slash form (C:/PZ), and the MSYS/Git Bash mount form
+# (/c/PZ) -- which is what the Bash tool produces natively, so it is the form
+# an agent reaches for first. Recognising only the drive-letter spellings left
+# `cp -r service/app/. /c/PZ/app/` unguarded: a whole-tree production overwrite
+# the classifier called read-only. A guard that can be evaded by spelling is
+# not a guard. `(?![\w\-])` still keeps C:\\PZ-verify and /c/PZ-main out.
+PROD_PZ_RX = re.compile(
+    r"(?:(?<![\w\-])/cygdrive/c/|(?<![\w\-])/c/|c:[\\/])pz(?![\w\-])",
+    re.IGNORECASE,
+)
 
 # The canonical deployment script. Matched by NAME because the script is
 # configuration-driven: its command line carries no production path token, so the
@@ -136,7 +146,10 @@ READ_ONLY_HEADS = frozenset(
 GIT_READ_ONLY_SUBCOMMANDS = frozenset(
     "show diff log ls-files ls-tree cat-file grep blame status rev-parse "
     "describe show-ref merge-base shortlog name-rev rev-list whatchanged "
-    "diff-tree config".split()
+    # hash-object is how a deploy is byte-verified against the repo, and
+    # ls-remote/for-each-ref are pure queries. Their absence made the
+    # verification step of a deploy look like an unclassifiable write.
+    "diff-tree config hash-object ls-remote for-each-ref".split()
 )
 
 # git subcommands that write only inside the LOCAL REPOSITORY. They take file
@@ -157,6 +170,47 @@ GH_PROSE_RX = re.compile(
 
 # Splits a command into independently-classified segments.
 SEGMENT_SPLIT_RX = re.compile(r"&&|\|\||[;|\n]")
+
+def _split_segments(command):
+    """Split on shell separators that are NOT inside quotes.
+
+    `SEGMENT_SPLIT_RX` split on every `|`, including the ones inside a quoted
+    argument. `grep -rn "a\\|b" Deploy-PZ.ps1` was therefore torn into fragments,
+    one of which looked like a command that names the deployment script, and the
+    execution rule refused a plain grep. The shell does not treat a quoted pipe
+    as a separator and neither may we -- this is stricter fidelity to shell
+    semantics, not a relaxation: a quoted `|` was never a pipe.
+
+    An unterminated quote yields one long trailing segment, which the read-only
+    vocabulary will not recognise -- ambiguity still fails closed.
+    """
+    segments, buf, quote = [], [], None
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+        elif ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            i += 1
+        elif command.startswith("&&", i) or command.startswith("||", i):
+            segments.append("".join(buf))
+            buf = []
+            i += 2
+        elif ch in ";|\n":
+            segments.append("".join(buf))
+            buf = []
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    segments.append("".join(buf))
+    return segments
+
 
 # Command substitution / expansion — the segment's real content is not visible.
 SUBSTITUTION_RX = re.compile(r"\$\(|\$\{|`|@\(")
@@ -191,6 +245,56 @@ def _is_prod_pz_path(text):
     if not text:
         return False
     return PROD_PZ_RX.search(text) is not None
+
+
+REDIRECT_TARGET_RX = re.compile(r"\d?>>?\s*(\"[^\"]*\"|'[^']*'|[^\s;&|<>]+)")
+
+
+def _redirects_into_protected(command):
+    """True only when a redirect's TARGET is inside the production tree.
+
+    The previous rule asked whether the command mentioned a production path
+    *anywhere* and contained a redirect *anywhere*, then treated two
+    independent facts as one. `cat >> notes.md <<'EOF'` whose body quotes the
+    production marker path satisfied both and was refused, though it writes to
+    notes.md. A protected path in a heredoc body, a grep pattern or an echo
+    string is prose; only the destination of a redirect is an operation.
+    """
+    stripped = BENIGN_REDIRECT_RX.sub("", command)
+    for target in REDIRECT_TARGET_RX.findall(stripped):
+        target = target.strip("\"'")
+        if (_is_prod_pz_path(target)
+                or DEPLOY_SCRIPT_RX.search(target)
+                or RUNTIME_CONFIG_SCRIPT_RX.search(target)):
+            return True
+    return False
+
+
+HEREDOC_RX = re.compile(r"<<-?\s*(['\"]?)(\w+)\1\n.*?^\2$", re.S | re.M)
+INTERPRETER_HEADS = frozenset(
+    "python python3 py powershell pwsh bash sh zsh node perl ruby cmd".split()
+)
+
+
+def _strip_heredoc_prose(command):
+    """Drop heredoc BODIES, which are data rather than operands.
+
+    `cat >> notes.md <<'MD' ... MD` whose body quotes a production path was read
+    as several nonsense segments ('marker at C:\\PZ\\version.txt'), none of them
+    provably read-only, and the fail-closed rule refused the whole command --
+    while it only ever writes notes.md.
+
+    The body is data ONLY when nothing executes it. If any segment head is an
+    interpreter the body is code, so it is left in place and classified in full.
+    """
+    heads = {
+        _segment_head(seg).split(" ", 1)[0]
+        for seg in _split_segments(command)
+        if seg.strip()
+    }
+    if heads & INTERPRETER_HEADS:
+        return command
+    return HEREDOC_RX.sub(lambda m: "<<" + m.group(2), command)
 
 
 def _segment_head(segment):
@@ -231,8 +335,10 @@ def _segment_is_read_only(segment):
     if SUBSTITUTION_RX.search(segment):
         return False
 
-    stripped = BENIGN_REDIRECT_RX.sub("", segment)
-    if ANY_REDIRECT_RX.search(stripped):
+    # A redirect matters here only when it writes somewhere PROTECTED. Refusing
+    # every redirect made `grep ... > report.txt` and `echo ... > /tmp/note`
+    # unclassifiable the moment the text happened to mention a production path.
+    if _redirects_into_protected(segment):
         return False
 
     base = head.split(" ", 1)[0]
@@ -310,7 +416,7 @@ def _command_is_inert(command):
     message describing PZService control, a grep for a robocopy line. Checked
     before the whole-command rules, which otherwise match their own description.
     """
-    segments = [s for s in SEGMENT_SPLIT_RX.split(command) if s.strip()]
+    segments = [s for s in _split_segments(command) if s.strip()]
     return bool(segments) and all(_segment_is_inert(s) for s in segments)
 
 
@@ -351,16 +457,14 @@ def classify_command(command):
             "read it without the pipe instead",
         )
 
-    if _is_prod_pz_path(low) and ANY_REDIRECT_RX.search(
-        BENIGN_REDIRECT_RX.sub("", command)
-    ):
+    if _redirects_into_protected(command):
         return _blocked(
             BLOCK_PRODUCTION_WRITE, "redirect-into-prod", "PRODUCTION_MUTATION",
             "redirecting output into C:\\PZ is a production write and is operator-only",
         )
 
     # --- per-segment classification ----------------------------------------
-    for segment in SEGMENT_SPLIT_RX.split(command):
+    for segment in _split_segments(_strip_heredoc_prose(command)):
         if not segment.strip():
             continue
         seg_low = _normalise(segment)

@@ -55,7 +55,11 @@ WRITE_VERBS = re.compile(
     r"|branch\s+-(?:f|d|D|m|M)\b"
     r"|checkout\s+-B\b|switch\s+-C\b"
     r"|push\s+[^\n]*--force(?:-with-lease)?"
-    r")",
+    # A verb must END here. Without this, `merge` matched inside `merge-base`
+    # and `merges`, so read-only queries -- `git merge-base --is-ancestor`,
+    # `git log --merges` -- were refused as branch writes while investigating a
+    # campaign. A branch name in an argument is not an operation on that branch.
+    r")(?![\w-])",
     re.IGNORECASE,
 )
 WORKTREE_ADD = re.compile(r"\bgit\b[^\n|;&]*?\bworktree\s+add\b", re.IGNORECASE)
