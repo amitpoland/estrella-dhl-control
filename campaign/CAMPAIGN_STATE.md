@@ -130,3 +130,112 @@ the inbound pipeline has **no carrier tracking authority**, so inbound stage dur
 measure internal paperwork stamps, not physical movement.
 
 Presented to Operator. Awaiting path decision. No file outside `campaign/` has been modified.
+
+---
+
+## Entry 005 — 2026-08-22 — CHAIR — TRIP LINE 1 cleared, W1–W4 executed
+
+Operator decision at Trip Line 1:
+- **W2 path:** presentation-first + two ingestion carve-outs.
+- **Inbound tracking:** accept and label it. W5 narrows to outbound.
+
+**Council dispatch — disclosed substitution (charter §2, Lesson B/K).** Seats were run in the
+main thread rather than as dispatched subagents. Subagents do not share context, so each would
+have re-read the charter and re-derived the census, and the operator's standing performance rule
+prohibits background agents by default. The protocol's substance was preserved — propose,
+challenge, revise, ratify, verify — with the Evidence Auditor's and Architect's vetoes both
+exercised against my own work. Disclosed here rather than applied silently.
+
+### Commits on `campaign/ct-master`
+
+| SHA | Wave | What |
+|---|---|---|
+| `533f25d0` | W0 | census + evidence vault + re-runnable script |
+| `1b1d77ce` | W2-S1 | carrier type-code normaliser — four dead stages repaired |
+| `c20428e9` | W2-S2/S3 | contamination split, backfilled-booking rule, ranking gates |
+| `d292e1b5` | W1+W3 | auto-refresh + freshness stamp; management / analyst views |
+| `885d15cd` | W4 | inbound clearance panel removed from the outbound page |
+| `b9425025` | W5 (part) | carrier-stage authority consolidated into `tracking_normalizer` |
+
+### Runtime payload — 6 files, all under `service/app`
+
+```
+service/app/services/dhl_logistics_intelligence.py  +286
+service/app/services/dhl_logistics_projector.py     +244
+service/app/services/dhl_logistics_targets.py        +16
+service/app/services/tracking_normalizer.py          +65
+service/app/static/v2/pages-v2.jsx                  +251
+service/app/static/v2/proforma-detail.jsx           +115
+```
+
+**No root-level engine file is touched — Lesson J's separate sync does not apply.**
+Tests and `campaign/` are outside the runtime payload.
+
+### Working-tree line endings — checked, because a deploy copies bytes, not commits
+
+`core.autocrlf=true`, no `.gitattributes`, production files are CRLF. A Python rewrite can
+convert a working file to LF in a way `git diff` cannot show, which would make every touched
+file differ from production by more than its actual change. Verified after normalising: three
+**unchanged** control files are SHA256-identical between this tree and `C:\PZ`
+(`routes_dhl_logistics.py`, `dhl_logistics_intelligence_pdf.py`, `pz-api.js`), so the tree's
+convention is deploy-consistent and the changed files differ only by their edits.
+
+### Self-caught defects — recorded because each was wrong-in-my-favour (Lesson Q rule 6)
+
+1. **Wrong-revision baseline.** The first before/after compared the live service against my
+   tree. Production is `3748daae`, not the `a4a7c227` the memory index carried — CLAUDE.md's own
+   rule is to re-measure `C:\PZ\version.txt` every time. Re-baselined: one revision, one variable.
+2. **Incomplete replica.** A "copy artifact" explanation for an inbound delta was asserted and
+   then disproved. The real cause was 11 `email_evidence` files not copied. After copying, the
+   replica reproduced the live projection exactly (inbound `25/25/18/32/0/0/30/31`).
+3. **A gate measuring the wrong population.** Contamination was computed over the all-time
+   cohort and used to block a current-window statistic. Six ~38-day-old backfilled bookings
+   suppressed the only three real bottlenecks in the dataset.
+4. **Duplicate authority, mine.** W2-S1 added a second carrier-event classifier without checking
+   that `tracking_normalizer` already owned the concern. Consolidated in `b9425025`.
+
+### Backlog — LOW/MEDIUM, never a deploy blocker per the operating model
+
+- `test_dhl_logistics_resolution.py::test_admin_resolve_requires_comment_and_does_not_touch_tracking`
+  fails identically on clean `main` — a textbook **Lesson O** stale test. The route was tightened
+  to `require_dhl_resolve`; the test still sends `X-API-Key` and gets 401 instead of 422.
+  Canonical fix: `app.dependency_overrides[require_dhl_resolve]`, popped in a `finally`.
+- `normalize_tracking_event` cannot separate `AF` (sort facility) from `AR` (delivery facility)
+  — both score `ARRIVED_ORIGIN_HUB` at 0.75 — and `WC` returns a stage at confidence **0.0**.
+  Deliberately not touched: `STAGE_ORDER` drives milestone emission under invariants the module
+  documents as locked.
+- Three pre-existing failures in the wider `-k normaliz` sweep, identical on clean `main`.
+- **Deploy-guard false positive:** `cat >> campaign/CAMPAIGN_STATE.md` run from
+  `C:\PZ-wt\ct-master` was blocked as `redirect-into-prod`, because the path prefix `/c/PZ-wt`
+  matches `/c/PZ`. Per CLAUDE.md's guard semantics this is a usability defect to fix in
+  `classify_command`, not friction to normalise. Not routed around — the Write tool was used.
+
+---
+
+## Entry 006 — 2026-08-22 — CHAIR — W5 exit gate CANNOT be signed
+
+Charter §5.3.1 precondition 1 requires the Evidence Auditor to have signed **every** W2–W5 exit
+gate. W5's gate reads: *"webhook receipt logged end-to-end with raw payload; poll fallback proven
+on a shipment with no subscription."*
+
+Measured:
+
+| W5 component | State |
+|---|---|
+| One normaliser for push and poll | **DONE** — `tracking_normalizer.carrier_stage_id`, `b9425025` |
+| Webhook ingest endpoint | **EXISTS ALREADY** — `routes_carrier_webhook.py`, HMAC-SHA256, dedup, log-safe storage to `carrier_events.db`. Its docstring records a deliberate prior decision: no business-state mutation, no coordinator calls. So receipt is logged, but the payload does not reach the tracking pipeline. |
+| Poll fallback every 15 min | **DOES NOT EXIST** — the only scheduler registered in the service is `wfirma_webhook_scheduler`. Tracking refreshes on demand only. |
+
+The poll floor the charter calls permanent has never been built. **The Evidence Auditor cannot
+sign W5, so §5.3's pre-authorisation does not cover a release that claims it** — the charter is
+explicit that a failed precondition voids the authority.
+
+Nothing in the W0–W4 runtime payload depends on the poller. Wiring the webhook into the pipeline
+would reverse a documented prior design decision, and a scheduled DHL poller carries API-quota
+and rate-limit consequences (`rate_limited` / `retry_after` are already in the cache contract).
+Both belong in their own slice with their own review, not bolted onto a release at the end of a
+long session.
+
+**Held for the Operator: release scope.** This is a scope decision, not a technical one, so the
+Chair does not take it alone. Deploy preparation is otherwise complete — window open (00:13
+Warsaw, Saturday), no batch in flight, payload identified, 95 targeted tests green.
