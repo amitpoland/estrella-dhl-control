@@ -456,3 +456,34 @@ Applied to this campaign's own dismissals, the rule paid three times in one pass
 Note the shape of that last one: **each re-check moved the finding, and the final
 answer was neither the original nor the first correction.** A dismissal is not
 retired by being questioned once.
+
+## EVIDENCE SCALES WITH THE MUTATION
+
+*A dismissal needs evidence too* guards under-detection. This is its other half.
+The evidence a diagnosis must carry is set by what the REPAIR does, not by how
+alarming the diagnosis sounds.
+
+    rows_lost      → re-ingest → CREATES data    → highest bar
+    rows_orphaned  → re-link   → creates nothing → lower bar
+    rows_absorbed  → no action                   → lowest bar
+
+Measured: calling `939ae11b` `rows_lost` would have queued a re-ingest and written a
+SECOND copy of 245 pieces, $3,172 and 505g into a batch that already held them — the
+exact duplication this campaign has spent three nodes preventing. Same finding, same
+effort, opposite outcome, decided entirely by which word was chosen.
+
+So: before filing any classification that triggers a repair, state what the repair
+will DO, and carry evidence proportional to that. **A word that commands a mutation
+is not a label — it is an instruction.**
+
+## FINDINGS MUST BE CROSS-CHECKED, NOT JUST FILED
+
+This campaign already held the answer. `245 orphan quarantine + FK` sat in the
+storage-applies backlog while F-23 was filed from a document-side query, and the two
+were never put side by side. Not a measurement failure — a **cross-reference**
+failure. Two true findings, never confronted.
+
+Mechanism, not just a rule: the ledger FINDINGS table carries a `magnitudes` column —
+the counts, ids, amounts and SHAs a finding turns on. Before filing a new finding,
+query existing magnitudes for a match. `245` appears twice; a string compare would
+have caught it.
