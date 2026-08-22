@@ -348,13 +348,40 @@ def normalize_item_description(
     # ── Detect stones ─────────────────────────────────────────────────────────
     stones_raw = ""
     stones_pl  = ""
+    absence_key = ""   # a key that asserts there are NO stones, e.g. PLAIN
     # Check compound first (DIA&CLS must beat DIA)
     for key in _STONE_KEYS:
         pattern = re.compile(r"\b" + re.escape(key) + r"\b", re.IGNORECASE)
-        if pattern.search(raw):
-            stones_raw = key.upper()
-            stones_pl  = STONE_ABBR.get(key.upper()) or STONE_ABBR.get(key) or ""
-            break
+        if not pattern.search(raw):
+            continue
+        polish = STONE_ABBR.get(key.upper()) or STONE_ABBR.get(key) or ""
+        if not polish:
+            # PLAIN does not NAME a stone -- it asserts the absence of one, and
+            # STONE_ABBR maps it to None to say so. It only shares this table
+            # because both answer questions about stones.
+            #
+            # _STONE_KEYS is sorted longest-first so DIA&CLS beats DIA, which
+            # puts PLAIN (5) ahead of DIA (3), DIAM (4) and CLS (3). In a
+            # first-match-wins loop that let a description carrying BOTH lose
+            # its stones: "PLAIN RING WITH DIA" broke on PLAIN and fell through
+            # to a fallback that only looks for the full word DIAMOND, never the
+            # abbreviation that was actually there.
+            #
+            # It is KEY order that decides, not text order -- "DIA RING PLAIN
+            # BAND" failed identically -- so any multi-item block mixing a plain
+            # piece with a set piece silently declared the whole block plain, on
+            # a customs description.
+            #
+            # An absence claim can only be true when nothing else matched, so
+            # remember it and keep looking.
+            absence_key = absence_key or key.upper()
+            continue
+        stones_raw = key.upper()
+        stones_pl  = polish
+        break
+
+    if not stones_pl and absence_key:
+        stones_raw = absence_key
 
     # ── Fallback: detect full English stone words when no abbreviation matched ─
     if not stones_pl:
