@@ -412,6 +412,11 @@ def init_packing_db(db_path: Path) -> None:
         _add_column_if_missing(con, "packing_lines", "allocation_cleared_at",      "TEXT DEFAULT NULL")
         _add_column_if_missing(con, "packing_lines", "allocation_cleared_by",      "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(con, "packing_lines", "allocation_cleared_reason",  "TEXT NOT NULL DEFAULT ''")
+        # An override is a decision a human made against a warning the system
+        # showed. A block leaves no trace; these three columns are the trace.
+        _add_column_if_missing(con, "packing_lines", "allocation_override_warning", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "allocation_override_reason",  "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "allocation_weak_identity",    "INTEGER NOT NULL DEFAULT 0")
         con.execute("CREATE INDEX IF NOT EXISTS idx_pl_allocated_customer "
                     "ON packing_lines (allocated_customer_id)")
 
@@ -1816,7 +1821,36 @@ def set_allocation_suggestion(
     }
 
 
-def confirm_allocation(line_id: str, customer_id: str, operator: str) -> Dict[str, Any]:
+ADVANCE_WARNING = (
+    "this is an ADVANCE packing line: the goods are not received yet and the "
+    "line carries no product identity"
+)
+WEAK_IDENTITY_WARNING = (
+    "this line's identity is INCOMPLETE — it carries neither an invoice number "
+    "nor a product code, so what it names cannot be pinned down"
+)
+
+
+def allocation_warning(con: sqlite3.Connection, row: sqlite3.Row) -> str:
+    """What an operator should be told before binding this line, or "".
+
+    None of these are blocks. We never open the box -- QC happens in India and
+    parcels are reshipped sealed -- so every quantity here is derived from the
+    same documents the operator can see, and the operator additionally knows
+    things no table holds. Refusing on that basis is the less-informed party
+    vetoing the better-informed one.
+
+    What the system CAN do is say what it noticed and keep the answer.
+    """
+    if _line_doc_stage(con, row) == "advance":
+        return ADVANCE_WARNING
+    if line_key_is_incomplete(dict(row)):
+        return WEAK_IDENTITY_WARNING
+    return ""
+
+
+def confirm_allocation(line_id: str, customer_id: str, operator: str,
+                       reason: str = "") -> Dict[str, Any]:
     """Bind a packing line to a customer. The operator's decision, not the
     supplier's.
 
@@ -1830,19 +1864,25 @@ def confirm_allocation(line_id: str, customer_id: str, operator: str) -> Dict[st
     resets to its defaults: a line that is allocated right now must not also
     read as an allocation somebody undid.
 
-    An advance (pre-shipment) line cannot be bound: it describes goods that do
-    not exist yet and carries no product identity, so a commitment against it
-    would be a promise about nothing. Suggestions on advance lines are fine.
+    An advance (pre-shipment) line, or one whose identity is incomplete, is
+    **warned about, not refused**. The system holds no independent knowledge of
+    the goods, so it cannot out-rank the operator on whether they exist -- but a
+    binding made against a warning must carry why. ``reason`` is mandatory in
+    that case and is stored beside the warning that was shown, and the line is
+    flagged ``allocation_weak_identity`` so downstream can see what the
+    allocation rests on. A block would have left none of that behind.
 
     Returns ``{"line_id", "allocated_customer_id", "allocation_source",
     "allocation_confirmed_at", "allocation_confirmed_by",
-    "allocation_source_revision"}``.
+    "allocation_source_revision", "override_warning", "override_reason",
+    "weak_identity"}``.
     """
     if _db_path is None:
         raise RuntimeError("packing_db not initialised — call init_packing_db() first")
     lid = str(line_id or "").strip()
     cid = str(customer_id or "").strip()
     op  = str(operator or "").strip()
+    reason = str(reason or "").strip()
     if not lid or not cid or not op:
         raise ValueError("line_id, customer_id and operator are all required")
     if not _customer_master_exists(cid):
@@ -1854,10 +1894,11 @@ def confirm_allocation(line_id: str, customer_id: str, operator: str) -> Dict[st
     with _lock:
         with _connect() as con:
             row = _get_line_row(con, lid)
-            if _line_doc_stage(con, row) == "advance":
+            warning = allocation_warning(con, row)
+            if warning and not reason:
                 raise ValueError(
-                    "an advance packing line cannot be allocated — the goods do "
-                    "not exist yet; allocate on the shipment it is linked to"
+                    "%s — allocation is allowed, but this one needs a reason. "
+                    "Pass reason=... to record why you are proceeding." % warning
                 )
             rev = compute_source_revision(dict(row))
             con.execute(
@@ -1867,12 +1908,18 @@ def confirm_allocation(line_id: str, customer_id: str, operator: str) -> Dict[st
                        allocation_confirmed_at=?,
                        allocation_confirmed_by=?,
                        allocation_source_revision=?,
+                       allocation_override_warning=?,
+                       allocation_override_reason=?,
+                       allocation_weak_identity=?,
                        allocation_cleared_at=NULL,
                        allocation_cleared_by='',
                        allocation_cleared_reason='',
                        updated_at=?
                    WHERE id=?""",
-                (cid, _ALLOC_CONFIRMED, now, op, rev, now, lid),
+                (cid, _ALLOC_CONFIRMED, now, op, rev,
+                 warning, reason if warning else "",
+                 1 if warning else 0,
+                 now, lid),
             )
     return {
         "line_id":                    lid,
@@ -1881,6 +1928,9 @@ def confirm_allocation(line_id: str, customer_id: str, operator: str) -> Dict[st
         "allocation_confirmed_at":    now,
         "allocation_confirmed_by":    op,
         "allocation_source_revision": rev,
+        "override_warning":           warning,
+        "override_reason":            reason if warning else "",
+        "weak_identity":              bool(warning),
     }
 
 

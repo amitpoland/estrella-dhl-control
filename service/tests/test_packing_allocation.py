@@ -395,13 +395,28 @@ def test_an_advance_line_accepts_a_suggestion(pdb):
     assert row["allocation_source"] == "supplier_preallocated"
 
 
-def test_an_advance_line_cannot_be_confirmed(pdb):
-    """An advance line describes goods that do not exist yet and carries no
-    product identity. Binding one would be a promise about nothing."""
+def test_an_advance_line_needs_a_reason_but_is_not_refused(pdb):
+    """SUPERSEDES `test_an_advance_line_cannot_be_confirmed` (operator ruling,
+    2026-08-22, OVERRIDE, DON'T BLOCK).
+
+    The old test pinned a refusal: "binding one would be a promise about
+    nothing". The premise was that the system knows the goods do not exist yet.
+    It does not — `doc_stage` comes from the document the operator uploaded, we
+    never open the box, and whether the goods exist is exactly what the operator
+    knows and no table holds. So the binding is allowed and the reason is kept.
+    """
     lid = _line(pdb, doc_stage="advance", batch_id="ADVANCE_ALLOC_2")
-    with pytest.raises(ValueError, match="advance packing line cannot be allocated"):
+    with pytest.raises(ValueError, match="allocation is allowed"):
         pdb.confirm_allocation(lid, CUSTOMER_ID, operator="jigar")
-    assert _read(pdb, lid)["allocated_customer_id"] is None
+    assert _read(pdb, lid)["allocated_customer_id"] is None      # unchanged, no partial write
+
+    out = pdb.confirm_allocation(lid, CUSTOMER_ID, operator="jigar",
+                                 reason="buyer confirmed; advance list is theirs")
+    assert out["allocated_customer_id"] == CUSTOMER_ID
+    row = _read(pdb, lid)
+    assert row["allocated_customer_id"] == CUSTOMER_ID
+    assert row["allocation_weak_identity"] == 1
+    assert row["allocation_override_reason"] == "buyer confirmed; advance list is theirs"
 
 
 # ── the writer is the only writer ────────────────────────────────────────────
