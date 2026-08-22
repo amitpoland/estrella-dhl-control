@@ -12,7 +12,8 @@ attention authorities. Does NOT:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+import statistics
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import dhl_logistics_projector as projector
 from . import dhl_logistics_targets as targets
@@ -297,12 +298,52 @@ def build_intervention_queue(operations: List[Dict[str, Any]]) -> List[Dict[str,
     return queue
 
 
+# What one terminating event actually is, per outbound stage. A stage that ends
+# on a shared physical event does not get one observation per shipment - five
+# parcels handed over in the same drop are one collection, not five.
+_OUTBOUND_EVENT_NOUN: Dict[str, str] = {
+    "acceptance": "collection events",
+    "first_movement": "collection events",
+    "departed": "departures",
+    "destination": "destination arrivals",
+    "delivered": "deliveries",
+}
+
+# Above this, row count and independent-observation count have diverged far
+# enough that quoting the row count overstates the evidence.
+INFLATION_FLAG_RATIO = 1.5
+
+
+def _independent(samples: List[Dict[str, Any]]) -> Tuple[int, Optional[float]]:
+    """Collapse samples that share a terminating event into one observation.
+
+    Returns (n_independent, clustered_typical). Measured 2026-08-22: outbound
+    booking->first movement reported 13 shipments across 5 collection events,
+    and ranking on the row count put it second at +108.1h when the independent
+    figure is +59.4h. Inbound is 1.00x on all eight stages and is not clustered.
+    """
+    clusters: Dict[Any, List[float]] = {}
+    for smp in samples:
+        end = smp.get("end_ts")
+        if end is None:
+            continue
+        clusters.setdefault(end, []).append(float(smp["hours"]))
+    if not clusters:
+        return 0, None
+    per_event = [statistics.median(v) for v in clusters.values()]
+    typical = (
+        statistics.median(per_event) if len(per_event) >= 3 else statistics.mean(per_event)
+    )
+    return len(per_event), round(float(typical), 2)
+
+
 def _transition_period_dto(
     samples: List[Dict[str, Any]],
     *,
     transition_id: str,
     label: str,
     now: datetime,
+    scope: str = "inbound",
 ) -> Dict[str, Any]:
     target = targets.target_hours(transition_id)
     all_hours = [float(s["hours"]) for s in samples]
@@ -310,7 +351,8 @@ def _transition_period_dto(
 
     cur_start = now - timedelta(days=30)
     prev_start = now - timedelta(days=60)
-    current = [float(s["hours"]) for s in samples if s.get("end_ts") and cur_start <= s["end_ts"] < now]
+    cur_samples = [s for s in samples if s.get("end_ts") and cur_start <= s["end_ts"] < now]
+    current = [float(s["hours"]) for s in cur_samples]
     previous = [float(s["hours"]) for s in samples if s.get("end_ts") and prev_start <= s["end_ts"] < cur_start]
     cur_stats = _cohort_stats(current)
     prev_stats = _cohort_stats(previous)
@@ -336,9 +378,29 @@ def _transition_period_dto(
         delta_pct = _delta_pct(cur_typical, prev_typical)
         delta_suppressed = None
 
+    # Outbound only. Inbound measured 1.00x on every stage, so clustering it
+    # would add a field that can never differ from n and invite the reader to
+    # think it had been checked per-stage when it had not.
+    is_outbound = scope == "outbound"
+    n_all_ind, _typ_all_ind = _independent(samples) if is_outbound else (None, None)
+    n_cur_ind, typ_cur_ind = _independent(cur_samples) if is_outbound else (None, None)
+    inflation = None
+    if is_outbound and n_cur_ind:
+        inflation = round(float(cur_stats.get("n") or 0) / float(n_cur_ind), 2)
+    end_key = None
+    for _k, _l, _pair in projector._OUTBOUND_FIXED_TRANSITIONS:  # noqa: SLF001
+        if _k == transition_id:
+            end_key = _pair.split("|", 1)[1]
+            break
+
     return {
         "id": transition_id,
         "label": label,
+        "scope": scope,
+        "n_independent": n_all_ind,
+        "observation_noun": _OUTBOUND_EVENT_NOUN.get(end_key or "", "events") if is_outbound else None,
+        "inflation_ratio": inflation,
+        "inflated": bool(inflation is not None and inflation > INFLATION_FLAG_RATIO),
         "median": all_stats.get("median"),
         "median_human": all_stats.get("median_human"),
         "average": all_stats.get("average"),
@@ -354,6 +416,8 @@ def _transition_period_dto(
         "target_source": "explicit_configured",
         "current_30d": {
             "n": cur_stats.get("n"),
+            "n_independent": n_cur_ind,
+            "typical_independent": typ_cur_ind,
             "median": cur_stats.get("median"),
             "average": cur_stats.get("average"),
             "typical": cur_typical,
@@ -414,7 +478,7 @@ def build_transition_kpis(
     inbound: Dict[str, Any] = {}
     for key, label, pair in projector._INBOUND_FIXED_TRANSITIONS:  # noqa: SLF001
         samples = projector.collect_transition_samples(inbound_rows, key, pair)  # noqa: SLF001
-        dto = _transition_period_dto(samples, transition_id=key, label=label, now=now)
+        dto = _transition_period_dto(samples, transition_id=key, label=label, now=now, scope="inbound")
         base = (analytics.get("fixed_transitions_inbound") or {}).get(key) or {}
         _attach_data_quality(dto, base)
         inbound[key] = dto
@@ -422,7 +486,7 @@ def build_transition_kpis(
     outbound: Dict[str, Any] = {}
     for key, label, pair in projector._OUTBOUND_FIXED_TRANSITIONS:  # noqa: SLF001
         samples = projector.collect_transition_samples(outbound_rows, key, pair)  # noqa: SLF001
-        dto = _transition_period_dto(samples, transition_id=key, label=label, now=now)
+        dto = _transition_period_dto(samples, transition_id=key, label=label, now=now, scope="outbound")
         base = (analytics.get("fixed_transitions_outbound") or {}).get(key) or {}
         _attach_data_quality(dto, base)
         outbound[key] = dto
@@ -449,14 +513,29 @@ def _ranking_exclusion(dto: Dict[str, Any]) -> Optional[str]:
     if dto.get("publishable") is False:
         return dto.get("not_publishable_reason") or "not_publishable"
     cur = dto.get("current_30d") or {}
-    n_now = cur.get("n") or 0
+    n_now, typical_now = _ranking_basis(dto)
     if n_now < targets.BOTTLENECK_MIN_N:
         return "insufficient_recent_samples"
-    if cur.get("typical") is None or dto.get("target_hours") is None:
+    if typical_now is None or dto.get("target_hours") is None:
         return "no_current_typical"
-    if float(cur["typical"]) - float(dto["target_hours"]) <= 0:
+    if float(typical_now) - float(dto["target_hours"]) <= 0:
         return "meeting_target"
     return None
+
+
+def _ranking_basis(dto: Dict[str, Any]) -> Tuple[int, Optional[float]]:
+    """The (count, typical) a bottleneck claim is allowed to rest on.
+
+    Outbound stages are ranked on INDEPENDENT observations - distinct
+    terminating events - never on row count. Five parcels collected in one drop
+    are one observation of how long collection took, repeated five times; a
+    floor that counts rows lets a stage clear N>=5 on a single real event.
+    Inbound is 1.00x on every stage and keeps its row count.
+    """
+    cur = dto.get("current_30d") or {}
+    if dto.get("scope") == "outbound" and cur.get("n_independent") is not None:
+        return int(cur["n_independent"] or 0), cur.get("typical_independent")
+    return int(cur.get("n") or 0), cur.get("typical")
 
 
 def build_bottleneck_ranking(transition_kpis: Dict[str, Any]) -> Dict[str, Any]:
@@ -480,13 +559,17 @@ def build_bottleneck_ranking(transition_kpis: Dict[str, Any]) -> Dict[str, Any]:
                     "reason": reason,
                     "n": dto.get("n"),
                     "current_30d_n": (dto.get("current_30d") or {}).get("n"),
+                    "current_30d_n_independent": (dto.get("current_30d") or {}).get("n_independent"),
+                    "observation_noun": dto.get("observation_noun"),
+                    "inflation_ratio": dto.get("inflation_ratio"),
+                    "inflated": dto.get("inflated"),
                     "contamination_pct": dto.get("contamination_pct"),
                 })
                 continue
 
             cur = dto["current_30d"]
-            excess = round(float(cur["typical"]) - float(dto["target_hours"]), 2)
-            n_now = cur.get("n") or 0
+            n_now, typical_now = _ranking_basis(dto)
+            excess = round(float(typical_now) - float(dto["target_hours"]), 2)
             ranked.append({
                 "id": tid,
                 "scope": scope,
@@ -494,11 +577,17 @@ def build_bottleneck_ranking(transition_kpis: Dict[str, Any]) -> Dict[str, Any]:
                 "excess_vs_target_hours": excess,
                 "excess_human": _fmt_duration(excess),
                 "n": n_now,
+                "n_rows": cur.get("n"),
+                "n_independent": cur.get("n_independent"),
+                "observation_noun": dto.get("observation_noun"),
+                "inflation_ratio": dto.get("inflation_ratio"),
+                "inflated": dto.get("inflated"),
+                "basis": "independent_events" if dto.get("scope") == "outbound" else "rows",
                 "n_all_time": dto.get("n"),
                 "window": "current_30d",
                 "contribution_hours": round(excess * float(n_now), 2),
-                "typical": cur.get("typical"),
-                "typical_human": cur.get("typical_human"),
+                "typical": typical_now,
+                "typical_human": _fmt_duration(typical_now),
                 "target_hours": dto.get("target_hours"),
                 "delta_pct_vs_previous_30d": dto.get("delta_pct_vs_previous_30d"),
                 "delta_suppressed_reason": dto.get("delta_suppressed_reason"),
@@ -631,6 +720,31 @@ def business_label(transition_id: str, fallback: Optional[str] = None) -> str:
     return BUSINESS_STAGE_LABELS.get(transition_id) or fallback or transition_id
 
 
+def _plural(n: int) -> str:
+    return "" if n == 1 else "s"
+
+
+def _top_headline(top: Dict[str, Any]) -> str:
+    """Never quote a bare row count for an outbound stage.
+
+    "on 13 recent shipments" reads as thirteen independent observations. When
+    those thirteen share five collection events, the sentence has to say so.
+    """
+    stage = business_label(top["id"], top.get("label"))
+    excess = top.get("excess_human") or ("%sh" % top.get("excess_vs_target_hours"))
+    ind = top.get("n_independent")
+    rows = top.get("n_rows")
+    noun = top.get("observation_noun")
+    if ind is not None and noun and rows is not None:
+        return "%s is taking %s longer than target - %d %s (%d shipment%s)" % (
+            stage, excess, ind, noun, rows, _plural(rows),
+        )
+    n = top.get("n") or 0
+    return "%s is taking %s longer than target, on %d recent shipment%s" % (
+        stage, excess, n, _plural(n),
+    )
+
+
 def build_management_summary(
     rows: List[Dict[str, Any]],
     operations: List[Dict[str, Any]],
@@ -700,12 +814,7 @@ def build_management_summary(
             "excess_human": top.get("excess_human") if top else None,
             "shipments": top.get("n") if top else None,
             "headline": (
-                "%s is taking %s longer than target, on %d recent shipment%s" % (
-                    business_label(top["id"], top.get("label")),
-                    top.get("excess_human") or ("%sh" % top.get("excess_vs_target_hours")),
-                    top.get("n") or 0,
-                    plural(top.get("n") or 0),
-                )
+                _top_headline(top)
                 if top else "No step is provably running slow right now"
             ),
             "steps_not_measurable": len([
@@ -859,6 +968,8 @@ def build_intelligence(
             "top_bottleneck": (bottlenecks[0]["label"] if bottlenecks else None),
             "top_bottleneck_excess_hours": (bottlenecks[0]["excess_vs_target_hours"] if bottlenecks else None),
             "top_bottleneck_n": (bottlenecks[0]["n"] if bottlenecks else None),
+            "top_bottleneck_n_rows": (bottlenecks[0].get("n_rows") if bottlenecks else None),
+            "top_bottleneck_noun": (bottlenecks[0].get("observation_noun") if bottlenecks else None),
             "top_bottleneck_window": (bottlenecks[0]["window"] if bottlenecks else None),
             "stages_excluded_from_ranking": len(bottlenecks_excluded),
         },

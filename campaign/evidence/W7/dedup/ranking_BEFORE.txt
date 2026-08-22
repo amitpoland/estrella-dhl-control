@@ -1,0 +1,10 @@
+BEFORE — ranking as shipped in PR #1313 (gate counts ROWS)
+generated_at_utc: 2026-08-22T02:18:49.202002+00:00
+
+#   scope     stage                         excess@N      N | excess@Nind   Nind contrib@N
+--------------------------------------------------------------------------------------------
+1   outbound  booking_to_acceptance          +113.82     13 |      +94.11     12    1479.7
+2   outbound  booking_to_first_movement      +108.10     13 |      +59.44      5    1405.3
+3   outbound  booking_to_delivered            +85.69     12 |      +85.69     12    1028.3
+
+excluded from ranking: 13

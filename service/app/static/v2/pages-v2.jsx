@@ -229,6 +229,17 @@ function DhlCustomsPage({ onViewShipment }) {
   // "+-2.98h" was a hardcoded plus in front of a number that could be negative.
   const fmtSigned = (h) => (h == null ? '—' : (h > 0 ? '+' : '') + (Math.round(h * 10) / 10) + 'h');
   const fmtPct = (v) => (v == null ? '—' : (Math.round(v * 10) / 10) + '%');
+  // "on 13 shipments" reads as thirteen independent observations. When those
+  // thirteen share five collection events, the sentence has to say so.
+  const evidenceOf = (x) => {
+    if (!x) return '—';
+    const ind = x.n_independent;
+    const rows = x.n_rows != null ? x.n_rows : x.n;
+    if (ind == null || !x.observation_noun) {
+      return 'N=' + fmt(rows) + ' (last 30d)';
+    }
+    return ind + ' ' + x.observation_noun + ' (' + fmt(rows) + ' shipment' + (rows === 1 ? '' : 's') + ', last 30d)';
+  };
   const toneFor = (row) => {
     if (row.manual_resolution_badge) return 'purple';
     if (row.classification === 'historical_unresolved') return 'amber';
@@ -373,7 +384,10 @@ function DhlCustomsPage({ onViewShipment }) {
               label="Top Bottleneck"
               value={fmt(exec.top_bottleneck || 'None')}
               sub={exec.top_bottleneck_excess_hours != null
-                ? (fmtSigned(exec.top_bottleneck_excess_hours) + ' vs target · N=' + fmt(exec.top_bottleneck_n) + ' · last 30d')
+                ? (fmtSigned(exec.top_bottleneck_excess_hours) + ' vs target · '
+                   + fmt(exec.top_bottleneck_n) + ' ' + (exec.top_bottleneck_noun || 'observations')
+                   + (exec.top_bottleneck_n_rows != null ? (' (' + exec.top_bottleneck_n_rows + ' shipments)') : '')
+                   + ' · last 30d')
                 : ((exec.stages_excluded_from_ranking || 0) + ' steps excluded — see Performance')}
               onClick={() => setIntelTab('performance')}
             />
@@ -598,8 +612,16 @@ function DhlCustomsPage({ onViewShipment }) {
                     <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>{bizLabel(b.id, b.label)}</div>
                     <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 8 }}>{fmtSigned(b.excess_vs_target_hours)} vs target</div>
                     <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      Typical {fmt(b.typical_human)} vs target {fmtHours(b.target_hours)} · N={fmt(b.n)} (last 30d)
+                      Typical {fmt(b.typical_human)} vs target {fmtHours(b.target_hours)}
                     </div>
+                    <div data-testid={'dhl-tower-evidence-' + b.id} style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      {evidenceOf(b)}
+                    </div>
+                    {b.inflated && (
+                      <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 2 }}>
+                        {fmtPct((b.inflation_ratio || 0) * 100 - 100)} more shipments than independent events — ranked on events
+                      </div>
+                    )}
                     <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
                       {b.delta_pct_vs_previous_30d != null
                         ? ('Δ vs previous 30d ' + fmtPct(b.delta_pct_vs_previous_30d))
@@ -628,7 +650,10 @@ function DhlCustomsPage({ onViewShipment }) {
                           {notMeasurable[e.reason] || e.reason}
                         </span>
                         <span style={{ color: 'var(--text-3)', fontSize: 11 }}>
-                          {e.scope} · N={fmt(e.n)} · last 30d N={fmt(e.current_30d_n)}
+                          {e.scope} · N={fmt(e.n)} · last 30d {e.current_30d_n_independent != null
+                            ? (e.current_30d_n_independent + ' ' + (e.observation_noun || 'events') + ' / ' + fmt(e.current_30d_n) + ' shipments')
+                            : ('N=' + fmt(e.current_30d_n))}
+                          {e.inflated ? ' · inflated ' + e.inflation_ratio + '×' : ''}
                         </span>
                       </div>
                     ))}
@@ -673,6 +698,15 @@ function DhlCustomsPage({ onViewShipment }) {
                           <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
                             Contamination {fmtPct(s.contamination_now_pct)} of the last 30 days
                           </div>
+                          {s.scope === 'outbound' && (
+                            <div data-testid={'dhl-tower-independent-' + s.id} style={{ fontSize: 11, color: s.inflated ? 'var(--badge-amber-text)' : 'var(--text-3)' }}>
+                              {(s.current_30d && s.current_30d.n_independent) != null
+                                ? (s.current_30d.n_independent + ' independent ' + (s.observation_noun || 'events')
+                                   + ' from ' + fmt(s.current_30d.n) + ' shipments'
+                                   + (s.inflated ? ('  ·  ' + s.inflation_ratio + '× inflated — do not read N as evidence') : ''))
+                                : 'independent-event count unavailable'}
+                            </div>
+                          )}
                         </React.Fragment>
                       )}
                     </div>
