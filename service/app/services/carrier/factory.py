@@ -30,6 +30,11 @@ class CarrierConfig:
     use_sandbox: bool = False
     account_number: Optional[str] = None
     live_allowlist: str = ""                       # comma-separated batch_ids; empty = no live
+    # FedEx production Ship. Off by default; on its own it is not enough —
+    # the batch must also be named in live_allowlist. UPS has no equivalent
+    # field on purpose: UpsSandboxAdapter reads ups_allow_production via
+    # getattr, so leaving it absent keeps UPS sandbox-only and unbookable.
+    fedex_allow_production: bool = False
 
 
 def get_adapter(

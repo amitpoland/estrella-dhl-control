@@ -61,14 +61,14 @@ def _adapter(*, production: bool = False) -> FedExSandboxAdapter:
 def test_production_booking_stays_hard_blocked(monkeypatch):
     monkeypatch.setattr(
         "app.services.carrier.adapters.fedex._fedex_fields",
-        lambda: {"client_id": "cid", "client_secret": "sec"},
+        lambda *_a, **_k: {"client_id": "cid", "client_secret": "sec"},
     )
     with pytest.raises(CarrierGateError) as exc:
         _adapter(production=True).create_shipment(_request())
     assert "FEDEX_PRODUCTION_BLOCKED" in str(exc.value)
 
 
-def test_sandbox_is_the_only_base_url():
+def test_sandbox_is_the_default_base_url():
     assert _adapter()._base_url() == "https://apis-sandbox.fedex.com"
 
 
@@ -204,7 +204,7 @@ def test_booking_returns_tracking_and_persists_the_label(tmp_path, monkeypatch):
     from app.services.carrier.adapters import fedex as fx
 
     monkeypatch.setattr(settings, "carrier_storage_root", tmp_path, raising=False)
-    monkeypatch.setattr(fx, "_fedex_fields", lambda: {"client_id": "cid", "client_secret": "sec"})
+    monkeypatch.setattr(fx, "_fedex_fields", lambda *_a, **_k: {"client_id": "cid", "client_secret": "sec"})
     monkeypatch.setattr(fx, "_token_cache", {})
     monkeypatch.setattr(fx.httpx, "post", lambda url, **kw: _Resp(200, {"access_token": "tok"}))
 
@@ -218,7 +218,9 @@ def test_booking_returns_tracking_and_persists_the_label(tmp_path, monkeypatch):
     assert result.tracking_ref == "794600000001"
     assert result.carrier_transaction_id == "txn-abc"
     assert result.state == ShipmentState.SUBMITTED
-    assert result.simulated is False
+    # This booking went to the FedEx sandbox, so it is recorded as simulated.
+    # A production booking (both gates cleared) is the one that is not.
+    assert result.simulated is True
     label = tmp_path / "labels" / "SHIPMENT_FDX_1-794600000001.pdf"
     assert label.exists(), sorted(p.name for p in tmp_path.rglob("*"))
     assert label.read_bytes().startswith(b"%PDF")

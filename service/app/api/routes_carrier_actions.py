@@ -73,6 +73,7 @@ from ..services.carrier.models.shipment import (
     ShipmentRequest,
 )
 from ..services.carrier.persistence import shipment_db
+from ..services.tracking_service import tracking_url_for
 
 router = APIRouter(prefix="/api/v1/carrier", tags=["carrier"])
 
@@ -1458,6 +1459,12 @@ def create_shipment(
         "saved_labels_exist": _batch_has_any_label(batch_id),
         # AWB logistics summary — echoes the shipment intent for display.
         "carrier": provider,
+        # Public tracking page for this carrier + AWB, from the one resolver.
+        # "" when the carrier has no public page or the AWB is not yet known.
+        "tracking_url": tracking_url_for(
+            provider,
+            result.tracking_ref if isinstance(result.tracking_ref, str) else "",
+        ),
         "service_code": (result.service_product if isinstance(result.service_product, str)
                          else (body.product_code or "P")),
         "box_type_code": body.box_type_code,
@@ -1489,6 +1496,9 @@ def _external_shipment_payload(batch_id: str, result, db_path: Path) -> dict:
         "replayed": bool(result.replayed),
         "booked_by": (result.booked_by if isinstance(result.booked_by, str) else None),
         "carrier": row.get("provider"),
+        # A customer-arranged UPS/FedEx AWB is tracked on the carrier's own
+        # page — this is the only tracking this app claims for it.
+        "tracking_url": tracking_url_for(row.get("provider") or "", tracking_ref or ""),
         "service_code": row.get("service_product"),
         "box_type_code": row.get("box_type_code"),
         "weight_kg": row.get("weight_kg"),
@@ -1768,6 +1778,7 @@ def get_shipment(
         # shipment_db._row() already resolved a legacy NULL to DHL, so this is
         # never blank and no consumer needs a fallback of its own.
         "carrier": row.get("provider"),
+        "tracking_url": tracking_url_for(row.get("provider") or "", tracking_ref or ""),
         "service_code": row.get("service_product"),
         "box_type_code": row.get("box_type_code"),
         "weight_kg": row.get("weight_kg"),

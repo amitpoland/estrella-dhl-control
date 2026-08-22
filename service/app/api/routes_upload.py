@@ -156,6 +156,10 @@ def _tracking_url(carrier: str, tracking_no: str) -> str:
         return f"https://www.dhl.com/pl-en/home/tracking.html?tracking-id={t}"
     if carrier == "FedEx" and t:
         return f"https://www.fedex.com/en-pl/tracking.html?trknbr={t}"
+    if carrier == "UPS" and t:
+        # One UPS link authority — the tracking service builds it.
+        from ..services.tracking_service import tracking_url_for
+        return tracking_url_for("UPS", t)
     return ""
 
 

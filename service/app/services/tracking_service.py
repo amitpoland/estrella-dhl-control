@@ -20,6 +20,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -451,6 +452,46 @@ def _dhl_tracking_url(tracking_no: str) -> str:
         f"https://www.dhl.com/pl-en/home/tracking/tracking-express.html"
         f"?tracking-id={tracking_no}"
     )
+
+
+# ── UPS tracking URL ──────────────────────────────────────────────────────────
+
+def _ups_tracking_url(tracking_no: str) -> str:
+    """Official UPS public tracking page for one tracking number.
+
+    URL-only by design: UPS has no client in this authority
+    (``TRACKING_SUPPORTED_CARRIERS``), so no status is ever claimed for a UPS
+    AWB — the operator is handed the carrier's own page. The value is escaped
+    because it reaches an ``href`` in the browser; the DHL and FedEx builders
+    above are left byte-identical so their URLs cannot shift.
+    """
+    ref = (tracking_no or "").strip()
+    if not ref:
+        return ""
+    return (
+        f"https://www.ups.com/track?loc=en_US&requester=ST"
+        f"&tracknum={quote(ref, safe='')}"
+    )
+
+
+def tracking_url_for(carrier: str, tracking_no: str) -> str:
+    """The one carrier → public tracking URL resolver.
+
+    Every surface that renders a tracking link resolves it here so a carrier
+    is described once. An unknown carrier or a blank ref yields "" — an
+    honest absence, never a guessed link.
+    """
+    ref = (tracking_no or "").strip()
+    if not ref:
+        return ""
+    code = (carrier or "").strip().upper()
+    if code == "DHL":
+        return _dhl_tracking_url(ref)
+    if code == "FEDEX":
+        return _fedex_tracking_url(ref)
+    if code == "UPS":
+        return _ups_tracking_url(ref)
+    return ""
 
 
 # ── Email-inferred arrival helper ────────────────────────────────────────────
@@ -1171,12 +1212,7 @@ def _get_tracking_status(
         return _dhl_pending_fallback(tracking_no, cache_dir=cache_dir)
 
     # ── Derive carrier-specific tracking URL ──────────────────────────────────
-    if carrier == "DHL":
-        tracking_url = _dhl_tracking_url(tracking_no)
-    elif carrier == "FedEx":
-        tracking_url = _fedex_tracking_url(tracking_no)
-    else:
-        tracking_url = ""
+    tracking_url = tracking_url_for(carrier, tracking_no)
 
     base: Dict[str, Any] = {
         "tracking_no":         tracking_no,
@@ -1280,7 +1316,17 @@ def _get_tracking_status(
     # PUBLIC predicate for callers like Carrier Master readiness; both read the
     # one TRACKING_SUPPORTED_CARRIERS declaration, so neither can drift from it.
     if carrier not in TRACKING_SUPPORTED_CARRIERS:
-        base["source"] = "no_credentials"
+        # A carrier with a public tracking page but no client here (UPS today)
+        # is not "missing credentials" — no credential would change the
+        # answer. Say so, and hand over the carrier's own page. Derived from
+        # whether a URL resolved, so a future URL-only carrier needs no branch.
+        if tracking_url:
+            base["source"] = "public_link_only"
+            # Upper-cased: the resolver matches the carrier case-insensitively,
+            # so a caller passing "ups" must not produce "Track on ups".
+            base["status_label"] = f"Track on {carrier.upper()}"
+        else:
+            base["source"] = "no_credentials"
         return base
 
     # ── DHL: Express MyDHL credentials OR Unified/legacy tracking key ─────────

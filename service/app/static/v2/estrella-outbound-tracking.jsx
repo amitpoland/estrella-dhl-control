@@ -295,7 +295,7 @@
               {tracking.tracking_url ? (
                 <a href={tracking.tracking_url} target="_blank" rel="noopener noreferrer"
                   data-testid={testIdRoot + '-url'} style={Object.assign({}, btn, { color: 'var(--accent)', borderColor: 'var(--accent)' })}>
-                  Open DHL tracking ↗
+                  {'Open ' + String(carrierLabel).toUpperCase() + ' tracking ↗'}
                 </a>
               ) : null}
               <span data-testid={testIdRoot + '-freshness'} style={{ fontSize: 11, color: 'var(--text-3)' }}>

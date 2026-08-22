@@ -207,6 +207,10 @@ class Settings(BaseSettings):
     dhl_api_key:         Optional[str] = Field(default=None)
     fedex_client_id:     Optional[str] = Field(default=None)
     fedex_client_secret: Optional[str] = Field(default=None)
+    # FedEx production Ship kill switch. False = sandbox. Turning it on does
+    # NOT release a booking on its own: carrier_live_allowlist must also name
+    # the batch (FedExSandboxAdapter._check_production_allowed).
+    fedex_allow_production: bool = Field(default=False)
     # UPS OAuth client credentials (sandbox). Production booking is blocked in
     # the adapter regardless of what is configured here.
     ups_client_id:       Optional[str] = Field(default=None)

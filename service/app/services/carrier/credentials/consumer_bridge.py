@@ -59,4 +59,7 @@ def express_carrier_config_kwargs(capability: str) -> dict:
         "account_number": fields.get("account_number")
         or (settings.dhl_express_account_number or ""),
         "live_allowlist": settings.carrier_live_allowlist,
+        "fedex_allow_production": bool(
+            getattr(settings, "fedex_allow_production", False)
+        ),
     }

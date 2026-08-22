@@ -33,7 +33,7 @@ def _creds_and_cache(monkeypatch):
     monkeypatch.setattr(
         fedex_mod,
         "_fedex_fields",
-        lambda: {"client_id": "sandbox-id", "client_secret": "sandbox-secret"},
+        lambda *_a, **_k: {"client_id": "sandbox-id", "client_secret": "sandbox-secret"},
     )
     yield
     fedex_mod._token_cache.clear()
