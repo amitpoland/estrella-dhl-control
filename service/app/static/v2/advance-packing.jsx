@@ -255,6 +255,86 @@
   }
 
   // ── Shipments-page hub ─────────────────────────────────────────────────────
+  // ── Status panel ──────────────────────────────────────────────────────────
+  // The four questions an operator must be able to answer without asking a
+  // developer: what state is this in, when did it last do something, what
+  // happened, and is there anything for me to do. Every number here comes
+  // from GET /packing-advance/status -- the screen computes none of them.
+  function StatusPanel({ status, loading }) {
+    if (loading && !status) {
+      return (
+        <div data-testid="advance-status-panel"
+             style={{ fontSize: 11, color: 'var(--text-3)', padding: '6px 0' }}>
+          Loading status…
+        </div>
+      );
+    }
+    if (!status) return null;
+
+    const att      = status.attention || {};
+    const docs     = status.documents || {};
+    const needs    = (att.awaiting_link || 0) + (att.with_variance || 0);
+    const healthy  = status.healthy !== false;
+    const tone     = !healthy ? 'red' : needs ? 'amber' : 'green';
+    const TONE = {
+      green: { bg: 'var(--badge-green-bg)', text: 'var(--badge-green-text)' },
+      amber: { bg: 'var(--badge-amber-bg)', text: 'var(--badge-amber-text)' },
+      red:   { bg: 'var(--badge-red-bg)',   text: 'var(--badge-red-text)' },
+    }[tone];
+
+    const Stat = ({ label, value, testid }) => (
+      <div style={{ minWidth: 84 }}>
+        <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase',
+                      letterSpacing: 0.4 }}>{label}</div>
+        <div data-testid={testid}
+             style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{value}</div>
+      </div>
+    );
+
+    return (
+      <div data-testid="advance-status-panel"
+           style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start',
+                    padding: '10px 12px', marginBottom: 12, borderRadius: 8,
+                    background: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase',
+                        letterSpacing: 0.4 }}>State</div>
+          <span data-testid="advance-status-state"
+                style={{ display: 'inline-block', marginTop: 2, padding: '2px 8px',
+                         borderRadius: 999, fontSize: 11, fontWeight: 700,
+                         background: TONE.bg, color: TONE.text }}>
+            {!healthy ? 'unavailable' : needs ? `${needs} need${needs === 1 ? 's' : ''} attention` : 'all reconciled'}
+          </span>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase',
+                        letterSpacing: 0.4 }}>Last activity</div>
+          <div data-testid="advance-status-last"
+               style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 3 }}>
+            {status.last_completed_at ? _fmtDate(status.last_completed_at) : '—'}
+          </div>
+        </div>
+
+        <Stat label="Announced"  value={docs.total || 0}         testid="advance-status-total" />
+        <Stat label="Awaiting"   value={docs.awaiting_link || 0} testid="advance-status-awaiting" />
+        <Stat label="Linked"     value={docs.linked || 0}        testid="advance-status-linked" />
+        <Stat label="Withdrawn"  value={docs.withdrawn || 0}     testid="advance-status-withdrawn" />
+        <Stat label="Variance"   value={att.with_variance || 0}  testid="advance-status-variance" />
+
+        <div style={{ flex: '1 1 200px', fontSize: 10, color: 'var(--text-3)', lineHeight: 1.5 }}>
+          {/* Requirement 1 is answered honestly rather than left blank: there is
+              no scheduler and there cannot be one. */}
+          Operator-initiated — a supplier sends the list, so there is nothing for
+          a scheduler to poll.
+          {status.last_error
+            ? <div style={{ color: 'var(--badge-red-text)', marginTop: 4 }}>{status.last_error}</div>
+            : null}
+        </div>
+      </div>
+    );
+  }
+
   function AdvancePackingHub({ onToast }) {
     const [docs,      setDocs]      = React.useState([]);
     const [loading,   setLoading]   = React.useState(true);
@@ -265,6 +345,7 @@
     const [wdDoc,     setWdDoc]     = React.useState(null);   // doc being withdrawn
     const [wdReason,  setWdReason]  = React.useState('');
     const [wdBusy,    setWdBusy]    = React.useState(false);
+    const [status,    setStatus]    = React.useState(null);
 
     const load = React.useCallback(() => {
       setLoading(true);
@@ -272,6 +353,11 @@
         .then(d => { setDocs((d && d.documents) || []); setError(''); })
         .catch(e => setError(_err(e)))
         .then(() => setLoading(false));
+      // Status is a separate read on purpose: a failing status panel must not
+      // take the document list down with it, and vice versa.
+      apiFetch('/api/v1/packing-advance/status')
+        .then(setStatus)
+        .catch(() => setStatus({ healthy: false, last_error: 'status unavailable' }));
     }, [showGone]);
 
     React.useEffect(load, [load]);
@@ -342,6 +428,8 @@
             </span>
           </label>
         </div>
+
+        <StatusPanel status={status} loading={loading} />
 
         {error && (
           <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginBottom: 8 }}>{error}</div>
