@@ -314,3 +314,72 @@ def test_no_shipment_specific_identifier_in_the_touched_surfaces(path):
         if _LITERAL_BATCH.search(code) or _LITERAL_AWB.search(code):
             offenders.append(f"{path.name}:{n}: {line.strip()[:80]}")
     assert not offenders, "shipment identity hard-coded:\n" + "\n".join(offenders)
+
+
+# ── HTTP-level wiring (closes the gate's source-grep-only coverage flags) ────
+
+
+@pytest.fixture()
+def _api():
+    """Isolated app exposing the real carrier + tracking routers, auth satisfied.
+
+    Source-grep proves a branch EXISTS; it cannot prove the route reaches it.
+    These two gaps were flagged at the gate, so they are exercised over real
+    HTTP instead of by reading the file.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.routes_carrier_actions import router as actions_router
+    from app.api.routes_tracking import router as tracking_router
+    from app.auth.dependencies import get_current_user
+    from app.core.security import require_api_key
+
+    app = FastAPI()
+    app.include_router(actions_router)
+    app.include_router(tracking_router)
+    app.dependency_overrides[require_api_key] = lambda: None
+    app.dependency_overrides[get_current_user] = lambda: {"role": "admin", "username": "t"}
+    try:
+        yield TestClient(app, raise_server_exceptions=False)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_dhl_service_catalogue_is_unchanged(_api):
+    """Both the historic no-parameter call and an explicit DHL call."""
+    for url in ("/api/v1/carrier/services", "/api/v1/carrier/services?carrier=DHL"):
+        r = _api.get(url)
+        assert r.status_code == 200, url
+        assert [row["code"] for row in r.json()] == ["P", "Y", "K", "D", "T"], url
+
+
+@pytest.mark.parametrize("carrier", ["FEDEX", "fedex", "UPS", "OTHER"])
+def test_http_a_non_dhl_carrier_is_never_served_dhl_codes(_api, carrier):
+    r = _api.get(f"/api/v1/carrier/services?carrier={carrier}")
+    assert r.status_code == 200
+    assert r.json() == [], f"{carrier} was served a catalogue: {r.json()!r}"
+
+
+def test_http_a_ups_reference_is_detected_when_no_carrier_is_supplied(_api, monkeypatch):
+    """The route must reach _auto_carrier — the exact wiring the frontend now relies on.
+
+    The card no longer sends a carrier when it does not know one, so if this
+    wiring were broken a UPS waybill would fall through as Unknown.
+    """
+    import app.services.tracking_service as ts
+
+    def _explode(*a, **kw):  # pragma: no cover - must never run
+        raise AssertionError("an unnamed-carrier tracking read opened an HTTP connection")
+
+    monkeypatch.setattr(ts.httpx, "post", _explode)
+    monkeypatch.setattr(ts.httpx, "get", _explode)
+
+    r = _api.get(f"/api/v1/tracking/{_UPS_REF}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["carrier"] == "UPS", body
+    assert body["source"] == "public_link_only", body
+    assert body["tracking_url"] == tracking_url_for("UPS", _UPS_REF)
+    assert "dhl" not in body["tracking_url"].lower()
+    assert not body.get("events")
