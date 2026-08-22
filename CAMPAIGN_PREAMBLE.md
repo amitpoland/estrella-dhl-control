@@ -487,3 +487,44 @@ Mechanism, not just a rule: the ledger FINDINGS table carries a `magnitudes` col
 the counts, ids, amounts and SHAs a finding turns on. Before filing a new finding,
 query existing magnitudes for a match. `245` appears twice; a string compare would
 have caught it.
+
+## OVERRIDE, DON'T BLOCK
+
+We never open the box. QC happens in India and parcels are reshipped sealed, so the
+system holds **no independent knowledge of the goods**. Every quantity it has is
+derived from the same documents the operator can see, and the operator additionally
+knows things no table holds. A hard block there is the less-informed party vetoing
+the better-informed one.
+
+**The test, before adding any block:** does the system know something here that the
+operator does not? If no, it is a warning with a reason field, not a gate.
+
+Warn-and-record, not walls:
+
+- **INCOMPLETE rows** — allocatable with a MANDATORY reason; tag the allocation
+  `weak_identity` so downstream can see what it rests on.
+- **Lot indivisibility** — whole-lot is the DEFAULT, not a rule. The operator may
+  split, bounded only by `SUM(alloc.qty) <= group qty`.
+- **AMBIGUOUS matches** — show the candidates and let the operator pick. Do not
+  auto-suggest; do not hide what was found either.
+- **QUANTITY_MISMATCH / variance** — surface prominently, never prevent.
+
+Every override records **who, when, what warning was shown, what reason was given**.
+That record is worth more than the block: **a block leaves no trace, an override
+does.**
+
+**Stays hard, because the system does hold the better information:** production-write
+guards · wFirma writes · `SUM(alloc.qty) <= group qty`, which is arithmetic, not
+judgement.
+
+## ORDERING — CAUSE BEFORE SYMPTOM
+
+Orphaned rows are a symptom; whatever produced them is the cause. Investigate the
+cause first. Repairing a symptom while its producer still runs is the mistake this
+rule exists to prevent — and the investigation may find, as it did here, that there
+is no live producer and the real gap is a missing defence.
+
+A corollary earned the same day: **the ordering ruling can be right while its premise
+is wrong.** "Find the writer" was the correct sequence and there was no writer; the
+answer was an unenforced constraint. Investigate the cause — do not assume you have
+already named it.
