@@ -9,12 +9,18 @@ Root cause pinned here. A supplier sends the same goods twice, in two forms:
 it, because it is not a property of the goods. Both the barcode function and the
 dedup key in ``upsert_packing_lines`` branched on its presence, so the two forms
 produced different keys, never matched each other, and one commercial line became
-two rows. Three such pairs are in production.
+two rows. 38 duplicate groups reached production that way.
 
-The fix is not a better ladder. It is that an identity function must be TOTAL over
-required fields and INVARIANT under optional ones -- every part always present,
-empty when unknown. ``scan_code`` keeps its ladder: it is the printed barcode and
-labels already exist on boxes. This is a second, separate concern.
+The key identifies a GROUP, and deliberately carries NO ordinal. Two independent
+failures proved an ordinal cannot exist here: computed within the incoming list
+it collapses when callers upsert one line at a time, and ranked against stored
+rows it makes the key a function of ingestion history. A pure function of the
+row cannot separate two lines of a lot — they are identical in every non-barred
+field — so how many rows share a key is a COUNT, the same shape the allocation
+ruling (R8) chose.
+
+``scan_code`` keeps its ladder: it is the printed barcode and labels already
+exist on boxes. This is a second, separate concern.
 """
 from __future__ import annotations
 
@@ -22,7 +28,6 @@ import pytest
 
 from app.services.packing_db import (
     line_key_is_incomplete,
-    line_ordinals,
     packing_line_key,
     _compute_scan_code,
 )
@@ -42,8 +47,7 @@ def _client_form():
 
 def test_the_two_supplier_forms_of_one_line_produce_one_key():
     """THE regression. Both forms describe the same commercial line."""
-    poland, client = _poland_form(), _client_form()
-    assert packing_line_key(poland, 1) == packing_line_key(client, 1)
+    assert packing_line_key(_poland_form()) == packing_line_key(_client_form())
 
 
 def test_the_old_barcode_key_still_partitions_them():
@@ -58,61 +62,55 @@ def test_the_old_barcode_key_still_partitions_them():
 @pytest.mark.parametrize("missing", ["invoice_no", "product_code", "design_no",
                                      "pack_sr", "bag_id"])
 def test_the_key_shape_never_varies_with_a_missing_field(missing):
-    """Five segments, always. A key that gains or loses one partitions."""
+    """Four segments, always. A key that gains or loses one partitions."""
     line = _poland_form()
     line[missing] = None
-    assert len(packing_line_key(line, 1).split("|")) == 5
+    assert len(packing_line_key(line).split("|")) == 4
 
 
 @pytest.mark.parametrize("qty", [1, 1.0, "1", "1.00", " 1.0 "])
 def test_quantity_spellings_are_one_quantity(qty):
     line = _poland_form()
     line["quantity"] = qty
-    assert packing_line_key(line, 1) == packing_line_key(_poland_form(), 1)
+    assert packing_line_key(line) == packing_line_key(_poland_form())
 
 
 def test_case_and_whitespace_do_not_create_a_second_line():
     line = _poland_form()
     line["design_no"] = "  jr08007 "
-    assert packing_line_key(line, 1) == packing_line_key(_poland_form(), 1)
+    assert packing_line_key(line) == packing_line_key(_poland_form())
 
 
-def test_genuinely_repeated_rows_stay_distinct():
-    """A lot of three identical rings is three lines, not one.
+def test_the_key_is_a_pure_function_of_the_row():
+    """ADVERSARY: both dead designs, pinned so neither returns.
 
-    The ordinal is what separates them, and it is computed from source row
-    order -- never read from pack_sr, which is the field that broke the old key.
+    The first ordinal was computed from list position -- so batching the calls
+    changed the key. The second ranked against stored rows -- so ingestion
+    history changed the key. A key that answers differently for the same row is
+    not an identity. The group key must depend on NOTHING but the row.
     """
-    lot = [_poland_form(), _poland_form(), _poland_form()]
-    assert line_ordinals(lot) == [1, 2, 3]
-    keys = {packing_line_key(l, o) for l, o in zip(lot, line_ordinals(lot))}
-    assert len(keys) == 3
+    line = _poland_form()
+    k1 = packing_line_key(line)
+    k2 = packing_line_key(dict(line))            # a copy
+    k3 = packing_line_key(dict(line, pack_sr=99.0))   # optional field changed
+    k4 = packing_line_key(dict(line, bag_id="B7"))    # optional field changed
+    assert k1 == k2 == k3 == k4
 
 
-def test_ordinals_correspond_across_the_two_forms():
-    """The property the whole design rests on, verified on production data:
-    within a group, row order matches between the Poland and Client forms."""
-    poland = [_poland_form(), _poland_form()]
-    client = [_client_form(), _client_form()]
-    assert line_ordinals(poland) == line_ordinals(client)
-    assert [packing_line_key(l, o) for l, o in zip(poland, line_ordinals(poland))] \
-        == [packing_line_key(l, o) for l, o in zip(client, line_ordinals(client))]
-
-
-def test_ordinal_ignores_pack_sr_entirely():
-    """ADVERSARY: the obvious 'improvement' is to seed the ordinal from pack_sr
-    when it happens to be there. That reintroduces the bug exactly."""
-    poland = [dict(_poland_form(), pack_sr=7.0), dict(_poland_form(), pack_sr=99.0)]
-    assert line_ordinals(poland) == [1, 2]
+def test_two_lines_of_a_lot_share_the_key_by_design():
+    """Not a defect: a lot of identical rings IS one commercial group.
+    Multiplicity is a count, never a key segment."""
+    assert packing_line_key(_poland_form()) == packing_line_key(
+        dict(_poland_form(), pack_sr=2.0))
 
 
 def test_a_line_with_neither_invoice_nor_product_code_is_incomplete():
     """123 live rows are in this state. The key still works; it is just too weak
-    to bind money to, so allocation must refuse rather than guess."""
+    to bind money to, so allocation and write-time absorb must refuse it."""
     thin = {"invoice_no": "", "product_code": None,
             "design_no": "JE01868", "quantity": 1.0}
     assert line_key_is_incomplete(thin)
-    assert packing_line_key(thin, 1) == "||JE01868|1|1"
+    assert packing_line_key(thin) == "||JE01868|1"
     assert not line_key_is_incomplete(_poland_form())
 
 

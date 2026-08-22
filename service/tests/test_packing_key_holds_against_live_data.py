@@ -1,10 +1,14 @@
 """GENUINE = 0 is what validates the key against real data. Pin it.
 
-Every collision class has a business explanation except GENUINE, which means the
-key itself grouped two rows that are not the same commercial line. Zero of those
-across the live corpus is the evidence that the key works. A future GENUINE is a
-key defect, not a data oddity, and it should fail here rather than be discovered
-by someone reading a report.
+The key is GROUP-shaped: several rows sharing it WITHIN one document are a lot,
+which is by design. A collision is the same key held by MORE THAN ONE DOCUMENT,
+and every such collision must classify to a business explanation. GENUINE means
+the key grouped rows that are not the same commercial line -- a key defect, not
+a data oddity, and it should fail here rather than be discovered in a report.
+
+Expected shape, measured 2026-08-22 before the pin was written: 774 distinct
+keys over 1326 live rows, 51 cross-document keys = 30 DUPLICATE
++ 21 ADVANCE_FINAL, zero GENUINE, zero QUANTITY_MISMATCH.
 
 The production database is not present in CI, so this SKIPS where it is absent
 and runs where it exists. It opens the file immutable and writes nothing.
@@ -23,7 +27,6 @@ from app.services.packing_db import (
     GENUINE,
     QUANTITY_MISMATCH,
     classify_key_collision,
-    line_ordinals,
     packing_line_key,
 )
 
@@ -45,24 +48,20 @@ def _live_collisions():
         "ORDER BY l.packing_document_id, l.rowid").fetchall()
     con.close()
 
-    by_doc = defaultdict(list)
+    keyed = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        by_doc[r["packing_document_id"]].append(r)
-    keyed = defaultdict(list)
-    for _d, drows in by_doc.items():
-        for row, ordinal in zip(drows, line_ordinals([dict(x) for x in drows])):
-            keyed[packing_line_key(dict(row), ordinal)].append(row)
+        keyed[packing_line_key(dict(r))][r["packing_document_id"]].append(r)
 
     out = {}
-    for key, members in keyed.items():
-        if len(members) < 2:
+    for key, per_doc in keyed.items():
+        if len(per_doc) < 2:          # within-document sharing is a lot
             continue
         payload = [{
-            "doc_stage": docs[m["packing_document_id"]]["doc_stage"],
-            "source_file_hash": docs[m["packing_document_id"]]["source_file_hash"],
-            "doc_total_quantity": totals[m["packing_document_id"]],
-        } for m in members]
-        out[key] = (classify_key_collision(payload), members)
+            "doc_stage": docs[d]["doc_stage"],
+            "source_file_hash": docs[d]["source_file_hash"],
+            "doc_total_quantity": totals[d],
+        } for d in per_doc]
+        out[key] = (classify_key_collision(payload), per_doc)
     return len(rows), out
 
 

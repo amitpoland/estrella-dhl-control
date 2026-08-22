@@ -29,7 +29,6 @@ from typing import Any, Dict, List, Optional
 from .packing_db import (
     DUPLICATE,
     classify_key_collision,
-    line_ordinals,
     packing_line_key,
 )
 
@@ -94,33 +93,38 @@ def _find_duplicate_groups(con: sqlite3.Connection) -> List[Dict[str, Any]]:
         "  AND NOT EXISTS (SELECT 1 FROM sqlite_master WHERE name = ?) "
         "ORDER BY l.packing_document_id, l.rowid", ("__never__",)).fetchall()
 
-    by_doc: Dict[str, List[sqlite3.Row]] = defaultdict(list)
+    # key -> document -> rows. The key names a GROUP; several rows sharing it
+    # WITHIN one document are a lot, which is by design and not a collision.
+    # A collision is the same key held by more than one DOCUMENT.
+    keyed: Dict[str, Dict[str, List[sqlite3.Row]]] = defaultdict(
+        lambda: defaultdict(list))
     for r in rows:
-        by_doc[r["packing_document_id"]].append(r)
-
-    keyed: Dict[str, List[sqlite3.Row]] = defaultdict(list)
-    for _doc, drows in by_doc.items():
-        for row, ordinal in zip(drows, line_ordinals([dict(x) for x in drows])):
-            keyed[packing_line_key(dict(row), ordinal)].append(row)
+        keyed[packing_line_key(dict(r))][r["packing_document_id"]].append(r)
 
     groups = []
-    for key, members in keyed.items():
-        if len(members) < 2:
+    for key, per_doc in keyed.items():
+        if len(per_doc) < 2:
             continue
         payload = [{
-            "doc_stage": docs[m["packing_document_id"]]["doc_stage"],
-            "source_file_hash": docs[m["packing_document_id"]]["source_file_hash"],
-            "doc_total_quantity": totals[m["packing_document_id"]],
-        } for m in members]
+            "doc_stage": docs[d]["doc_stage"],
+            "source_file_hash": docs[d]["source_file_hash"],
+            "doc_total_quantity": totals[d],
+        } for d in per_doc]
         cls = classify_key_collision(payload)
         if cls != DUPLICATE:
             continue
-        # Keep the RICHEST row, not the first: the per-invoice form carries
-        # pack_sr and the per-client form does not, and the arbitrary insertion
-        # order would otherwise decide which survives.
-        ranked = sorted(members, key=_richness, reverse=True)
+        # Keep the RICHEST document's rows, not the first-inserted: the
+        # per-invoice form carries pack_sr and the per-client form does not,
+        # and insertion order would otherwise decide which record survives.
+        ranked_docs = sorted(
+            per_doc,
+            key=lambda d: max(_richness(r) for r in per_doc[d]),
+            reverse=True)
+        kept_doc = ranked_docs[0]
+        surplus = [r for d in ranked_docs[1:] for r in per_doc[d]]
         groups.append({"key": key, "collision_class": cls,
-                       "kept": ranked[0], "surplus": ranked[1:]})
+                       "kept": per_doc[kept_doc][0], "kept_doc": kept_doc,
+                       "surplus": surplus})
     return groups
 
 
