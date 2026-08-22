@@ -895,8 +895,10 @@
     // GET /api/v1/carrier/services
     // Returns static DHL Express product code catalogue. No credentials required.
     // Returns: [{ code, name, delivery }]
-    listCarrierServices: () =>
-      _get(`${BASE}/carrier/services`),
+    // Carrier-scoped service catalogue. Omitting the carrier keeps the historic
+    // DHL response byte-for-byte, so existing callers are unaffected.
+    listCarrierServices: (carrier) =>
+      _get(`${BASE}/carrier/services` + (carrier ? `?carrier=${encodeURIComponent(carrier)}` : '')),
 
     // URL builders for existing carrier document GETs only (no MyDHL fetch,
     // no tracking interpretation, no persistence, no second document registry).

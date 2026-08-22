@@ -1703,6 +1703,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
   const [result,        setResult]        = React.useState(null);
   const [boxTypes,      setBoxTypes]      = React.useState([]);
   const [services,      setServices]      = React.useState([]);
+  const [servicesLoaded, setServicesLoaded] = React.useState(false);
   const [boxOverridden, setBoxOverridden] = React.useState(false); // true when dims differ from selected box
   const [carrierStatus, setCarrierStatus] = React.useState(null);
   const [boxTypesLoaded, setBoxTypesLoaded] = React.useState(false);
@@ -1722,6 +1723,13 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
   // external (production Ship closed by design, Track not provisioned).
   const isExternal = isUps;
   const isApiBooking = isDhl || isFedex;
+  // Carrier display name for copy that must never name the wrong carrier.
+  const carrierName = isFedex ? 'FedEx' : (isUps ? 'UPS' : 'DHL');
+  // A carrier with no configured service catalogue cannot be booked. We do NOT
+  // borrow another carrier's codes to fill the gap: the FedEx adapter rejects
+  // DHL's "P" anyway (FEDEX_SERVICE_NOT_SELECTED), so offering it would only
+  // move the failure later and blame the operator for it.
+  const serviceAuthorityMissing = isFedex && servicesLoaded && services.length === 0;
   const [cmAccounts, setCmAccounts] = React.useState([]);
   const [cmAccountsStatus, setCmAccountsStatus] = React.useState('idle');
   const [selectedCmAccountId, setSelectedCmAccountId] = React.useState(null);
@@ -1807,9 +1815,6 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
         }
       })
       .catch(() => { setBoxTypes([]); setBoxTypesLoaded(true); });
-    window.PzApi.listCarrierServices && window.PzApi.listCarrierServices()
-      .then(r => setServices(r && r.ok && Array.isArray(r.data) ? r.data : []))
-      .catch(() => setServices([]));
     window.PzApi.getCarrierStatus && window.PzApi.getCarrierStatus()
       .then(r => setCarrierStatus(r && r.ok ? r.data : null))
       .catch(() => setCarrierStatus(null));
@@ -2043,9 +2048,36 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
 
   const _apiStatus = carrierStatus && carrierStatus.carrier_api_status;
   const isPending = !_apiStatus || _apiStatus === 'pending';
-  const _footerLabel = isPending ? 'Carrier API pending'
+  // carrier_api_status describes the DHL gate only -- factory.get_adapter
+  // returns the FedEx adapter before that status is ever consulted -- so it
+  // must not be used to label a FedEx booking. FedEx states its own gate.
+  const _footerLabel = isFedex
+    ? (serviceAuthorityMissing ? 'FedEx service configuration required' : 'FedEx AWB')
+    : isPending ? 'Carrier API pending'
     : _apiStatus === 'shadow' ? 'Shadow DHL AWB'
     : 'Live DHL Express AWB';
+
+  // The service catalogue belongs to the SELECTED carrier, and so do the
+  // selections made from it. Switching carrier inside one open dialog must not
+  // leave DHL's product code sitting in a FedEx booking, so the code and the
+  // box profile are cleared with the catalogue that offered them.
+  React.useEffect(() => {
+    if (!isApiBooking) { setServices([]); setServicesLoaded(true); return; }
+    let alive = true;
+    setServicesLoaded(false);
+    setForm(prev => ({ ...prev, product_code: '', box_type_code: '' }));
+    if (!window.PzApi || !window.PzApi.listCarrierServices) {
+      setServices([]); setServicesLoaded(true); return;
+    }
+    window.PzApi.listCarrierServices(selectedCarrier)
+      .then(r => {
+        if (!alive) return;
+        setServices(r && r.ok && Array.isArray(r.data) ? r.data : []);
+        setServicesLoaded(true);
+      })
+      .catch(() => { if (alive) { setServices([]); setServicesLoaded(true); } });
+    return () => { alive = false; };
+  }, [selectedCarrier, isApiBooking]);
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
@@ -2216,7 +2248,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
     // DHL rejects receiver contact without a phone (minLength 1) — block
     // locally with the exact reason instead of a DHL 422 round-trip.
     if (isDhl && !(form.phone || '').trim()) {
-      setApiError('Receiver phone is required by DHL Express.');
+      setApiError('Receiver phone is required by ' + carrierName + '.');
       return;
     }
 
@@ -2521,7 +2553,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
         <div style={header}>
           <div style={{ fontSize: 18, fontWeight: 700 }}>
             {isUps ? 'Register customer-arranged shipment'
-              : (isFedex ? 'Generate FedEx sandbox shipment' : 'Generate DHL Express AWB')}
+              : (isFedex ? 'Generate FedEx AWB' : 'Generate DHL Express AWB')}
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer', color: 'var(--text-3)', lineHeight: 1 }}
             aria-label="Close">×</button>
@@ -2542,9 +2574,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
               padding: '10px 14px', background: 'var(--bg-subtle)',
               borderRadius: 6, border: '1px solid var(--border)',
               color: 'var(--text-2)', fontSize: 12, marginBottom: 16,
-            }} data-testid="awb-fedex-sandbox-note">
-              FedEx sandbox booking uses the same coordinator as DHL. Production FedEx
-              is blocked. Missing sandbox credentials fail closed (FEDEX_NOT_CONFIGURED).
+            }} data-testid="awb-fedex-note">
+              FedEx books through the same canonical coordinator as every other carrier.
+              Production requires the FedEx production flag AND this batch named in the
+              live allowlist — otherwise the booking goes to the FedEx sandbox. Missing
+              credentials fail closed (FEDEX_NOT_CONFIGURED); nothing is ever rerouted
+              to another carrier.
             </div>
           )}
           {isDhl && isPending && (
@@ -2659,20 +2694,38 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
 
           {isApiBooking && (
           <div data-testid="awb-dhl-form">
-          {/* ── DHL Service ── */}
-          <div style={sectionHead}>DHL Service</div>
+          {/* ── Carrier service ── */}
+          <div style={sectionHead}>{carrierName} Service</div>
           <div style={fieldStyle}>
             <label htmlFor="awb-product_code" style={labelStyle}>Service / Product *</label>
             <select id="awb-product_code" value={form.product_code}
               onChange={e => set('product_code', e.target.value)}
+              disabled={serviceAuthorityMissing}
               style={selStyle} data-testid="awb-field-product_code">
               {services.length > 0
                 ? services.map(s => (
                     <option key={s.code} value={s.code}>{s.name} ({s.code}) — {s.delivery}</option>
                   ))
-                : <option value="P">Express Worldwide (P) — End of day</option>
+                : (isDhl
+                    /* DHL keeps its historic offline default, unchanged. */
+                    ? <option value="P">Express Worldwide (P) — End of day</option>
+                    /* Any other carrier gets NOTHING rather than DHL's code.
+                       Offering "P" here produced a modal that looked complete
+                       and could only fail: the FedEx adapter rejects it with
+                       FEDEX_SERVICE_NOT_SELECTED. */
+                    : <option value="">— No service configured —</option>)
               }
             </select>
+            {serviceAuthorityMissing && (
+              <div data-testid="awb-fedex-service-missing" style={{
+                marginTop: 6, fontSize: 11.5, lineHeight: 1.45,
+                color: 'var(--badge-amber-text)',
+              }}>
+                FedEx service configuration required — no FedEx service is configured
+                in Carrier Master, so an AWB cannot be created. DHL service codes are
+                deliberately not offered here.
+              </div>
+            )}
           </div>
 
           {/* ── Package ── */}
@@ -2857,13 +2910,13 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
-              <label htmlFor="awb-phone" style={labelStyle}>Phone * (required by DHL)</label>
+              <label htmlFor="awb-phone" style={labelStyle}>{'Phone * (required by ' + carrierName + ')'}</label>
               <input id="awb-phone" value={form.phone} onChange={e => set('phone', e.target.value)}
                 style={inputStyle} data-testid="awb-field-phone" />
               {!(form.phone || '').trim() && (
                 <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 3 }}
                   data-testid="awb-phone-missing-hint">
-                  Receiver phone is required by DHL Express.
+                  {'Receiver phone is required by ' + carrierName + '.'}
                 </div>
               )}
             </div>
@@ -2962,7 +3015,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
             }} data-testid="awb-master-save-confirm">
               <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
                 {saveConfirm.phoneOnly
-                  ? 'Receiver phone is required by DHL Express. Save this phone to Customer Master shipping contact?'
+                  ? 'Receiver phone is required by ' + carrierName + '. Save this phone to Customer Master shipping contact?'
                   : 'These shipping details are different from Customer Master. Save them to this customer\'s shipping details?'}
               </div>
               <div style={{ fontSize: 11.5, marginBottom: 10 }}>
@@ -3069,12 +3122,12 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="ghost" onClick={onClose} disabled={loading}>Cancel</Btn>
               <Btn variant="primary" onClick={handleSubmit}
-                disabled={loading || (isDhl && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit))}
+                disabled={loading || serviceAuthorityMissing || (isDhl && (isPending || !!saveConfirm || legacyConfirm || dhlBlocksSubmit))}
                 data-testid="awb-submit-btn">
                 {loading
                   ? (isExternal ? 'Saving…' : 'Creating AWB…')
                   : (isExternal ? 'Register external shipment'
-                    : (isFedex ? 'Create FedEx sandbox shipment' : 'Create AWB'))}
+                    : (isFedex ? 'Create FedEx AWB' : 'Create AWB'))}
               </Btn>
             </div>
           </div>

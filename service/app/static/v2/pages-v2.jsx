@@ -834,7 +834,11 @@ function DhlTowerDrawer({ row, isAdmin, onClose, onViewShipment, onResolved }) {
                 {React.createElement(window.EJOutboundTrackingCard, {
                   awb: row.awb,
                   batchId: row.batch_id,
-                  carrier: 'DHL',
+                  // The row's own carrier, never a hardcoded one. '' means unknown
+                  // and lets the backend detect the carrier from the reference
+                  // shape; hardcoding DHL here made every non-DHL AWB render and
+                  // be QUERIED as DHL.
+                  carrier: row.carrier || '',
                   draftId: row.draft_id,
                   testIdRoot: 'dhl-tower-ej-track',
                 })}
