@@ -16,6 +16,20 @@ scan_code column:
   same algorithm as routes_packing._barcode_value() and warehouse_db.scan_code_for_packing_line().
   Indexed for O(1) lookup.
 
+Allocation authority (S2a):
+  ONE writer for the customer allocation of a packing line —
+  set_allocation_suggestion / confirm_allocation / clear_allocation, with
+  allocation_is_stale as the read-side rule. No other module writes
+  allocation_source, suggested_customer_name, suggested_customer_id,
+  allocated_customer_id, allocation_confirmed_at, allocation_confirmed_by,
+  allocation_source_revision, allocation_strategy, allocation_cleared_at,
+  allocation_cleared_by or allocation_cleared_reason.
+  Allocation NEVER writes `remarks` — that column describes the goods and feeds
+  customs rows and sales lines; the allocation audit trail has its own columns.
+  It consumes Customer Master for customer identity and never keeps its own
+  customer table, never writes Product Master / Inventory / Proforma / Sales,
+  and NEVER performs an accounting or wFirma side effect.
+
 Thread-safe: connection per call, WAL mode, threading.Lock.
 """
 from __future__ import annotations
@@ -40,6 +54,129 @@ _db_path: Optional[Path] = None
 # ── scan_code computation (mirrors routes_packing._barcode_value) ─────────────
 # Kept here so packing_db can populate the column at write time without
 # importing warehouse_db (which imports packing_db — would be circular).
+
+def _norm_key_part(value: Any) -> str:
+    """One normalisation for every key part. Numbers compare as numbers."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:  # 1, 1.0 and "1.00" are the same quantity and must key the same
+        number = float(text)
+    except (TypeError, ValueError):
+        return " ".join(text.upper().split())
+    return str(int(number)) if number.is_integer() else repr(number)
+
+
+def packing_line_key(line: Dict[str, Any]) -> str:
+    """Identity of a COMMERCIAL LINE GROUP. Not a barcode, not a piece, not a row.
+
+    ``_compute_scan_code`` below answers "what did the operator just scan" -- the
+    printed barcode, mirrored in routes_packing._barcode_value and
+    warehouse_db.scan_code_for_packing_line, and deliberately untouched: labels
+    already exist on boxes.
+
+    This answers "is this the same commercial line I have already stored", and
+    its SHAPE never varies: four parts, always present, empty when unknown.
+
+    There is deliberately NO ordinal. Two independent failures proved it cannot
+    exist here: computed within the incoming list it collapses when callers
+    upsert one line at a time (every line becomes ordinal 1), and ranked against
+    stored rows it makes the key a function of ingestion history -- IDENTITY
+    STABILITY violated more subtly than the pack_sr bug this replaced. A pure
+    function of the row cannot separate two lines of a lot, because they are
+    identical in every non-barred field. So the key identifies the GROUP, and
+    how many rows share it is a COUNT -- the same shape the allocation ruling
+    (R8) chose: quantity-scoped, no row explosion.
+
+    Deliberately UNSCOPED -- no batch_id, no doc_stage. The same line arriving
+    under an advance pseudo-batch and its real shipment batch must produce the
+    same key; what a cross-document collision MEANS is the classifier's job.
+    """
+    return "|".join((
+        _norm_key_part(line.get("invoice_no")),
+        _norm_key_part(line.get("product_code")),
+        _norm_key_part(line.get("design_no")),
+        _norm_key_part(line.get("quantity")),
+    ))
+
+
+def line_key_is_incomplete(line: Dict[str, Any]) -> bool:
+    """True when the key rests on design and quantity alone.
+
+    123 live rows (9.3%) carry neither invoice_no nor product_code. Their key is
+    still stable, but it is too weak to bind money to, so allocation refuses them
+    rather than silently allocating against a guess.
+    """
+    return not (_norm_key_part(line.get("invoice_no"))
+                or _norm_key_part(line.get("product_code")))
+
+
+# Collision classes for one packing_line_key carried by more than one row.
+# The key is deliberately unscoped, so a collision is a QUESTION, never a verdict.
+DUPLICATE = "DUPLICATE"                  # withdraw the poorer document
+ADVANCE_FINAL = "ADVANCE_FINAL"          # link them; both are legitimate
+QUANTITY_MISMATCH = "QUANTITY_MISMATCH"  # flag; NEVER merge
+GENUINE = "GENUINE"                      # the key is wrong; escalate
+
+# Most severe first: a set of rows takes the worst class any pair produces.
+_SEVERITY = (GENUINE, QUANTITY_MISMATCH, DUPLICATE, ADVANCE_FINAL)
+
+
+def classify_collision_pair(a: Dict[str, Any], b: Dict[str, Any]) -> str:
+    """Classify two rows sharing one packing_line_key.
+
+    Each argument carries the row plus its document's ``doc_stage``,
+    ``source_file_hash`` and ``doc_total_quantity``.
+
+    Order is load-bearing and is the operator's ruling:
+
+      same doc_stage                          -> DUPLICATE
+      different doc_stage, same file hash     -> ADVANCE_FINAL
+      different doc_stage, quantities differ  -> QUANTITY_MISMATCH
+      otherwise                               -> GENUINE
+
+    Note the second rule fires BEFORE the third. Same bytes under two stages is
+    one document ingested twice, so it links even when the two ingestions
+    disagree on totals -- that disagreement is a parser-determinism defect
+    (identical bytes yielding 21 rows once and 24 another), not two documents
+    describing different goods. Classifying it as QUANTITY_MISMATCH would blame
+    the goods for a bug in the extractor.
+
+    ``quantity`` itself is INSIDE the key, so two colliding rows always agree on
+    it. QUANTITY_MISMATCH can therefore only mean the two DOCUMENTS disagree on
+    what they contain, which is why it reads doc_total_quantity and not quantity.
+    """
+    stage_a = _norm_key_part(a.get("doc_stage"))
+    stage_b = _norm_key_part(b.get("doc_stage"))
+    if stage_a == stage_b:
+        return DUPLICATE
+
+    hash_a = _norm_key_part(a.get("source_file_hash"))
+    hash_b = _norm_key_part(b.get("source_file_hash"))
+    if hash_a and hash_a == hash_b:
+        return ADVANCE_FINAL
+
+    total_a = _norm_key_part(a.get("doc_total_quantity"))
+    total_b = _norm_key_part(b.get("doc_total_quantity"))
+    if total_a != total_b:
+        return QUANTITY_MISMATCH
+
+    return GENUINE
+
+
+def classify_key_collision(rows: List[Dict[str, Any]]) -> str:
+    """Worst class across every pair. One clean pair does not excuse a bad one."""
+    if len(rows) < 2:
+        return ""
+    seen = {classify_collision_pair(rows[i], rows[j])
+            for i in range(len(rows)) for j in range(i + 1, len(rows))}
+    for cls in _SEVERITY:
+        if cls in seen:
+            return cls
+    return GENUINE
+
 
 def _compute_scan_code(line: Dict[str, Any]) -> str:
     """
@@ -182,6 +319,17 @@ def init_packing_db(db_path: Path) -> None:
         _add_column_if_missing(con, "packing_lines",     "unit_price",       "REAL NOT NULL DEFAULT 0.0")
         _add_column_if_missing(con, "packing_lines",     "total_value",      "REAL NOT NULL DEFAULT 0.0")
         _add_column_if_missing(con, "packing_lines",     "scan_code",        "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines",     "packing_line_key", "TEXT DEFAULT NULL")
+        con.execute("""CREATE TABLE IF NOT EXISTS packing_doc_links (
+            doc_a TEXT NOT NULL,
+            doc_b TEXT NOT NULL,
+            kind  TEXT NOT NULL,
+            total_variance      REAL NOT NULL DEFAULT 0,
+            line_count_variance INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (doc_a, doc_b, kind)
+        )""")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pl_line_key ON packing_lines(packing_line_key)")
         # source_file_hash — added to packing_documents after initial schema;
         # guard ensures existing DBs pick it up without a manual migration.
         _add_column_if_missing(con, "packing_documents", "source_file_hash", "TEXT NOT NULL DEFAULT ''")
@@ -214,6 +362,58 @@ def init_packing_db(db_path: Path) -> None:
         _add_column_if_missing(con, "packing_lines", "operator_confirmed_at",    "TEXT DEFAULT NULL")
         _add_column_if_missing(con, "packing_lines", "operator_confirmed_by",    "TEXT DEFAULT NULL")
         _add_column_if_missing(con, "packing_lines", "operator_source_revision", "TEXT DEFAULT NULL")
+
+        # Allocation authority (S2a) — WHICH CUSTOMER a piece is destined for,
+        # SEPARATE from who suggested it, exactly as the operator review columns
+        # above are separate from machine extraction evidence.
+        #   allocation_source           : '' = unallocated (stock);
+        #                                 'supplier_preallocated' = a suggestion
+        #                                 only; 'operator_allocated' = binding.
+        #   suggested_customer_name     : raw supplier text (a filename or a
+        #                                 column value). ADVISORY — it is not a
+        #                                 Customer Master identity and never binds.
+        #   suggested_customer_id       : bill_to_contractor_id when the raw text
+        #                                 resolved to a Customer Master row, else
+        #                                 NULL. Still only a suggestion.
+        #   allocated_customer_id       : bill_to_contractor_id, BINDING. NULL
+        #                                 means the piece is unallocated stock —
+        #                                 the honest default, never a guess.
+        #   allocation_confirmed_at/by  : who/when bound it.
+        #   allocation_source_revision  : compute_source_revision snapshot AT
+        #                                 confirm time, so a later re-import that
+        #                                 materially changes the line reopens the
+        #                                 allocation instead of silently keeping a
+        #                                 binding made against different goods.
+        #   allocation_strategy         : WHY the machine suggested this customer
+        #                                 ("filename", "client_column", …) — the
+        #                                 same account match_strategy gives for a
+        #                                 product mapping.
+        #   allocation_cleared_at/by/   : the account of an allocation that was
+        #   allocation_cleared_reason     undone. These have their OWN columns
+        #                                 and must never be appended to
+        #                                 ``remarks``: remarks is a GOODS
+        #                                 description field that feeds documents
+        #                                 — routes_dhl_clearance reads it as the
+        #                                 stone_type fallback on customs rows,
+        #                                 and _build_matched_sales_lines copies
+        #                                 it into sales_packing_lines, where
+        #                                 customer_incoterm_authority scans it
+        #                                 for Incoterms. An allocation note in
+        #                                 there becomes a stone type on a
+        #                                 customs declaration.
+        _add_column_if_missing(con, "packing_lines", "allocation_source",          "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "suggested_customer_name",    "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "suggested_customer_id",      "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines", "allocated_customer_id",      "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines", "allocation_confirmed_at",    "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines", "allocation_confirmed_by",    "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "allocation_source_revision", "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines", "allocation_strategy",        "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "allocation_cleared_at",      "TEXT DEFAULT NULL")
+        _add_column_if_missing(con, "packing_lines", "allocation_cleared_by",      "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "packing_lines", "allocation_cleared_reason",  "TEXT NOT NULL DEFAULT ''")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pl_allocated_customer "
+                    "ON packing_lines (allocated_customer_id)")
 
         # match_strategy — WHICH evidence placed this row on its invoice line
         # ("type+qty+rate+metal", "qty+rate", "type+metal_aggregate", …).  The
@@ -745,6 +945,7 @@ def upsert_packing_lines(
         return 0
     inserted = 0
     now = _now_iso()
+    _fb_seen: Dict[tuple, int] = {}
     with _lock:
         with _connect() as con:
             for line in lines:
@@ -755,6 +956,48 @@ def upsert_packing_lines(
                 bag_id    = line.get("bag_id", "")
                 pack_sr   = line.get("pack_sr")           # source-list serial
                 unit_price= float(line.get("unit_price", 0) or 0)
+
+                # ── Cross-document absorb (shape-invariant key) ──────────
+                # The historical dedup keys below branch on pack_sr, so the
+                # per-invoice and per-client forms of ONE commercial line could
+                # never match each other -- 38 duplicate groups reached
+                # production that way. The group key does not vary with any
+                # optional field, so it matches across both forms and across
+                # batches.
+                #
+                # Absorb ONLY when another document of the SAME stage already
+                # holds this key with multiplicity my document has not reached:
+                # same stage is the classifier's DUPLICATE rule, and it needs
+                # no totals, so it is decidable mid-ingestion. Different-stage
+                # matches (advance vs final) are legitimate pairs -- both are
+                # stored, and the post-ingestion linker records them (R17).
+                # Rows too thin to carry identity (neither invoice_no nor
+                # product_code) are never absorbed on this key -- a
+                # design+quantity coincidence across shipments must not eat a
+                # real line.
+                _key = packing_line_key(line)
+                if not line_key_is_incomplete(line) and not force_reextract:
+                    _doc_id = str(line.get("packing_document_id") or "")
+                    _my_stage_row = con.execute(
+                        "SELECT doc_stage FROM packing_documents WHERE id=?",
+                        (_doc_id,)).fetchone()
+                    _my_stage = _my_stage_row[0] if _my_stage_row else ""
+                    _other = con.execute(
+                        """SELECT COUNT(*) FROM packing_lines l
+                           JOIN packing_documents d ON d.id = l.packing_document_id
+                           WHERE l.packing_line_key = ?
+                             AND l.packing_document_id != ?
+                             AND d.doc_stage IS ?
+                             AND (d.withdrawn_reason IS NULL
+                                  OR TRIM(d.withdrawn_reason) = '')""",
+                        (_key, _doc_id, _my_stage)).fetchone()[0]
+                    if _other:
+                        _mine = con.execute(
+                            "SELECT COUNT(*) FROM packing_lines "
+                            "WHERE packing_line_key=? AND packing_document_id=?",
+                            (_key, _doc_id)).fetchone()[0]
+                        if _mine < _other:
+                            continue  # within the duplicate's multiplicity
 
                 # ── Primary dedup ────────────────────────────────────────
                 # Each row in the source packing list is a DISTINCT physical
@@ -776,17 +1019,26 @@ def upsert_packing_lines(
                         (batch_id, inv_no, pack_sr),
                     ).fetchone()
                 else:
-                    existing = con.execute(
+                    # L1: this fallback key is IDENTICAL for every row of a lot
+                    # (no serial to tell them apart), so matching "the first
+                    # stored row" swallowed every subsequent lot line -- goods
+                    # silently lost. Count how many times THIS call has used
+                    # this key and demand a distinct stored row per occurrence.
+                    _fb_key = (batch_id, inv_no, inv_pos, design_no, bag_id,
+                               unit_price)
+                    _fb_seen[_fb_key] = _fb_seen.get(_fb_key, 0) + 1
+                    _fb_rows = con.execute(
                         """SELECT id, operator_review_status, product_code,
                                   invoice_line_position FROM packing_lines
                            WHERE batch_id=? AND invoice_no=?
                              AND invoice_line_position IS ?
                              AND design_no=? AND bag_id=?
                              AND unit_price=?
-                           LIMIT 1""",
-                        (batch_id, inv_no, inv_pos, design_no, bag_id,
-                         unit_price),
-                    ).fetchone()
+                           ORDER BY rowid""",
+                        _fb_key,
+                    ).fetchall()
+                    existing = (_fb_rows[_fb_seen[_fb_key] - 1]
+                                if len(_fb_rows) >= _fb_seen[_fb_key] else None)
 
                 # Secondary dedup: same position + same bag_id, design_no may differ.
                 # Covers two cases:
@@ -867,6 +1119,7 @@ def upsert_packing_lines(
                                metal=?, karat=?, stone_type=?, remarks=?,
                                extracted_confidence=?, requires_manual_review=?,
                                match_strategy=?, scan_code=?,
+                               packing_line_key=?,
                                unit_price_eur=?, metal_color=?, quality_string=?,
                                size=?, diamond_weight=?, color_weight=?,
                                updated_at=?
@@ -900,6 +1153,7 @@ def upsert_packing_lines(
                             1 if line.get("requires_manual_review") else 0,
                             line.get("match_strategy") or None,
                             scan_code or None,
+                            _key,
                             float(line.get("unit_price_eur", 0) or 0),
                             str(line.get("metal_color", "") or ""),
                             str(line.get("quality_string", "") or ""),
@@ -922,10 +1176,11 @@ def upsert_packing_lines(
                             metal, karat, stone_type, remarks,
                             extracted_confidence, requires_manual_review, match_strategy,
                             pack_sr, unit_price, total_value, scan_code,
+                            packing_line_key,
                             unit_price_eur, metal_color, quality_string,
                             size, diamond_weight, color_weight,
                             created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         line_id, line.get("packing_document_id", ""),
                         batch_id,
@@ -951,6 +1206,7 @@ def upsert_packing_lines(
                         unit_price,
                         float(line.get("total_value", 0) or 0),
                         scan_code or None,
+                        _key,
                         float(line.get("unit_price_eur", 0) or 0),
                         str(line.get("metal_color", "") or ""),
                         str(line.get("quality_string", "") or ""),
@@ -962,6 +1218,82 @@ def upsert_packing_lines(
                 )
                 inserted += 1
     return inserted
+
+
+def link_advance_final_documents(con=None) -> int:
+    """R17: record every advance/final pair sharing a file hash, WITH variance.
+
+    Same bytes under two stages is one document ingested twice; both records are
+    legitimate and the classifier links them rather than withdrawing either.
+    But linking must never absorb a discrepancy: the known production pair
+    extracted 24 rows as advance and 21 as final from IDENTICAL bytes, and that
+    disagreement is a parser defect the link has to carry, not hide. Each link
+    therefore records total_variance and line_count_variance, and the advance
+    document's empty linked_batch_id is pointed at the final document's batch.
+
+    Idempotent; safe to run after every ingestion and over history.
+    """
+    if con is None:
+        if _db_path is None:
+            return 0
+        with _lock:
+            with _connect() as own:
+                return link_advance_final_documents(own)
+    made = 0
+    now = _now_iso()
+    pairs = con.execute(
+        """SELECT a.id a_id, b.id b_id, a.batch_id a_batch, b.batch_id b_batch
+           FROM packing_documents a
+           JOIN packing_documents b
+             ON a.source_file_hash = b.source_file_hash
+            AND a.source_file_hash IS NOT NULL
+            AND TRIM(a.source_file_hash) != ''
+            AND a.id < b.id
+            AND a.doc_stage IS NOT b.doc_stage""").fetchall()
+    for a_id, b_id, a_batch, b_batch in pairs:
+        tot = {}
+        cnt = {}
+        for d in (a_id, b_id):
+            row = con.execute(
+                "SELECT COALESCE(SUM(quantity),0), COUNT(*) FROM packing_lines "
+                "WHERE packing_document_id=?", (d,)).fetchone()
+            tot[d], cnt[d] = float(row[0] or 0), int(row[1])
+        cur = con.execute(
+            """INSERT OR IGNORE INTO packing_doc_links
+               (doc_a, doc_b, kind, total_variance, line_count_variance,
+                created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (a_id, b_id, "ADVANCE_FINAL",
+             abs(tot[a_id] - tot[b_id]), abs(cnt[a_id] - cnt[b_id]), now))
+        made += cur.rowcount or 0
+        # auto-link history: the advance document's batch points at the final's
+        for adv, fin_batch in ((a_id, b_batch), (b_id, a_batch)):
+            stage = con.execute(
+                "SELECT doc_stage FROM packing_documents WHERE id=?",
+                (adv,)).fetchone()[0]
+            if (stage or "").lower() == "advance":
+                con.execute(
+                    """UPDATE packing_documents SET linked_batch_id=?
+                       WHERE id=? AND (linked_batch_id IS NULL
+                                       OR TRIM(linked_batch_id) = '')""",
+                    (fin_batch, adv))
+    return made
+
+
+def advance_final_links(con=None) -> List[Dict[str, Any]]:
+    """Read-only: every recorded advance/final link with its variance."""
+    if con is None:
+        if _db_path is None:
+            return []
+        with _lock:
+            with _connect() as own:
+                return advance_final_links(own)
+    rows = con.execute(
+        "SELECT doc_a, doc_b, kind, total_variance, line_count_variance, "
+        "created_at FROM packing_doc_links ORDER BY created_at").fetchall()
+    cols = ["doc_a", "doc_b", "kind", "total_variance", "line_count_variance",
+            "created_at"]
+    return [dict(zip(cols, r)) for r in rows]
 
 
 def assign_product_code_to_unassigned_design(
@@ -1199,6 +1531,432 @@ def release_product_confirmation(
                     "product_code": found[rid]["product_code"],
                 })
     return {"released": len(released), "rows": released, "operator": op}
+
+
+# ── Allocation authority (S2a) ───────────────────────────────────────────────
+# ONE writer for the customer allocation of a packing line. Every write to
+# allocation_source / suggested_customer_* / allocated_customer_id /
+# allocation_confirmed_* / allocation_source_revision / allocation_strategy /
+# allocation_cleared_* goes through the four functions below. No route, service
+# or agent writes those columns directly, and this authority never writes
+# product identity, inventory state, proforma drafts or sales linkage — nor
+# `remarks`, which belongs to the goods description and reaches documents.
+#
+# The split it enforces is the whole point: a supplier CAN say who a piece is
+# for, and that is worth recording, but it is a suggestion. Only an operator
+# binds, only against a Customer Master row, and a binding made against goods
+# that later changed is reported stale rather than trusted.
+
+_ALLOC_UNALLOCATED = ""
+_ALLOC_SUGGESTED   = "supplier_preallocated"
+_ALLOC_CONFIRMED   = "operator_allocated"
+
+
+def _customer_master_exists(bill_to_contractor_id: str) -> bool:
+    """True when *bill_to_contractor_id* is a real Customer Master row.
+
+    Customer Master is the authority for customer identity; this module consumes
+    it and never keeps its own customer table. The canonical id is
+    ``customer_master.bill_to_contractor_id`` (TEXT NOT NULL UNIQUE) and the
+    canonical read is ``customer_master_db.get_customer``.
+
+    Imported lazily so packing_db keeps no import-time dependency on settings or
+    on the customer package (the same lazy-consume pattern routes_intake uses).
+    """
+    from ..core.config import settings                    # noqa: PLC0415
+    from .customer_master_db import get_customer          # noqa: PLC0415
+
+    db_path = settings.storage_root / "customer_master.sqlite"
+    return get_customer(db_path, bill_to_contractor_id) is not None
+
+
+def _get_line_row(con: sqlite3.Connection, line_id: str) -> sqlite3.Row:
+    row = con.execute(
+        "SELECT * FROM packing_lines WHERE id=?", (str(line_id),)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"no packing line {line_id!r}")
+    return row
+
+
+def _line_doc_stage(con: sqlite3.Connection, row: sqlite3.Row) -> str:
+    stage = con.execute(
+        "SELECT doc_stage FROM packing_documents WHERE id=?",
+        (row["packing_document_id"],),
+    ).fetchone()
+    return (stage[0] if stage else "final") or "final"
+
+
+def set_allocation_suggestion(
+    line_id:       str,
+    customer_name: str,
+    customer_id:   Optional[str] = None,
+    strategy:      str = "",
+) -> Dict[str, Any]:
+    """Record who the SUPPLIER says this line is for. Advisory, never binding.
+
+    Writes ``suggested_customer_name`` / ``suggested_customer_id`` /
+    ``allocation_strategy`` and nothing else. It never sets
+    ``allocated_customer_id``, so a supplier's claim cannot become a commitment
+    without an operator.
+
+    An already ``operator_allocated`` line keeps its binding: the suggestion is
+    still recorded next to it (the supplier did say it, and an operator
+    comparing the two needs to see both), but ``allocation_source`` is left at
+    ``operator_allocated``. A re-import must never silently unbind a line an
+    operator committed.
+
+    ``customer_id`` is optional — a raw supplier name that resolves to no
+    Customer Master row is still worth keeping as the reason a human should
+    look. An id that does NOT exist in Customer Master is refused rather than
+    stored, because a stored id reads as resolved.
+
+    Returns ``{"line_id", "allocation_source", "suggested_customer_name",
+    "suggested_customer_id", "bound"}`` where ``bound`` says whether an
+    operator binding was left standing.
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    lid  = str(line_id or "").strip()
+    name = str(customer_name or "").strip()
+    cid  = str(customer_id or "").strip() or None
+    if not lid:
+        raise ValueError("line_id is required")
+    if not name and cid is None:
+        raise ValueError("a suggestion needs a customer name or a customer id")
+    if cid is not None and not _customer_master_exists(cid):
+        raise ValueError(
+            f"suggested_customer_id {cid!r} is not a Customer Master "
+            "bill_to_contractor_id — pass the raw text as customer_name instead"
+        )
+    now = _now_iso()
+    with _lock:
+        with _connect() as con:
+            row   = _get_line_row(con, lid)
+            bound = (row["allocation_source"] or "") == _ALLOC_CONFIRMED
+            source = _ALLOC_CONFIRMED if bound else _ALLOC_SUGGESTED
+            con.execute(
+                """UPDATE packing_lines SET
+                       suggested_customer_name=?,
+                       suggested_customer_id=?,
+                       allocation_strategy=?,
+                       allocation_source=?,
+                       updated_at=?
+                   WHERE id=?""",
+                (name, cid, str(strategy or ""), source, now, lid),
+            )
+    return {
+        "line_id":                 lid,
+        "allocation_source":       source,
+        "suggested_customer_name": name,
+        "suggested_customer_id":   cid,
+        "bound":                   bound,
+    }
+
+
+def confirm_allocation(line_id: str, customer_id: str, operator: str) -> Dict[str, Any]:
+    """Bind a packing line to a customer. The operator's decision, not the
+    supplier's.
+
+    ``customer_id`` must be a ``bill_to_contractor_id`` that exists in Customer
+    Master — free text is refused, so an allocation can always be resolved back
+    to a real customer. Snapshots :func:`compute_source_revision` so a later
+    re-import that materially changes the line makes the binding *stale* (see
+    :func:`allocation_is_stale`) instead of silently applying to different goods.
+
+    A fresh binding supersedes any previous clear, so ``allocation_cleared_*``
+    resets to its defaults: a line that is allocated right now must not also
+    read as an allocation somebody undid.
+
+    An advance (pre-shipment) line cannot be bound: it describes goods that do
+    not exist yet and carries no product identity, so a commitment against it
+    would be a promise about nothing. Suggestions on advance lines are fine.
+
+    Returns ``{"line_id", "allocated_customer_id", "allocation_source",
+    "allocation_confirmed_at", "allocation_confirmed_by",
+    "allocation_source_revision"}``.
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    lid = str(line_id or "").strip()
+    cid = str(customer_id or "").strip()
+    op  = str(operator or "").strip()
+    if not lid or not cid or not op:
+        raise ValueError("line_id, customer_id and operator are all required")
+    if not _customer_master_exists(cid):
+        raise ValueError(
+            f"customer_id {cid!r} is not a Customer Master bill_to_contractor_id — "
+            "allocation binds to Customer Master, never to a typed name"
+        )
+    now = _now_iso()
+    with _lock:
+        with _connect() as con:
+            row = _get_line_row(con, lid)
+            if _line_doc_stage(con, row) == "advance":
+                raise ValueError(
+                    "an advance packing line cannot be allocated — the goods do "
+                    "not exist yet; allocate on the shipment it is linked to"
+                )
+            rev = compute_source_revision(dict(row))
+            con.execute(
+                """UPDATE packing_lines SET
+                       allocated_customer_id=?,
+                       allocation_source=?,
+                       allocation_confirmed_at=?,
+                       allocation_confirmed_by=?,
+                       allocation_source_revision=?,
+                       allocation_cleared_at=NULL,
+                       allocation_cleared_by='',
+                       allocation_cleared_reason='',
+                       updated_at=?
+                   WHERE id=?""",
+                (cid, _ALLOC_CONFIRMED, now, op, rev, now, lid),
+            )
+    return {
+        "line_id":                    lid,
+        "allocated_customer_id":      cid,
+        "allocation_source":          _ALLOC_CONFIRMED,
+        "allocation_confirmed_at":    now,
+        "allocation_confirmed_by":    op,
+        "allocation_source_revision": rev,
+    }
+
+
+def clear_allocation(line_id: str, operator: str, reason: str) -> Dict[str, Any]:
+    """Return an allocated line to stock. A repair, not a deletion.
+
+    A *reason* is mandatory for the same purpose it is mandatory when
+    withdrawing an advance packing document: an allocation that quietly
+    disappears leaves the operator who made it with no account of why. The
+    reason and the operator go into ``allocation_cleared_reason`` /
+    ``allocation_cleared_by`` / ``allocation_cleared_at``.
+
+    They must NOT go into ``remarks``. ``remarks`` is a goods-description field
+    that feeds documents: ``routes_dhl_clearance`` reads it as the ``stone_type``
+    fallback when building customs rows, and ``_build_matched_sales_lines``
+    copies it into ``sales_packing_lines``, where ``customer_incoterm_authority``
+    regex-scans it for Incoterms. An allocation note written there would surface
+    as a stone type on a customs declaration.
+
+    ``allocation_confirmed_at`` / ``_by`` are deliberately LEFT STANDING — they
+    record the binding that was cleared. Blanking them would erase who committed
+    the goods, leaving only the record of who undid it; the pair read together
+    is the history.
+
+    The supplier's suggestion is deliberately KEPT — the supplier really did
+    say it, and the next operator needs to see what was proposed as well as the
+    fact that it was rejected. Only the binding is removed:
+    ``allocated_customer_id`` returns to NULL (stock) and
+    ``allocation_source_revision`` is dropped with it, because a revision
+    snapshot with nothing bound to it is meaningless.
+
+    Returns ``{"line_id", "allocation_source", "allocated_customer_id",
+    "reason", "cleared_by", "cleared_at"}``.
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    lid = str(line_id or "").strip()
+    op  = str(operator or "").strip()
+    why = str(reason or "").strip()
+    if not lid or not op:
+        raise ValueError("line_id and operator are both required")
+    if not why:
+        raise ValueError("a reason is required to clear an allocation")
+    now = _now_iso()
+    with _lock:
+        with _connect() as con:
+            row = _get_line_row(con, lid)
+            # Keep the suggestion visible: a line that still carries one is
+            # back to 'supplier_preallocated', not to a blank slate that hides
+            # the fact anything was ever proposed.
+            has_suggestion = bool(
+                (row["suggested_customer_name"] or "").strip()
+                or (row["suggested_customer_id"] or "")
+            )
+            source = _ALLOC_SUGGESTED if has_suggestion else _ALLOC_UNALLOCATED
+            con.execute(
+                """UPDATE packing_lines SET
+                       allocated_customer_id=NULL,
+                       allocation_source=?,
+                       allocation_source_revision=NULL,
+                       allocation_cleared_at=?,
+                       allocation_cleared_by=?,
+                       allocation_cleared_reason=?,
+                       updated_at=?
+                   WHERE id=?""",
+                (source, now, op, why, now, lid),
+            )
+    return {
+        "line_id":               lid,
+        "allocation_source":     source,
+        "allocated_customer_id": None,
+        "reason":                why,
+        "cleared_by":            op,
+        "cleared_at":            now,
+    }
+
+
+def allocation_is_stale(line: Dict[str, Any]) -> bool:
+    """True when a BOUND line no longer describes the goods it was bound against.
+
+    Same rule the operator product review uses to reopen itself: compare the
+    revision snapshotted at confirm time with the line's current
+    :func:`compute_source_revision`. A line that was never bound, or that
+    carries no snapshot, is not stale — there is nothing to invalidate, and
+    calling an unallocated line "stale" would send an operator looking for a
+    decision nobody made.
+    """
+    if not isinstance(line, dict):
+        return False
+    if (line.get("allocation_source") or "") != _ALLOC_CONFIRMED:
+        return False
+    snapshot = line.get("allocation_source_revision") or None
+    if snapshot is None:
+        return False
+    try:
+        current = compute_source_revision(line)
+    except Exception:
+        return False
+    return bool(current and current != snapshot)
+
+
+# ── Operator decisions survive a reparse ─────────────────────────────────────
+# Every column below records something a HUMAN decided about a packing line, as
+# opposed to something the parser extracted. upsert_packing_lines already goes
+# out of its way to carry the product-review pair across a re-extraction (see
+# the ``_confirmed`` branch above) — but a caller that DELETEs the batch first
+# defeats that entirely, because the row the upsert would have matched is gone.
+_OPERATOR_DECISION_COLUMNS = (
+    "operator_review_status", "operator_confirmed_at", "operator_confirmed_by",
+    "operator_source_revision",
+    "allocation_source", "suggested_customer_name", "suggested_customer_id",
+    "allocated_customer_id", "allocation_confirmed_at", "allocation_confirmed_by",
+    "allocation_source_revision", "allocation_strategy",
+    "allocation_cleared_at", "allocation_cleared_by", "allocation_cleared_reason",
+)
+
+
+def _decision_key(row: Dict[str, Any]) -> tuple:
+    """Identity of a stored packing row for decision carry-over.
+
+    Mirrors the dedup key upsert_packing_lines uses — pack_sr when the source
+    list supplied a serial, otherwise position + design + bag + price — so a row
+    the upsert would have recognised as "the same logical row" is the row whose
+    decisions come back.
+    """
+    inv = str(row.get("invoice_no") or "")
+    sr = row.get("pack_sr")
+    if sr is not None:
+        try:
+            return (inv, "sr", float(sr))
+        except (TypeError, ValueError):
+            return (inv, "sr", str(sr))
+    return (
+        inv, "pos", row.get("invoice_line_position"),
+        str(row.get("design_no") or ""), str(row.get("bag_id") or ""),
+        float(row.get("unit_price") or 0.0),
+    )
+
+
+def _carries_a_decision(row: Dict[str, Any]) -> bool:
+    if str(row.get("operator_review_status") or "").strip():
+        return True
+    if str(row.get("allocation_source") or "").strip():
+        return True
+    return bool(row.get("allocated_customer_id"))
+
+
+def replace_batch_packing_lines(
+    batch_id:        str,
+    line_records:    List[Dict[str, Any]],
+    *,
+    force_reextract: bool = True,
+) -> Dict[str, Any]:
+    """Re-extract a batch's packing lines WITHOUT discarding operator decisions.
+
+    This is the ``clear_batch`` helper the force-reparse path in
+    routes_dhl_clearance asked for in a comment and, lacking it, open-coded as
+    ``DELETE FROM packing_lines WHERE batch_id = ?`` against packing_db's file.
+    That delete bypassed this module's lock and every decision-preserving branch
+    in :func:`upsert_packing_lines`, so one operator pressing "regenerate"
+    silently erased product-review confirmations — and would erase customer
+    allocations — for the whole batch, with no record that anything was lost.
+
+    What this does instead: capture the decision columns of every row that
+    carries one, delete, re-extract, then put each decision back on the row the
+    upsert recreated for the same logical line. A decision whose line is NOT in
+    the new parse cannot be restored — the goods it described are no longer
+    claimed by the source document — so it is REPORTED in ``dropped`` rather
+    than disappearing quietly. The caller decides what to tell the operator;
+    this function refuses to be the place a human decision vanishes unlogged.
+
+    Returns ``{"stored", "deleted", "decisions_preserved", "decisions_dropped",
+    "dropped": [...]}``.
+    """
+    if _db_path is None:
+        raise RuntimeError("packing_db not initialised — call init_packing_db() first")
+    bid = str(batch_id or "").strip()
+    if not bid:
+        raise ValueError("batch_id is required")
+
+    saved: Dict[tuple, Dict[str, Any]] = {}
+    with _lock:
+        with _connect() as con:
+            for r in con.execute(
+                "SELECT * FROM packing_lines WHERE batch_id=?", (bid,)
+            ).fetchall():
+                row = dict(r)
+                if _carries_a_decision(row):
+                    saved[_decision_key(row)] = {
+                        c: row.get(c) for c in _OPERATOR_DECISION_COLUMNS
+                    }
+            deleted = con.execute(
+                "DELETE FROM packing_lines WHERE batch_id=?", (bid,)
+            ).rowcount
+
+    # Outside the lock: upsert_packing_lines takes it itself and threading.Lock
+    # is not re-entrant.
+    stored = upsert_packing_lines(line_records, force_reextract=force_reextract)
+
+    preserved = 0
+    set_clause = ", ".join(f"{c}=?" for c in _OPERATOR_DECISION_COLUMNS)
+    with _lock:
+        with _connect() as con:
+            for r in con.execute(
+                "SELECT * FROM packing_lines WHERE batch_id=?", (bid,)
+            ).fetchall():
+                row = dict(r)
+                keep = saved.pop(_decision_key(row), None)
+                if keep is None:
+                    continue
+                con.execute(
+                    f"UPDATE packing_lines SET {set_clause}, updated_at=? WHERE id=?",
+                    tuple(keep[c] for c in _OPERATOR_DECISION_COLUMNS)
+                    + (_now_iso(), row["id"]),
+                )
+                preserved += 1
+
+    dropped = [
+        {
+            "invoice_no":             k[0],
+            "allocated_customer_id":  v.get("allocated_customer_id"),
+            "operator_review_status": v.get("operator_review_status"),
+            "allocation_source":      v.get("allocation_source"),
+        }
+        for k, v in saved.items()
+    ]
+    if dropped:
+        log.warning(
+            "[%s] reparse dropped %d operator decision(s) whose line is absent "
+            "from the new parse: %s", bid, len(dropped), dropped,
+        )
+    return {
+        "stored":              stored,
+        "deleted":             deleted,
+        "decisions_preserved": preserved,
+        "decisions_dropped":   len(dropped),
+        "dropped":             dropped,
+    }
 
 
 def get_line_counts_for_batch(batch_id: str) -> Dict[str, int]:

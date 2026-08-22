@@ -166,6 +166,25 @@ SUBSTITUTION_RX = re.compile(r"\$\(|\$\{|`|@\(")
 BENIGN_REDIRECT_RX = re.compile(r"\d?>\s*(?:&\d|/dev/null|\$null|nul)\b", re.IGNORECASE)
 ANY_REDIRECT_RX = re.compile(r">")
 
+# A '>' inside a quoted span is DATA, not a redirect. `git for-each-ref
+# --format='%(refname:short) -> %(objectname:short)'` carries one, and so does
+# `echo "a -> b"`. The redirect-into-prod rule below inspects the WHOLE command,
+# so such an arrow anywhere in a command that also READS a production path was
+# classified as a production write — refusing a plain `cat` of version.txt,
+# which guard-semantics rule 1 explicitly permits. Measured: the arrow, not
+# `2>&1`, was the trigger; `2>&1` is already benign above.
+#
+# Safe because a genuine redirect is written OUTSIDE quotes and therefore
+# survives the strip — a redirect onto a quoted production path still blocks.
+# A write hidden wholly inside quotes (`bash -c "... > ..."`) is still denied,
+# by the interpreter rule, which fails closed on arbitrary interpreters.
+_QUOTED_SPAN_RX = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _strip_quoted(text):
+    """Blank out quoted spans, preserving length so offsets stay meaningful."""
+    return _QUOTED_SPAN_RX.sub(lambda m: " " * len(m.group(0)), text)
+
 # In-place / write flags for otherwise-read-only stream editors.
 INPLACE_RX = re.compile(r"(?:^|\s)-{1,2}[a-z]*i(?:[a-z]*)?(?:\s|$|\.)|in-?place", re.IGNORECASE)
 STREAM_EDITORS = frozenset(["sed", "awk", "perl", "ruby"])
@@ -231,7 +250,13 @@ def _segment_is_read_only(segment):
     if SUBSTITUTION_RX.search(segment):
         return False
 
-    stripped = BENIGN_REDIRECT_RX.sub("", segment)
+    # Same quoted-span rule as the whole-command check below: an arrow inside a
+    # quoted value is data. Without this, `git log --format='%h -> %s' -- <path>`
+    # is not read-only, so a production path in the same segment falls through
+    # to the unclassified branch and fails closed — the same false refusal in a
+    # different rule. An interpreter hiding a real write inside quotes is caught
+    # earlier, by the arbitrary-interpreter check.
+    stripped = BENIGN_REDIRECT_RX.sub("", _strip_quoted(segment))
     if ANY_REDIRECT_RX.search(stripped):
         return False
 
@@ -352,7 +377,7 @@ def classify_command(command):
         )
 
     if _is_prod_pz_path(low) and ANY_REDIRECT_RX.search(
-        BENIGN_REDIRECT_RX.sub("", command)
+        BENIGN_REDIRECT_RX.sub("", _strip_quoted(command))
     ):
         return _blocked(
             BLOCK_PRODUCTION_WRITE, "redirect-into-prod", "PRODUCTION_MUTATION",

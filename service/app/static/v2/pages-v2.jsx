@@ -65,6 +65,36 @@ function Pill({ children, tone = 'neutral', small }) {
 // Automation health (secondary tab) still uses the existing observer GETs.
 // ════════════════════════════════════════════════════════════════════════════
 
+const DHL_TOWER_REFRESH_MS = 60000;
+
+const _MGMT_TONES = {
+  red: 'var(--badge-red-text)',
+  amber: 'var(--badge-amber-text)',
+  green: 'var(--badge-green-text)',
+};
+
+function _MgmtCard({ testid, title, headline, value, tone, note, onClick, cta }) {
+  return (
+    <div
+      data-testid={testid}
+      onClick={onClick}
+      style={{
+        padding: 14, border: '1px solid var(--border)', borderRadius: 10,
+        background: 'var(--card)', cursor: onClick ? 'pointer' : 'default',
+        display: 'flex', flexDirection: 'column', gap: 6,
+      }}
+    >
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{title}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: _MGMT_TONES[tone] || 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>
+        {value == null || value === '' ? '—' : String(value)}
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.45 }}>{headline || '—'}</div>
+      {note && <div style={{ fontSize: 11, color: 'var(--text-3)', lineHeight: 1.4 }}>{note}</div>}
+      {cta && onClick && <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 2 }}>{cta} →</div>}
+    </div>
+  );
+}
+
 function DhlCustomsPage({ onViewShipment }) {
   const [mainTab, setMainTab] = React.useState('logistics'); // logistics | automation
   const [intelTab, setIntelTab] = React.useState('operations'); // operations | intervention | performance | cost
@@ -84,6 +114,10 @@ function DhlCustomsPage({ onViewShipment }) {
   const [autoStatus, setAutoStatus] = React.useState(null);
   const [autoOpen, setAutoOpen] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
+  // Management is the default audience. Analyst holds every statistic that used
+  // to be on the front page - relocated, never removed.
+  const [audience, setAudience] = React.useState('management');
+  const [lastLoadedAt, setLastLoadedAt] = React.useState(null);
 
   React.useEffect(() => {
     window.EstrellaShared.apiFetch('/auth/me')
@@ -91,8 +125,9 @@ function DhlCustomsPage({ onViewShipment }) {
       .catch(() => setIsAdmin(false));
   }, []);
 
-  const loadProjection = React.useCallback(() => {
-    setLoading(true); setError(null);
+  const loadProjection = React.useCallback((silent) => {
+    if (!silent) setLoading(true);
+    setError(null);
     const params = { view, direction };
     if (q.trim()) params.q = q.trim();
     if (stage.trim()) params.stage = stage.trim();
@@ -103,11 +138,36 @@ function DhlCustomsPage({ onViewShipment }) {
       ? api(params)
       : window.EstrellaShared.apiFetch('/api/v1/dhl/logistics/projection?' + new URLSearchParams(params).toString());
     Promise.resolve(req)
-      .then((d) => { setData(d && d.data !== undefined && d.ok !== undefined ? d.data : d); setLoading(false); })
+      .then((d) => {
+        setData(d && d.data !== undefined && d.ok !== undefined ? d.data : d);
+        setLoading(false);
+        setLastLoadedAt(new Date());
+      })
       .catch((e) => { setError((e && e.message) || String(e)); setLoading(false); });
   }, [view, direction, q, stage, dateFrom, dateTo]);
 
   React.useEffect(() => { if (mainTab === 'logistics') loadProjection(); }, [loadProjection, mainTab]);
+
+  // The page used to fetch once and then sit there. Two screenshots taken
+  // minutes apart looked identical not because the numbers were cached but
+  // because nothing ever asked again. One interval, one endpoint, held in a ref
+  // so a filter change does not tear it down and rebuild it.
+  const loadRef = React.useRef(loadProjection);
+  loadRef.current = loadProjection;
+  React.useEffect(() => {
+    if (mainTab !== 'logistics') return undefined;
+    const visible = () => typeof document === 'undefined' || document.visibilityState === 'visible';
+    // No point refetching for a tab nobody is looking at.
+    const id = setInterval(() => { if (visible()) loadRef.current(true); }, DHL_TOWER_REFRESH_MS);
+    // Coming back to a backgrounded tab must not mean up to a minute of
+    // staring at stale numbers before the next tick lands. Catch up at once.
+    const onVisible = () => { if (visible()) loadRef.current(true); };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(id);
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [mainTab]);
 
   React.useEffect(() => {
     if (mainTab !== 'automation') return;
@@ -166,6 +226,9 @@ function DhlCustomsPage({ onViewShipment }) {
 
   const fmt = (v) => (v == null || v === '') ? '—' : String(v);
   const fmtHours = (h) => (h == null ? '—' : (Math.round(h * 10) / 10) + 'h');
+  // "+-2.98h" was a hardcoded plus in front of a number that could be negative.
+  const fmtSigned = (h) => (h == null ? '—' : (h > 0 ? '+' : '') + (Math.round(h * 10) / 10) + 'h');
+  const fmtPct = (v) => (v == null ? '—' : (Math.round(v * 10) / 10) + '%');
   const toneFor = (row) => {
     if (row.manual_resolution_badge) return 'purple';
     if (row.classification === 'historical_unresolved') return 'amber';
@@ -187,6 +250,11 @@ function DhlCustomsPage({ onViewShipment }) {
   const exec = intelligence.executive_summary || {};
   const intervention = intelligence.intervention_queue || [];
   const bottlenecks = intelligence.bottlenecks || [];
+  const bottlenecksExcluded = intelligence.bottlenecks_excluded || [];
+  const mgmt = intelligence.management_summary || {};
+  const bizLabels = intelligence.business_stage_labels || {};
+  const notMeasurable = intelligence.not_measurable_reasons || {};
+  const bizLabel = (id, fallback) => bizLabels[id] || fallback || id;
   const lanes = intelligence.lane_performance || [];
   const cost = intelligence.cost_intelligence || {};
   const transitIn = (intelligence.transit_performance && intelligence.transit_performance.inbound) || {};
@@ -199,10 +267,27 @@ function DhlCustomsPage({ onViewShipment }) {
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>DHL Logistics</div>
           <h1 style={{ margin: '4px 0 0', fontSize: 22, fontWeight: 700, color: 'var(--text)', fontFamily: '"DM Serif Display", serif' }}>Control Tower</h1>
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4, lineHeight: 1.4 }}>
-            Logistics Intelligence · Live ops → Intervention → Bottlenecks → Lanes → Quoted cost · Europe/Warsaw
+            {audience === 'management'
+              ? 'What needs attention, what is moving, and where the days are going · Europe/Warsaw'
+              : 'Logistics Intelligence · Live ops → Intervention → Bottlenecks → Lanes → Quoted cost · Europe/Warsaw'}
+          </div>
+          <div data-testid="dhl-tower-freshness" style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+            {lastLoadedAt
+              ? ('Updated ' + lastLoadedAt.toLocaleTimeString() + ' · refreshes every ' + Math.round(DHL_TOWER_REFRESH_MS / 1000) + 's')
+              : 'Loading…'}
+            {data && data.generated_at_warsaw
+              ? (' · projection built ' + String(data.generated_at_warsaw).slice(11, 19))
+              : ''}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            data-testid="dhl-tower-audience"
+            onClick={() => setAudience(audience === 'management' ? 'analyst' : 'management')}
+            style={_dhlBtnStyle()}
+          >
+            {audience === 'management' ? 'Analyst view' : 'Management view'}
+          </button>
           <button data-testid="dhl-tower-export" onClick={exportCsv} style={_dhlBtnStyle()}>Export CSV</button>
           <button data-testid="dhl-tower-export-pdf" onClick={exportPdf} style={_dhlBtnStyle()}>Export PDF</button>
           <button data-testid="dhl-tower-reload" onClick={() => { loadProjection(); setReloadKey((k) => k + 1); }} disabled={loading} style={_dhlBtnStyle()}>↻ Reload</button>
@@ -218,13 +303,80 @@ function DhlCustomsPage({ onViewShipment }) {
         ]}
       />
 
-      {mainTab === 'logistics' && (
+      {mainTab === 'logistics' && audience === 'management' && (
+        <div data-testid="dhl-tower-management" style={{ marginBottom: 18 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+            <_MgmtCard
+              testid="dhl-mgmt-needs-action"
+              title="Needs action now"
+              headline={(mgmt.needs_action_now || {}).headline}
+              value={(mgmt.needs_action_now || {}).count}
+              tone={((mgmt.needs_action_now || {}).count ? 'red' : 'green')}
+              onClick={() => { setView('attention'); setAudience('analyst'); setIntelTab('intervention'); }}
+              cta="See which ones"
+            />
+            <_MgmtCard
+              testid="dhl-mgmt-moving"
+              title="Moving normally"
+              headline={(mgmt.moving_normally || {}).headline}
+              value={(mgmt.moving_normally || {}).count}
+              tone="green"
+              onClick={() => { setView('active'); setAudience('analyst'); setIntelTab('operations'); }}
+              cta="See the list"
+            />
+            <_MgmtCard
+              testid="dhl-mgmt-lose-days"
+              title="Where we lose days"
+              headline={(mgmt.where_we_lose_days || {}).headline}
+              value={(mgmt.where_we_lose_days || {}).excess_human}
+              tone={(mgmt.where_we_lose_days || {}).stage ? 'amber' : 'green'}
+              note={(mgmt.where_we_lose_days || {}).steps_not_measurable
+                ? ((mgmt.where_we_lose_days || {}).steps_not_measurable + ' step(s) cannot be measured yet — see Analyst view')
+                : null}
+              onClick={() => { setAudience('analyst'); setIntelTab('performance'); }}
+              cta="See the steps"
+            />
+            <_MgmtCard
+              testid="dhl-mgmt-import-speed"
+              title="Import speed"
+              headline={(mgmt.import_speed || {}).typical_human
+                ? ('Typical import is taking ' + (mgmt.import_speed || {}).typical_human
+                   + ' against a target of ' + (mgmt.import_speed || {}).target_human
+                   + ', over ' + fmt((mgmt.import_speed || {}).shipments) + ' recent shipments')
+                : 'No import has completed in the last 30 days'}
+              value={(mgmt.import_speed || {}).typical_human}
+              tone={(mgmt.import_speed || {}).on_target === false ? 'amber' : 'green'}
+              onClick={() => { setAudience('analyst'); setIntelTab('performance'); }}
+              cta="See every step"
+            />
+            <_MgmtCard
+              testid="dhl-mgmt-days-lost"
+              title="Days lost this month"
+              headline={(mgmt.days_lost_this_month || {}).headline}
+              value={(mgmt.days_lost_this_month || {}).days}
+              tone={((mgmt.days_lost_this_month || {}).days ? 'amber' : 'green')}
+              note={'Time past the ' + fmt((mgmt.days_lost_this_month || {}).target_human) + ' import target, added up. Imports that beat target are not netted off.'}
+            />
+          </div>
+          {loading && <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 10 }}>Loading…</div>}
+          {error && <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 10 }}>{error}</div>}
+        </div>
+      )}
+
+      {mainTab === 'logistics' && audience === 'analyst' && (
         <div data-testid="dhl-tower-logistics">
           <div className="grid-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
             <StatTile label="Operational Active" value={fmt(operationalActive)} sub={'In ' + fmt(kpis.active_inbound) + ' · Out ' + fmt(kpis.active_outbound) + (kpis.operational_exceptions ? (' · Exc ' + kpis.operational_exceptions) : '')} onClick={() => { setDirection('all'); setView('active'); setIntelTab('operations'); }} />
             <StatTile label="Intervention Queue" value={fmt(exec.intervention_queue != null ? exec.intervention_queue : kpis.needs_attention)} sub={'Critical ' + fmt(exec.critical) + ' · Action ' + fmt(exec.action_required)} accent="var(--badge-red-text)" onClick={() => { setView('attention'); setIntelTab('intervention'); }} />
             <StatTile label="Delivered Today" value={fmt(kpis.delivered_today)} sub="Warsaw · in + out" accent="var(--badge-green-text)" onClick={() => setView('delivered')} />
-            <StatTile label="Top Bottleneck" value={fmt(exec.top_bottleneck || '—')} sub={exec.top_bottleneck_excess_hours != null ? ('+' + exec.top_bottleneck_excess_hours + 'h vs target') : 'vs configured target'} onClick={() => setIntelTab('performance')} />
+            <StatTile
+              label="Top Bottleneck"
+              value={fmt(exec.top_bottleneck || 'None')}
+              sub={exec.top_bottleneck_excess_hours != null
+                ? (fmtSigned(exec.top_bottleneck_excess_hours) + ' vs target · N=' + fmt(exec.top_bottleneck_n) + ' · last 30d')
+                : ((exec.stages_excluded_from_ranking || 0) + ' steps excluded — see Performance')}
+              onClick={() => setIntelTab('performance')}
+            />
             <StatTile
               label="Avg Inbound Transit"
               value={fmt(kpis.avg_inbound_transit_human || fmtHours(kpis.avg_inbound_transit_hours))}
@@ -434,18 +586,55 @@ function DhlCustomsPage({ onViewShipment }) {
 
           {!loading && !error && intelTab === 'performance' && (
             <div data-testid="dhl-tower-performance">
-              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Bottleneck ranking</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginBottom: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4, color: 'var(--text)' }}>Bottleneck ranking</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+                Ranked on the last 30 days only, over target only, five or more shipments only.
+                Everything excluded is listed underneath with its reason.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, marginBottom: 14 }}>
                 {bottlenecks.slice(0, 8).map((b) => (
                   <div key={b.id} data-testid={'dhl-tower-bottleneck-' + b.id} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
                     <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase' }}>{b.scope}</div>
-                    <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>{b.label}</div>
-                    <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 8 }}>+{fmt(b.excess_vs_target_hours)}h vs target</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>N={fmt(b.n)} · Δ30d {fmt(b.delta_pct_vs_previous_30d)}%</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>{bizLabel(b.id, b.label)}</div>
+                    <div style={{ fontSize: 12, color: 'var(--badge-red-text)', marginTop: 8 }}>{fmtSigned(b.excess_vs_target_hours)} vs target</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      Typical {fmt(b.typical_human)} vs target {fmtHours(b.target_hours)} · N={fmt(b.n)} (last 30d)
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      {b.delta_pct_vs_previous_30d != null
+                        ? ('Δ vs previous 30d ' + fmtPct(b.delta_pct_vs_previous_30d))
+                        : 'Δ withheld — previous window too small to compare'}
+                    </div>
                   </div>
                 ))}
-                {bottlenecks.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No excess vs configured targets.</div>}
+                {bottlenecks.length === 0 && (
+                  <div data-testid="dhl-tower-no-bottleneck" style={{ fontSize: 12, color: 'var(--text-2)', gridColumn: '1 / -1', padding: 12, border: '1px dashed var(--border)', borderRadius: 8 }}>
+                    No step is provably running over target on the last 30 days. Every step is
+                    listed below with the reason it is not ranked.
+                  </div>
+                )}
               </div>
+
+              {bottlenecksExcluded.length > 0 && (
+                <details data-testid="dhl-tower-bottleneck-excluded" style={{ marginBottom: 18 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-2)' }}>
+                    {bottlenecksExcluded.length} step(s) not ranked — and why
+                  </summary>
+                  <div style={{ marginTop: 8, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                    {bottlenecksExcluded.map((e) => (
+                      <div key={e.scope + ':' + e.id} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'baseline', padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+                        <span style={{ fontWeight: 600, minWidth: 240 }}>{bizLabel(e.id, e.label)}</span>
+                        <span style={{ color: 'var(--text-2)', flex: 1, minWidth: 260 }}>
+                          {notMeasurable[e.reason] || e.reason}
+                        </span>
+                        <span style={{ color: 'var(--text-3)', fontSize: 11 }}>
+                          {e.scope} · N={fmt(e.n)} · last 30d N={fmt(e.current_30d_n)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
 
               <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Transit performance</div>
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
@@ -455,17 +644,37 @@ function DhlCustomsPage({ onViewShipment }) {
                 {[]
                   .concat(Object.keys(transitIn).map((k) => ({ ...transitIn[k], scope: 'Inbound' })))
                   .concat(Object.keys(transitOut).map((k) => ({ ...transitOut[k], scope: 'Outbound' })))
-                  .filter((s) => s && s.n > 0)
-                  .slice(0, 14)
                   .map((s) => (
-                    <div key={s.id} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
+                    <div key={s.scope + ':' + s.id} data-testid={'dhl-tower-transit-' + s.id} style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card)' }}>
                       <div style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase' }}>{s.scope}</div>
-                      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>{s.label}</div>
-                      <div style={{ fontSize: 12, marginTop: 8 }}>Typical: {fmt(s.typical_human)}</div>
-                      <div style={{ fontSize: 12 }}>P90: {fmt(s.p90_human)} · Target: {fmt(s.target_human)}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
-                        30d {fmt((s.current_30d && s.current_30d.typical_human) || '—')} · prev {fmt((s.previous_30d && s.previous_30d.typical_human) || '—')} · Δ {fmt(s.delta_pct_vs_previous_30d)}% · N={s.n}
-                      </div>
+                      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>{bizLabel(s.id, s.label)}</div>
+                      {s.publishable === false ? (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--badge-amber-text)', letterSpacing: '0.04em' }}>
+                            INSUFFICIENT CLEAN DATA
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4, lineHeight: 1.4 }}>
+                            {notMeasurable[s.not_publishable_reason] || s.not_publishable_reason}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+                            {fmt(s.n)} usable of {fmt(s.cohort_n)} · {fmt(s.coverage_excluded_n)} missing a timestamp · {fmt(s.contaminated_n)} out of order
+                          </div>
+                        </div>
+                      ) : (
+                        <React.Fragment>
+                          <div style={{ fontSize: 12, marginTop: 8 }}>Typical: {fmt(s.typical_human)}</div>
+                          <div style={{ fontSize: 12 }}>P90: {fmt(s.p90_human)} · Target: {fmt(s.target_human)}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+                            30d {fmt((s.current_30d && s.current_30d.typical_human) || '—')} · prev {fmt((s.previous_30d && s.previous_30d.typical_human) || '—')}
+                            {' · Δ '}
+                            {s.delta_pct_vs_previous_30d != null ? fmtPct(s.delta_pct_vs_previous_30d) : 'withheld'}
+                            {' · N='}{fmt(s.n)}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                            Contamination {fmtPct(s.contamination_now_pct)} of the last 30 days
+                          </div>
+                        </React.Fragment>
+                      )}
                     </div>
                   ))}
               </div>

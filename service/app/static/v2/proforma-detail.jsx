@@ -4829,14 +4829,6 @@ function SourceExtractionTab({ draftId, batchId, expectedUpdatedAt, onSaved }) {
 //   the outbound timeline. DSK / SAD / agency / inbound AWB stay here.
 // Advisory only — never a fiscal gate.
 
-function _pfPickPrim(e, keys) {
-  for (const k of keys) {
-    const v = e && e[k];
-    if (v != null && typeof v !== 'object') return v;
-  }
-  return '';
-}
-
 function OutboundShipmentTracking({ awb, batchId, carrier, draftId }) {
   // Shared presentation authority — estrella-outbound-tracking.jsx
   // (same card as Shipment Detail). Tracking bytes still only from PzApi.
@@ -4859,89 +4851,40 @@ function OutboundShipmentTracking({ awb, batchId, carrier, draftId }) {
   );
 }
 
-function ImportClearanceLogisticsPanel({ batchId }) {
-  const [tl, setTl] = React.useState(null);
-  const [clr, setClr] = React.useState(null);
-  const [loading, setLoading] = React.useState(!!batchId);
-  const [err, setErr] = React.useState(null);
-
-  React.useEffect(() => {
-    let alive = true;
-    if (!batchId) { setLoading(false); return; }
-    setLoading(true); setErr(null);
-    const af = window.EstrellaShared && window.EstrellaShared.apiFetch;
-    if (!af) { setLoading(false); setErr('apiFetch unavailable'); return; }
-    Promise.allSettled([
-      af(`/api/v1/tracking/shipment/${encodeURIComponent(batchId)}/timeline`),
-      af(`/api/v1/dhl/clearance-status/${encodeURIComponent(batchId)}`),
-    ]).then(([t, c]) => {
-      if (!alive) return;
-      if (t.status === 'fulfilled') setTl((t.value && t.value.timeline) || []);
-      else setErr((t.reason && t.reason.message) || 'import timeline unavailable');
-      if (c.status === 'fulfilled' && c.value && c.value.found !== false) setClr(c.value);
-      setLoading(false);
-    });
-    return () => { alive = false; };
-  }, [batchId]);
-
-  const box = { padding: '12px 16px', background: 'var(--bg-subtle)', border: '1px solid var(--border)', borderRadius: 8 };
-
+function ImportClearanceLink({ batchId }) {
+  // This page is the OUTBOUND customer shipment. The panel that used to sit
+  // here fetched the inbound import timeline and the inbound clearance status
+  // on every render of every proforma - two extra round trips to draw somebody
+  // else's workflow on the wrong page.
+  //
+  // It also could not draw it. The audit timeline emits {ts, event,
+  // trigger_source, actor, detail}; the panel looked for a timestamp under
+  // timestamp/time/at/t/date, so every one of the 3,142 recorded events showed
+  // a dash for its time, and `detail` is an object, which its value picker
+  // rejected outright. Fixing the key would have made a correct panel that is
+  // still on the wrong page, so the panel is gone and the authority it belonged
+  // to gets a link.
+  if (!batchId) return null;
   return (
-    <div data-testid="pf-logistics-inbound-clearance" style={{ marginTop: 20 }}>
+    <div data-testid="pf-logistics-inbound-clearance-link" style={{ marginTop: 20 }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 2 }}>
         Import clearance (inbound)
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
-        Inbound AWB / DSK / SAD / agency events for this import batch — not the customer outbound shipment.
+        The inbound AWB, DSK, SAD and agency events belong to the import batch, not to this
+        customer shipment.
       </div>
-      {loading && (
-        <div data-testid="pf-logistics-inbound-loading" style={{ ...box, fontSize: 12, color: 'var(--text-3)' }}>
-          Loading import clearance…
-        </div>
-      )}
-      {!loading && clr && (
-        <div style={{ ...box, marginBottom: 10 }} data-testid="pf-logistics-inbound-clearance-status">
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12 }}>
-            <span style={{ color: 'var(--text-3)' }}>Customs clearance</span>
-            <span style={{ fontWeight: 700, color: 'var(--text)' }}>{clr.clearance_status || '—'}</span>
-          </div>
-          {clr.clearance_action && (
-            <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 3 }}>Action: {clr.clearance_action}</div>
-          )}
-          {clr.awb && (
-            <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }} data-testid="pf-logistics-inbound-awb">
-              Inbound AWB: <span style={{ fontFamily: 'monospace' }}>{clr.awb}</span>
-              {clr.updated_at ? ` · ${String(clr.updated_at).slice(0, 10)}` : ''}
-            </div>
-          )}
-        </div>
-      )}
-      {!loading && tl && tl.length > 0 && (
-        <div style={{ ...box, padding: 0, overflow: 'hidden' }} data-testid="pf-logistics-inbound-timeline">
-          {tl.map((e, i) => (
-            <div key={i} data-testid="pf-logistics-inbound-timeline-row"
-              style={{ display: 'flex', gap: 12, padding: '8px 14px', borderBottom: i < tl.length - 1 ? '1px solid var(--border)' : 'none' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 92, fontFamily: 'monospace' }}>
-                {String(_pfPickPrim(e, ['timestamp', 'time', 'at', 't', 'date']) || '').slice(0, 16) || '—'}
-              </span>
-              <span style={{ fontSize: 12, color: 'var(--text)', flex: 1 }}>
-                <strong>{_pfPickPrim(e, ['event', 'status', 'label', 'type', 'stage']) || '—'}</strong>
-                {_pfPickPrim(e, ['location', 'where', 'place'])
-                  ? <span style={{ color: 'var(--text-3)' }}> · {_pfPickPrim(e, ['location', 'where', 'place'])}</span>
-                  : null}
-                {_pfPickPrim(e, ['detail', 'message', 'note', 'description'])
-                  ? <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2 }}>{_pfPickPrim(e, ['detail', 'message', 'note', 'description'])}</div>
-                  : null}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      {!loading && (!tl || tl.length === 0) && !clr && (
-        <div style={{ ...box, fontSize: 11.5, color: 'var(--text-3)' }} data-testid="pf-logistics-inbound-empty">
-          No import clearance events recorded for this batch yet{err ? ` (${err})` : ''}.
-        </div>
-      )}
+      <a
+        data-testid="pf-logistics-inbound-open-batch"
+        href={'/v2/shipments?batch_id=' + encodeURIComponent(batchId)}
+        style={{
+          display: 'inline-block', padding: '8px 14px', fontSize: 12,
+          border: '1px solid var(--border)', borderRadius: 8,
+          background: 'var(--bg-subtle)', color: 'var(--accent)', textDecoration: 'none',
+        }}
+      >
+        Open import batch {batchId} →
+      </a>
     </div>
   );
 }
@@ -7948,7 +7891,7 @@ function ProformaDetailPage({ draft, onBack, onConvert }) {
                 carrier={(carrierShipment && carrierShipment.carrier) || null}
                 draftId={draft && draft.id}
               />
-              <ImportClearanceLogisticsPanel
+              <ImportClearanceLink
                 batchId={liveDraft.batch_id || (draft && draft.batch_id) || ''}
               />
             </div>

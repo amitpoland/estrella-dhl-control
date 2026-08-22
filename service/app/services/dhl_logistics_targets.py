@@ -42,6 +42,19 @@ LANE_TARGETS_HOURS: Dict[str, float] = {
     "PL→SK": 48.0,
 }
 
+# Share of a stage's cohort that may be excluded for *ordering* defects before
+# its duration statistics stop being publishable. Coverage gaps (an endpoint we
+# simply never recorded) narrow the sample; ordering defects mean the samples we
+# do have describe a sequence that did not happen, which is the failure that
+# silently distorts a median. Measured 2026-08-22: at 10% this separates the
+# five genuinely disordered stages from the eleven that are merely sparse.
+CONTAMINATION_BLOCK_PCT = 10.0
+
+# Minimum samples before a stage may be ranked as a bottleneck, and minimum
+# samples in the prior window before a period-over-period delta is publishable.
+BOTTLENECK_MIN_N = 5
+DELTA_MIN_PREVIOUS_N = 3
+
 # Stage-age watch / action thresholds used by Operations Now risk (hours).
 STAGE_AGE_WATCH_HOURS = 14.0
 STAGE_AGE_ACTION_HOURS = 24.0
@@ -78,4 +91,7 @@ def targets_payload() -> Dict[str, Any]:
         "stage_age_watch_hours": STAGE_AGE_WATCH_HOURS,
         "stage_age_action_hours": STAGE_AGE_ACTION_HOURS,
         "stage_age_critical_hours": STAGE_AGE_CRITICAL_HOURS,
+        "contamination_block_pct": CONTAMINATION_BLOCK_PCT,
+        "bottleneck_min_n": BOTTLENECK_MIN_N,
+        "delta_min_previous_n": DELTA_MIN_PREVIOUS_N,
     }
