@@ -797,6 +797,21 @@ def _status_against_stored_rows(con: sqlite3.Connection, row: sqlite3.Row) -> st
     extractor). No claim recorded means nothing to contradict, and the stored
     status stands: this refuses a specific false statement, it does not invent
     a stricter one.
+
+    Three ways a claim can go unmet, and they are NOT the same operational fact:
+
+    ``rows_absorbed``
+        a sibling registration of the same bytes holds the rows. Benign.
+    ``rows_orphaned``
+        the batch holds rows belonging to no live document. **The goods are
+        stored**; the link that accounts for them is broken. Measured: all 245
+        rows of ``939ae11b``'s parse are in ``packing_lines`` under document id
+        ``c838d434``, which no longer exists -- the only 245 orphans in a table
+        of 1598. Calling that "lost" would send someone to re-ingest goods the
+        database already holds, which is the duplication failure rather than
+        the missing-goods one.
+    ``rows_lost``
+        nothing anywhere holds them.
     """
     status = str((row["extraction_status"] or "")).strip().lower()
     if status not in ("complete", "extracted"):
@@ -825,7 +840,19 @@ def _status_against_stored_rows(con: sqlite3.Connection, row: sqlite3.Row) -> st
         "(SELECT source_file_hash FROM packing_documents WHERE id=?) "
         "AND l.packing_document_id != ? LIMIT 1",
         (row["id"], row["id"])).fetchone()
-    return ROWS_ABSORBED if held else ROWS_LOST
+    if held:
+        return ROWS_ABSORBED
+    # Rows in this batch that belong to NO live document. The goods are stored;
+    # what is broken is the link to the document that accounts for them. Saying
+    # "lost" here would send someone to re-ingest goods the database already
+    # holds, which is the duplication failure, not the missing-goods one.
+    orphaned = con.execute(
+        "SELECT 1 FROM packing_lines l WHERE l.batch_id = "
+        "(SELECT batch_id FROM packing_documents WHERE id=?) "
+        "AND NOT EXISTS (SELECT 1 FROM packing_documents d "
+        "                WHERE d.id = l.packing_document_id) LIMIT 1",
+        (row["id"],)).fetchone()
+    return ROWS_ORPHANED if orphaned else ROWS_LOST
 
 
 def update_packing_document_diagnostic(document_id: str, diagnostic: Dict[str, Any]) -> bool:
@@ -1274,6 +1301,7 @@ def upsert_packing_lines(
 
 
 ROWS_ABSORBED = "rows_absorbed"
+ROWS_ORPHANED = "rows_orphaned"
 ROWS_LOST     = "rows_lost"
 _OUTCLAIMING  = ("complete", "extracted", "pending")
 

@@ -102,7 +102,7 @@ def _diag(con, doc_id, claimed):
 
 
 def test_a_document_claiming_rows_it_does_not_hold_is_not_complete(tmp_path):
-    """939ae11b: parsed 245, skipped 0, $3,172, stored zero, read 'complete'."""
+    """A claim with nothing behind it anywhere. The goods really are missing."""
     con = _init(tmp_path)
     _doc(con, "d1", h="hA")
     _diag(con, "d1", 245)
@@ -111,6 +111,32 @@ def test_a_document_claiming_rows_it_does_not_hold_is_not_complete(tmp_path):
         row = c.execute("SELECT id, extraction_status, parser_diagnostic_json "
                         "FROM packing_documents WHERE id='d1'").fetchone()
         assert pdb._status_against_stored_rows(c, row) == pdb.ROWS_LOST
+
+
+def test_rows_belonging_to_no_live_document_are_orphaned_not_lost(tmp_path):
+    """939ae11b: all 245 rows of its parse ARE in packing_lines, under document
+    id c838d434, which no longer exists -- the only 245 orphans in 1598 rows.
+
+    'lost' would send someone to re-ingest goods the database already holds.
+    That is the duplication failure, and it is the one this distinction exists
+    to prevent: the two words describe opposite recovery actions.
+    """
+    con = _init(tmp_path)
+    _doc(con, "d1", h="hA")
+    _diag(con, "d1", 245)
+    con.commit()
+    _doc(con, "gone", h="hB")
+    con.commit()
+    pdb.upsert_packing_lines(_rows("gone", 3))          # same batch B1
+    with pdb._connect() as c:
+        c.execute("DELETE FROM packing_documents WHERE id='gone'")
+        row = c.execute("SELECT id, extraction_status, parser_diagnostic_json "
+                        "FROM packing_documents WHERE id='d1'").fetchone()
+        assert pdb._status_against_stored_rows(c, row) == pdb.ROWS_ORPHANED
+
+
+def test_orphaned_absorbed_and_lost_are_three_different_words(tmp_path):
+    assert len({pdb.ROWS_ABSORBED, pdb.ROWS_ORPHANED, pdb.ROWS_LOST}) == 3
 
 
 def test_the_same_claim_with_the_rows_present_stays_complete(tmp_path):
