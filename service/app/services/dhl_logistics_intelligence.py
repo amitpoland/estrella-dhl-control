@@ -323,6 +323,19 @@ def _transition_period_dto(
     cur_typical = cur_stats.get("median") if cur_stats.get("median") is not None else cur_stats.get("average")
     prev_typical = prev_stats.get("median") if prev_stats.get("median") is not None else prev_stats.get("average")
 
+    # A period-over-period percentage is only as trustworthy as its denominator.
+    # Measured 2026-08-22: booking->first movement showed +1526.8% against a
+    # previous window holding a single shipment. The number was arithmetically
+    # correct and told the reader nothing except that one shipment moved fast in
+    # July. Below the floor the delta is withheld and the reason is stated.
+    prev_n = prev_stats.get("n") or 0
+    if prev_n < targets.DELTA_MIN_PREVIOUS_N:
+        delta_pct = None
+        delta_suppressed = "previous_window_n_%d_below_%d" % (prev_n, targets.DELTA_MIN_PREVIOUS_N)
+    else:
+        delta_pct = _delta_pct(cur_typical, prev_typical)
+        delta_suppressed = None
+
     return {
         "id": transition_id,
         "label": label,
@@ -355,11 +368,37 @@ def _transition_period_dto(
             "typical_human": prev_stats.get("typical_human"),
             "p90": prev_stats.get("p90"),
         },
-        "delta_pct_vs_previous_30d": _delta_pct(cur_typical, prev_typical),
+        "delta_pct_vs_previous_30d": delta_pct,
+        "delta_suppressed_reason": delta_suppressed,
         "excess_vs_target_hours": excess_vs_target,
         "n": all_stats.get("n"),
         "excluded_n": None,  # filled by caller from projector analytics when available
     }
+
+
+_DATA_QUALITY_FIELDS = (
+    "cohort_n",
+    "excluded_n",
+    "coverage_excluded_n",
+    "contaminated_n",
+    "contamination_pct",
+    "clean_data_sufficient",
+    "contamination_block_pct",
+    "publishable",
+    "not_publishable_reason",
+)
+
+
+def _attach_data_quality(dto: Dict[str, Any], base: Dict[str, Any]) -> None:
+    """Copy the projector's measured data-quality verdict onto the stage DTO.
+
+    The projector owns the exclusion arithmetic; this layer never recomputes it,
+    it only carries it to the surface so the page can show the same numbers the
+    ranking gates on.
+    """
+    for field in _DATA_QUALITY_FIELDS:
+        dto[field] = base.get(field)
+    dto["exclusion_reason_counts"] = base.get("exclusion_reason_counts") or {}
 
 
 def build_transition_kpis(
@@ -377,8 +416,7 @@ def build_transition_kpis(
         samples = projector.collect_transition_samples(inbound_rows, key, pair)  # noqa: SLF001
         dto = _transition_period_dto(samples, transition_id=key, label=label, now=now)
         base = (analytics.get("fixed_transitions_inbound") or {}).get(key) or {}
-        dto["excluded_n"] = base.get("excluded_n")
-        dto["exclusion_reason_counts"] = base.get("exclusion_reason_counts") or {}
+        _attach_data_quality(dto, base)
         inbound[key] = dto
 
     outbound: Dict[str, Any] = {}
@@ -386,40 +424,92 @@ def build_transition_kpis(
         samples = projector.collect_transition_samples(outbound_rows, key, pair)  # noqa: SLF001
         dto = _transition_period_dto(samples, transition_id=key, label=label, now=now)
         base = (analytics.get("fixed_transitions_outbound") or {}).get(key) or {}
-        dto["excluded_n"] = base.get("excluded_n")
-        dto["exclusion_reason_counts"] = base.get("exclusion_reason_counts") or {}
+        _attach_data_quality(dto, base)
         outbound[key] = dto
 
     return {"inbound": inbound, "outbound": outbound}
 
 
-def build_bottleneck_ranking(transition_kpis: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _ranking_exclusion(dto: Dict[str, Any]) -> Optional[str]:
+    """Why this stage may not be ranked as a bottleneck, or None if it may.
+
+    A bottleneck claim is an instruction to go and fix something, so it has to
+    survive four questions before it earns a rank:
+
+      is the stage even measurable?   publishable == False -> no
+      is it slow *now*?               ranked on the current 30-day window, not
+                                      an all-time median that can be dominated
+                                      by a backfill nobody is going to relive
+      is it actually over target?     a stage beating target is not a bottleneck
+      are there enough shipments?     one shipment is an anecdote
+
+    Nothing is dropped silently: every exclusion here is returned to the caller
+    and published as excluded_from_ranking.
+    """
+    if dto.get("publishable") is False:
+        return dto.get("not_publishable_reason") or "not_publishable"
+    cur = dto.get("current_30d") or {}
+    n_now = cur.get("n") or 0
+    if n_now < targets.BOTTLENECK_MIN_N:
+        return "insufficient_recent_samples"
+    if cur.get("typical") is None or dto.get("target_hours") is None:
+        return "no_current_typical"
+    if float(cur["typical"]) - float(dto["target_hours"]) <= 0:
+        return "meeting_target"
+    return None
+
+
+def build_bottleneck_ranking(transition_kpis: Dict[str, Any]) -> Dict[str, Any]:
+    """Rank the stages genuinely costing time right now.
+
+    Returns {"ranked": [...], "excluded": [...]} — the excluded list is part of
+    the answer, not debris. A ranking that quietly drops two thirds of the
+    stages reads as "these are the only stages" and that is how a stage stops
+    being looked at.
+    """
     ranked: List[Dict[str, Any]] = []
+    excluded: List[Dict[str, Any]] = []
     for scope in ("inbound", "outbound"):
         for tid, dto in (transition_kpis.get(scope) or {}).items():
-            excess = dto.get("excess_vs_target_hours")
-            n = dto.get("n") or 0
-            if excess is None or n <= 0:
+            reason = _ranking_exclusion(dto)
+            if reason is not None:
+                excluded.append({
+                    "id": tid,
+                    "scope": scope,
+                    "label": dto.get("label"),
+                    "reason": reason,
+                    "n": dto.get("n"),
+                    "current_30d_n": (dto.get("current_30d") or {}).get("n"),
+                    "contamination_pct": dto.get("contamination_pct"),
+                })
                 continue
-            contribution = round(float(excess) * float(n), 2)
+
+            cur = dto["current_30d"]
+            excess = round(float(cur["typical"]) - float(dto["target_hours"]), 2)
+            n_now = cur.get("n") or 0
             ranked.append({
                 "id": tid,
                 "scope": scope,
                 "label": dto.get("label"),
                 "excess_vs_target_hours": excess,
-                "excess_human": _fmt_duration(excess if excess > 0 else 0),
-                "n": n,
-                "contribution_hours": contribution,
-                "typical": dto.get("typical"),
+                "excess_human": _fmt_duration(excess),
+                "n": n_now,
+                "n_all_time": dto.get("n"),
+                "window": "current_30d",
+                "contribution_hours": round(excess * float(n_now), 2),
+                "typical": cur.get("typical"),
+                "typical_human": cur.get("typical_human"),
                 "target_hours": dto.get("target_hours"),
                 "delta_pct_vs_previous_30d": dto.get("delta_pct_vs_previous_30d"),
+                "delta_suppressed_reason": dto.get("delta_suppressed_reason"),
                 "improved": (
                     dto.get("delta_pct_vs_previous_30d") is not None
-                    and dto.get("delta_pct_vs_previous_30d") < 0
+                    and dto["delta_pct_vs_previous_30d"] < 0
                 ),
             })
     ranked.sort(key=lambda r: (-(r.get("contribution_hours") or 0), -(r.get("excess_vs_target_hours") or 0)))
-    return ranked
+    excluded.sort(key=lambda r: (r.get("scope") or "", r.get("id") or ""))
+    return {"ranked": ranked, "excluded": excluded}
 
 
 def _lane_id_for_row(row: Dict[str, Any]) -> str:
@@ -500,6 +590,155 @@ def build_lane_performance(
         })
     out.sort(key=lambda r: (-(r.get("n") or 0), r.get("lane_id") or ""))
     return out
+
+
+# Stage names a manager can act on. The statistical id stays the authority and
+# is still what the Analyst view shows; this is presentation, not a second
+# vocabulary - every key here is a real transition id, none is invented, and a
+# stage with no entry falls back to its engineering label rather than vanishing.
+BUSINESS_STAGE_LABELS: Dict[str, str] = {
+    # Inbound
+    "origin_pickup_to_poland": "India to Warsaw flight leg",
+    "poland_to_dhl_email": "Waiting for DHL to send clearance paperwork",
+    "dhl_email_to_dsk": "Waiting for DHL clearance paperwork",
+    "dsk_to_agency_sad": "Customs agent filing",
+    "sad_to_customs_cleared": "Customs clearance confirmation",
+    "customs_cleared_to_pz": "Goods booked into warehouse",
+    "sad_to_pz": "Goods booked into warehouse",
+    "origin_pickup_to_delivered": "Whole import, pickup to delivered",
+    # Outbound
+    "booking_to_acceptance": "Label printed, DHL took the parcel",
+    "acceptance_to_departure": "Sitting at Warsaw depot",
+    "departure_to_destination": "Flight to destination country",
+    "destination_to_delivered": "Last mile in destination country",
+    "booking_to_delivered": "Whole export, booking to delivered",
+    "booking_to_first_movement": "Label printed, DHL actually collected",
+    "pickup_to_delivery": "Collection to delivery",
+    "departure_to_delivery": "Departure to delivery",
+}
+
+# Why a step is not being shown, said the way an operator would say it.
+NOT_MEASURABLE_REASONS: Dict[str, str] = {
+    "insufficient_samples": "Not enough shipments have finished this step to say anything yet",
+    "contaminated_ordering": "The timestamps for this step are recorded out of order, so any average would be wrong",
+    "insufficient_recent_samples": "Too few shipments in the last 30 days to judge",
+    "meeting_target": "Running at or under target",
+    "no_current_typical": "No shipment finished this step in the last 30 days",
+}
+
+
+def business_label(transition_id: str, fallback: Optional[str] = None) -> str:
+    return BUSINESS_STAGE_LABELS.get(transition_id) or fallback or transition_id
+
+
+def build_management_summary(
+    rows: List[Dict[str, Any]],
+    operations: List[Dict[str, Any]],
+    intervention: List[Dict[str, Any]],
+    bottlenecks: List[Dict[str, Any]],
+    excluded: List[Dict[str, Any]],
+    transition_kpis: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """The four questions a manager opens this page to answer.
+
+    What needs me today, what is fine, where are we losing days, and how fast
+    are imports running. Every number is a projection of a figure computed
+    above - nothing is recomputed here, and no threshold is introduced that the
+    Analyst view cannot show the workings of.
+    """
+    now = now or _now_utc()
+    active = [o for o in operations if o.get("classification") in ("active", "exception")]
+    needs_action = [o for o in active if o.get("risk") in ("critical", "action_required")]
+    moving_normally = [o for o in active if o.get("risk") not in ("critical", "action_required")]
+
+    # Days lost this month: for every import delivered in the current calendar
+    # month, how far past the end-to-end import target it ran. Only overruns
+    # count. An import that beat target does not earn back somebody else's
+    # delay, and netting them off would hide both.
+    target = targets.target_hours("origin_pickup_to_delivered")
+    lost_hours = 0.0
+    counted = 0
+    for r in rows:
+        if r.get("direction") != "inbound" or r.get("classification") != "delivered":
+            continue
+        delivered = _parse_iso(r.get("delivered_at_utc"))
+        elapsed = r.get("total_elapsed_hours")
+        if delivered is None or not isinstance(elapsed, (int, float)):
+            continue
+        if (delivered.year, delivered.month) != (now.year, now.month):
+            continue
+        counted += 1
+        if target is not None and elapsed > target:
+            lost_hours += float(elapsed) - float(target)
+
+    top = bottlenecks[0] if bottlenecks else None
+    import_dto = (transition_kpis.get("inbound") or {}).get("origin_pickup_to_delivered") or {}
+    import_now = (import_dto.get("current_30d") or {}).get("typical")
+    n_action = len(needs_action)
+    n_normal = len(moving_normally)
+    days_lost = round(lost_hours / 24.0, 1)
+    plural = lambda n: "" if n == 1 else "s"
+
+    return {
+        "needs_action_now": {
+            "count": n_action,
+            "headline": (
+                "%d shipment%s need%s attention today"
+                % (n_action, plural(n_action), "s" if n_action == 1 else "")
+                if n_action else "Nothing needs attention today"
+            ),
+        },
+        "moving_normally": {
+            "count": n_normal,
+            "headline": "%d shipment%s moving normally" % (n_normal, plural(n_normal)),
+        },
+        "where_we_lose_days": {
+            "stage": business_label(top["id"], top.get("label")) if top else None,
+            "excess_hours": top.get("excess_vs_target_hours") if top else None,
+            "excess_human": top.get("excess_human") if top else None,
+            "shipments": top.get("n") if top else None,
+            "headline": (
+                "%s is taking %s longer than target, on %d recent shipment%s" % (
+                    business_label(top["id"], top.get("label")),
+                    top.get("excess_human") or ("%sh" % top.get("excess_vs_target_hours")),
+                    top.get("n") or 0,
+                    plural(top.get("n") or 0),
+                )
+                if top else "No step is provably running slow right now"
+            ),
+            "steps_not_measurable": len([
+                e for e in excluded
+                if e.get("reason") in (
+                    "insufficient_samples", "contaminated_ordering",
+                    "insufficient_recent_samples", "no_current_typical",
+                )
+            ]),
+        },
+        "import_speed": {
+            "typical_hours": import_now,
+            "typical_human": _fmt_duration(import_now),
+            "target_hours": target,
+            "target_human": _fmt_duration(target),
+            "shipments": (import_dto.get("current_30d") or {}).get("n"),
+            "on_target": (
+                None if import_now is None or target is None else float(import_now) <= float(target)
+            ),
+        },
+        "days_lost_this_month": {
+            "days": days_lost,
+            "hours": round(lost_hours, 1),
+            "imports_counted": counted,
+            "target_human": _fmt_duration(target),
+            "headline": (
+                "%s days lost this month across %d completed import%s"
+                % (days_lost, counted, plural(counted))
+            ),
+        },
+        "intervention_queue_count": len(intervention),
+        "window_days": 30,
+    }
 
 
 def build_cost_intelligence(outbound_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -583,9 +822,15 @@ def build_intelligence(
     operations = build_operations_now(all_rows, now=now)
     intervention = build_intervention_queue(operations)
     transition_kpis = build_transition_kpis(inbound, outbound, now=now, analytics=analytics)
-    bottlenecks = build_bottleneck_ranking(transition_kpis)
+    ranking = build_bottleneck_ranking(transition_kpis)
+    bottlenecks = ranking["ranked"]
+    bottlenecks_excluded = ranking["excluded"]
     lanes = build_lane_performance(all_rows, now=now)
     cost = build_cost_intelligence(outbound)
+    management = build_management_summary(
+        all_rows, operations, intervention, bottlenecks, bottlenecks_excluded,
+        transition_kpis, now=now,
+    )
 
     active_ops = [o for o in operations if o.get("classification") in ("active", "exception")]
     slowest = sorted(
@@ -613,11 +858,18 @@ def build_intelligence(
             "watch": sum(1 for o in active_ops if o.get("risk") == "watch"),
             "top_bottleneck": (bottlenecks[0]["label"] if bottlenecks else None),
             "top_bottleneck_excess_hours": (bottlenecks[0]["excess_vs_target_hours"] if bottlenecks else None),
+            "top_bottleneck_n": (bottlenecks[0]["n"] if bottlenecks else None),
+            "top_bottleneck_window": (bottlenecks[0]["window"] if bottlenecks else None),
+            "stages_excluded_from_ranking": len(bottlenecks_excluded),
         },
         "operations_now": operations,
         "intervention_queue": intervention,
         "transit_performance": transition_kpis,
+        "management_summary": management,
+        "business_stage_labels": dict(BUSINESS_STAGE_LABELS),
+        "not_measurable_reasons": dict(NOT_MEASURABLE_REASONS),
         "bottlenecks": bottlenecks,
+        "bottlenecks_excluded": bottlenecks_excluded,
         "lane_performance": lanes,
         "slowest_current_shipments": slowest,
         "data_quality_notes": dq,

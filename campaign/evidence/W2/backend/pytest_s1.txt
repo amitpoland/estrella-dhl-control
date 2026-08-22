@@ -1,0 +1,84 @@
+============================= test session starts =============================
+platform win32 -- Python 3.9.1, pytest-8.4.2, pluggy-1.6.0 -- C:\Users\Super Fashion\AppData\Local\Programs\Python\Python39\python.exe
+rootdir: C:\PZ-wt\ct-master\service
+configfile: pytest.ini
+plugins: anyio-4.12.1, timeout-2.4.0
+timeout: 120.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 66 items
+
+tests/test_carrier_stage_normalizer.py::test_real_cached_events_normalise_to_semantic_stages PASSED [  1%]
+tests/test_carrier_stage_normalizer.py::test_sort_facility_is_not_destination_arrival PASSED [  3%]
+tests/test_carrier_stage_normalizer.py::test_already_normalised_stage_wins_over_type_code PASSED [  4%]
+tests/test_carrier_stage_normalizer.py::test_unknown_code_is_left_as_event_never_guessed PASSED [  6%]
+tests/test_carrier_stage_normalizer.py::test_every_censused_code_has_a_mapping PASSED [  7%]
+tests/test_carrier_stage_normalizer.py::test_acceptance_lookup_is_not_shadowed_by_processed_events PASSED [  9%]
+tests/test_carrier_stage_normalizer.py::test_destination_resolves_from_out_for_delivery_when_no_delivery_facility PASSED [ 10%]
+tests/test_dhl_logistics_projector.py::test_pz_complete_does_not_imply_physical_delivery PASSED [ 12%]
+tests/test_dhl_logistics_projector.py::test_classify_inbound_delivered_via_timeline PASSED [ 13%]
+tests/test_dhl_logistics_projector.py::test_classify_inbound_carrier_nonterminal_blocks_timeline_delivered PASSED [ 15%]
+tests/test_dhl_logistics_projector.py::test_dhl_email_kpi_prefers_received_at_not_discovery_timeline PASSED [ 16%]
+tests/test_dhl_logistics_projector.py::test_dhl_inbox_scanned_cannot_satisfy_dhl_email_kpi PASSED [ 18%]
+tests/test_dhl_logistics_projector.py::test_pickup_to_poland_excludes_delivered_before_poland PASSED [ 19%]
+tests/test_dhl_logistics_projector.py::test_poland_to_dhl_email_excludes_missing_original_timestamp PASSED [ 21%]
+tests/test_dhl_logistics_projector.py::test_failed_tracking_cache_blocks_timeline_delivered PASSED [ 22%]
+tests/test_dhl_logistics_projector.py::test_manual_admin_received_at_defers_to_email_evidence PASSED [ 24%]
+tests/test_dhl_logistics_projector.py::test_pre_arrival_customs_contact_counts_as_zero_hours PASSED [ 25%]
+tests/test_dhl_logistics_projector.py::test_classify_inbound_excluded_awb PASSED [ 27%]
+tests/test_dhl_logistics_projector.py::test_canonical_delivered_overrides_booking_complete PASSED [ 28%]
+tests/test_dhl_logistics_projector.py::test_delivered_stage_age_null_and_total_freezes PASSED [ 30%]
+tests/test_dhl_logistics_projector.py::test_completed_without_delivery_excluded_from_transit_average PASSED [ 31%]
+tests/test_dhl_logistics_projector.py::test_invalid_delivery_before_created_excluded PASSED [ 33%]
+tests/test_dhl_logistics_projector.py::test_no_movement_12h_needs_attention PASSED [ 34%]
+tests/test_dhl_logistics_projector.py::test_main_status_never_exposes_booking_complete PASSED [ 36%]
+tests/test_dhl_logistics_projector.py::test_fixed_transitions_do_not_mix_predecessors PASSED [ 37%]
+tests/test_dhl_logistics_projector.py::test_delivered_today_includes_inbound_and_outbound PASSED [ 39%]
+tests/test_dhl_logistics_projector.py::test_no_second_tracker_poller_in_source PASSED [ 40%]
+tests/test_dhl_logistics_projector.py::test_inbound_outbound_awb_isolation PASSED [ 42%]
+tests/test_dhl_logistics_projector.py::test_duration_and_timezone_fields PASSED [ 43%]
+tests/test_dhl_logistics_projector.py::test_missing_timestamps_do_not_invent_expected_delivery PASSED [ 45%]
+tests/test_dhl_logistics_projector.py::test_pz_complete_stays_in_active_filter PASSED [ 46%]
+tests/test_dhl_logistics_projector.py::test_exception_remains_visible_in_active PASSED [ 48%]
+tests/test_dhl_logistics_projector.py::test_historical_unresolved_requires_full_combination PASSED [ 50%]
+tests/test_dhl_logistics_projector.py::test_movement_keeps_row_operational_not_historical PASSED [ 51%]
+tests/test_dhl_logistics_projector.py::test_historical_excluded_from_active_and_attention_kpis PASSED [ 53%]
+tests/test_dhl_logistics_projector.py::test_historical_unresolved_uses_timeline_fallback_when_batch_created_missing PASSED [ 54%]
+tests/test_dhl_logistics_projector.py::test_csv_export_includes_filters PASSED [ 56%]
+tests/test_dhl_logistics_projector.py::test_routes_require_api_key PASSED [ 57%]
+tests/test_dhl_logistics_projector.py::test_routes_registered PASSED     [ 59%]
+tests/test_dhl_logistics_intelligence.py::test_party_never_uses_clearance_agency PASSED [ 60%]
+tests/test_dhl_logistics_intelligence.py::test_party_rejects_agency_shaped_supplier_field PASSED [ 62%]
+tests/test_dhl_logistics_intelligence.py::test_targets_are_explicit_not_inferred PASSED [ 63%]
+tests/test_dhl_logistics_intelligence.py::test_delivered_excluded_from_intervention_queue PASSED [ 65%]
+tests/test_dhl_logistics_intelligence.py::test_attention_reason_explainability PASSED [ 66%]
+tests/test_dhl_logistics_intelligence.py::test_lane_grouping_and_metrics PASSED [ 68%]
+tests/test_dhl_logistics_intelligence.py::test_no_cross_currency_cost_merge PASSED [ 69%]
+tests/test_dhl_logistics_intelligence.py::test_bottleneck_uses_explicit_target_not_p90 PASSED [ 71%]
+tests/test_dhl_logistics_intelligence.py::test_poland_to_dhl_email_kpi_population_unchanged_by_intelligence PASSED [ 72%]
+tests/test_dhl_logistics_intelligence.py::test_percentile_helpers_median_p75_p90 PASSED [ 74%]
+tests/test_dhl_logistics_intelligence.py::test_pdf_totals_match_intelligence_payload PASSED [ 75%]
+tests/test_dhl_logistics_intelligence.py::test_no_new_delivered_authority_in_intelligence_module PASSED [ 77%]
+tests/test_control_tower_envelope_contract.py::test_pzapi_call_wraps_every_response_in_an_ok_data_envelope PASSED [ 78%]
+tests/test_control_tower_envelope_contract.py::test_pzapi_call_resolves_on_failure_instead_of_rejecting PASSED [ 80%]
+tests/test_control_tower_envelope_contract.py::test_get_dhl_logistics_shipment_goes_through_the_wrapped_call PASSED [ 81%]
+tests/test_control_tower_envelope_contract.py::test_the_drawer_reads_events_from_the_envelope_data PASSED [ 83%]
+tests/test_control_tower_envelope_contract.py::test_the_drawer_does_not_read_events_off_the_envelope_itself PASSED [ 84%]
+tests/test_control_tower_envelope_contract.py::test_the_drawer_branches_on_ok_so_a_real_failure_is_visible PASSED [ 86%]
+tests/test_control_tower_envelope_contract.py::test_a_successful_envelope_is_never_conflated_with_a_failure PASSED [ 87%]
+tests/test_control_tower_envelope_contract.py::test_the_degraded_state_is_rendered_not_just_recorded PASSED [ 89%]
+tests/test_control_tower_envelope_contract.py::test_outbound_legs_skip_the_fetch_by_design PASSED [ 90%]
+tests/test_control_tower_envelope_contract.py::test_the_previous_rows_stream_is_cleared_before_any_early_return PASSED [ 92%]
+tests/test_control_tower_envelope_contract.py::test_milestones_remain_the_fallback_and_the_stage_authority PASSED [ 93%]
+tests/test_control_tower_timeline_composition.py::test_composed_stream_carries_the_carrier_movements PASSED [ 95%]
+tests/test_control_tower_timeline_composition.py::test_the_composed_stream_reaches_past_the_last_workflow_event PASSED [ 96%]
+tests/test_control_tower_timeline_composition.py::test_milestones_remain_the_narrow_stage_authority PASSED [ 98%]
+tests/test_control_tower_timeline_composition.py::test_detail_payload_publishes_events_beside_milestones PASSED [100%]
+
+============================== warnings summary ===============================
+app\api\routes_dhl_clearance.py:4424
+  C:\PZ-wt\ct-master\service\app\api\routes_dhl_clearance.py:4424: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class ProactiveDispatchRequest(BaseModel):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 66 passed, 1 warning in 2.65s ========================

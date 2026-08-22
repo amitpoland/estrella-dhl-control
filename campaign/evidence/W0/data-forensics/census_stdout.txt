@@ -1,0 +1,103 @@
+generated_at_utc: 2026-08-21T23:15:12.336642+00:00 rows: 62
+
+== §1 CONTAMINATION ==
+inbound   origin_pickup_to_poland        N=25  excl=15  tot=40  cohort=40  OK          37.5% {'lifecycle_mismatch_delivered_before_poland': 6, 'missing_pickup': 1, 'missing_pickup_and_arrived_pl': 8}
+inbound   poland_to_dhl_email            N=25  excl=15  tot=40  cohort=40  OK          37.5% {'lifecycle_mismatch_email_vs_late_poland': 4, 'mismatched_non_customs_email_evidence': 1, 'missing_dhl_email': 2, 'missing_arrived_pl_and_dhl_email': 2, 'missing_arrived_pl': 6}
+inbound   dhl_email_to_dsk               N=18  excl=22  tot=40  cohort=40  OK          55.0% {'inverted_or_invalid': 12, 'missing_dhl_email_and_dsk': 3, 'missing_dhl_email': 2, 'missing_dsk': 5}
+inbound   dsk_to_agency_sad              N=32  excl=8   tot=40  cohort=40  OK          20.0% {'missing_dsk': 8}
+inbound   sad_to_customs_cleared         N=0   excl=40  tot=40  cohort=40  OK          100.0% {'missing_customs_cleared': 40}
+inbound   customs_cleared_to_pz          N=0   excl=40  tot=40  cohort=40  OK          100.0% {'missing_customs_cleared': 34, 'missing_customs_cleared_and_pz': 6}
+inbound   sad_to_pz                      N=30  excl=10  tot=40  cohort=40  OK          25.0% {'inverted_or_invalid': 4, 'missing_pz': 6}
+inbound   origin_pickup_to_delivered     N=31  excl=9   tot=40  cohort=40  OK          22.5% {'missing_pickup': 1, 'missing_pickup_and_delivered': 8}
+outbound  booking_to_acceptance          N=1   excl=21  tot=22  cohort=22  OK          95.5% {'missing_acceptance': 15, 'inverted_or_invalid': 6}
+outbound  acceptance_to_departure        N=6   excl=16  tot=22  cohort=22  OK          72.7% {'missing_acceptance': 13, 'missing_acceptance_and_departed': 2, 'inverted_or_invalid': 1}
+outbound  departure_to_destination       N=0   excl=22  tot=22  cohort=22  OK          100.0% {'missing_destination': 20, 'missing_departed_and_destination': 2}
+outbound  destination_to_delivered       N=0   excl=22  tot=22  cohort=22  OK          100.0% {'missing_destination_and_delivered': 3, 'missing_destination': 19}
+outbound  booking_to_delivered           N=17  excl=5   tot=22  cohort=22  OK          22.7% {'missing_delivered': 3, 'inverted_or_invalid': 2}
+outbound  booking_to_first_movement      N=14  excl=8   tot=22  cohort=22  OK          36.4% {'missing_first_movement': 2, 'inverted_or_invalid': 6}
+outbound  pickup_to_delivery             N=7   excl=15  tot=22  cohort=22  OK          68.2% {'missing_pickup_and_delivered': 3, 'missing_pickup': 12}
+outbound  departure_to_delivery          N=19  excl=3   tot=22  cohort=22  OK          13.6% {'missing_delivered': 1, 'missing_departed_and_delivered': 2}
+cohort spine: N + excluded == cohort on all 16 stages
+
+== §4 ZOMBIE SPLIT ==
+  inbound   GENUINE  1
+  inbound   SUSPECT  4
+  inbound   ZOMBIE   35
+  outbound  GENUINE  18
+  outbound  SUSPECT  4
+
+== §3 DSK DAY HISTOGRAM ==
+  2026-04-27 #### 4
+  2026-04-28 # 1
+  2026-04-29 ### 3
+  2026-05-02 # 1
+  2026-05-03 # 1
+  2026-05-04 ## 2
+  2026-05-05 #### 4
+  2026-05-06 # 1
+  2026-05-13 # 1
+  2026-05-19 # 1
+  2026-05-21 # 1
+  2026-05-22 # 1
+  2026-06-02 # 1
+  2026-06-08 # 1
+  2026-06-10 # 1
+  2026-06-24 # 1
+  2026-07-09 # 1
+  2026-07-13 # 1
+  2026-07-18 # 1
+  2026-07-27 # 1
+  2026-08-05 # 1
+  2026-08-12 # 1
+  2026-08-18 # 1
+  backfill window 2026-04-27..05-06: 17 of 21 pre-June stamps
+
+== §3 email -> DSK SAMPLES ==
+  AWB-28   2026-08-10 05:52 -> 2026-08-05 09:36     -116.26 h
+  AWB-49   2026-05-25 02:14 -> 2026-05-22 00:20      -73.90 h
+  AWB-47   2026-06-05 07:51 -> 2026-06-02 09:14      -70.62 h
+  AWB-30   2026-07-30 02:52 -> 2026-07-27 10:29      -64.39 h
+  AWB-32   2026-07-21 02:43 -> 2026-07-18 12:54      -61.81 h
+  AWB-26   2026-08-14 02:34 -> 2026-08-12 06:37      -43.95 h
+  AWB-24   2026-08-20 02:48 -> 2026-08-18 08:08      -42.67 h
+  AWB-62   2026-04-29 08:00 -> 2026-04-27 15:42      -40.30 h
+  AWB-51   2026-05-20 09:42 -> 2026-05-19 00:28      -33.22 h
+  AWB-36   2026-07-14 02:47 -> 2026-07-13 18:37       -8.16 h
+  AWB-59   2026-04-29 02:46 -> 2026-04-28 18:50       -7.93 h
+  AWB-52   2026-05-13 09:31 -> 2026-05-13 07:22       -2.16 h
+  AWB-45   2026-06-10 06:55 -> 2026-06-10 07:15        0.32 h
+  AWB-42   2026-06-24 06:46 -> 2026-06-24 07:15        0.48 h
+  AWB-38   2026-07-09 06:04 -> 2026-07-09 08:16        2.20 h
+  AWB-50   2026-05-21 05:36 -> 2026-05-21 07:50        2.23 h
+  AWB-46   2026-06-08 05:13 -> 2026-06-08 08:11        2.96 h
+  AWB-55   2026-04-14 09:28 -> 2026-05-05 11:22      505.91 h
+  AWB-09   2026-04-01 12:15 -> 2026-05-05 11:03      814.80 h
+  AWB-07   2026-03-17 10:17 -> 2026-05-04 14:27     1156.17 h
+  AWB-05   2026-03-12 07:55 -> 2026-05-04 00:48     1264.88 h
+  AWB-01   2026-03-03 08:55 -> 2026-05-05 08:45     1511.84 h
+  AWB-06   2026-02-25 07:50 -> 2026-05-03 23:47     1623.96 h
+  AWB-03   2026-02-18 13:53 -> 2026-04-27 14:08     1632.25 h
+  AWB-10   2026-02-13 11:06 -> 2026-05-05 09:03     1941.95 h
+  AWB-56   2026-01-27 12:50 -> 2026-04-29 12:11     2207.35 h
+  AWB-57   2026-01-23 08:36 -> 2026-04-29 12:04     2307.47 h
+  AWB-54   2026-01-19 12:27 -> 2026-05-06 08:04     2563.62 h
+  AWB-60   2026-01-07 12:22 -> 2026-04-27 14:05     2641.72 h
+  AWB-58   2026-01-08 08:59 -> 2026-04-29 10:07     2665.14 h
+  positive n=18 median=1388.36h (57.8d)
+  post-backfill n=5 max=2.96h   <- every one beats the 24h target
+  inverted (DSK before email) n=12
+
+== §5 BOTTLENECKS AS RENDERED ==
+  1   inbound   dhl_email_to_dsk               excess=1364.36    N=18   contrib=24558.48   d%=None
+  2   outbound  booking_to_first_movement      excess=83.77      N=14   contrib=1172.78    d%=1526.8
+  3   outbound  departure_to_delivery          excess=12.55      N=19   contrib=238.45     d%=-72.9
+  4   outbound  booking_to_acceptance          excess=181.26     N=1    contrib=181.26     d%=None
+  5   outbound  booking_to_delivered           excess=0.75       N=17   contrib=12.75      d%=7380.0
+  6   outbound  pickup_to_delivery             excess=-0.75      N=7    contrib=-5.25      d%=-12.2
+  7   inbound   poland_to_dhl_email            excess=-2.98      N=25   contrib=-74.5      d%=-9.1
+  8   outbound  acceptance_to_departure        excess=-17.7      N=6    contrib=-106.2     d%=None
+  9   inbound   origin_pickup_to_poland        excess=-9.68      N=25   contrib=-242.0     d%=-55.6
+  10  inbound   dsk_to_agency_sad              excess=-23.77     N=32   contrib=-760.64    d%=177.4
+  11  inbound   origin_pickup_to_delivered     excess=-26.13     N=31   contrib=-810.03    d%=27.6
+  12  inbound   sad_to_pz                      excess=-47.73     N=30   contrib=-1431.9    d%=-66.7
+  entries beating target yet ranked as bottlenecks: 7 of 12

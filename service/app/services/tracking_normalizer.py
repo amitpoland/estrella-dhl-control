@@ -231,6 +231,71 @@ _NORMALIZE_RULES: List[Tuple[str, str, float]] = [
     ("order processed",                            "SHIPMENT_CREATED",            0.85),
 ]
 
+# ── DHL type codes — the unambiguous signal ───────────────────────────────────
+# Every DHL event carries a two-letter type code. This module already receives
+# it (raw_status) and stores it, but classified on the human description
+# instead, which cannot separate cases the code separates cleanly:
+#
+#   AF "Arrived at DHL Sort Facility LEIPZIG"     -> ARRIVED_ORIGIN_HUB (0.75)
+#   AR "Arrived at DHL Delivery Facility ARQUES"  -> ARRIVED_ORIGIN_HUB (0.75)
+#
+# A transit hub and the destination-country delivery facility are not the same
+# event, and while they read the same the leg between them cannot be measured.
+#
+# Census: 962 events across storage/outputs/*/tracking_cache.json, 21 distinct
+# codes (campaign/evidence/W0). This is the carrier contract as this account
+# actually receives it, not a mapping taken from documentation.
+#
+# STAGE_ORDER above is the workflow vocabulary and drives milestone emission
+# under locked invariants. The map below is the milestone vocabulary the
+# logistics projector measures durations with. They are deliberately separate
+# and both live here, so there is one module to read when either changes.
+DHL_TYPE_CODE_STAGES: Dict[str, str] = {
+    "SD": "shipment_created",         # Shipment information received
+    "PU": "pickup",                   # Shipment picked up
+    "SA": "acceptance",               # Shipment Accepted
+    "PL": "processed_at_facility",    # Processed at <facility>
+    "DF": "departed",                 # Departed a DHL facility
+    "AF": "arrived_facility",         # Arrived at DHL SORT facility (transit hub)
+    "AR": "arrived_destination",      # Arrived at DHL DELIVERY facility (in-country)
+    "WC": "out_for_delivery",         # Out with courier for delivery (in-country)
+    "AD": "scheduled_for_delivery",
+    "TR": "in_transit",
+    "SM": "in_transit",               # Scheduled to depart on next planned movement
+    "OK": "delivered",
+    "CC": "awaiting_collection",
+    "OH": "on_hold",
+    "ND": "delivery_attempt_failed",
+    "CA": "delivery_attempt_failed",
+    "RR": "clearance_event",
+    "UD": "clearance_event",
+    "CD": "clearance_event",
+    "IC": "clearance_processing",
+    "CR": "clearance_complete",
+}
+
+
+def carrier_stage_id(ev: Dict[str, Any]) -> str:
+    """Normalise one carrier tracking event to a milestone stage id.
+
+    Precedence: an already-normalised stage from the tracking store wins, then
+    the DHL type code, then the literal "event" for a code never seen before.
+    An unknown code is left as "event" rather than guessed - a wrong stage id
+    would silently close a duration sample against the wrong milestone, which is
+    worse than an excluded sample that gets counted and shown.
+
+    Push and poll both enter here. There is no second copy of this map.
+    """
+    explicit = str(ev.get("normalized_stage") or ev.get("stage") or "").strip()
+    if explicit:
+        return explicit
+    code = str(
+        ev.get("status") or ev.get("type_code") or ev.get("typeCode")
+        or ev.get("raw_status") or ""
+    ).strip().upper()
+    return DHL_TYPE_CODE_STAGES.get(code, "event")
+
+
 # ── Stage colour palette (for the dashboard) ──────────────────────────────────
 
 STAGE_COLORS: Dict[str, str] = {
