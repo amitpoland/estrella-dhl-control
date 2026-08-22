@@ -18,7 +18,8 @@ Updated at every node transition. A run with no ledger update is invisible work.
 | M0 master consolidation | **RESCOPED — 2 of 3 items withdrawn** | — | — | VAT codes and product→towar verified at code level as NOT duplicate authorities (see D-08, D-09). Only the customer-master write-path item survives, and it now carries Track B's duplicate-cid findings and PR #1247 | 2026-08-22 |
 | X1 description generator | **CODE-COMPLETE** | `fix/plain-is-not-a-stone` | #1320 | `472122a5`; golden regression 160/160; 2 pre-existing failures proven pre-existing by stash comparison; ENGINE FILE — Lesson J declared in the PR | 2026-08-22 |
 | S0R quarantine allocation safety | **CODE-COMPLETE** | `fix/quarantine-preserves-operator-binding` | #1322 | `ed05f4f9`; floors PZ 296/260 and carrier 965/604 read from junitxml at base `26a480d2`; 4 failures, 0 new -- 3 registered carrier known-failures + one packing print-CSS test proven pre-existing in a detached worktree at exactly `26a480d2` | 2026-08-22 |
-| S1 · S4a · S2 · S3 · S4 · S5 | QUEUED | — | — | — | — |
+| S1 ingestion contract | **CODE-COMPLETE** | `fix/a-packing-document-must-not-outclaim-its-rows` | #1324 | `5e98ce5a`; applied to all 104 live documents, exactly one changes; floors PZ 296/260 and carrier 979/604 at base `21082d77`; 5 failures, 0 new — 3 registered carrier known-failures + 2 proven pre-existing in a clean tree at `21082d77` | 2026-08-22 |
+| S4a · S2 · S3 · S4 · S5 | QUEUED | — | — | — | — |
 | W4-Z AR/AP zombie census | **MERGED** | — | — | census complete: 772 AR / 2176 AP rows; scope, basis and currency integrity all CLEAN | 2026-08-22 |
 | TB-1 contractor identity | **ACTIVE** | `fix/ar-ap-contractor-identity` | HELD | `c7ce03c9`, 6 new tests, 72 accounting-hub tests green | 2026-08-22 |
 | D8 unify read-only classifiers | QUEUED | — | — | — | — |
@@ -117,6 +118,40 @@ than a decision. The opposite risk, a rule that defers everything and quietly
 disables the repair, is pinned by `test_an_identical_binding_on_both_copies_is_not_a_conflict`
 and `test_a_supplier_suggestion_is_not_a_decision`.
 
+## SELF-ANALYSIS — 2026-08-22 S1 (ARCHAEOLOGIST + ADVERSARY co-signed)
+
+**What the run proved.** The screen rule applied to my own ledger. F-23 said "245
+noise rows" — a garbage parse, low stakes, nothing owed. The document's diagnostic
+says the parse succeeded, skipped nothing, and totalled 245 pieces, $3,172 and 505
+grams. **The sign of the finding was inverted**, the same failure mode as F-22, and
+this time the wrong version was the reassuring one. A finding written from a
+symptom inherits the symptom's framing; only reading the producer's own account
+corrects it.
+
+**Where the first design was wrong, and how it failed.** I chose the write path as
+the choke point — one guard where every caller routes through, the correct instinct.
+Two tests refused to fail: the write path *cannot* produce the defect, because the
+lost rows were never offered to it. The premise, not the code, was wrong. Rather
+than weaken the tests to match the implementation, the implementation moved to
+where the claim is actually recorded — the parser diagnostic — and the tests were
+rewritten around the authority that reports to the registry. **A test that will not
+fail on a real defect is telling you the instrument is pointed somewhere else.**
+
+**Doctrine already held, applied here:** *A SCREEN IS NOT A FINDING* (the zero-line
+census returns 4 batches; 3 are corrupt-file test fixtures and 1 is real — a 4×
+overstatement avoided) and *EVERY PIN MUST BE ABLE TO PASS*, in its mirror form: a
+pin that cannot fail is equally useless.
+
+**ARCHAEOLOGIST**: `extraction_status` has been parse-derived since the column
+existed; no earlier fix regressed it, and the registry bridge that amplifies it
+(`get_packing_status_for_shipment_document`) was added to *correct* a different
+staleness and inherited this one. **ADVERSARY**: the predicate reads the claim from
+`rows_extracted` / `row_count`, so a parser that records neither is exempt — three
+zero-line re-registrations of `EJL/26-27/148` stay `complete` for exactly that
+reason, and the PR says so instead of implying they were fixed. The exemption is
+the price of refusing one false statement rather than inventing a stricter contract;
+it is recorded, not hidden.
+
 ## FINDINGS
 
 | id | sev | finding | evidence | fixed by |
@@ -135,6 +170,9 @@ and `test_a_supplier_suggestion_is_not_a_decision`.
 | F-19 | **HIGH** | 13 AR + 2 AP ZOMBIE positions: unpaid invoices AND unlinked credits in one currency. The payment matcher applies payment facts only — there is no correction-to-invoice path, so `correction_of_id` is set by wFirma and ignored by the aggregator | Z2: EUR 4 / PLN 1 / USD 8 AR; USD 2 AP. Railing PLN 557,610 against a PLN 31,297 credit | W4-Z10 decision package |
 | F-20 | MED | 3 exact-match orphaned credits — the unallocated-pair signature, invoice gross equal to the credit to the cent. The oldest is **four years** old | UAB Tomas Gold $52,940 (2021); Esency Diamonds $9,323.74 (2024); Juliany EOOD $2,843.00 (2026). All carry `correction_of_id` | needs a ruling: refund owed, or write-off |
 | F-22 | MED | **Corpus re-scan complete: 4 L1 victims, 12 lines recoverable.** 91 of 101 live documents re-parsed and compared (10 source files no longer on disk). Victims — `6e1a7e7c` 4 lines (`…3109419880`), `57581182` 4 lines (`…8722845401`), `0164ed48` 3 lines (`…6696117050`), `84c50d39` 1 line (`…1196338404`). All four: FINAL stage, xlsx, shortfall equal to the serial-less repeat surplus EXACTLY. First **under-count** class in this campaign — goods present, record missing; surfaces as phantom shortage in S3. Recovery is re-ingest through S0-fixed code, under declared-delta acceptance | re-scan with E1–E5 declared in advance; E1 ✅ E3 ✅ E4 ✅ (deficit 3), E5 ✅ after separating never-ingested documents | S0 deploy + re-ingest |
+| F-28 | **HIGH** | **F-23 was wrong in the direction that matters, and the correction is worse than the finding.** It was recorded as a PDF parsed to 245 *noise* rows — a garbage parse, low stakes. The document's own diagnostic says `rows_extracted` 245, `rows_skipped` 0, `failure_reason` null, `total_qty` 245, `total_fob_usd` 3172, gross 505.102g, net 453.212g. The parse SUCCEEDED and totalled; the rows were lost between it and persistence, and the document reads `complete` on a shipment whose batch holds no packing lines at all. Because the registry answers `complete` if ANY resolved document is complete, that shipment's packing reports complete. Under-count class, like F-22 — goods present, record missing — not a noise class | full-corpus predicate over 104 live documents: exactly 1 changes (`939ae11b`, `complete` → `rows_lost`), 97 unchanged | S1 ✅ #1324; row recovery still behind the S0 deploy |
+| F-29 | MED | **The three `SHIPMENT_PXT*` batches in the production packing DB are corrupt-file test fixtures** — `pack.xlsx` BadZipFile, `pack.pdf` "No /Root object", `pack.xls` with literal `smok` bytes. All correctly `empty` with a real `failure_reason`, so the ingestion contract is not missing; it works. Screening "batches with documents but zero lines" returns 4 and only ONE is real — the screen would have quadrupled this finding | zero-line document census over the live DB | test fixtures in production storage: backlog |
+| F-30 | LOW | A NEW red landed on main outside both metered globs: `test_intake_add_document_packing_persist.py::test_persist_helper_superset_mapping_and_transit_seed` — `match_strategy` is now an extra key against a superset pin. Proven at clean `21082d77`, so it arrived with #1312/#1318, unregistered | isolated run in a clean tree at the exact SHA | backlog: register or repoint the pin |
 | F-27 | **HIGH** | **A dedup repair can delete an operator's allocation.** #1312 put the binding ON `packing_lines`; `packing_dedupe_repair` picks the survivor of a DUPLICATE group by generic field-richness, ranked per DOCUMENT by its single richest row, then DELETEs every row of the losing document. So the copy an operator bound can be the copy that goes, and the survivor carries no binding. The binding *partially* defends itself — the allocation columns are populated fields, so a bound row scores higher — but that is an accident of field counting, not a rule: a richer document still outranks it, and the fixture proving this is a 3-field difference. Never applied to storage, so nothing is lost yet | failing test first: `quarantined == 1` on a group whose only bound row was the surplus; premise pinned so it cannot silently stop testing anything | repair defers the group and names the rows; `fix/quarantine-preserves-operator-binding` |
 | F-26 | MED | **An authority map produced from module structure over-reports duplication.** Two of M0's three consolidations were unnecessary: one pair is disjoint systems that merely share a subject word (VAT), the other was consolidated in a prior wave with the fallback explicitly retired in code. Both read as DUPLICATE from the census's file-level view. The map is a SCREEN — the same rule the corpus re-scan earned — and every entry needs a code-level disambiguating pass before it becomes work | D-08, D-09 | M0 rescoped |
 | F-25 | **HIGH** | **X1 is a customs-description defect, not a cosmetic one, and far wider than reported.** `PLAIN` maps to `None` in `STONE_ABBR` to mean *no stones*, but sits in the same longest-first, first-match-wins list as real stones — ahead of `DIAM`, `DIA`, `CLS`, `CZ`, `LGD`, `LG`, `LAB`. Any description carrying PLAIN **and** a stone abbreviation lost the stone, and the fallback only rescued the full word `DIAMOND`. The brief called it 'trailing blocks render as plain'; measurement shows **text order is irrelevant — key order decides**: `DIA RING PLAIN BAND` failed identically to `PLAIN RING WITH DIA`. Every multi-item block mixing a plain piece with a set piece understated the customs description | repro over 9 inputs, expectations declared first; E1–E4 all confirmed | X1 ✅ `472122a5` |
