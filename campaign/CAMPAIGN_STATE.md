@@ -239,3 +239,72 @@ long session.
 **Held for the Operator: release scope.** This is a scope decision, not a technical one, so the
 Chair does not take it alone. Deploy preparation is otherwise complete — window open (00:13
 Warsaw, Saturday), no batch in flight, payload identified, 95 targeted tests green.
+
+---
+
+## Entry 007 — 2026-08-22 — CHAIR — seven-agent gate + a PII incident of my own making
+
+Operator narrowed the release to **W0–W4 plus the normaliser consolidation**. W5's poller is a
+separate wave. The DSK backfill is treated as a one-time historical event.
+
+### Seven-agent gate — six reviewers on frozen head `73cbd658`
+
+| Seat | Risk | Verdict |
+|---|---|---|
+| `deploy-git-diff-reviewer` | LOW | **CLEAR** — no forbidden paths, no engine files, no schema, no auth |
+| `deploy-backend-impact-reviewer` | LOW | **CLEAR** — import DAG acyclic; every `build_bottleneck_ranking` caller traced |
+| `deploy-persistence-storage-reviewer` | LOW | **CLEAR** — read-only; `tracking_normalizer` locked invariants untouched |
+| `deploy-security-reviewer` | MEDIUM | **CONDITIONAL** — runtime payload clear; **PII blocker** on the branch |
+| `deploy-qa-reviewer` | MEDIUM | **CLEAR** — floors cleared; 3 non-blocking coverage flags |
+| `deploy-release-manager` | — | **CONDITIONAL** — Lesson D applies to a worktree deploy; merge-first recommended |
+
+Two independent confirmations worth recording, because both were claims of mine that could have
+been wrong in my favour: no root-level engine file is touched (Lesson J's separate sync does not
+apply), and the additions to `tracking_normalizer.py` sit *alongside* its write path —
+`_MILESTONE_ALLOWLIST`, the dedup key and `apply_workflow_progression` are unchanged.
+
+### PII incident — mine, caught by the gate, contained
+
+`deploy-security-reviewer` raised a **non-overridable** `PII_IN_COMMIT` blocker. The repository is
+**PUBLIC** (`gh repo view` → `isPrivate: false`). I had committed five live projection snapshots
+carrying **54 real counterparty names, 62 AWBs and 21 declared values**, plus the same identifiers
+inside `census_stdout.txt` and both wave reports.
+
+**Nothing leaked.** The branch had never been pushed (`git ls-remote` empty,
+`git branch -r --contains HEAD` empty), so this was contained to this machine.
+
+Remediation:
+1. **Pseudonymised, not deleted.** Every census figure is aggregate and needs no real name, but the
+   per-sample tables need stable identifiers or a reader cannot check that the same shipment sits
+   in the same place across two files. 62 AWB, 20 party and 40 batch tokens, shared across every
+   evidence file and both reports. Declared values, quoted costs, weights, destination cities and
+   milestone locations redacted outright.
+2. **Field-level scrubbing was not sufficient** — AWBs also live inside `tracking_url` query
+   strings and free-text event lines — so the serialised JSON gets a final sweep, and the script
+   exits non-zero if any mapped identifier survives anywhere under `campaign/`.
+3. **Stripped from every commit**, not merely replaced at the tip:
+   `git filter-branch --index-filter` over `main..HEAD`. Branch went 8 commits → 7 (one pruned as
+   empty); sanitised versions re-added in one new commit.
+4. **Verified independently of the sanitiser:** a `git cat-file` pass over every blob under
+   `campaign/` in all 7 commits finds zero AWB-shaped numbers and zero known party names.
+5. **The gate verdict still binds:** all six runtime-payload blobs are byte-identical between the
+   reviewed `73cbd658` and the post-rewrite HEAD (`git rev-parse 73cbd658:<path>` vs `HEAD:<path>`).
+
+Re-verification was sent back to `deploy-security-reviewer` rather than self-certified — a
+security blocker is not the Chair's to clear.
+
+**Lesson for the vault:** the charter's evidence protocol says "RAW stdout only, never edited".
+Raw is right for *stdout*; a raw capture of a live production **payload** is a different object,
+and on a public repo it needs pseudonymising before it is committed, not after it is caught.
+
+### Release path
+
+`deploy-release-manager` established that deploying directly from this worktree would be a
+**LOCAL-COMMIT-ONLY deploy under Lesson D** (non-`main` branch, SHA not on `origin/main`),
+requiring a disclosure header and a reconciliation plan. The clean alternative is merge-first:
+push → PR → merge to `main` → `ff-only` pull into `C:\PZ-main` → deploy from there. That removes
+both the branch-name block and the Lesson D requirement.
+
+Pushing this branch to a **public** remote is an outward-facing, irreversible act, and its content
+was PII-contaminated until minutes ago. The Chair does not take that step on standing
+authorisation — it goes to the Operator with the security re-verification attached.
