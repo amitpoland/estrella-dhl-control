@@ -2248,7 +2248,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
     // DHL rejects receiver contact without a phone (minLength 1) — block
     // locally with the exact reason instead of a DHL 422 round-trip.
     if (isDhl && !(form.phone || '').trim()) {
-      setApiError('Receiver phone is required by ' + carrierName + '.');
+      setApiError('Receiver phone is required by DHL Express.');
       return;
     }
 
@@ -2910,13 +2910,17 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
             <div>
-              <label htmlFor="awb-phone" style={labelStyle}>{'Phone * (required by ' + carrierName + ')'}</label>
+              <label htmlFor="awb-phone" style={labelStyle}>{isDhl
+                ? 'Phone * (required by DHL)'
+                : 'Phone * (required by ' + carrierName + ')'}</label>
               <input id="awb-phone" value={form.phone} onChange={e => set('phone', e.target.value)}
                 style={inputStyle} data-testid="awb-field-phone" />
               {!(form.phone || '').trim() && (
                 <div style={{ fontSize: 11, color: 'var(--badge-amber-text)', marginTop: 3 }}
                   data-testid="awb-phone-missing-hint">
-                  {'Receiver phone is required by ' + carrierName + '.'}
+                  {isDhl
+                    ? 'Receiver phone is required by DHL Express.'
+                    : 'Receiver phone is required by ' + carrierName + '.'}
                 </div>
               )}
             </div>
@@ -3015,7 +3019,7 @@ function AwbGenerateModal({ batchId, prefill, onClose, onSuccess, onDraftChanged
             }} data-testid="awb-master-save-confirm">
               <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
                 {saveConfirm.phoneOnly
-                  ? 'Receiver phone is required by ' + carrierName + '. Save this phone to Customer Master shipping contact?'
+                  ? 'Receiver phone is required by DHL Express. Save this phone to Customer Master shipping contact?'
                   : 'These shipping details are different from Customer Master. Save them to this customer\'s shipping details?'}
               </div>
               <div style={{ fontSize: 11.5, marginBottom: 10 }}>

@@ -243,19 +243,58 @@ def test_the_control_tower_passes_the_rows_own_carrier():
 
 # ── the booking modal: FedEx must not wear DHL's words ──────────────────────
 
-# Copy that names DHL and is NOT rendered behind a DHL-only condition.
-_DHL_ONLY_COPY = (
-    "required by DHL Express.",
-    "Phone * (required by DHL)",
+# Copy that must never appear at all: it either names a carrier the modal does
+# not book, or invents a DHL control for every carrier.
+_NEVER_IN_THE_MODAL = (
     "Create FedEx sandbox shipment",
     "Generate FedEx sandbox shipment",
     ">DHL Service<",
 )
 
+# DHL's own operator copy. This is REQUIRED wording on the DHL branch — DHL
+# rejects a receiver contact without a phone, and the operator is told so in
+# DHL's words. It is not leakage to keep it; it is leakage to render it for a
+# carrier that never said it. So the contract is not "absent", it is "reachable
+# only when isDhl". An earlier revision of this file asserted these strings were
+# absent, which silently deleted DHL operator copy that two legacy pins have
+# always required (test_awb_master_save_confirm, test_receiver_contact_validation).
+_DHL_COPY_THAT_MUST_BE_GATED = (
+    "Receiver phone is required by DHL Express.",
+    "Phone * (required by DHL)",
+)
 
-@pytest.mark.parametrize("phrase", _DHL_ONLY_COPY)
-def test_the_booking_modal_carries_no_ungated_dhl_copy(phrase):
-    assert phrase not in _src(_PROFORMA), f"ungated DHL copy survives: {phrase!r}"
+_DHL_GUARDS = ("isDhl", "selectedCarrier === 'DHL'")
+
+
+@pytest.mark.parametrize("phrase", _NEVER_IN_THE_MODAL)
+def test_the_booking_modal_carries_no_invented_carrier_copy(phrase):
+    assert phrase not in _src(_PROFORMA), f"invented carrier copy survives: {phrase!r}"
+
+
+@pytest.mark.parametrize("phrase", _DHL_COPY_THAT_MUST_BE_GATED)
+def test_dhl_operator_copy_is_present_and_reachable_only_on_the_dhl_branch(phrase):
+    lines = _src(_PROFORMA).splitlines()
+    hits = [i for i, ln in enumerate(lines) if phrase in ln]
+    assert hits, f"DHL operator copy was deleted, not gated: {phrase!r}"
+    for i in hits:
+        # 12 lines: a JSX block guard can sit above several style/attr lines.
+        window = lines[max(0, i - 12):i + 1]
+        assert any(g in ln for ln in window for g in _DHL_GUARDS), (
+            f"DHL copy {phrase!r} at line {i + 1} is not behind a DHL-only "
+            f"condition — FedEx and UPS would render it"
+        )
+
+
+@pytest.mark.parametrize("phrase", _DHL_COPY_THAT_MUST_BE_GATED)
+def test_the_non_dhl_branch_names_the_carrier_instead_of_dhl(phrase):
+    """Every gated DHL string has a sibling that says the real carrier's name."""
+    src = _src(_PROFORMA)
+    generic = phrase.replace("DHL Express", "' + carrierName + '").replace(
+        "(required by DHL)", "(required by ' + carrierName + ')")
+    assert generic in src, (
+        f"no non-DHL alternative for {phrase!r} — a FedEx or UPS operator would "
+        f"either see DHL's words or see nothing"
+    )
 
 
 def test_the_modal_derives_its_carrier_name_instead_of_naming_dhl():
