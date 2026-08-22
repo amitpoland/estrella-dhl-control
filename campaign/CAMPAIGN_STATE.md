@@ -378,3 +378,123 @@ Temporary verification server (uvicorn :8099) stopped and confirmed down; no orp
 pytest/uvicorn processes; `PZService` untouched throughout (`STATE: RUNNING`, never stopped).
 The storage replica and the throwaway local verifier account exist **only** in the session
 scratchpad and were never written to production.
+
+---
+
+## Entry 009 — 2026-08-22 — RELEASE CLOSURE — **DEPLOYED_VERIFIED**
+
+| Field | Value |
+|---|---|
+| Target SHA | `fd4c79a76dc2a180935a11a55650a4480c1b3183` |
+| Deployed SHA | `fd4c79a76dc2a180935a11a55650a4480c1b3183` (measured from `C:\PZ\version.txt`, not reported) |
+| Deployment unit | `fd4c79a76dc2...-20260822-144648` |
+| Gate | 7/7 **GO**, revalidated immediately before the write — `VALID seven-agent GO for fd4c79a76dc2`, exit 0 |
+| Deployed by | Operator, via `Deploy-PZ.ps1 -Release` + UAC. The agent session is guard-blocked from the deploy script and is not elevated. |
+| Previous production | `7a241604cfff6cff527d9e9a5e61e803fcc637d3` |
+
+### Preflight (nothing mutated)
+
+`C:\PZ-main` clean, `HEAD == origin/main == fd4c79a7 == gated target`. Gate valid with 5.5 h
+remaining, 0 blockers. Stale-target test confirmed the same evidence file refuses `21082d77`.
+
+### Endpoints
+
+| Check | Result |
+|---|---|
+| `GET /api/v1/health` | **200** |
+| `GET /api/v1/dhl/logistics/projection?direction=all&view=active` | **200** |
+| `GET /api/v1/carrier/status` | **200** |
+| `PZService` | **RUNNING** |
+
+### `packing.db` — the number this release existed to protect
+
+```
+before  1,486,848 bytes   sha256 0652a3f841ea08b8eb80a35cf58dfc66371421422cf5f13e1771106a368a65eb
+after   1,515,520 bytes   sha256 6d10a83d432b08577f510f4ef911370c6e824451fc79a345032c5467f377d4cb
+delta     +28,672 bytes = 7 pages @ 4096
+```
+
+**The delta was investigated rather than tolerated, and is fully accounted for.** No byte-delta
+tolerance was invented.
+
+| Object | Status |
+|---|---|
+| `packing_doc_links` | NEW this release (absent at `7a241604`), created empty, root page |
+| `sqlite_autoindex_packing_doc_links_1` | implicit UNIQUE index for the above, root page |
+| `idx_pl_line_key` | NEW this release, built over 1,598 `packing_lines` rows |
+| `freelist_count` | **0** — nothing freed, so growth is pure allocation |
+
+**The decisive check, run against the live production database:**
+
+- allocation columns in `packing_lines`: **0 of 11** (`allocation_source`,
+  `suggested_customer_name`, `suggested_customer_id`, `allocated_customer_id`,
+  `allocation_confirmed_at`, `allocation_confirmed_by`, `allocation_source_revision`,
+  `allocation_strategy`, `allocation_cleared_at`, `allocation_cleared_by`,
+  `allocation_cleared_reason`)
+- `idx_pl_allocated_customer`: **ABSENT**
+- `packing_lines` column count: **39** (would have been 50 with the allocation set)
+- `packing_line_quarantine`: **ABSENT** — the dedupe repair never ran, as designed
+
+PR #1323 is therefore proven effective against production reality, not merely against source.
+No manual database write, migration, vacuum or repair was performed at any point.
+
+### stderr — one ImportError, proven NOT a release regression
+
+```
+File "C:\PZ\app\services\commercial_cmr.py", line 172, in build_cmr_document
+    from .commercial_document_parties import resolve_document_parties
+ImportError: cannot import name 'resolve_document_parties' from partially initialized module
+'app.services.commercial_document_parties' (most likely due to a circular import)
+```
+
+Diagnosed before recording the verdict, per governance rule 13:
+
+- `commercial_cmr.py` and `commercial_document_parties.py` are **byte-identical** between
+  `7a241604` (what production was already running) and `fd4c79a7`.
+- The 9-file payload **does not touch that import graph at all**.
+- It is a **request-time** lazy import inside `build_cmr_document`, not a startup failure; the
+  service started clean and all three endpoints answer 200.
+
+**Pre-existing latent defect, actively failing, in `GET /api/v1/shipment-documents/.../cmr.json`
+(`routes_shipment_documents.py:307`). Recorded as a backlog item. It did not block this release
+and was not caused by it.**
+
+### Control Tower acceptance — met, with one recorded nuance
+
+```
+1. booking_to_acceptance       +113.82h  N=13
+2. booking_to_first_movement   +108.10h  N=13
+3. booking_to_delivered         +85.69h  N=12   <- the expected value
+4. origin_pickup_to_delivered   +17.23h  N=5
+```
+
+- **`booking_to_delivered · +85.69h · N=12` is live** — matches the expected `+85.7h · 12`.
+- **The `+1364h` result is GONE from the ranking.** `dhl_email_to_dsk` is now withheld:
+  `publishable=false`, `not_publishable_reason=contaminated_ordering`. Its all-time typical is
+  still `1388.36` in the underlying data, which is correct — the fix was to stop *ranking* a
+  figure with zero recent observations, not to alter history.
+
+**Nuance, stated rather than glossed:** the expected phrasing *"Whole export, booking to delivered
+· +85.7h · 12 deliveries"* as the **headline** is CT-DEDUP output. CT-DEDUP is **not deployed** —
+it is the unmerged `campaign/ct-dedup` branch. Production correctly runs CT-MASTER (#1313), which
+ranks on row counts, so `booking_to_delivered` sits at **#3** and the count renders as `N=12`, not
+`12 deliveries`. Traced to its owning authority before reporting: this is neither a data,
+calculation, cache nor rendering fault — it is a feature that has not shipped yet. It ships with
+queue item 1.
+
+### Rollback
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\.claude\deploy\Deploy-PZ.ps1" `
+  -Rollback -Unit fd4c79a76dc2...-20260822-144648
+```
+
+Restores from the manifest-validated backup taken by the deployer. Production before this release
+was `7a241604cfff6cff527d9e9a5e61e803fcc637d3`. After any rollback, re-run the three endpoint
+checks, `version.txt`, `PZService` state, the `packing.db` size comparison and the stderr tail, and
+record the restored state.
+
+### Verdict
+
+**DEPLOYED_VERIFIED.** Every closure condition evidenced above. Two items carried to backlog: the
+pre-existing CMR circular import, and the CT-DEDUP ranking that has not shipped.
